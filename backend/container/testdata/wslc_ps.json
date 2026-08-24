@@ -11,8 +11,8 @@
   {
     "CreatedAt": 1787301591,
     "Id": "4ad471401180ee1b003cfca1812d8229994e3ac6582cb141460f4eb8a3633d17",
-    "Image": "backend-api:static-43",
-    "Name": "backend-api-static-43",
+    "Image": "web-app:1.0",
+    "Name": "web-app",
     "Ports": [
       {
         "BindingAddress": "127.0.0.1",
@@ -27,8 +27,8 @@
   {
     "CreatedAt": 1786013514,
     "Id": "49a9097cff1f0d97142c059b60e08df9f56fa99a5907628927a0a14ef1a0bd82",
-    "Image": "bestrui/octopus",
-    "Name": "octopus",
+    "Image": "redis:7",
+    "Name": "redis",
     "Ports": [],
     "State": 3,
     "StateChangedAt": 1786066350

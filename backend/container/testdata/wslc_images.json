@@ -9,8 +9,8 @@
   {
     "CreatedAt": 1786013500,
     "Id": "f6e5d4c3b2a1",
-    "Repository": "bestrui/octopus",
-    "Tag": "latest",
+    "Repository": "redis",
+    "Tag": "7",
     "Size": 52000000
   }
 ]
