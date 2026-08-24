@@ -81,10 +81,10 @@
               <button v-if="row.state === 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.stop')" @click.stop="runAction(row, 'stop')">
                 <Square :size="14" />
               </button>
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.restart')" @click.stop="runAction(row, 'restart')">
+              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.restart')" @click.stop="runAction(row, 'restart')">
                 <Power :size="14" />
               </button>
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.rename')" @click.stop="onRename(row)">
+              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.rename')" @click.stop="onRename(row)">
                 <Pencil :size="14" />
               </button>
               <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.remove')" @click.stop="onRemove(row)">

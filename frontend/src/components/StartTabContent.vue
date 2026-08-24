@@ -426,7 +426,7 @@ import { useTabStore } from '../stores/tabStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
 import { GetRecentConnections } from '../../wailsjs/go/main/App'
-import { formatConnSubtitle, getConnectionTypeKey, getTypeCategory, formatTypeFilterLabel, getTypeFilterCatalog } from '../utils/quickConnect'
+import { formatConnSubtitle, getConnectionTypeKey, getTypeCategory, formatTypeFilterLabel, getTypeFilterCatalog, isWindows } from '../utils/quickConnect'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
@@ -535,7 +535,7 @@ const TYPE_LABELS: Record<string, string> = {
 // new-connection form) → concrete types present in connections.
 const filterGroups = computed(() => {
   const connKeys = new Set(connectionStore.connections.map(c => getConnectionTypeKey(c)))
-  const catalog = getTypeFilterCatalog(t)
+  const catalog = getTypeFilterCatalog(t, isWindows)
   const catalogKeys = new Set(catalog.flatMap(g => g.items.map(i => i.key)))
 
   // Present-but-uncataloged types (e.g. legacy sftp / monitor that aren't in

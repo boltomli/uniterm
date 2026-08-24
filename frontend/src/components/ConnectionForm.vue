@@ -610,6 +610,11 @@ onMounted(() => {
   proxyStore.load()
 })
 
+// ── Platform detection (before allSubTypes so it's available in computed closures) ──
+const isWindows = ref(/windows/i.test(navigator.userAgent) || /win32/i.test(navigator.platform))
+const platform = ref<string>('')
+GetPlatform().then(p => { platform.value = p })
+
 // ── Categories & sub-types ──
 interface SubTypeInfo {
   type: string
@@ -665,6 +670,7 @@ const allSubTypes = computed((): Record<string, SubTypeInfo[]> => ({
     { type: 'container', containerRuntime: 'docker', label: 'Docker', icon: Boxes },
     { type: 'container', containerRuntime: 'podman', label: 'Podman', icon: Boxes },
     { type: 'container', containerRuntime: 'nerdctl', label: 'nerdctl', icon: Boxes },
+    ...(isWindows.value ? [{ type: 'container', containerRuntime: 'wslc', label: 'WSLC', icon: Boxes }] : []),
   ],
 }))
 
@@ -686,7 +692,7 @@ function selectType(st: SubTypeInfo) {
     form.dbType = st.dbType
   } else if (st.containerRuntime) {
     form.type = 'container'
-    form.containerRuntime = st.containerRuntime as 'docker' | 'podman' | 'nerdctl'
+    form.containerRuntime = st.containerRuntime as 'docker' | 'podman' | 'nerdctl' | 'wslc'
   } else {
     form.type = st.type
   }
@@ -718,9 +724,6 @@ const shellOptions = computed(() =>
   settingsStore.availableShells.map(sh => ({ label: getShellLabel(sh), value: sh }))
 )
 
-const isWindows = ref(/windows/i.test(navigator.userAgent))
-const platform = ref<string>('')
-GetPlatform().then(p => { platform.value = p })
 const x11HintKey = computed(() => {
   if (platform.value === 'darwin') return 'conn.x11ForwardingDescMac'
   return ''

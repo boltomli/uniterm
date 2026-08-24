@@ -471,7 +471,7 @@ import MenuItem from './MenuItem.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
 import MenuDivider from './MenuDivider.vue'
 import type { ConnectionConfig, ConnectionGroup } from '../types/session'
-import { parseQuickConnect, formatConnSubtitle, getConnectionTypeKey, getTypeCategory, formatTypeFilterLabel, getTypeFilterCatalog } from '../utils/quickConnect'
+import { parseQuickConnect, formatConnSubtitle, getConnectionTypeKey, getTypeCategory, formatTypeFilterLabel, getTypeFilterCatalog, isWindows } from '../utils/quickConnect'
 import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, FOLLOW_APP_THEME } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
 import { useTerminalThemeOptions } from '../composables/useTerminalThemeOptions'
@@ -614,7 +614,7 @@ function filterTypeLabel(key: string): string {
 // new-connection form) → concrete types present in connections.
 const filterGroups = computed(() => {
   const connKeys = new Set(connectionStore.connections.map(c => getConnectionTypeKey(c)))
-  const catalog = getTypeFilterCatalog(t)
+  const catalog = getTypeFilterCatalog(t, isWindows)
   const catalogKeys = new Set(catalog.flatMap(g => g.items.map(i => i.key)))
 
   // Present-but-uncataloged types (e.g. legacy sftp / monitor that aren't in

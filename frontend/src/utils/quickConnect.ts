@@ -1,5 +1,8 @@
 import type { ConnectionConfig } from '../types/session'
 
+// Platform detection for Windows-only features (e.g., WSLC)
+export const isWindows = /windows/i.test(navigator.userAgent)
+
 const QUICK_PROTOCOLS: Record<string, { type: string; dbType?: string; defaultPort?: number }> = {
   ssh: { type: 'ssh', defaultPort: 22 },
   telnet: { type: 'telnet', defaultPort: 23 },
@@ -164,7 +167,8 @@ export const TYPE_CATEGORIES: string[] = ['terminal', 'filetransfer', 'remote', 
 // (ConnectionForm `categories` + `allSubTypes`) exactly — same category order,
 // same subtype order, same labels. `t` is required only for the few names that
 // are localized (category titles, local terminal, serial).
-export function getTypeFilterCatalog(t: (key: string) => string) {
+// `isWin` controls whether Windows-only options (WSLC) are included.
+export function getTypeFilterCatalog(t: (key: string) => string, isWin = false) {
   return [
     {
       key: 'terminal',
@@ -225,6 +229,7 @@ export function getTypeFilterCatalog(t: (key: string) => string) {
         { key: 'container:docker', label: 'Docker' },
         { key: 'container:podman', label: 'Podman' },
         { key: 'container:nerdctl', label: 'nerdctl' },
+        ...(isWin ? [{ key: 'container:wslc', label: 'WSLC' }] : []),
       ],
     },
   ]

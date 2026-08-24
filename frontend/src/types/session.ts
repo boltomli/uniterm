@@ -137,7 +137,7 @@ export interface ConnectionConfig {
   // Container connection (type: 'container')
   containerTransport?: 'ssh' | 'local'
   containerSSHConnId?: string
-  containerRuntime?: 'docker' | 'podman' | 'nerdctl'
+  containerRuntime?: 'docker' | 'podman' | 'nerdctl' | 'wslc'
   // Container exec terminal (container-exec panel) — 重连参数
   containerExecConnId?: string
   containerExecContainerId?: string

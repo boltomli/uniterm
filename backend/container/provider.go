@@ -55,7 +55,11 @@ func (p *Provider) Rename(ctx context.Context, id, newName string) error {
 	if strings.TrimSpace(newName) == "" {
 		return fmt.Errorf("name required")
 	}
-	_, err := p.runner.Run(ctx, renameArgs(p.rt, p.ns, id, newName))
+	argv, err := renameArgs(p.rt, p.ns, id, newName)
+	if err != nil {
+		return err
+	}
+	_, err = p.runner.Run(ctx, argv)
 	return err
 }
 
@@ -121,7 +125,7 @@ func (p *Provider) Namespaces(ctx context.Context) ([]string, error) {
 // DetectRuntimes 探测候选运行时中哪些可用（用于连接失败时的诊断）。
 func DetectRuntimes(ctx context.Context, r Runner) []Runtime {
 	var found []Runtime
-	for _, rt := range []Runtime{RuntimeDocker, RuntimePodman, RuntimeNerdctl} {
+	for _, rt := range []Runtime{RuntimeDocker, RuntimePodman, RuntimeNerdctl, RuntimeWSLC} {
 		if _, err := r.Run(ctx, detectArgs(rt)); err == nil {
 			found = append(found, rt)
 		}
@@ -136,7 +140,7 @@ func ValidateRuntime(ctx context.Context, rt Runtime, r Runner) error {
 	}
 	found := DetectRuntimes(ctx, r)
 	if len(found) == 0 {
-		return fmt.Errorf("container runtime %q not found; none of docker/podman/nerdctl detected", rt)
+		return fmt.Errorf("container runtime %q not found; none of docker/podman/nerdctl/wslc detected", rt)
 	}
 	names := make([]string, len(found))
 	for i, f := range found {

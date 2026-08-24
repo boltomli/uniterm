@@ -21,6 +21,7 @@ var candidateDirs = []string{
 	"/usr/local/bin", "/opt/homebrew/bin", "/snap/bin", "/usr/bin",
 	`C:\Program Files\Docker\Docker\resources\bin`,
 	`C:\Program Files\Rancher Desktop\resources\resources\win32\bin`,
+	`C:\Windows\System32`,
 }
 
 func resolveBinary(name string) (string, error) {
@@ -50,7 +51,7 @@ func (r *LocalRunner) command(ctx context.Context, argv []string) (*exec.Cmd, er
 			rest = []string{"where", strings.TrimPrefix(rest[0], "command -v ")}
 		}
 		argv = append([]string{"cmd", "/c"}, rest...)
-	} else if argv[0] == "docker" || argv[0] == "podman" || argv[0] == "nerdctl" {
+	} else if argv[0] == "docker" || argv[0] == "podman" || argv[0] == "nerdctl" || argv[0] == "wslc" {
 		p, err := resolveBinary(argv[0])
 		if err != nil {
 			return nil, err

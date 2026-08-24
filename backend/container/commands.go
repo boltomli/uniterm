@@ -18,6 +18,11 @@ func withNS(rt Runtime, ns string, argv ...string) []string {
 const jsonFormat = "{{json .}}"
 
 func psArgs(rt Runtime, ns string) []string {
+	if rt == RuntimeWSLC {
+		argv := []string{"ps", "-a"}
+		argv = append(argv, wslcFormat()...)
+		return withNS(rt, ns, argv...)
+	}
 	return withNS(rt, ns, "ps", "-a", "--format", jsonFormat)
 }
 
@@ -26,6 +31,16 @@ func inspectArgs(rt Runtime, ns, id string) []string {
 }
 
 func logsArgs(rt Runtime, ns, id string, tail int, follow, timestamps bool) []string {
+	if rt == RuntimeWSLC {
+		argv := []string{"logs", "-n", strconv.Itoa(tail)}
+		if follow {
+			argv = append(argv, "-f")
+		}
+		if timestamps {
+			argv = append(argv, "-t")
+		}
+		return withNS(rt, ns, append(argv, id)...)
+	}
 	argv := []string{"logs", "--tail", strconv.Itoa(tail)}
 	if timestamps {
 		argv = append(argv, "--timestamps")
@@ -42,6 +57,13 @@ func execArgs(rt Runtime, ns, id, shell string) []string {
 
 // action ∈ start/stop/restart/rm/pause/unpause
 func actionArgs(rt Runtime, ns, action, id string) ([]string, error) {
+	if rt == RuntimeWSLC {
+		switch action {
+		case "start", "stop", "rm":
+			return withNS(rt, ns, action, id), nil
+		}
+		return nil, fmt.Errorf("unsupported action %q for WSLC runtime", action)
+	}
 	switch action {
 	case "start", "stop", "restart", "rm", "pause", "unpause":
 		return withNS(rt, ns, action, id), nil
@@ -49,15 +71,28 @@ func actionArgs(rt Runtime, ns, action, id string) ([]string, error) {
 	return nil, fmt.Errorf("unsupported action %q", action)
 }
 
-func renameArgs(rt Runtime, ns, id, newName string) []string {
-	return withNS(rt, ns, "rename", id, newName)
+func renameArgs(rt Runtime, ns, id, newName string) ([]string, error) {
+	if rt == RuntimeWSLC {
+		return nil, fmt.Errorf("rename not supported for WSLC runtime")
+	}
+	return withNS(rt, ns, "rename", id, newName), nil
 }
 
 func statsArgs(rt Runtime, ns string) []string {
+	if rt == RuntimeWSLC {
+		argv := []string{"stats"}
+		argv = append(argv, wslcFormat()...)
+		return withNS(rt, ns, argv...)
+	}
 	return withNS(rt, ns, "stats", "--no-stream", "--format", jsonFormat)
 }
 
 func imagesArgs(rt Runtime, ns string) []string {
+	if rt == RuntimeWSLC {
+		argv := []string{"images"}
+		argv = append(argv, wslcFormat()...)
+		return withNS(rt, ns, argv...)
+	}
 	return withNS(rt, ns, "images", "--format", jsonFormat)
 }
 
@@ -90,7 +125,8 @@ func createArgs(rt Runtime, ns string, o CreateOptions) []string {
 	for _, e := range o.Env {
 		argv = append(argv, "-e", e)
 	}
-	if o.Restart != "" && o.Restart != "no" {
+	// WSLC doesn't support --restart
+	if rt != RuntimeWSLC && o.Restart != "" && o.Restart != "no" {
 		argv = append(argv, "--restart", o.Restart)
 	}
 	argv = append(argv, o.Image)
@@ -99,7 +135,12 @@ func createArgs(rt Runtime, ns string, o CreateOptions) []string {
 
 // detectArgs: command -v 走 shell，两 runner 均支持（见各 runner 的特例处理）。
 func detectArgs(rt Runtime) []string {
-	return []string{"sh", "-c", "command -v " + rt.Bin()}
+		return []string{"sh", "-c", "command -v " + rt.Bin()}
+	}
+
+// wslcFormat returns --format json for WSLC (vs Docker's --format "{{json .}}")
+func wslcFormat() []string {
+	return []string{"--format", "json"}
 }
 
 // posixQuote 供 SSHRunner 把 argv 拼成远端 sh 命令行；LocalRunner 不使用。

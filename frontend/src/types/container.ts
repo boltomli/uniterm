@@ -84,6 +84,6 @@ export interface ContainerTab {
   panelId: string
   name: string
   connectionId: string // 保存的连接配置 ID（= 后端 conn key）
-  runtime: 'docker' | 'podman' | 'nerdctl'
+  runtime: 'docker' | 'podman' | 'nerdctl' | 'wslc'
   locked?: boolean
 }

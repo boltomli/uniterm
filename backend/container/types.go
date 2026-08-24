@@ -6,11 +6,12 @@ const (
 	RuntimeDocker  Runtime = "docker"
 	RuntimePodman  Runtime = "podman"
 	RuntimeNerdctl Runtime = "nerdctl"
+	RuntimeWSLC    Runtime = "wslc"
 )
 
 func (r Runtime) Bin() string { return string(r) }
 func (r Runtime) Valid() bool {
-	return r == RuntimeDocker || r == RuntimePodman || r == RuntimeNerdctl
+	return r == RuntimeDocker || r == RuntimePodman || r == RuntimeNerdctl || r == RuntimeWSLC
 }
 
 type Container struct {
