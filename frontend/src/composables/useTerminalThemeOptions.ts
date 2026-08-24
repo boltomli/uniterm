@@ -3,9 +3,8 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { TERMINAL_THEMES } from '../types/settings'
 import type { TerminalThemeEntry } from '../types/settings'
 
-const DARK_THEMES = TERMINAL_THEMES.filter(t => t.type === 'dark' && t.group !== 'ssh')
-const LIGHT_THEMES = TERMINAL_THEMES.filter(t => t.type === 'light' && t.group !== 'ssh')
-const SSH_THEMES = TERMINAL_THEMES.filter(t => t.group === 'ssh')
+const DARK_THEMES = TERMINAL_THEMES.filter(t => t.type === 'dark')
+const LIGHT_THEMES = TERMINAL_THEMES.filter(t => t.type === 'light')
 
 /** Grouped terminal theme options for the theme <el-select>: built-in themes
  * split into Dark/Light, SSH client defaults, plus a Custom group for
@@ -26,7 +25,6 @@ export function useTerminalThemeOptions() {
     const groups = [
       { label: 'Dark', options: DARK_THEMES },
       { label: 'Light', options: LIGHT_THEMES },
-      { label: 'Xshell / MobaXterm / FinalShell', options: SSH_THEMES },
     ]
     if (customThemeEntries.value.length > 0) {
       groups.push({ label: 'Custom', options: customThemeEntries.value })

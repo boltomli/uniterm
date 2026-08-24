@@ -260,7 +260,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tabCloseButton: 'left'
 }
 
-export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light'; group?: 'builtin' | 'ssh' }
+export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light' }
 export const TERMINAL_THEMES: TerminalThemeEntry[] = [
   { label: 'uniTerm Dark', value: 'uniterm-dark', type: 'dark' },
   { label: 'uniTerm Light', value: 'uniterm-light', type: 'light' },
@@ -290,13 +290,13 @@ export const TERMINAL_THEMES: TerminalThemeEntry[] = [
   { label: 'Everforest Dark', value: 'everforest-dark', type: 'dark' },
   { label: 'Everforest Light', value: 'everforest-light', type: 'light' },
   // Popular SSH client defaults
-  { label: 'Xshell XTerm', value: 'xshell-xterm', type: 'dark', group: 'ssh' },
-  { label: 'Xshell ANSI on Black', value: 'xshell-ansi-black', type: 'dark', group: 'ssh' },
-  { label: 'Xshell New Black', value: 'xshell-new-black', type: 'dark', group: 'ssh' },
-  { label: 'MobaXterm Default', value: 'mobaxterm-default', type: 'dark', group: 'ssh' },
-  { label: 'MobaXterm Ubuntu', value: 'mobaxterm-ubuntu', type: 'dark', group: 'ssh' },
-  { label: 'FinalShell Dark', value: 'finalshell-dark', type: 'dark', group: 'ssh' },
-  { label: 'FinalShell Light', value: 'finalshell-light', type: 'light', group: 'ssh' },
+  { label: 'Xshell XTerm', value: 'xshell-xterm', type: 'dark' },
+  { label: 'Xshell ANSI on Black', value: 'xshell-ansi-black', type: 'dark' },
+  { label: 'Xshell New Black', value: 'xshell-new-black', type: 'dark' },
+  { label: 'MobaXterm Default', value: 'mobaxterm-default', type: 'dark' },
+  { label: 'MobaXterm Ubuntu', value: 'mobaxterm-ubuntu', type: 'dark' },
+  { label: 'FinalShell Dark', value: 'finalshell-dark', type: 'dark' },
+  { label: 'FinalShell Light', value: 'finalshell-light', type: 'light' },
 ]
 
 export const FONT_OPTIONS: { label: string; value: string }[] = [
