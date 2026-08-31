@@ -67,6 +67,18 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 	// Encrypt password fields in place before writing JSON.
 	for i := range connections {
 		conn := &connections[i]
+		if conn.AuthType == "identity" {
+			// Identity connections obtain both username and credentials solely
+			// from the referenced identity (MaterializeIdentity overrides User
+			// and Password at connect time). A stale password/user left when
+			// switching away from another auth mode is unused — and, if it still
+			// holds an enc:v1: field, would be carried verbatim into cloud sync
+			// (sync normalization only cleans authType=="password" connections),
+			// surfacing as a literal enc:v1: on other devices (issue #711).
+			conn.Password = ""
+			conn.User = ""
+			continue
+		}
 		if conn.AuthType != "password" {
 			continue
 		}
