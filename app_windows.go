@@ -230,6 +230,21 @@ func (a *App) unsubclassMainWindow() {
 // picker only exists on macOS. See app_darwin.go for details.
 func (a *App) configureMacKeyRepeat() {}
 
+// hideProcWindow prevents batch-file shims (e.g. VS Code's code.cmd) from
+// flashing a console window: shims can only run through cmd.exe, which
+// allocates a console of its own when launched from a GUI process that has
+// none. HideWindow (STARTF_USESHOWWINDOW, SW_HIDE) suppresses that console.
+// It must only be applied to shims: GUI exes honor STARTF_USESHOWWINDOW for
+// their first window too, so hiding them would leave the editor invisible.
+// Editors needing a CLI shim for wait semantics (VS Code's -w lives in the
+// node cli.js, not in Code.exe) are launched via their shim + HideWindow.
+func hideProcWindow(cmd *exec.Cmd) {
+	ext := strings.ToLower(filepath.Ext(cmd.Path))
+	if ext == ".cmd" || ext == ".bat" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	}
+}
+
 // detectExternalEditors scans for text editors installed on this Windows host
 // and returns only those actually found. Console-based editors (Vim, Neovim,
 // nano, Micro) are excluded: spawned from a GUI app without a console they
@@ -242,18 +257,22 @@ func detectExternalEditors() []ExternalEditorOption {
 		name, prog, pathCmd string
 		fixed               []fixed
 	}
+	// VS Code family: the -w (wait) flag is implemented by the node cli.js
+	// invoked from the bin\*.cmd shim, NOT by the GUI exe — launching Code.exe
+	// directly exits immediately and breaks auto-upload. So even when the exe
+	// is found at a fixed path, the command must point at the bin shim.
 	editors := []editor{
 		{"VS Code", "code", "code -w", []fixed{
-			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Microsoft VS Code", "Code.exe"), " -w"},
-			{filepath.Join(os.Getenv("ProgramFiles"), "Microsoft VS Code", "Code.exe"), " -w"},
+			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Microsoft VS Code", "bin", "code.cmd"), " -w"},
+			{filepath.Join(os.Getenv("ProgramFiles"), "Microsoft VS Code", "bin", "code.cmd"), " -w"},
 		}},
 		{"VS Code Insiders", "code-insiders", "code-insiders -w", []fixed{
-			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Microsoft VS Code Insiders", "Code - Insiders.exe"), " -w"},
-			{filepath.Join(os.Getenv("ProgramFiles"), "Microsoft VS Code Insiders", "Code - Insiders.exe"), " -w"},
+			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"), " -w"},
+			{filepath.Join(os.Getenv("ProgramFiles"), "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"), " -w"},
 		}},
 		{"VSCodium", "codium", "codium -w", []fixed{
-			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "VSCodium", "VSCodium.exe"), " -w"},
-			{filepath.Join(os.Getenv("ProgramFiles"), "VSCodium", "VSCodium.exe"), " -w"},
+			{filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "VSCodium", "bin", "codium.cmd"), " -w"},
+			{filepath.Join(os.Getenv("ProgramFiles"), "VSCodium", "bin", "codium.cmd"), " -w"},
 		}},
 		{"Sublime Text", "subl", "subl -w", []fixed{
 			{filepath.Join(os.Getenv("ProgramFiles"), "Sublime Text", "subl.exe"), " -w"},
@@ -301,18 +320,21 @@ func detectExternalEditors() []ExternalEditorOption {
 	}
 
 	for _, e := range editors {
-		if _, err := exec.LookPath(e.prog); err == nil {
-			add(e.name, e.pathCmd)
-			continue
-		}
-		// Fall back to fixed install dirs. The command embeds the full quoted
-		// exe path so it launches even though the editor isn't on PATH.
+		// Prefer the real GUI exe in known install dirs: launching it directly
+		// avoids the batch shim (code.cmd) and the console window it flashes.
 		for _, f := range e.fixed {
 			matches, _ := filepath.Glob(f.glob)
 			if len(matches) > 0 {
 				add(e.name, "\""+matches[0]+"\""+f.suffix)
 				break
 			}
+		}
+		if seen[e.name] {
+			continue
+		}
+		// Fall back to PATH (may resolve to a shim — covered by hideProcWindow).
+		if _, err := exec.LookPath(e.prog); err == nil {
+			add(e.name, e.pathCmd)
 		}
 	}
 

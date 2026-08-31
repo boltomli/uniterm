@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "外部編輯器已關閉",
   "sftp.editExternalNotConfigured": "尚未設定外部編輯器，請在設定中設定。",
   "settings.externalEditor": "外部編輯器",
-  "settings.externalEditorDesc": "用於開啟遠端檔案編輯的程式及參數，暫存檔路徑會自動附加。可從下拉選單中選擇預設，也可直接輸入命令。",
+  "settings.externalEditorDesc": "外部編輯器命令，暫存檔路徑自動附加。含空格的路徑需用雙引號包裹。",
   "sftp.edit.saveClose": "儲存並關閉"
 }

@@ -12,6 +12,10 @@ import (
 
 func (a *App) findMainWindow() uintptr { return 0 }
 
+// hideProcWindow is a no-op on non-Windows platforms: the console-flash issue
+// is Windows-specific (batch-file shims spawning cmd.exe). See app_windows.go.
+func hideProcWindow(cmd *exec.Cmd) {}
+
 func (a *App) subclassMainWindow() {}
 
 func (a *App) unsubclassMainWindow() {}

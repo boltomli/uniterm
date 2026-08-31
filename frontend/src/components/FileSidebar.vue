@@ -43,6 +43,7 @@
           @chmod="onChmod"
           @send-to-other="onDownloadTo"
           @edit="onEditFile"
+          @edit-external="onEditExternal"
           @new-file="onNewFile"
           @copy-to-clipboard="() => {}"
           @cut-to-clipboard="() => {}"
@@ -129,10 +130,11 @@ import { useSettingsStore } from '../stores/settingsStore'
 import {
   SftpListRemote, SftpChangeRemoteDir,
   SftpMakeDir, SftpRemove, SftpRename, SftpChmod, SftpPutContent,
-  SftpGet, SftpPut, WriteTempFile, CreateTempUpload, AppendTempUpload,
+  SftpGet, SftpPut, SftpOpenExternalEditor, WriteTempFile, CreateTempUpload, AppendTempUpload,
   SftpCancelTransfer, SftpPauseTransfer, SftpResumeTransfer,
   OpenMultipleFilesDialog, OpenDirectoryDialog, ListSessions,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { useLocalStateStore } from '../stores/localStateStore'
 import FileList from './FileList.vue'
 import type { FileItem } from './FileList.vue'
 import TransferPanel from './TransferPanel.vue'
@@ -147,6 +149,7 @@ const { t } = useI18n()
 const companionStore = useCompanionStore()
 const panelStore = usePanelStore()
 const settingsStore = useSettingsStore()
+const localStateStore = useLocalStateStore()
 
 const connecting = ref(false)
 const connectError = ref('')
@@ -728,6 +731,30 @@ async function onEditFile(item: FileItem) {
   await fileEditorRef.value?.open(path, t('sftp.dialog.editTitle', { path }), 'remote')
 }
 
+// onEditExternal opens a remote file in the configured external editor with
+// backend auto-upload (same flow as the SFTP tab's remote pane).
+async function onEditExternal(item: FileItem) {
+  if (item.isDir) return
+  const sid = sessionId.value
+  if (!sid) return
+  if (item.size > 5 * 1024 * 1024) {
+    msg.warning(t('sftp.edit.fileTooLarge'))
+    return
+  }
+  const editorCmd = localStateStore.state.externalEditor?.trim()
+  if (!editorCmd) {
+    msg.warning(t('sftp.editExternalNotConfigured'))
+    return
+  }
+  const path = joinPath(cwd.value, item.name)
+  try {
+    await SftpOpenExternalEditor(sid, path, editorCmd)
+    msg.info(t('sftp.editExternalStart', { path }))
+  } catch (e: any) {
+    msg.error(e?.toString() || 'Failed to open external editor')
+  }
+}
+
 async function onCancelTransfer(taskId: string) {
   const sid = sessionId.value
   if (!sid) return
@@ -746,10 +773,12 @@ async function onResumeTransfer(taskId: string) {
 
 let unsubStatus: (() => void) | null = null
 let unsubData: (() => void) | null = null
+let unsubExtEdit: (() => void) | null = null
 
 function bindListeners() {
   unsubStatus?.()
   unsubData?.()
+  unsubExtEdit?.()
   unsubStatus =Events.On('session:status', (ev) => { const payload: { id: string; status: string } = ev.data; 
     if (payload.id !== sessionId.value) return
     if (payload.status === 'connected') {
@@ -765,6 +794,19 @@ function bindListeners() {
       connectError.value = connMatch[1]
       msg.error(connMatch[1])
       return
+    }
+  })
+
+  // External-editor status events (started / uploaded / closed): refresh the
+  // listing when edits land back on the remote, like the SFTP tab does.
+  unsubExtEdit = Events.On('sftp:extedit', (ev) => {
+    const payload = ev?.data as { sessionId?: string; status?: string }
+    if (payload?.sessionId !== sessionId.value) return
+    if (payload.status === 'uploaded') {
+      msg.success(t('sftp.editExternalUploaded'))
+      onRefresh()
+    } else if (payload.status === 'closed') {
+      msg.success(t('sftp.editExternalClosed'))
     }
   })
 
@@ -837,6 +879,7 @@ onMounted(() => {
 onUnmounted(() => {
   unsubStatus?.()
   unsubData?.()
+  unsubExtEdit?.()
   unbindFileDrop()
   if (refreshTimer) clearTimeout(refreshTimer)
 })

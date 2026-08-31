@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "外部エディタが閉じられました",
   "sftp.editExternalNotConfigured": "外部エディタが設定されていません。設定で指定してください。",
   "settings.externalEditor": "外部エディタ",
-  "settings.externalEditorDesc": "リモートファイルを外部エディタで開くためのプログラムとオプション。一時ファイルのパスは自動的に付加されます。プリセットを選ぶか、コマンドを直接入力してください。",
+  "settings.externalEditorDesc": "外部エディタのコマンド。一時ファイルのパスは自動的に付加されます。空白を含むパスは二重引用符で囲んでください。",
   "sftp.edit.saveClose": "保存して閉じる"
 }

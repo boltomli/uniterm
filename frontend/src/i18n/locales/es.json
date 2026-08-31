@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "Editor externo cerrado",
   "sftp.editExternalNotConfigured": "No hay editor externo configurado. Configúralo en Ajustes.",
   "settings.externalEditor": "Editor externo",
-  "settings.externalEditorDesc": "Programa y opciones para abrir un archivo remoto en un editor externo; la ruta del archivo temporal se añade automáticamente. Elige una plantilla o escribe un comando.",
+  "settings.externalEditorDesc": "Comando del editor externo; la ruta del archivo temporal se añade automáticamente. Las rutas con espacios deben ir entre comillas dobles.",
   "sftp.edit.saveClose": "Guardar y cerrar"
 }

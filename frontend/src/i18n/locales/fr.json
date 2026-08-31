@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "Éditeur externe fermé",
   "sftp.editExternalNotConfigured": "Aucun éditeur externe configuré. Configurez-en un dans les paramètres.",
   "settings.externalEditor": "Éditeur externe",
-  "settings.externalEditorDesc": "Programme et options pour ouvrir un fichier distant dans un éditeur externe ; le chemin du fichier temporaire est ajouté automatiquement. Choisissez un modèle ou saisissez une commande.",
+  "settings.externalEditorDesc": "Commande de l'éditeur externe ; le chemin du fichier temporaire est ajouté automatiquement. Les chemins avec espaces doivent être entre guillemets doubles.",
   "sftp.edit.saveClose": "Enregistrer et fermer"
 }

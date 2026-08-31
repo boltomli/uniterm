@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "Externer Editor geschlossen",
   "sftp.editExternalNotConfigured": "Kein externer Editor konfiguriert. Bitte in den Einstellungen festlegen.",
   "settings.externalEditor": "Externer Editor",
-  "settings.externalEditorDesc": "Programm und Optionen zum Öffnen einer Remote-Datei im externen Editor; der Pfad der temporären Datei wird automatisch angehängt. Wähle eine Vorlage oder gib selbst einen Befehl ein.",
+  "settings.externalEditorDesc": "Externer-Editor-Befehl; der Pfad der temporären Datei wird angehängt. Pfade mit Leerzeichen in doppelte Anführungszeichen setzen.",
   "sftp.edit.saveClose": "Speichern und schließen"
 }

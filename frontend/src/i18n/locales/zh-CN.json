@@ -1406,6 +1406,6 @@
   "sftp.editExternalClosed": "外部编辑器已关闭",
   "sftp.editExternalNotConfigured": "尚未配置外部编辑器，请在设置中配置。",
   "settings.externalEditor": "外部编辑器",
-  "settings.externalEditorDesc": "用于打开远程文件编辑的程序及参数，临时文件路径会自动追加。可在下拉中选择预设，也可直接输入命令。",
+  "settings.externalEditorDesc": "外部编辑器命令，临时文件路径自动追加。含空格的路径需用双引号包裹。",
   "sftp.edit.saveClose": "保存并关闭"
 }
