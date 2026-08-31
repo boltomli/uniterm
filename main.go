@@ -65,22 +65,6 @@ func main() {
 		maxW, maxH = 9999, 9999
 	}
 
-	// On macOS, install the standard App + Edit menus. The Edit menu is what
-	// routes the native Cmd+C/V/X/A/Z shortcuts to the first responder — every
-	// WKWebView text field (input/textarea/contenteditable) relies on it. An
-	// empty menu here used to suppress Wails' defaults but also killed those
-	// shortcuts app-wide, forcing per-component JS reimplementations. The menu
-	// lives in the top system menu bar, so it doesn't affect the frameless
-	// window. On Linux (GTK) a non-nil Menu creates an empty GtkMenuBar that
-	// shows as a thin white line in the frameless window, so leave it nil
-	// there. See issue #291.
-	var appMenu *application.Menu
-	if runtime.GOOS == "darwin" {
-		appMenu = application.NewMenu()
-		appMenu.AddRole(application.AppMenu)
-		appMenu.AddRole(application.EditMenu)
-	}
-
 	// Read persisted window geometry before creating the window — it's fixed at
 	// creation in v3 (services start before the window exists, so ServiceStartup
 	// can't position it). Race the load against a short timeout so a slow disk
@@ -147,6 +131,25 @@ func main() {
 			ProgramName: "uniterm",
 		},
 	})
+
+	// On macOS, install the standard App + Edit menus. This must run AFTER
+	// application.New(): menu roles dereference the global app instance and
+	// panic with a nil pointer otherwise (macOS-only — NewAppMenu returns nil
+	// on other platforms, which masked the crash). The Edit menu is what
+	// routes the native Cmd+C/V/X/A/Z shortcuts to the first responder — every
+	// WKWebView text field (input/textarea/contenteditable) relies on it. An
+	// empty menu here used to suppress Wails' defaults but also killed those
+	// shortcuts app-wide, forcing per-component JS reimplementations. The menu
+	// lives in the top system menu bar, so it doesn't affect the frameless
+	// window. On Linux (GTK) a non-nil Menu creates an empty GtkMenuBar that
+	// shows as a thin white line in the frameless window, so leave it nil
+	// there. See issue #291.
+	var appMenu *application.Menu
+	if runtime.GOOS == "darwin" {
+		appMenu = application.NewMenu()
+		appMenu.AddRole(application.AppMenu)
+		appMenu.AddRole(application.EditMenu)
+	}
 
 	if appMenu != nil {
 		w3app.Menu.SetApplicationMenu(appMenu)
