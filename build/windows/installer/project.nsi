@@ -25,6 +25,9 @@ SetCompressorDictSize 128
 !include "LogicLib.nsh"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${BINARY}"
+; Launch uniTerm via Explorer on finish-page "Run" so it never inherits the
+; installer's elevated token. Admin is opted in explicitly by the user.
+!define MUI_FINISHPAGE_RUN_FUNCTION "LaunchUnelevated"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -35,10 +38,23 @@ Function .onInit
   Call CheckAndCloseProcess
 FunctionEnd
 
+; Launch via Explorer (normal privileges) so uniTerm does not inherit the
+; installer's elevated token.
+Function LaunchUnelevated
+  Exec 'explorer.exe "$INSTDIR\${BINARY}"'
+FunctionEnd
+
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
+
+; The wizard pages localize to the OS language, so the custom dialogs below
+; must follow suit via LangString instead of hardcoded Chinese.
+LangString MSG_FORCE_CLOSE_PROMPT ${LANG_SIMPCHINESE} "${PRODUCT_NAME} 正在运行。安装前需要先关闭它。是否强制关闭进程？"
+LangString MSG_FORCE_CLOSE_PROMPT ${LANG_ENGLISH} "${PRODUCT_NAME} is currently running and must be closed before installing. Force-close the process?"
+LangString MSG_CLOSE_MANUALLY ${LANG_SIMPCHINESE} "请手动关闭 ${PRODUCT_NAME} 后再继续安装。"
+LangString MSG_CLOSE_MANUALLY ${LANG_ENGLISH} "Please close ${PRODUCT_NAME} manually and then continue installing."
 
 Function CheckAndCloseProcess
   check_process:
@@ -52,14 +68,14 @@ Function CheckAndCloseProcess
   ${EndIf}
 
   ; Process is running — ask user
-  MessageBox MB_YESNO|MB_ICONQUESTION "${PRODUCT_NAME} 正在运行。安装前需要先关闭它。是否强制关闭进程？" /SD IDYES IDNO no_kill
+  MessageBox MB_YESNO|MB_ICONQUESTION "$(MSG_FORCE_CLOSE_PROMPT)" /SD IDYES IDNO no_kill
   nsExec::ExecToStack 'cmd /c taskkill /F /IM "${BINARY}"'
   Pop $0
   Sleep 1500
   Goto check_process
 
   no_kill:
-  MessageBox MB_OK|MB_ICONEXCLAMATION "请手动关闭 ${PRODUCT_NAME} 后再继续安装。"
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$(MSG_CLOSE_MANUALLY)"
   Abort
 FunctionEnd
 
