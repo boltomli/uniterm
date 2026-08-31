@@ -960,7 +960,7 @@ const form = reactive<ConnectionConfig>({
   vncShared: true,
   vncRepeaterID: '',
   encoding: 'utf-8',
-  backspaceKey: 'bs',
+  backspaceKey: 'del',
   telnetNegotiationMode: 'active' as 'active' | 'passive',
   telnetLocalEcho: false,
   telnetSendMode: 'character' as 'character' | 'line',
@@ -1254,7 +1254,7 @@ function resetForm() {
   form.vncShared = true
   form.vncRepeaterID = ''
   form.encoding = 'utf-8'
-  form.backspaceKey = 'bs'
+  form.backspaceKey = 'del'
   form.telnetNegotiationMode = 'active'
   form.telnetLocalEcho = false
   form.telnetSendMode = 'character'
