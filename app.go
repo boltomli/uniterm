@@ -1949,7 +1949,10 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	}
 
 	// Resolve an identity reference into a concrete password/key config
-	// before handing the jump host to the tunnel service.
+	// before handing the jump host to the tunnel service. Identity is
+	// authoritative from the 密钥库(identity store); inline credentials
+	// never override it.
+	wasIdentity := tunnelSSHConfig.AuthType == "identity"
 	if tunnelSSHConfig.AuthType == "identity" {
 		m, err := a.materializeIdentity(*tunnelSSHConfig)
 		if err != nil {
@@ -1967,13 +1970,16 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 		}
 	}
 
-	// Apply inline tunnel credentials if the frontend provided them
-	// (e.g. credential prompt "connect" without saving).
-	if config.TunnelSSHUser != "" {
-		tunnelSSHConfig.User = config.TunnelSSHUser
-	}
-	if config.TunnelSSHPassword != "" {
-		tunnelSSHConfig.Password = config.TunnelSSHPassword
+	// Inline tunnel credentials (ephemeral prompt "connect" without saving)
+	// only fill gaps — they never override already-resolved values, and
+	// never touch an identity-resolved config.
+	if !wasIdentity {
+		if config.TunnelSSHUser != "" && tunnelSSHConfig.User == "" {
+			tunnelSSHConfig.User = config.TunnelSSHUser
+		}
+		if config.TunnelSSHPassword != "" && tunnelSSHConfig.Password == "" {
+			tunnelSSHConfig.Password = config.TunnelSSHPassword
+		}
 	}
 
 	// VNC/SPICE use libvirt display numbers (port < 100 → 5900+N).
@@ -4865,45 +4871,7 @@ func (a *App) K8sConnect(source string, sourceIsPath bool, contextName string,
 		return a.k8sManager.Connect(a.ctx, raw, contextName)
 	}
 
-	// ── SSH Tunnel for K8s ─────────────────────────────────────
-	if a.tunnelService == nil {
-		return "", fmt.Errorf("tunnel service not initialized")
-	}
-	if a.connectionStore == nil {
-		return "", fmt.Errorf("connection store not initialized")
-	}
-	data, err := a.connectionStore.Load()
-	if err != nil {
-		return "", fmt.Errorf("load connections for tunnel: %w", err)
-	}
-	var tunnelSSHConfig *session.ConnectionConfig
-	for _, c := range data.Connections {
-		if c.ID == tunnelSSHConnID {
-			tunnelSSHConfig = &c
-			break
-		}
-	}
-	if tunnelSSHConfig == nil {
-		return "", fmt.Errorf("tunnel SSH connection not found: %s", tunnelSSHConnID)
-	}
-
-	// Resolve an identity reference into a concrete password/key config
-	// before the user/password overrides below so those still take precedence.
-	if tunnelSSHConfig.AuthType == "identity" {
-		m, err := a.materializeIdentity(*tunnelSSHConfig)
-		if err != nil {
-			return "", err
-		}
-		tunnelSSHConfig = &m
-	}
-
-	if tunnelSSHUser != "" {
-		tunnelSSHConfig.User = tunnelSSHUser
-	}
-	if tunnelSSHPassword != "" {
-		tunnelSSHConfig.Password = tunnelSSHPassword
-	}
-
+	// ── SSH Tunnel for K8s (reuses the shared jump-host tunnel logic) ──
 	// 从 kubeconfig 解出 apiserver host/port 作为隧道目标
 	kc, err := k8s.ParseBytes(raw)
 	if err != nil {
@@ -4929,12 +4897,18 @@ func (a *App) K8sConnect(source string, sourceIsPath bool, contextName string,
 	// 用同一个 key 既做 K8s connID 也做 TunnelService 的 sessionID，
 	// 方便 Disconnect 时的 onClose 回调直接 Stop 同名隧道。
 	tunnelKey := uuid.New().String()
-	localPort, err := a.tunnelService.Start(tunnelKey, *tunnelSSHConfig, targetHost, targetPort, nil)
-	if err != nil {
-		return "", fmt.Errorf("tunnel start: %w", err)
+	tunnelConfig := session.ConnectionConfig{
+		TunnelSSHConnID:   tunnelSSHConnID,
+		TunnelSSHUser:     tunnelSSHUser,
+		TunnelSSHPassword: tunnelSSHPassword,
+		Host:              targetHost,
+		Port:              targetPort,
 	}
-	log.Writef("[K8sConnect] tunnel established for k8s=%s via ssh=%s, localPort=%d",
-		tunnelKey, tunnelSSHConnID, localPort)
+	// 与其它连接类型共享同一段隧道逻辑：按认证类型解析跳板机凭据并拉起隧道。
+	if err := a.setupJumpHostTunnel(tunnelKey, "k8s", &tunnelConfig); err != nil {
+		return "", err
+	}
+	localPort := tunnelConfig.Port
 
 	var dialer net.Dialer
 	dialOverride := func(ctx context.Context, _ /*network*/, _ /*addr*/ string) (net.Conn, error) {
@@ -5083,38 +5057,22 @@ func (a *App) ContainerConnect(connectionID string) error {
 		sshCfg = &m
 	}
 
-	// 跳板机：被引用连接自身的 tunnel 配置
-	if sshCfg.TunnelSSHConnID != "" && a.tunnelService != nil {
-		var tunnelCfg *session.ConnectionConfig
-		for _, c := range data.Connections {
-			if c.ID == sshCfg.TunnelSSHConnID {
-				tunnelCfg = &c
-				break
-			}
-		}
-		if tunnelCfg == nil {
-			return fmt.Errorf("tunnel SSH connection not found: %s", sshCfg.TunnelSSHConnID)
-		}
-		if tunnelCfg.AuthType == "identity" {
-			m, err := a.materializeIdentity(*tunnelCfg)
-			if err != nil {
-				return err
-			}
-			tunnelCfg = &m
-		}
-		localPort, err := a.tunnelService.Start(connectionID, *tunnelCfg, sshCfg.Host, sshCfg.Port, nil)
-		if err != nil {
-			return fmt.Errorf("tunnel start: %w", err)
-		}
-		sshCfg.Host = "127.0.0.1"
-		sshCfg.Port = localPort
-		if err := a.containerManager.ConnectSSH(connectionID, rt, "", *sshCfg); err != nil {
-			a.tunnelService.Stop(connectionID) // 与 K8sConnect 一致：连接失败时回收隧道
+	// 跳板机：复用统一的 setupJumpHostTunnel（与其它连接类型同一段逻辑）。
+	// 它会按认证类型解析被引用跳板机连接的凭据并拉起隧道，同时改写
+	// sshCfg.Host/Port 指向本地监听口。
+	hasTunnel := sshCfg.TunnelSSHConnID != ""
+	if hasTunnel {
+		if err := a.setupJumpHostTunnel(connectionID, "container", sshCfg); err != nil {
 			return err
 		}
-		return nil
 	}
-	return a.containerManager.ConnectSSH(connectionID, rt, "", *sshCfg)
+	if err := a.containerManager.ConnectSSH(connectionID, rt, "", *sshCfg); err != nil {
+		if hasTunnel && a.tunnelService != nil {
+			a.tunnelService.Stop(connectionID) // 与其它连接一致：连接失败时回收隧道
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *App) ContainerDisconnect(connectionID string) {
