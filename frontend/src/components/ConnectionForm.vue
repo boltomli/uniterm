@@ -1363,6 +1363,15 @@ function normalizeForm(): ConnectionConfig {
     form.serialParity = serialParityValue.value
   }
   const normalized = { ...form }
+  // Identity (密钥库) 的用户名与凭据完全由所引用的 identity 提供，连接时
+  // MaterializeIdentity 会以 identity 的 username/password 覆盖本字段。
+  // 从别的认证方式切到 identity 时，旧字段若残留 enc:v1: 密文，会被
+  // 云同步原样带进仓库（同步规范化只处理 authType=="password" 的连接），
+  // 导致他机显示字面量 enc:v1:xxx（issue #711）。保存时清掉两者以绝后患。
+  if (normalized.authType === 'identity') {
+    normalized.password = ''
+    normalized.user = ''
+  }
   normalized.postLoginExpectSteps = normalizeExpectSteps(form.postLoginExpectSteps || [])
   if (postLoginMode.value === 'script') {
     normalized.postLoginExpectSteps = []
