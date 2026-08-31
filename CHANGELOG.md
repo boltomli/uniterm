@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.9.0
+## v1.9.1
 
 ### What's Changed
 
@@ -31,12 +31,13 @@
 - Terminal: configurable middle-click action, Ctrl/Cmd+right-click always opens the context menu, and font zoom via shortcuts or Ctrl/Cmd+wheel.
 - Quick commands: remark field and a larger edit dialog.
 - Connection: "Connect Only" opens a session without saving it; new-connection forms prefill from the search box.
+- SSH: new "keyText" inline private-key auth mode — paste or import the PEM private-key text directly (beside password and key-file), encrypted at rest and portable across machines.
 
 **Bug Fixes**
 - VNC / SPICE: fixed a race that could break session start. (@boltomli)
 - macOS: fixed the title-bar layout. (@surenwuyuwuqiu)
 - Settings: fixed the cursor-blink toggle showing the "text highlight" title and description, which duplicated the text-highlight entry. (@wangxufeng)
-- Linux: desktop icon added for the deb / rpm packages and the bare binary.
+- Linux: desktop icon added for the deb / rpm packages.
 - Terminal: suggestion popup no longer lingers when clicking outside.
 - Terminal: pasting content now auto-scrolls to the newest output (the bottom).
 - Terminal: highlighting now covers indented lines and paths with special characters.
@@ -44,6 +45,10 @@
 - K8s: namespaces stay usable when list permission is restricted.
 - History: wrapped command lines are joined so extraction isn't truncated.
 - Connection: "Save & Connect" persists edits; test-connection error toast auto-dismisses.
+- macOS: fixed a startup panic that crashed the app on launch, so uniTerm now starts normally again. (@surenwuyuwuqiu)
+- Tunnel: jump-host credentials for K8s / container connections are now resolved by auth type (identity from the vault); inline credentials never override the resolved value.
+- Windows installer: "Run" on the finish page now launches uniTerm unelevated so the first-run config isn't written into a then-unwritable Program Files dir.
+- Sync: switching a connection to identity now clears the stale saved user/password, so a leftover enc:v1: field isn't propagated into cloud sync.
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
@@ -79,12 +84,13 @@ Thanks to @iCarrear, @boltomli, @surenwuyuwuqiu, and @wangxufeng for their contr
 - 终端：中键动作可配置，Ctrl/Cmd + 右键始终打开右键菜单，并支持快捷键或 Ctrl/Cmd + 滚轮缩放字体。
 - 快捷命令：新增备注字段，并放大编辑弹窗。
 - 连接：新增「仅连接」操作，打开会话而不保存连接；新建连接表单支持从搜索框预填。
+- SSH：新增「KeyText 内联私钥」认证模式——可直接粘贴或从文件导入 PEM 私钥文本（第三种认证方式），加密存储、跨机器可用，不受密钥文件路径影响。
 
 **Bug 修复**
 - VNC / SPICE：修复可能导致会话无法启动的竞态问题。（@boltomli）
 - macOS：修复标题栏布局。（@surenwuyuwuqiu）
 - 设置：修复「光标闪烁」开关误用「文本高亮」标题与描述、导致与高亮条目重复显示的问题。（@wangxufeng）
-- Linux：修复 deb / rpm 与裸二进制缺少桌面图标的问题。
+- Linux：修复 deb / rpm 缺少桌面图标的问题。
 - 终端：修复补全建议弹窗点击外部后不消失的问题。
 - 终端：粘贴内容后自动滚动到最新输出（底部）。
 - 终端：文本高亮现在覆盖缩进行与含特殊字符的路径。
@@ -92,6 +98,10 @@ Thanks to @iCarrear, @boltomli, @surenwuyuwuqiu, and @wangxufeng for their contr
 - K8s：列表权限受限时命名空间仍可正常访问。
 - 历史：换行的命令会拼回一行，命令提取不再截断。
 - 连接：「保存并连接」会持久化编辑；测试连接错误提示自动关闭。
+- macOS：修复启动即崩溃的启动 panic，应用在 macOS 上恢复正常启动。（@surenwuyuwuqiu）
+- 隧道：K8s / 容器连接的跳板机凭据按认证方式解析（身份来自密钥库），内联凭据永不覆盖已解析值。
+- Windows 安装包：完成页「运行」改为非提权启动，避免首次配置写入日后不可写的 Program Files。
+- 同步：连接切到身份认证时清掉残留的用户名/密码，避免旧 enc:v1: 密文被云同步散布到其他设备。
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
