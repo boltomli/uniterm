@@ -102,3 +102,51 @@ func TestConnectionStore_EnsurePasswordCache(t *testing.T) {
 		t.Fatalf("EnsurePassword(missing) = %q, want empty", got)
 	}
 }
+
+// TestConnectionStore_SaveEncryptsKeyText and LoadDecryptsKeyText lock in that
+// an inline private-key text (authType "keyText", KeyContent) is encrypted at
+// rest in connections.json like a password, so plaintext keys can't leak to disk
+// and are decrypted back on load (#720).
+func TestConnectionStore_SaveEncryptsKeyText(t *testing.T) {
+	dir := t.TempDir()
+	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}
+
+	const keyText = "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----"
+	data := session.ConnectionStoreData{
+		Groups:      []session.ConnectionGroup{},
+		Connections: []session.ConnectionConfig{{ID: "c1", Type: "ssh", AuthType: "keyText", KeyContent: keyText, Password: "pp"}},
+	}
+	if err := s.Save(data); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, storeFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if contains(string(raw), keyText) {
+		t.Fatalf("plaintext KeyContent leaked: %s", raw)
+	}
+	if !contains(string(raw), "enc:v1:") {
+		t.Fatalf("expected encrypted KeyContent on disk: %s", raw)
+	}
+}
+
+func TestConnectionStore_LoadDecryptsKeyText(t *testing.T) {
+	dir := t.TempDir()
+	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}
+
+	seed := session.ConnectionStoreData{
+		Groups:      []session.ConnectionGroup{},
+		Connections: []session.ConnectionConfig{{ID: "c1", Type: "ssh", AuthType: "keyText", KeyContent: enc("PEM-KEY"), Password: enc("pp")}},
+	}
+	if err := s.writeJSONLocked(seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if data.Connections[0].KeyContent != "PEM-KEY" {
+		t.Fatalf("Load KeyContent = %q, want PEM-KEY", data.Connections[0].KeyContent)
+	}
+}

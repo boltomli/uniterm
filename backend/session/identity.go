@@ -7,9 +7,10 @@ type Identity struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Username string `json:"username"`
-	AuthType string `json:"authType"`           // "password" | "key"
-	Password string `json:"password,omitempty"` // 解密后的密码 / key passphrase
-	KeyPath  string `json:"keyPath,omitempty"`  // key 类型：私钥文件路径
+	AuthType   string `json:"authType"`           // "password" | "key" | "keyText"
+	Password   string `json:"password,omitempty"` // 解密后的密码 / key passphrase
+	KeyPath    string `json:"keyPath,omitempty"`  // key 类型：私钥文件路径
+	KeyContent string `json:"keyContent,omitempty"` // keyText 类型：私钥文本内容（PEM）
 }
 
 // IdentityStoreData 是 identities.json 的顶层结构。
@@ -38,6 +39,10 @@ func MaterializeIdentity(config ConnectionConfig, resolve IdentityResolver) (Con
 	case "key":
 		config.AuthType = "key"
 		config.KeyPath = id.KeyPath
+		config.Password = id.Password // passphrase
+	case "keyText":
+		config.AuthType = "keyText"
+		config.KeyContent = id.KeyContent
 		config.Password = id.Password // passphrase
 	default:
 		return config, fmt.Errorf("identity %q has unknown authType %q", id.ID, id.AuthType)

@@ -79,6 +79,17 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 			conn.User = ""
 			continue
 		}
+		// keyText connections carry the inline private-key text in KeyContent —
+		// a secret like passwords — so encrypt it before it lands in
+		// connections.json. "key" references a path on disk and carries no
+		// inline secret here, so it (and everything else) falls through to the
+		// plain continue.
+		if conn.AuthType == "keyText" {
+			if err := encryptSecretField(&conn.KeyContent, s.passwordStore); err != nil {
+				return err
+			}
+			continue
+		}
 		if conn.AuthType != "password" {
 			continue
 		}
@@ -190,6 +201,13 @@ func (s *ConnectionStore) populatePasswords(data *session.ConnectionStoreData) e
 
 	for i := range data.Connections {
 		conn := &data.Connections[i]
+		if conn.AuthType == "keyText" && conn.KeyContent != "" && credentials.IsEncrypted(conn.KeyContent) && s.passwordStore != nil {
+			dec, err := s.passwordStore.Decrypt(conn.KeyContent)
+			if err != nil {
+				return err
+			}
+			conn.KeyContent = dec
+		}
 		if conn.AuthType != "password" {
 			continue
 		}
