@@ -403,7 +403,7 @@ async function retryConnection() {
 
   // On first retry, try with existing credentials; on subsequent retries, re-prompt
   const credTypes = ['ssh', 'mosh', 'sftp', 'ftp', 'telnet']
-  if (credTypes.includes(props.panel.type) && props.panel.config.authType !== 'key' && retryAttempt > 1) {
+  if (credTypes.includes(props.panel.type) && props.panel.config.authType !== 'key' && props.panel.config.authType !== 'keyText' && retryAttempt > 1) {
     const result = await showCredentialDialog(
       t('credential.title'),
       props.panel.config.user || props.panel.config.host ? `${props.panel.config.user}@${props.panel.config.host}` : '',

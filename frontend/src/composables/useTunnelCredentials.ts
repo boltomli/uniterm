@@ -14,7 +14,7 @@ type ShowCredentialDialog = (
 
 function needsCred(cfg: ConnectionConfig): boolean {
   if (cfg.type !== 'ssh' && cfg.type !== 'mosh' && cfg.type !== 'sftp' && cfg.type !== 'ftp') return false
-  if ((cfg.type === 'ssh' || cfg.type === 'mosh') && cfg.authType === 'key') return false
+  if ((cfg.type === 'ssh' || cfg.type === 'mosh') && (cfg.authType === 'key' || cfg.authType === 'keyText')) return false
   // 身份认证：账密来自身份库(密钥库)，由后端 materializeIdentity 解析，无需补全提示。
   // 与 App.vue needsCredentialCheck 保持一致 —— 否则 identity 连接的 user/password 字段
   // 为空会被误判为"缺少凭据"而弹窗，弹窗里的临时/旧密码又会压过后端从密钥库解析出的正确值。

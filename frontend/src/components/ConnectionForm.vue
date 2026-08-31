@@ -78,6 +78,7 @@
               <el-radio-group v-model="form.authType">
                 <el-radio-button label="password">{{ t('conn.password') }}</el-radio-button>
                 <el-radio-button v-if="form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop'" label="key">{{ t('conn.keyPath') }}</el-radio-button>
+                <el-radio-button v-if="form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop'" label="keyText">{{ t('conn.keyText') }}</el-radio-button>
                 <el-radio-button v-if="form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop'" label="identity">{{ t('conn.identity') }}</el-radio-button>
                 <el-radio-button v-if="isElasticsearch" label="apikey">{{ t('conn.esAuthApiKey') }}</el-radio-button>
               </el-radio-group>
@@ -142,7 +143,35 @@
                 </template>
               </el-input>
             </el-form-item>
-            <el-form-item v-if="form.authType === 'key' && (form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
+            <el-form-item v-if="form.authType === 'keyText' && (form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyContent')">
+              <template v-if="!keyContentRevealed">
+                <el-button size="small" @click="keyContentRevealed = true">
+                  <el-icon><Eye :size="14" /></el-icon>
+                  <span style="margin-left: 4px">{{ t('conn.keyTextReveal') }}</span>
+                </el-button>
+              </template>
+              <template v-else>
+                <el-input
+                  v-model="form.keyContent"
+                  type="textarea"
+                  :rows="7"
+                  class="key-text-area mono"
+                  :placeholder="t('conn.keyContentPlaceholder')"
+                  spellcheck="false"
+                />
+                <div class="key-content-actions">
+                  <el-button size="small" @click="keyContentRevealed = false">
+                    <el-icon><EyeOff :size="14" /></el-icon>
+                    <span style="margin-left: 4px">{{ t('conn.keyTextHide') }}</span>
+                  </el-button>
+                  <el-button size="small" @click="importKeyText">
+                    <el-icon><FolderOpen :size="14" /></el-icon>
+                    <span style="margin-left: 4px">{{ t('conn.importFromFile') }}</span>
+                  </el-button>
+                </div>
+              </template>
+            </el-form-item>
+            <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
             <el-form-item v-if="form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
@@ -603,10 +632,10 @@ import { useIdentityStore } from '../stores/identityStore'
 import { useProxyStore } from '../stores/proxyStore'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig, PostLoginExpectStep } from '../types/session'
-import { OpenFileDialog, GetPlatform, ListSerialPorts, TestConnection } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { OpenFileDialog, OpenPrivateKeyFile, GetPlatform, ListSerialPorts, TestConnection } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
-import { Plus, Trash2, ChevronDown, ChevronRight, FolderOpen, RefreshCw, Terminal, Monitor, Database, DatabaseZap, Layers, DatabaseSearch, SquareTerminal, Zap, Laptop, Cable, FolderUp, HardDrive, Cloud, Globe, MonitorCloud, MonitorSmartphone, Boxes, ShipWheel, AppWindow, ArrowLeftRight, CircleCheck, CircleX } from '@lucide/vue'
+import { Plus, Trash2, ChevronDown, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, Terminal, Monitor, Database, DatabaseZap, Layers, DatabaseSearch, SquareTerminal, Zap, Laptop, Cable, FolderUp, HardDrive, Cloud, Globe, MonitorCloud, MonitorSmartphone, Boxes, ShipWheel, AppWindow, ArrowLeftRight, CircleCheck, CircleX } from '@lucide/vue'
 import { listContexts } from '../services/k8sClient'
 import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
@@ -620,6 +649,13 @@ const connectionStore = useConnectionStore()
 const settingsStore = useSettingsStore()
 const identityStore = useIdentityStore()
 const proxyStore = useProxyStore()
+
+// Gates the keyText paste area: the private key stays hidden behind a single
+// "show" button until the user reveals it. Declared early (top of setup) so
+// resetForm — fired by an immediate watch during setup — can read it without
+// hitting the temporal dead zone (a late declaration there caused a ReferenceError
+// that blanked the whole form in dev).
+const keyContentRevealed = ref(false)
 
 onMounted(() => {
   identityStore.load()
@@ -896,6 +932,7 @@ const form = reactive<ConnectionConfig>({
   authType: 'password',
   password: '',
   keyPath: '',
+  keyContent: '',
   groupId: undefined,
   rdpFixedWidth: undefined,
   rdpFixedHeight: undefined,
@@ -1174,6 +1211,10 @@ watch(() => form.authType, (val) => {
 })
 
 function resetForm() {
+  // Always re-hide the keyText paste area when the dialog (re)opens, whether
+  // editing an existing connection or creating a new one, so a prior reveal
+  // can't leak the previous connection's PEM into a fresh edit.
+  keyContentRevealed.value = false
   form.id = ''
   form.name = ''
   form.remark = ''
@@ -1184,6 +1225,7 @@ function resetForm() {
   form.authType = 'password'
   form.password = ''
   form.keyPath = ''
+  form.keyContent = ''
   form.identityId = ''
   form.groupId = undefined
   form.rdpFixedWidth = undefined
@@ -1306,6 +1348,18 @@ async function selectKeyFile() {
   }
 }
 
+async function importKeyText() {
+  try {
+    const content = await OpenPrivateKeyFile()
+    if (content) {
+      form.keyContent = content
+      keyContentRevealed.value = true
+    }
+  } catch (e: any) {
+    msg.error(String(e?.message || e))
+  }
+}
+
 async function pickKubeconfigFile() {
   try {
     const selected = await OpenFileDialog()
@@ -1372,6 +1426,10 @@ function normalizeForm(): ConnectionConfig {
     normalized.password = ''
     normalized.user = ''
   }
+  // key 相关字段只在对应认证方式下有效；切走后清掉，避免把残留的路径/密钥
+  // 文本原样带进仓库（同 #711 语义）。
+  if (normalized.authType !== 'key') normalized.keyPath = ''
+  if (normalized.authType !== 'keyText') normalized.keyContent = ''
   normalized.postLoginExpectSteps = normalizeExpectSteps(form.postLoginExpectSteps || [])
   if (postLoginMode.value === 'script') {
     normalized.postLoginExpectSteps = []
@@ -1532,6 +1590,17 @@ function onConnect() {
 }
 .test-status-btn.test-error :deep(.el-icon) {
   color: var(--error);
+}
+/* KeyText paste area renders in a monospace font so PEM blocks stay aligned;
+   the textarea only appears after the user reveals the private key. */
+.key-text-area :deep(textarea) {
+  font-family: var(--font-mono, ui-monospace, "JetBrains Mono", monospace);
+}
+.key-content-actions {
+  margin-top: 6px;
+}
+.key-content-actions .el-button + .el-button {
+  margin-left: 8px;
 }
 
 /* ── Layout ── */

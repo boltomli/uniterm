@@ -27,6 +27,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"golang.org/x/crypto/ssh"
+
 	"github.com/ys-ll/uniterm/backend/container"
 	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/database"
@@ -1515,6 +1517,62 @@ func (a *App) SaveCommand(name, description, argumentHint, body string) error {
 
 func (a *App) OpenFileDialog() (string, error) {
 	return a.app.Dialog.OpenFile().SetTitle("Select File").PromptForSingleSelection()
+}
+
+// OpenPrivateKeyFile opens the private-key picker, reads the selected file's
+// text and returns it for direct use with the "keyText" auth type (#720). The
+// content is validated before returning; a passphrase-protected key is accepted
+// (the user supplies its passphrase separately) but content that doesn't look
+// like a PEM private key is rejected with an immediate error.
+func (a *App) OpenPrivateKeyFile() (string, error) {
+	path, err := a.app.Dialog.OpenFile().SetTitle("Select Private Key").PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		// Picker cancelled — nothing to import.
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read private key: %w", err)
+	}
+	content := string(data)
+	if err := validatePrivateKeyText(content); err != nil {
+		return "", err
+	}
+	return content, nil
+}
+
+// validatePrivateKeyText parses content as a private key when possible. An
+// OpenSSH/RSA/EC/DSA PEM parsed without a passphrase is valid. Content that
+// clearly isn't a private key is rejected up front; content that looks like a
+// PEM private key but requires a passphrase to crack is accepted, since the key
+// passphrase is entered separately on the form.
+func validatePrivateKeyText(content string) error {
+	data := []byte(content)
+	if _, err := ssh.ParsePrivateKey(data); err == nil {
+		return nil
+	}
+	// Parse can only succeed for an unencrypted key; a passphrase-protected key
+	// aborts at the decryption step while still being a valid PEM private key,
+	// so accept anything that carries the private-key envelope and reject
+	// content that never looked like a key to begin with.
+	if !looksLikePrivateKeyPEM(data) {
+		return fmt.Errorf("所选文件不是有效的私钥（未识别到 PEM 私钥头）")
+	}
+	return nil
+}
+
+// looksLikePrivateKeyPEM reports whether data begins with a PEM private-key
+// envelope (-----BEGIN ... PRIVATE KEY-----), whitespace-insensitive.
+func looksLikePrivateKeyPEM(data []byte) bool {
+	head := strings.ToUpper(string(bytes.TrimSpace(data)))
+	const prefix = "-----BEGIN "
+	if !strings.HasPrefix(head, prefix) || !strings.Contains(head, "PRIVATE KEY-----") {
+		return false
+	}
+	return true
 }
 
 // OpenFileDialogFiltered is like OpenFileDialog but restricts the picker to

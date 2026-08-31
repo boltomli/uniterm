@@ -111,21 +111,29 @@ func encryptConnectionsFile(src, dest string, key []byte, kc *Keychain, ps Passw
 			return fmt.Errorf("parse connections: %w", err)
 		}
 		for _, cm := range wrapper.Connections {
-			if cm["authType"] != "password" {
-				continue
-			}
-			pw, _ := cm["password"].(string)
-			if pw == "" {
-				// Legacy: password stored in keychain, not in JSON.
-				if id, ok := cm["id"].(string); ok && kc != nil {
-					if kcPw, err := kc.GetPassword(id); err == nil && kcPw != "" {
-						cm["password"] = kcPw
+			switch cm["authType"] {
+			case "password":
+				pw, _ := cm["password"].(string)
+				if pw == "" {
+					// Legacy: password stored in keychain, not in JSON.
+					if id, ok := cm["id"].(string); ok && kc != nil {
+						if kcPw, err := kc.GetPassword(id); err == nil && kcPw != "" {
+							cm["password"] = kcPw
+						}
+					}
+				} else if isEncryptedField(pw) && ps != nil {
+					// Normalize in-place encrypted field to plaintext for upload.
+					if pt, err := ps.Decrypt(pw); err == nil {
+						cm["password"] = pt
 					}
 				}
-			} else if isEncryptedField(pw) && ps != nil {
-				// Normalize in-place encrypted field to plaintext for upload.
-				if pt, err := ps.Decrypt(pw); err == nil {
-					cm["password"] = pt
+			case "keyText":
+				// Normalize the inline private-key text to plaintext for upload,
+				// mirroring the password path so enc:v1: never escapes the file.
+				if kc, _ := cm["keyContent"].(string); kc != "" && isEncryptedField(kc) && ps != nil {
+					if pt, err := ps.Decrypt(kc); err == nil {
+						cm["keyContent"] = pt
+					}
 				}
 			}
 		}
@@ -199,6 +207,11 @@ func encryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error
 			if pw, ok := im["password"].(string); ok && isEncryptedField(pw) {
 				if pt, err := ps.Decrypt(pw); err == nil {
 					im["password"] = pt
+				}
+			}
+			if kc, ok := im["keyContent"].(string); ok && isEncryptedField(kc) {
+				if pt, err := ps.Decrypt(kc); err == nil {
+					im["keyContent"] = pt
 				}
 			}
 		}
@@ -327,11 +340,23 @@ func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) erro
 			return fmt.Errorf("parse connections: %w", err)
 		}
 		for _, cm := range wrapper.Connections {
-			if pw, ok := cm["password"].(string); ok && pw != "" && !isEncryptedField(pw) {
-				// Re-encrypt plaintext under the local credential key.
-				if enc, err := ps.Encrypt(pw); err == nil {
-					cm["password"] = enc
+			switch cm["authType"] {
+			case "password":
+				if pw, ok := cm["password"].(string); ok && pw != "" && !isEncryptedField(pw) {
+					// Re-encrypt plaintext under the local credential key.
+					if enc, err := ps.Encrypt(pw); err == nil {
+						cm["password"] = enc
+					}
 				}
+			case "keyText":
+				if kc, ok := cm["keyContent"].(string); ok && kc != "" && !isEncryptedField(kc) {
+					if enc, err := ps.Encrypt(kc); err == nil {
+						cm["keyContent"] = enc
+					}
+				}
+				// The keyText passphrase (password field) is never in-place
+				// encrypted locally, so sync carries it through as-is — re-encrypting
+				// it here would corrupt real passphrases on the receiving side.
 			}
 		}
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
@@ -405,6 +430,11 @@ func decryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error
 			if pw, ok := im["password"].(string); ok && pw != "" && !isEncryptedField(pw) {
 				if enc, err := ps.Encrypt(pw); err == nil {
 					im["password"] = enc
+				}
+			}
+			if kc, ok := im["keyContent"].(string); ok && kc != "" && !isEncryptedField(kc) {
+				if enc, err := ps.Encrypt(kc); err == nil {
+					im["keyContent"] = enc
 				}
 			}
 		}

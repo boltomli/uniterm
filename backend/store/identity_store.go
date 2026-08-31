@@ -50,17 +50,13 @@ func (s *IdentityStore) Save(data session.IdentityStoreData) error {
 
 	for i := range identities {
 		id := &identities[i]
-		if id.Password == "" || credentials.IsEncrypted(id.Password) {
-			continue
+		// Both the password/passphrase and the inline key text (keyText) are
+		// secrets; encrypt whichever is present, leaving empty values alone.
+		for _, field := range []*string{&id.Password, &id.KeyContent} {
+			if err := encryptSecretField(field, s.passwordStore); err != nil {
+				return err
+			}
 		}
-		if s.passwordStore == nil {
-			return errors.New("passwordStore not initialized; refusing to save plaintext password")
-		}
-		enc, err := s.passwordStore.Encrypt(id.Password)
-		if err != nil {
-			return err
-		}
-		id.Password = enc
 	}
 
 	jsonData, err := json.MarshalIndent(session.IdentityStoreData{Identities: identities}, "", "  ")
@@ -91,13 +87,34 @@ func (s *IdentityStore) Load() (session.IdentityStoreData, error) {
 	}
 	for i := range out.Identities {
 		id := &out.Identities[i]
-		if id.Password != "" && credentials.IsEncrypted(id.Password) && s.passwordStore != nil {
-			pw, err := s.passwordStore.Decrypt(id.Password)
+		for _, field := range []*string{&id.Password, &id.KeyContent} {
+			if *field == "" || !credentials.IsEncrypted(*field) || s.passwordStore == nil {
+				continue
+			}
+			dec, err := s.passwordStore.Decrypt(*field)
 			if err != nil {
 				return session.IdentityStoreData{}, err
 			}
-			id.Password = pw
+			*field = dec
 		}
 	}
 	return out, nil
+}
+
+// encryptSecretField encrypts a secret field in place using the password store,
+// skipping empty and already-encrypted values. Returns an error (failing
+// closed) when a plaintext secret would be persisted with no cipher wired.
+func encryptSecretField(field *string, ps PasswordStore) error {
+	if *field == "" || credentials.IsEncrypted(*field) {
+		return nil
+	}
+	if ps == nil {
+		return errors.New("passwordStore not initialized; refusing to save plaintext secret")
+	}
+	enc, err := ps.Encrypt(*field)
+	if err != nil {
+		return err
+	}
+	*field = enc
+	return nil
 }

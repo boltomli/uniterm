@@ -47,6 +47,11 @@ type ConnectionConfig struct {
 	// Password is stored in plaintext JSON. Will be migrated to OS keychain in a future iteration.
 	Password string  `json:"password,omitempty"`
 	KeyPath  string  `json:"keyPath,omitempty"`
+	// KeyContent holds the inline private-key text (PEM) for authType "keyText".
+	// When set, the connection authenticates from the text directly instead of
+	// reading KeyPath from disk. Encrypted at rest and normalized across cloud
+	// sync exactly like passwords so it stays portable across devices (#720).
+	KeyContent string `json:"keyContent,omitempty"`
 	GroupId  *string `json:"groupId,omitempty"`
 	// RDP-specific fields
 	RdpFixedWidth  int  `json:"rdpFixedWidth,omitempty"`

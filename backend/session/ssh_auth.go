@@ -13,8 +13,8 @@ func makeSSHAuthMethods(config ConnectionConfig, kbCallback ssh.KeyboardInteract
 	switch config.AuthType {
 	case "password":
 		methods = append(methods, ssh.Password(config.Password))
-	case "key":
-		if signer, ok := parsePrivateKeyFile(config.KeyPath, config.Password); ok {
+	case "key", "keyText":
+		if signer, ok := parseAuthKeySigner(config); ok {
 			methods = append(methods, ssh.PublicKeys(signer))
 		}
 	}
@@ -36,10 +36,10 @@ func makeSSHAuthMethods(config ConnectionConfig, kbCallback ssh.KeyboardInteract
 // key files, and treats "agent" as password for backward compatibility.
 func buildAuthMethods(config ConnectionConfig) ([]ssh.AuthMethod, error) {
 	switch config.AuthType {
-	case "key":
-		signer, ok := parsePrivateKeyFile(config.KeyPath, config.Password)
+	case "key", "keyText":
+		signer, ok := parseAuthKeySigner(config)
 		if !ok {
-			return nil, fmt.Errorf("parse key: %s 不存在、无权限或口令错误", config.KeyPath)
+			return nil, fmt.Errorf("parse key: %s 不存在、无权限或口令错误", keySourceLabel(config))
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	default: // "", "password", "agent" and any unknown type fall back to password
@@ -47,15 +47,41 @@ func buildAuthMethods(config ConnectionConfig) ([]ssh.AuthMethod, error) {
 	}
 }
 
-// parsePrivateKeyFile reads the private key at path and parses it, using
-// passphrase when the key is encrypted. Returns (nil, false) on any error;
-// the caller is expected to fall back to other auth methods so the SSH
-// handshake surfaces a meaningful error to the user.
+// parseAuthKeySigner returns the SSH signer for an authType of "key" or
+// "keyText". "keyText" parses the inline PEM text from KeyContent directly;
+// "key" reads the private-key file at KeyPath. The passphrase (config.Password)
+// decrypts an encrypted key in both cases. Returns (nil, false) on any error;
+// the caller falls back to other auth methods so the SSH handshake surfaces a
+// meaningful error to the user.
+func parseAuthKeySigner(config ConnectionConfig) (ssh.Signer, bool) {
+	if config.AuthType == "keyText" {
+		return parsePrivateKey([]byte(config.KeyContent), config.Password)
+	}
+	return parsePrivateKeyFile(config.KeyPath, config.Password)
+}
+
+// keySourceLabel names the key source for error messages — the file path for
+// "key", or a friendly label for inline "keyText" content.
+func keySourceLabel(config ConnectionConfig) string {
+	if config.AuthType == "keyText" {
+		return "inline private key text"
+	}
+	return config.KeyPath
+}
+
+// parsePrivateKeyFile reads the private key at path and parses it via
+// parsePrivateKey. Returns (nil, false) on any error.
 func parsePrivateKeyFile(path, passphrase string) (ssh.Signer, bool) {
 	key, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
+	return parsePrivateKey(key, passphrase)
+}
+
+// parsePrivateKey parses a private key from raw bytes, using passphrase when
+// the key is encrypted. Returns (nil, false) on any error.
+func parsePrivateKey(key []byte, passphrase string) (ssh.Signer, bool) {
 	if passphrase != "" {
 		signer, err := ssh.ParsePrivateKeyWithPassphrase(key, []byte(passphrase))
 		if err != nil {

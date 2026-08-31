@@ -21,9 +21,10 @@ export interface ConnectionConfig {
   host: string
   port: number
   user: string
-  authType: 'password' | 'key' | 'agent' | 'identity'
+  authType: 'password' | 'key' | 'keyText' | 'agent' | 'identity'
   password?: string
   keyPath?: string
+  keyContent?: string // inline private-key text (authType === 'keyText')
   identityId?: string // reference to a vault identity (authType === 'identity')
   proxyId?: string // reference to a saved outbound proxy (SOCKS5/HTTP)
   groupId?: string
