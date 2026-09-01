@@ -283,11 +283,16 @@ function formatToolName(tc: { function: { name: string; arguments: string } }): 
   const translated = t(key) !== key ? t(key) : name
   try {
     const args = JSON.parse(tc.function.arguments)
-    if (name === 'execute_command' && args.timeout) {
-      return `${translated} [${args.timeout}s]`
-    }
-    if (name === 'collect_output' && args.timeout) {
-      return `${translated} [${args.timeout}s]`
+    // Show the effective wait: the model-provided timeout when present, or
+    // the runtime fallback defaults from agent.ts (execute_command 60s,
+    // collect_output 30s) — so the badge never disappears just because the
+    // model omitted the optional argument.
+    if (name === 'execute_command' || name === 'collect_output') {
+      const t = args.timeout
+      const seconds = typeof t === 'number' && Number.isFinite(t) && t > 0
+        ? t
+        : (name === 'execute_command' ? 60 : 30)
+      return `${translated} [${seconds}s]`
     }
   } catch {}
   return translated
