@@ -335,6 +335,8 @@
   "settings.themeSystem": "Sistema",
   "settings.tabCloseButton": "Botón de cerrar pestaña",
   "settings.tabCloseButtonDesc": "Elija si el botón de cerrar (×) de la pestaña se muestra a la izquierda o a la derecha",
+  "settings.sidebarTabs": "Pestañas de la barra lateral",
+  "settings.sidebarTabsDesc": "Elige qué pestañas se muestran en la parte superior de la barra lateral (clic derecho en la barra para alternar)",
   "settings.tabCloseButtonLeft": "Izquierda",
   "settings.tabCloseButtonRight": "Derecha",
   "settings.language": "Idioma",

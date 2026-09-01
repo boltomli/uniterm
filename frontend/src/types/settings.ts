@@ -218,7 +218,35 @@ export interface AppSettings {
   defaultLocalShell: string
   // Which side of the tab the close (X) button sits on.
   tabCloseButton: 'left' | 'right'
+  // Which connection-sidebar tab icons are visible, keyed by view id.
+  // Missing keys fall back to SIDEBAR_TAB_DEFAULTS (issue #736).
+  sidebarTabs: Record<string, boolean>
 }
+
+// Default visibility per sidebar view. "connections" is the primary view and
+// is always shown (never hidden by either the settings card or the tab-strip
+// context menu); tunnels ships hidden by default (issue #736).
+export const SIDEBAR_TAB_DEFAULTS: Record<string, boolean> = {
+  connections: true,
+  files: true,
+  monitor: true,
+  tunnels: false,
+  quickCommands: true,
+  history: true,
+  personalization: true,
+}
+
+// Canonical sidebar tab order shared by the tab-strip context menu and the
+// Settings card. `labelKey` is the existing i18n key for each tab's title.
+export const SIDEBAR_TAB_ORDER: { key: string; labelKey: string }[] = [
+  { key: 'connections', labelKey: 'header.connections' },
+  { key: 'files', labelKey: 'header.files' },
+  { key: 'monitor', labelKey: 'header.monitor' },
+  { key: 'tunnels', labelKey: 'tunnels.tunnelsTab' },
+  { key: 'quickCommands', labelKey: 'quickCommands.quickCommandsTab' },
+  { key: 'history', labelKey: 'quickCommands.historyTab' },
+  { key: 'personalization', labelKey: 'sidebar.personalization' },
+]
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -271,7 +299,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   customTerminalThemes: [],
   defaultLocalShell: '',
-  tabCloseButton: 'left'
+  tabCloseButton: 'left',
+  sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS }
 }
 
 export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light' }

@@ -125,6 +125,13 @@ type AppSettings struct {
 	CustomTerminalThemes []CustomTerminalTheme `json:"customTerminalThemes"`
 	DefaultLocalShell    string                `json:"defaultLocalShell"`
 	TabCloseButton       string                `json:"tabCloseButton"`
+	// SidebarTabs toggles which connection-sidebar tab icons are visible,
+	// keyed by view id (connections/files/monitor/tunnels/quickCommands/
+	// history/personalization). "connections" is always shown in the UI and
+	// never hidden. Pointer + omitempty so settings.json written by older
+	// builds (which lack this field) still load; a nil map means "use the
+	// frontend defaults" (everything visible except tunnels — issue #736).
+	SidebarTabs map[string]bool `json:"sidebarTabs,omitempty"`
 }
 
 type SFTPBookmarks struct {

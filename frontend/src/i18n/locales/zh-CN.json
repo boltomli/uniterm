@@ -335,6 +335,8 @@
   "settings.themeSystem": "跟随系统",
   "settings.tabCloseButton": "标签关闭按钮",
   "settings.tabCloseButtonDesc": "选择标签的关闭按钮（×）显示在左侧还是右侧",
+  "settings.sidebarTabs": "边栏标签",
+  "settings.sidebarTabsDesc": "选择在边栏顶部显示哪些标签页（可在标签栏右键切换）",
   "settings.tabCloseButtonLeft": "左边",
   "settings.tabCloseButtonRight": "右边",
   "settings.language": "语言",

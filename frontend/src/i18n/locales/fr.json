@@ -335,6 +335,8 @@
   "settings.themeSystem": "Système",
   "settings.tabCloseButton": "Bouton de fermeture de l'onglet",
   "settings.tabCloseButtonDesc": "Choisissez si le bouton de fermeture (×) de l'onglet se trouve à gauche ou à droite",
+  "settings.sidebarTabs": "Onglets de la barre latérale",
+  "settings.sidebarTabsDesc": "Choisissez les onglets affichés en haut de la barre latérale (clic droit sur la barre pour basculer)",
   "settings.tabCloseButtonLeft": "Gauche",
   "settings.tabCloseButtonRight": "Droite",
   "settings.language": "Langue",
