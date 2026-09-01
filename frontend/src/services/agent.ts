@@ -116,7 +116,7 @@ function validateExecuteCommandInput(raw: unknown): ExecuteCommandInput {
   const obj = validateObject(raw, 'execute_command input')
   return {
     command: validateRequiredString(obj.command, 'command'),
-    timeout: typeof obj.timeout === 'number' && Number.isFinite(obj.timeout) ? obj.timeout : 60,
+    timeout: typeof obj.timeout === 'number' && Number.isFinite(obj.timeout) && obj.timeout > 0 ? obj.timeout : 60,
     head_lines: typeof obj.head_lines === 'number' && Number.isFinite(obj.head_lines) ? obj.head_lines : 50,
     tail_lines: typeof obj.tail_lines === 'number' && Number.isFinite(obj.tail_lines) ? obj.tail_lines : 300,
     panel: typeof obj.panel === 'string' ? obj.panel : undefined,
@@ -665,8 +665,9 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         throw e
       }
       const command = validated.command
-      const timeoutSec = validated.timeout
-      const timeoutMs = Math.max(5000, Math.min(timeoutSec * 1000, 300000))
+      // Honor the model-provided timeout as-is (no clamping); the validator
+      // falls back to 60s when the argument is missing or invalid.
+      const timeoutMs = validated.timeout * 1000
       const headLines = validated.head_lines
       const tailLines = validated.tail_lines
       const risk = getRisk(tu)
@@ -795,8 +796,9 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         })
       }
     } else if (tu.name === 'collect_output') {
-      const timeoutSec = (tu.input.timeout as number) || 30
-      const timeoutMs = Math.max(5000, Math.min(timeoutSec * 1000, 120000))
+      // Honor the model-provided timeout as-is (no clamping); `|| 30` falls
+      // back to 30s when the argument is missing or invalid.
+      const timeoutMs = ((tu.input.timeout as number) || 30) * 1000
       const headLines = (tu.input.head_lines as number) ?? 100
       const tailLines = (tu.input.tail_lines as number) ?? 300
       try {
