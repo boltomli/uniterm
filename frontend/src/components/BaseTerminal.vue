@@ -99,6 +99,12 @@
 
     <!-- Zmodem transfer panel -->
     <ZmodemTransfer :session-id="props.sessionId || ''" @cancel="onZmodemCancel" />
+
+    <!-- Screen preview on scrollbar hover (issue #729) -->
+    <TerminalScreenPreview
+      :session-id="props.sessionId || ''"
+      :enabled="settingsStore.settings.terminal.screenPreview ?? true"
+    />
   </div>
 </template>
 
@@ -150,6 +156,7 @@ import { startZmodemService } from '../services/zmodemService'
 import { stampWrittenLines, stampCommandLine, currentAbsoluteLine } from '../services/terminalTimestamps'
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
+import TerminalScreenPreview from './TerminalScreenPreview.vue'
 import { Browser, Clipboard, Events } from '@wailsio/runtime'
 import { ChevronUp, ChevronDown, X } from '@lucide/vue'
 

@@ -356,6 +356,8 @@
   "settings.rightClickMenu": "彈出右鍵選單",
   "settings.rightClickPaste": "貼上剪貼簿內容",
   "settings.maxHistory": "最大歷史行數",
+  "settings.screenPreview": "螢幕回看",
+  "settings.screenPreviewDesc": "滑鼠懸停終端機捲軸時，彈出該位置的歷史內容預覽，點擊可跳轉",
   "settings.themeDesc": "選擇介面主題風格",
   "settings.languageDesc": "切換介面顯示語言",
   "settings.colorSchemeDesc": "終端機視窗的配色方案",
