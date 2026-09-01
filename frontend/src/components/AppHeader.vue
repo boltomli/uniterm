@@ -70,11 +70,20 @@
 
         <MenuDivider />
 
+        <!-- 导入 / 导出连接 -->
+        <MenuItem @click="openImport">{{ t('importExport.import') }}</MenuItem>
+        <MenuItem @click="openExport">{{ t('importExport.export') }}</MenuItem>
+
+        <MenuDivider />
+
         <!-- 设置 / 关于 / 检查更新 -->
         <MenuItem @click="openCategory('basic')">{{ t('settings.title') }}</MenuItem>
         <MenuItem @click="openCategory('about')">{{ t('settings.about') }}</MenuItem>
         <MenuItem @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
       </Menu>
+
+      <ImportDialog v-model:visible="showImportDialog" />
+      <ExportDialog v-model:visible="showExportDialog" />
     </div>
 
     <!-- Windows/Linux: window controls right (hidden when using system title bar) -->
@@ -104,6 +113,8 @@ import { LANGUAGE_OPTIONS } from '../types/settings'
 import type { AppSettings } from '../types/settings'
 import WindowControls from './WindowControls.vue'
 import TabsList from './TabsList.vue'
+import ImportDialog from './ImportDialog.vue'
+import ExportDialog from './ExportDialog.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
@@ -137,6 +148,20 @@ function toggleSettingsMenu() {
 
 function closeSettingsMenu() {
   showSettingsMenu.value = false
+}
+
+// ── 导入 / 导出（对话框自包含，菜单关闭后由对话框接管） ──
+const showImportDialog = ref(false)
+const showExportDialog = ref(false)
+
+function openImport() {
+  closeSettingsMenu()
+  showImportDialog.value = true
+}
+
+function openExport() {
+  closeSettingsMenu()
+  showExportDialog.value = true
 }
 
 function applyTheme(value: AppSettings['theme']) {
