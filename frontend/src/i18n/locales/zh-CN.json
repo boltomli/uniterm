@@ -406,7 +406,7 @@
   "settings.testSuccess": "连接成功",
   "settings.testFailed": "连接失败",
   "settings.highlight": "文本高亮",
-  "settings.highlightDesc": "自动高亮时间、IP、关键词、字符串等模式",
+  "settings.highlightDesc": "自动高亮 IP、错误、警告、成功等关键词（MobaXterm 风格）",
   "settings.showLineNumbers": "显示行号",
   "settings.showLineNumbersDesc": "在终端左侧显示行号栏，自动折行的续行留空。",
   "settings.showTimestamps": "显示时间",

@@ -406,7 +406,7 @@
   "settings.testSuccess": "Connection successful",
   "settings.testFailed": "Connection failed",
   "settings.highlight": "Text Highlight",
-  "settings.highlightDesc": "Highlight timestamps, IPs, keywords, strings, etc.",
+  "settings.highlightDesc": "Highlight IPs, errors, warnings and keywords in terminal output (MobaXterm-style)",
   "settings.showLineNumbers": "Show Line Numbers",
   "settings.showLineNumbersDesc": "Show a line-number column on the left edge of the terminal. Wrapped continuation lines stay blank.",
   "settings.showTimestamps": "Show Timestamps",

@@ -406,7 +406,7 @@
   "settings.testSuccess": "Connexion réussie",
   "settings.testFailed": "Échec de la connexion",
   "settings.highlight": "Surlignage du texte",
-  "settings.highlightDesc": "Surligner les horodatages, IP, mots-clés, chaînes, etc.",
+  "settings.highlightDesc": "Surligner les IP, erreurs, avertissements et mots-clés dans la sortie du terminal (style MobaXterm)",
   "settings.showLineNumbers": "Afficher les numéros de ligne",
   "settings.showLineNumbersDesc": "Affiche une colonne de numéros de ligne sur le bord gauche du terminal. Les lignes repliées restent vides.",
   "settings.showTimestamps": "Afficher les horodatages",

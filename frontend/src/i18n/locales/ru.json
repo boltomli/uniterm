@@ -406,7 +406,7 @@
   "settings.testSuccess": "Соединение успешно",
   "settings.testFailed": "Соединение не удалось",
   "settings.highlight": "Подсветка текста",
-  "settings.highlightDesc": "Выделять метки времени, IP, ключевые слова, строки и т.д.",
+  "settings.highlightDesc": "Выделять IP, ошибки, предупреждения и ключевые слова в выводе терминала (в стиле MobaXterm)",
   "settings.showLineNumbers": "Показывать номера строк",
   "settings.showLineNumbersDesc": "Показывает столбец с номерами строк по левому краю терминала. Продолжения перенесённых строк остаются пустыми.",
   "settings.showTimestamps": "Показывать время",
