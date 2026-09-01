@@ -697,7 +697,7 @@
           <el-table-column prop="name" :label="t('conn.name')" />
           <el-table-column prop="username" :label="t('conn.user')" />
           <el-table-column :label="t('conn.authType')">
-            <template #default="{ row }">{{ row.authType === 'password' ? t('conn.password') : t('conn.keyPath') }}</template>
+            <template #default="{ row }">{{ row.authType === 'password' ? t('conn.password') : row.authType === 'keyText' ? t('conn.keyText') : t('conn.keyPath') }}</template>
           </el-table-column>
           <el-table-column :label="t('common.actions')" width="160">
             <template #default="{ row }">
