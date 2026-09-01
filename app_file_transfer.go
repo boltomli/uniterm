@@ -403,6 +403,7 @@ func (a *App) SftpOpenExternalEditor(sessionID, remotePath, editorCmd string) er
 	registerExternalEdit(sessionID, tmp, cancel)
 
 	cmd := exec.CommandContext(runCtx, prog, args...)
+	hideProcWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		unregisterExternalEdit(sessionID, tmp, cancel)
 		os.Remove(tmp)
@@ -435,6 +436,7 @@ func (a *App) OpenExternalEditorLocal(localPath, editorCmd string) error {
 	}
 	args = append(args, localPath)
 	cmd := exec.Command(prog, args...)
+	hideProcWindow(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start external editor %s: %w", prog, err)
 	}
