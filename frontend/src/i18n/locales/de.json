@@ -356,6 +356,8 @@
   "settings.rightClickMenu": "Kontextmenü anzeigen",
   "settings.rightClickPaste": "Zwischenablage einfugen",
   "settings.maxHistory": "Max. Verlaufszeilen",
+  "settings.screenPreview": "Bildschirm-Vorschau",
+  "settings.screenPreviewDesc": "Zeigt beim Überfahren der Bildlaufleiste eine Vorschau des Verlaufs an; Klick springt zur Position",
   "settings.themeDesc": "Oberflächendesign auswählen",
   "settings.languageDesc": "Anzeigesprache wechseln",
   "settings.colorSchemeDesc": "Farbschema des Terminals",

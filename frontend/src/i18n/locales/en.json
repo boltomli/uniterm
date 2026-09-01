@@ -356,6 +356,8 @@
   "settings.rightClickMenu": "Show context menu",
   "settings.rightClickPaste": "Paste clipboard content",
   "settings.maxHistory": "Max History Lines",
+  "settings.screenPreview": "Screen Preview",
+  "settings.screenPreviewDesc": "Show a preview of history content when hovering over the terminal scrollbar",
   "settings.themeDesc": "Choose the interface theme",
   "settings.languageDesc": "Switch the display language",
   "settings.colorSchemeDesc": "Terminal color scheme",

@@ -68,6 +68,9 @@ export interface TerminalSettings {
   // #671) for scroll-sensitive mice; defaults to enabled.
   ctrlWheelZoom?: boolean
   maxHistoryLines: number
+  // Issue #729: WindTerm/Termora-style screen preview — hovering the terminal
+  // scrollbar pops up a read-only preview of the scrollback at that position.
+  screenPreview?: boolean
   smartCompletion: boolean
   aiTranscription: boolean
   highlightEnabled: boolean
@@ -230,6 +233,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     rightClickAction: 'menu',
     middleClickAction: 'paste',
     maxHistoryLines: 2500,
+    screenPreview: true,
     smartCompletion: true,
     aiTranscription: true,
     highlightEnabled: true,
