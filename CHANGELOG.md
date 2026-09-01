@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.9.2-alpha
+
+### What's Changed
+
+**New Features**
+- Terminal: screen preview on scrollbar hover — hovering the scrollbar pops up a preview of the history output at that position; click to jump there. New setting, on by default.
+- Sidebar: the tunnels tab is back. Right-click the tab strip to toggle tab visibility; also configurable in Settings. Visible by default.
+
+**Bug Fixes**
+- Terminal: restored the Backspace default to 0x7F (DEL), fixing whole-word deletion in Windows 11 ConPTY PowerShell/CMD and `bash read` erasing nothing over SSH. Existing connections that already saved a backspace option need to be manually switched back to DEL in the connection settings.
+- SFTP: the external editor menu in the file sidebar now works, with auto-upload on save; on Windows, editors no longer flash a console window and VS Code wait-for-close works.
+- SFTP: the filename tooltip now shows only when the name is truncated.
+- Identities: identities imported via key text now show the correct auth type label.
+- AI: command output is now captured from the terminal screen buffer instead of the raw PTY stream, fixing duplicated/shifted fragments from ConPTY redraws.
+- AI: the tool timeout badge now always shows the effective wait, and model-provided timeouts are honored as-is instead of being clamped.
+- Terminal: text highlighting is now optimized based on MobaXterm's color scheme — improved IP coloring, curated keyword colors for errors / success / warnings / info; arbitrary numbers are no longer highlighted.
+
+**Notes**
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+
+### 更新内容
+
+**新功能**
+- 终端：滚动条悬停预览——悬停滚动条即弹出该位置历史输出的预览，点击可跳转。新增设置项，默认开启。
+- 侧边栏：隧道标签页回归；右键标签栏可开关显示各标签页，设置中也可配置。默认显示。
+
+**Bug 修复**
+- 终端：退格键默认值恢复为 0x7F（DEL），修复 Windows 11 ConPTY 下 PowerShell/CMD 退格删整词、SSH `bash read` 无法删除字符的问题。存量连接若已保存退格键设置，需手动在连接配置中改回 DEL。
+- SFTP：文件边栏的「外部编辑器」菜单现已生效，保存后自动回传；Windows 上启动编辑器不再闪现控制台窗口，VS Code 等待关闭也恢复正常。
+- SFTP：文件名提示框仅在名称被截断时显示。
+- 身份（密钥库）：私钥文本导入的身份现在显示正确的认证类型标签。
+- AI：命令输出改为从终端屏幕缓冲区捕获，修复 ConPTY 重绘导致的重复/错位片段。
+- AI：工具超时徽标现在始终显示实际等待时间，模型提供的超时值按原值生效、不再被钳制。
+- 终端：文本高亮基于 MobaXterm 配色方案进行优化——优化 IP 配色、错误/成功/警告/提示关键词配色；不再高亮任意数字。
+
+**说明**
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+
 ## v1.9.1
 
 ### What's Changed
@@ -29,7 +67,6 @@
 - Tunnel management moved into the Settings page.
 - Monitor: collapsible per-core / per-NIC / per-disk detail lists and a process kill button in the monitor tab; disk and network statistics are now more accurate (works on hosts without `ip` / `lsblk -j`, e.g. CentOS 7).
 - Terminal: configurable middle-click action, Ctrl/Cmd+right-click always opens the context menu, and font zoom via shortcuts or Ctrl/Cmd+wheel.
-- Terminal: text highlighting now follows MobaXterm's simplified scheme (issue #725) — IP addresses are magenta (the classic MobaXterm "pink IP", first octet 1–254), and error / success / warning / info keywords use MobaXterm's curated word lists with red / green / yellow / cyan colors; URLs are underlined. Arbitrary numbers are no longer highlighted; paths, timestamps, quoted strings and braces remain highlighted. Colors still follow the terminal theme palette.
 - Quick commands: remark field and a larger edit dialog.
 - Connection: "Connect Only" opens a session without saving it; new-connection forms prefill from the search box.
 - SSH: new "keyText" inline private-key auth mode — paste or import the PEM private-key text directly (beside password and key-file), encrypted at rest and portable across machines.
