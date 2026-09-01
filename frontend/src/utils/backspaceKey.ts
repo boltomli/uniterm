@@ -8,10 +8,14 @@
 // (SFTP, FTP, database, RDP…) never pass through xterm's onData, but the
 // defensive type check makes the function safe to call from any code path.
 //
-// `mode === undefined` falls back to the new default ('bs') to match the
-// behavior the ConnectionForm applies to new connections; this is the
-// intentional behavior change for issue #456 (MobaXterm ships the same
-// default — "Backspace sends ^H" is on by default).
+// `mode === undefined` falls back to 'del' (0x7F, xterm.js's native byte) so
+// terminal-stream types behave as before commit 3d9c5a1 changed it. Sending
+// 0x08 unconditionally broke two scenarios: Linux shells whose tty line
+// discipline ERASE is 0x7F echo literal ^H for bash `read` prompts (issue
+// #638), and Windows local PowerShell/CMD sessions through ConPTY, where the
+// translated byte maps to a Ctrl+Backspace key event that deletes a whole
+// word. Huawei/H3C/Cisco users (issue #456) can still pick "bs" per
+// connection via the dropdown.
 const TERMINAL_STREAM_TYPES = new Set([
   'ssh',
   'telnet',
@@ -22,6 +26,12 @@ const TERMINAL_STREAM_TYPES = new Set([
   'container',
 ])
 
+// Types without a backspaceKey dropdown in ConnectionForm. Any stored 'bs'
+// value on these came from the v1.7 form default (saved silently, never user
+// chosen), so it is ignored and the default applies — otherwise existing
+// local/k8s/container connections keep sending 0x08 and stay broken.
+const NO_UI_TYPES = new Set(['local', 'k8s', 'container'])
+
 export type BackspaceKeyMode = 'del' | 'bs' | 'vt220'
 
 export function applyBackspaceKey(
@@ -30,8 +40,8 @@ export function applyBackspaceKey(
   connType: string | undefined,
 ): string {
   if (!connType || !TERMINAL_STREAM_TYPES.has(connType)) return data
-  // Undefined → default to 'bs' for terminal-stream types (see file header).
-  const effective: BackspaceKeyMode = mode ?? 'bs'
+  // Undefined → keep xterm.js's native 0x7F (see file header).
+  const effective: BackspaceKeyMode = NO_UI_TYPES.has(connType) ? 'del' : mode ?? 'del'
   if (effective === 'del') return data
   if (!data.includes('\x7f')) return data
   const replacement = effective === 'bs' ? '\x08' : '\x1b[3~'
