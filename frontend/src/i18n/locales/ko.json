@@ -335,6 +335,8 @@
   "settings.themeSystem": "시스템",
   "settings.tabCloseButton": "탭 닫기 버튼",
   "settings.tabCloseButtonDesc": "탭의 닫기 버튼(×)을 왼쪽 또는 오른쪽에 표시할지 선택합니다",
+  "settings.sidebarTabs": "사이드바 탭",
+  "settings.sidebarTabsDesc": "사이드바 상단에 표시할 탭을 선택합니다(탭 막대 우클릭으로 전환 가능)",
   "settings.tabCloseButtonLeft": "왼쪽",
   "settings.tabCloseButtonRight": "오른쪽",
   "settings.language": "언어",

@@ -335,6 +335,8 @@
   "settings.themeSystem": "Системная",
   "settings.tabCloseButton": "Кнопка закрытия вкладки",
   "settings.tabCloseButtonDesc": "Выберите, где находится кнопка закрытия вкладки (×): слева или справа",
+  "settings.sidebarTabs": "Вкладки боковой панели",
+  "settings.sidebarTabsDesc": "Выберите вкладки вверху боковой панели (переключение правым кликом по панели вкладок)",
   "settings.tabCloseButtonLeft": "Слева",
   "settings.tabCloseButtonRight": "Справа",
   "settings.language": "Язык",

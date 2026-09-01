@@ -335,6 +335,8 @@
   "settings.themeSystem": "System",
   "settings.tabCloseButton": "Tab Close Button",
   "settings.tabCloseButtonDesc": "Choose whether the tab close (×) button sits on the left or right side of the tab",
+  "settings.sidebarTabs": "Sidebar Tabs",
+  "settings.sidebarTabsDesc": "Choose which tabs show at the top of the sidebar (right-click the tab strip to toggle)",
   "settings.tabCloseButtonLeft": "Left",
   "settings.tabCloseButtonRight": "Right",
   "settings.language": "Language",

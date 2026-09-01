@@ -6,13 +6,14 @@
     :style="{ width: sidebarWidth + 'px' }"
   >
     <div class="resize-handle" @mousedown="onResizeStart" />
-    <div class="sidebar-header">
+    <div class="sidebar-header" @contextmenu.prevent="onTabStripContextMenu">
       <button class="sidebar-tab" :class="{ active: activeView === 'connections' }" @click="activeView = 'connections'" :title="t('header.connections')"><el-icon><Network :size="14" /></el-icon></button>
-      <button class="sidebar-tab" :class="{ active: activeView === 'files' }" @click="onFilesTabClick" :title="t('header.files')"><el-icon><FolderTree :size="14" /></el-icon></button>
-      <button class="sidebar-tab" :class="{ active: activeView === 'monitor' }" @click="onMonitorTabClick" :title="t('header.monitor')"><el-icon><Activity :size="14" /></el-icon></button>
-      <button class="sidebar-tab" :class="{ active: activeView === 'quickCommands' }" @click="activeView = 'quickCommands'" :title="t('quickCommands.quickCommandsTab')"><el-icon><Zap :size="14" /></el-icon></button>
-      <button class="sidebar-tab" :class="{ active: activeView === 'history' }" @click="activeView = 'history'" :title="t('quickCommands.historyTab')"><el-icon><Clock :size="14" /></el-icon></button>
-      <button class="sidebar-tab" :class="{ active: activeView === 'personalization' }" @click="activeView = 'personalization'" :title="t('sidebar.personalization')"><el-icon><Palette :size="14" /></el-icon></button>
+      <button v-if="tabVisible('files')" class="sidebar-tab" :class="{ active: activeView === 'files' }" @click="onFilesTabClick" :title="t('header.files')"><el-icon><FolderTree :size="14" /></el-icon></button>
+      <button v-if="tabVisible('monitor')" class="sidebar-tab" :class="{ active: activeView === 'monitor' }" @click="onMonitorTabClick" :title="t('header.monitor')"><el-icon><Activity :size="14" /></el-icon></button>
+      <button v-if="tabVisible('tunnels')" class="sidebar-tab" :class="{ active: activeView === 'tunnels' }" @click="activeView = 'tunnels'" :title="t('tunnels.tunnelsTab')"><el-icon><ArrowRightLeft :size="14" /></el-icon></button>
+      <button v-if="tabVisible('quickCommands')" class="sidebar-tab" :class="{ active: activeView === 'quickCommands' }" @click="activeView = 'quickCommands'" :title="t('quickCommands.quickCommandsTab')"><el-icon><Zap :size="14" /></el-icon></button>
+      <button v-if="tabVisible('history')" class="sidebar-tab" :class="{ active: activeView === 'history' }" @click="activeView = 'history'" :title="t('quickCommands.historyTab')"><el-icon><Clock :size="14" /></el-icon></button>
+      <button v-if="tabVisible('personalization')" class="sidebar-tab" :class="{ active: activeView === 'personalization' }" @click="activeView = 'personalization'" :title="t('sidebar.personalization')"><el-icon><Palette :size="14" /></el-icon></button>
       <button class="icon-btn" @click="emit('toggle')" :title="t('sidebar.collapse')"><el-icon><X :size="14" /></el-icon></button>
     </div>
 
@@ -173,6 +174,8 @@
 
     <QuickCommandsPanel v-if="activeView === 'quickCommands'" />
 
+    <TunnelsPanel v-if="activeView === 'tunnels'" />
+
     
     <HistoryPanel v-if="activeView === 'history'" />
 
@@ -289,6 +292,19 @@
     <ExportDialog v-model:visible="showExportDialog" />
     <ImportDialog v-model:visible="showImportDialog" />
     <CustomThemeEditor v-model="themeEditorVisible" :source-theme-id="themeEditorSourceId" />
+
+    <!-- Tab-strip context menu: toggle which sidebar tabs are shown.
+         Reuses the same AppSettings.sidebarTabs as the Settings page card.
+         "connections" is fixed, so it is not listed. -->
+    <Menu ref="tabStripMenuRef" v-model:visible="tabStripMenuVisible">
+      <MenuItem
+        v-for="tab in SIDEBAR_TAB_ORDER.filter(tab => tab.key !== 'connections')"
+        :key="tab.key"
+        iconic
+        :icon="tabVisible(tab.key) ? Check : undefined"
+        @click="onTabVisibilityClick(tab.key)"
+      >{{ t(tab.labelKey) }}</MenuItem>
+    </Menu>
 
     <!-- Connection context menu -->
     <Menu ref="menuRef" v-model:visible="menuVisible" @contextmenu.stop>
@@ -448,7 +464,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick, provide } from 'vue'
-import { X, ChevronRight, ChevronDown, Filter, Check, Network, Zap, Clock, Plus, Palette, SquareTerminal, Terminal, FolderUp, HardDrive, Cloud, Globe, Monitor, MonitorCloud, MonitorSmartphone, Database, DatabaseZap, Layers, DatabaseSearch, Activity, Laptop, Cable, Pencil, MoreHorizontal, FolderTree, ShipWheel, Boxes, AppWindow, ArrowLeftRight } from '@lucide/vue'
+import { X, ChevronRight, ChevronDown, Filter, Check, Network, Zap, Clock, Plus, Palette, SquareTerminal, Terminal, FolderUp, HardDrive, Cloud, Globe, Monitor, MonitorCloud, MonitorSmartphone, Database, DatabaseZap, Layers, DatabaseSearch, Activity, Laptop, Cable, Pencil, MoreHorizontal, FolderTree, ShipWheel, Boxes, AppWindow, ArrowLeftRight, ArrowRightLeft } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { msg } from '../services/message'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -461,6 +477,7 @@ import ConnectionForm from './ConnectionForm.vue'
 import ExportDialog from './ExportDialog.vue'
 import ImportDialog from './ImportDialog.vue'
 import QuickCommandsPanel from './QuickCommandsPanel.vue'
+import TunnelsPanel from './TunnelsPanel.vue'
 import HistoryPanel from './HistoryPanel.vue'
 import FileSidebar from './FileSidebar.vue'
 import MonitorOverviewSidebar from './MonitorOverviewSidebar.vue'
@@ -473,7 +490,7 @@ import MenuSubmenu from './MenuSubmenu.vue'
 import MenuDivider from './MenuDivider.vue'
 import type { ConnectionConfig, ConnectionGroup } from '../types/session'
 import { parseQuickConnect, formatConnSubtitle, getConnectionTypeKey, getTypeCategory, formatTypeFilterLabel, getTypeFilterCatalog, isWindows } from '../utils/quickConnect'
-import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, FOLLOW_APP_THEME } from '../types/settings'
+import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, FOLLOW_APP_THEME, SIDEBAR_TAB_DEFAULTS, SIDEBAR_TAB_ORDER } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
 import { useTerminalThemeOptions } from '../composables/useTerminalThemeOptions'
 import { GetAllFonts } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -503,7 +520,7 @@ const showForm = ref(false)
 const showExportDialog = ref(false)
 const showImportDialog = ref(false)
 const editConfig = ref<ConnectionConfig | undefined>(undefined)
-const activeView = ref<'connections' | 'quickCommands' | 'history' | 'personalization' | 'files' | 'monitor'>('connections')
+const activeView = ref<'connections' | 'quickCommands' | 'history' | 'personalization' | 'files' | 'monitor' | 'tunnels'>('connections')
 
 // ── SSH companion: files / monitor folded into this sidebar ──
 function onFilesTabClick() {
@@ -530,6 +547,31 @@ watch(
     if (!monitorVisible && activeView.value === 'monitor') activeView.value = 'connections'
   },
 )
+
+// ── Sidebar tab visibility (issue #736) ──
+// Single source of truth is AppSettings.sidebarTabs (editable in Settings →
+// basic); right-clicking the tab strip opens the same toggles as a shortcut.
+// "connections" is the primary view and can never be hidden.
+
+function tabVisible(key: string): boolean {
+  return settingsStore.settings.sidebarTabs?.[key] ?? SIDEBAR_TAB_DEFAULTS[key] ?? true
+}
+
+const tabStripMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const tabStripMenuVisible = ref(false)
+
+function onTabStripContextMenu(e: MouseEvent) {
+  tabStripMenuRef.value?.openAt(e.clientX, e.clientY)
+}
+
+function onTabVisibilityClick(key: string) {
+  if (key === 'connections') return // always visible
+  const tabs = settingsStore.settings.sidebarTabs
+  tabs[key] = !tabVisible(key)
+  settingsStore.save()
+  // Hiding the view that's currently active falls back to connections.
+  if (!tabs[key] && activeView.value === key) activeView.value = 'connections'
+}
 
 // ── Personalization panel ──
 // Single source: GetAllFonts returns every installed family with its mono

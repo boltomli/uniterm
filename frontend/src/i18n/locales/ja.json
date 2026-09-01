@@ -335,6 +335,8 @@
   "settings.themeSystem": "システム",
   "settings.tabCloseButton": "タブの閉じるボタン",
   "settings.tabCloseButtonDesc": "タブの閉じるボタン（×）の表示位置（左または右）を選択します",
+  "settings.sidebarTabs": "サイドバータブ",
+  "settings.sidebarTabsDesc": "サイドバー上部に表示するタブを選択します（タブバー右クリックで切り替え可）",
   "settings.tabCloseButtonLeft": "左",
   "settings.tabCloseButtonRight": "右",
   "settings.language": "言語",

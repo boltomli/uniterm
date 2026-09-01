@@ -335,6 +335,8 @@
   "settings.themeSystem": "System",
   "settings.tabCloseButton": "Tab-Schließen-Schaltfläche",
   "settings.tabCloseButtonDesc": "Wählen Sie, ob die Schließen-Schaltfläche (×) des Tabs links oder rechts sitzt",
+  "settings.sidebarTabs": "Seitenleisten-Registerkarten",
+  "settings.sidebarTabsDesc": "Wählt die Registerkarten oben in der Seitenleiste (Umschalten per Rechtsklick auf die Leiste)",
   "settings.tabCloseButtonLeft": "Links",
   "settings.tabCloseButtonRight": "Rechts",
   "settings.language": "Sprache",

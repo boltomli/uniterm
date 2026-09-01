@@ -335,6 +335,8 @@
   "settings.themeSystem": "跟隨系統",
   "settings.tabCloseButton": "標籤關閉按鈕",
   "settings.tabCloseButtonDesc": "選擇標籤的關閉按鈕（×）顯示在左側還是右側",
+  "settings.sidebarTabs": "邊欄標籤",
+  "settings.sidebarTabsDesc": "選擇在邊欄頂部顯示哪些標籤頁（可在標籤列右鍵切換）",
   "settings.tabCloseButtonLeft": "左邊",
   "settings.tabCloseButtonRight": "右邊",
   "settings.language": "語言",
