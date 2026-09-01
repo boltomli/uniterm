@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "影響行数（合計）",
   "db.exportSQL": "SQLエクスポート",
   "db.exportStructure": "構造のみエクスポート",
+  "db.exportData": "データのみエクスポート",
   "db.exportStructureData": "構造とデータをエクスポート",
   "db.exportDone": "{name} をエクスポートしました",
   "config.changeDir": "ディレクトリを変更",

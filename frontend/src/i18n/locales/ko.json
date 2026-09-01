@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "영향 받은 행(합계)",
   "db.exportSQL": "SQL 내보내기",
   "db.exportStructure": "구조만 내보내기",
+  "db.exportData": "데이터만 내보내기",
   "db.exportStructureData": "구조와 데이터 내보내기",
   "db.exportDone": "{name} 내보냄",
   "config.changeDir": "디렉터리 변경",

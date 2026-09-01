@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "Всего затронуто строк",
   "db.exportSQL": "Экспорт SQL",
   "db.exportStructure": "Экспорт только структуру",
+  "db.exportData": "Экспорт только данные",
   "db.exportStructureData": "Экспорт структуру и данные",
   "db.exportDone": "{name} экспортировано",
   "config.changeDir": "Изменить каталог",
