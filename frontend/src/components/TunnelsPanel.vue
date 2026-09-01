@@ -14,7 +14,7 @@
     </div>
 
     <!-- Flat list (grouping lives in the Settings page's data model only;
-         the sidebar shows every tunnel in sortOrder, issue #736) -->
+         the sidebar shows every tunnel in sortOrder) -->
     <div class="tn-list">
       <div
         v-for="tn in visibleTunnels"

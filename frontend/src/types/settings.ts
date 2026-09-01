@@ -219,18 +219,18 @@ export interface AppSettings {
   // Which side of the tab the close (X) button sits on.
   tabCloseButton: 'left' | 'right'
   // Which connection-sidebar tab icons are visible, keyed by view id.
-  // Missing keys fall back to SIDEBAR_TAB_DEFAULTS (issue #736).
+  // Missing keys fall back to SIDEBAR_TAB_DEFAULTS.
   sidebarTabs: Record<string, boolean>
 }
 
 // Default visibility per sidebar view. "connections" is the primary view and
 // is always shown (never hidden by either the settings card or the tab-strip
-// context menu); tunnels ships hidden by default (issue #736).
+// context menu); every tab ships visible by default.
 export const SIDEBAR_TAB_DEFAULTS: Record<string, boolean> = {
   connections: true,
   files: true,
   monitor: true,
-  tunnels: false,
+  tunnels: true,
   quickCommands: true,
   history: true,
   personalization: true,
