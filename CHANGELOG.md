@@ -29,6 +29,7 @@
 - Tunnel management moved into the Settings page.
 - Monitor: collapsible per-core / per-NIC / per-disk detail lists and a process kill button in the monitor tab; disk and network statistics are now more accurate (works on hosts without `ip` / `lsblk -j`, e.g. CentOS 7).
 - Terminal: configurable middle-click action, Ctrl/Cmd+right-click always opens the context menu, and font zoom via shortcuts or Ctrl/Cmd+wheel.
+- Terminal: text highlighting now follows MobaXterm's simplified scheme (issue #725) — IP addresses are magenta (the classic MobaXterm "pink IP", first octet 1–254), and error / success / warning / info keywords use MobaXterm's curated word lists with red / green / yellow / cyan colors; URLs are underlined. Arbitrary numbers are no longer highlighted; paths, timestamps, quoted strings and braces remain highlighted. Colors still follow the terminal theme palette.
 - Quick commands: remark field and a larger edit dialog.
 - Connection: "Connect Only" opens a session without saving it; new-connection forms prefill from the search box.
 - SSH: new "keyText" inline private-key auth mode — paste or import the PEM private-key text directly (beside password and key-file), encrypted at rest and portable across machines.

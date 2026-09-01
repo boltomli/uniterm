@@ -406,7 +406,7 @@
   "settings.testSuccess": "接続成功",
   "settings.testFailed": "接続失敗",
   "settings.highlight": "テキストハイライト",
-  "settings.highlightDesc": "タイムスタンプ、IP、キーワード、文字列などをハイライト",
+  "settings.highlightDesc": "ターミナル出力の IP、エラー、警告、キーワードなどをハイライト（MobaXterm スタイル）",
   "settings.showLineNumbers": "行番号を表示",
   "settings.showLineNumbersDesc": "ターミナルの左端に行番号欄を表示します。折り返しの続き行は空欄になります。",
   "settings.showTimestamps": "時間を表示",

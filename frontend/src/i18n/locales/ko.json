@@ -406,7 +406,7 @@
   "settings.testSuccess": "연결 성공",
   "settings.testFailed": "연결 실패",
   "settings.highlight": "텍스트 강조",
-  "settings.highlightDesc": "타임스탬프, IP, 키워드, 문자열 등을 강조 표시",
+  "settings.highlightDesc": "터미널 출력의 IP, 오류, 경고, 키워드 등을 강조 표시 (MobaXterm 스타일)",
   "settings.showLineNumbers": "줄 번호 표시",
   "settings.showLineNumbersDesc": "터미널 왼쪽 가장자리에 줄 번호 칸을 표시합니다. 자동 줄바꿈된 연속 줄은 비워 둡니다.",
   "settings.showTimestamps": "시간 표시",

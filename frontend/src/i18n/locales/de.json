@@ -406,7 +406,7 @@
   "settings.testSuccess": "Verbindung erfolgreich",
   "settings.testFailed": "Verbindung fehlgeschlagen",
   "settings.highlight": "Texthervorhebung",
-  "settings.highlightDesc": "Zeitstempel, IPs, Schlüsselwörter, Strings usw. hervorheben",
+  "settings.highlightDesc": "IPs, Fehler, Warnungen und Schlüsselwörter in der Terminalausgabe hervorheben (MobaXterm-Stil)",
   "settings.showLineNumbers": "Zeilennummern anzeigen",
   "settings.showLineNumbersDesc": "Zeigt eine Zeilennummern-Spalte am linken Rand des Terminals an. Umbruch-Zeilen bleiben leer.",
   "settings.showTimestamps": "Zeitstempel anzeigen",

@@ -31,38 +31,54 @@ function segmentText(text: string): { text: string; isCSI: boolean }[] {
 }
 
 // ── Color palette ──
-// Use ANSI standard SGR codes (30-37 / 90-97) instead of 256-color palette
-// indices so that highlight colors follow the terminal theme's ANSI color
-// definitions and always match the background.
-//
-// Standard: 30=black 31=red 32=green 33=yellow 34=blue 35=magenta 36=cyan 37=white
-// Bright:   90=brightBlack 91=brightRed 92=brightGreen 93=brightYellow
-//           94=brightBlue 95=brightMagenta 96=brightCyan 97=brightWhite
+// ANSI SGR codes (30-37 / 90-97) so highlight colors follow the terminal
+// theme's palette.
 const C = {
-  url:       '\x1b[4;34m',   // blue + underline
-  ip:        '\x1b[32m',     // green
-  path:      '\x1b[35m',     // magenta
-  datetime:  '\x1b[94m',     // bright blue
-  string:    '\x1b[33m',     // yellow
-  error:     '\x1b[31m',     // red
-  warning:   '\x1b[93m',     // bright yellow
-  info:      '\x1b[36m',     // cyan
-  brace:     '\x1b[95m',     // bright magenta
-  number:    '\x1b[96m',     // bright cyan
+  url:      '\x1b[4;34m',
+  host:     '\x1b[35m',
+  path:     '\x1b[35m',
+  datetime: '\x1b[94m',
+  string:   '\x1b[33m',
+  success:  '\x1b[32m',
+  error:    '\x1b[31m',
+  warning:  '\x1b[33m',
+  info:     '\x1b[36m',
+  brace:    '\x1b[95m',
 } as const
 
-// Patterns grouped by color type, ordered longest-first
+// Group 1, when present, is a consumed left word guard that is NOT part of
+// the highlighted span (highlightPlainSegment trims m[1]). Right guards are
+// zero-width lookaheads. No lookbehind anywhere — unsupported by the
+// JavaScriptCore in macOS ≤12.3 WebView, where this module fails to parse.
 const PATTERNS: { sgr: string; regexes: RegExp[] }[] = [
-  { sgr: C.url,     regexes: [/https?:\/\/[^\s\x1b]+/gi] },
-  { sgr: C.ip,      regexes: [/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b/g] },
-  // NOTE: path/`~/` must not use a lookbehind ((?<=…)) — it is a parse-time
-  // feature unsupported by the JavaScriptCore in macOS ≤12.3 (Safari 15.4
-  // WebView), where the whole module fails to parse and the terminal shows
-  // a black screen. Anchor the start with a consuming (^|\s) group instead.
+  { sgr: C.url,     regexes: [
+    /https?:\/\/[A-Za-z0-9_.&?=%~#{}()@+-]+(?::?[A-Za-z0-9_./&?=%~#{}()@+-]+)?/gi,
+  ]},
+  { sgr: C.host,    regexes: [
+    // IPv4 (first octet 1-254) and IPv6 (full and ::-compressed forms)
+    /(^|[^0-9a-z_&-])(localhost|(?:1[0-9][0-9]|2[0-4][0-9]|25[0-4]|[1-9][0-9]|[1-9])\.\d+\.\d+\.\d+|null|none)(?![0-9a-z_-])/gi,
+    /(^|[^0-9a-z_&-])((?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}|(?:[a-f0-9]{1,4}:){1,7}:|(?:[a-f0-9]{1,4}:){1,6}:[a-f0-9]{1,4}|(?:[a-f0-9]{1,4}:){1,5}(?::[a-f0-9]{1,4}){1,2}|(?:[a-f0-9]{1,4}:){1,4}(?::[a-f0-9]{1,4}){1,3}|(?:[a-f0-9]{1,4}:){1,3}(?::[a-f0-9]{1,4}){1,4}|(?:[a-f0-9]{1,4}:){1,2}(?::[a-f0-9]{1,4}){1,5}|[a-f0-9]{1,4}:(?::[a-f0-9]{1,4}){1,6}|:(?::[a-f0-9]{1,4}){1,7})(?![0-9a-f:])/gi,
+  ]},
+  { sgr: C.error,   regexes: [
+    // "<adjective> <noun>" phrases: bad address, invalid argument, …
+    /(^|[^a-z_&-])((?:bad|wrong|incorrect|improper|invalid|unsupported)(?: file| memory)? (?:descriptor|alloc(?:ation)?|addr(?:ess)?|owner(?:ship)?|arg(?:ument)?|param(?:eter)?|setting|length|filename))(?![a-z_-])/gi,
+    // denied, failed, segfault, no X found, …
+    /(^|[^a-z_&-])((?:operation |connection |authentication |access |permission )?(?:denied|disallowed|not allowed|refused|problem|failed|failure|not permitted)|not properly|improperly|no [a-z]+(?: [a-z]+)? found|invalid|unsupported|not supported|seg(?:mentation )?fault|corrupt(?:ion|ed)?|overflow|underrun|not ok|unimplemented|unsuccessfull?|not implemented|permerrors?|errors?|crash(?:ed)?|core dump|\(ee\)|\(ni\))(?![a-z_-])/gi,
+    // falsy output values ("=> no", "status: false")
+    /([=>"':.,;({\[] *)(?:false|no|ko)(?=[\]=>"':.,;)} ]|$)/gi,
+  ]},
+  { sgr: C.success, regexes: [
+    /(^|[^a-z_&-])(accepted|allowed|enabled|connected|successfully|successful|succeeded|success)(?![a-z_-])/gi,
+  ]},
+  { sgr: C.warning, regexes: [
+    /(^|[^a-z_&-])(\[-w[a-z-]+\]|caught signal [0-9]+|cannot|not responding|(?:connection (?:to (?:remote host|[a-z0-9.]+) )?)?(?:closed|terminated|stopped)|exited|no more [a-z]+ available|unexpected|(?:command |binary |file )?not found|o{2,}ps|out of (?:space|memory)|low (?:memory|disk)|unknown|disabled|disconnect(?:ed|ion)?|deprecated|refused|warnings?|\(ww\)|\(\?\?\)|could not|unable to)(?![a-z_-])/gi,
+  ]},
+  { sgr: C.info,    regexes: [
+    /(^|[^a-z_&-])(last (?:failed )?login:|launching|checking|loading|creating|building|important|booting|starting|informational|informations?|info|notice|note|\(ii\)|\(\!\!\))(?![a-z_-])/gi,
+  ]},
   // Character class includes `+`, `~`, `@` so paths like
-  // `/usr/local/gcc-11.5.0/bin/g++` or `/tmp/cache@1.tgz` are recognised
-  // whole (issue #651), not truncated at the first special symbol.
-  { sgr: C.path,    regexes: [/(?:^|\s)(?:\/|~\/)[\w.+~@/-]+(?=[\s:;"')\]}]|$)/g] },
+  // `/usr/local/gcc-11.5.0/bin/g++` are recognised whole.
+  { sgr: C.path,    regexes: [/(^|\s)(?:\/|~\/)[\w.+~@/-]+(?=[\s:;"')\]}]|$)/g] },
   { sgr: C.datetime, regexes: [
     /\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?Z?\b/g,
     /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\b/g,
@@ -70,11 +86,7 @@ const PATTERNS: { sgr: string; regexes: RegExp[] }[] = [
     /\b\d{2}:\d{2}:\d{2}\b/g,
   ]},
   { sgr: C.string,  regexes: [/"(?:[^"\\]|\\.){2,}"|'(?:[^'\\]|\\.){2,}'/g] },
-  { sgr: C.error,   regexes: [/\b(?:ERROR|FAIL(?:ED|URE)?|CRITICAL|FATAL)\b/g] },
-  { sgr: C.warning, regexes: [/\bWARN(?:ING)?\b/g] },
-  { sgr: C.info,    regexes: [/\b(?:INFO|SUCCESS|OK)\b/g] },
   { sgr: C.brace,   regexes: [/[{}()\[\]|*=<>]/g] },
-  { sgr: C.number,  regexes: [/\d+/g] },
 ]
 
 // Report how an SGR sequence affects the foreground color:
@@ -118,7 +130,8 @@ function highlightPlainSegment(text: string, opts: HighlightSegmentOpts = {}): s
       regex.lastIndex = 0
       let m: RegExpExecArray | null
       while ((m = regex.exec(text)) !== null) {
-        allMatches.push({ start: m.index, end: m.index + m[0].length, sgr })
+        const lead = m[1] ? m[1].length : 0  // skip the consumed left guard
+        allMatches.push({ start: m.index + lead, end: m.index + m[0].length, sgr })
         if (allMatches.length > 200) break
       }
       if (allMatches.length > 200) break
@@ -148,10 +161,8 @@ function highlightPlainText(text: string, opts: HighlightSegmentOpts = {}): stri
   const segments = segmentText(text)
   let result = ''
   // Track whether the upstream application already set a non-default
-  // foreground color (e.g. `ls` coloring a directory name blue). Our keyword
-  // highlighting must skip such spans — re-coloring digits/braces inside an
-  // already-colored token would fragment the app's own color (issue #587).
-  // Only text still in the default foreground gets styled by us.
+  // foreground color (e.g. `ls` coloring a directory name blue); such spans
+  // must not be re-colored. Only default-foreground text gets styled by us.
   let colored = false
   for (const seg of segments) {
     if (seg.isCSI) {
@@ -205,11 +216,9 @@ export function highlight(text: string): string {
           fenceChar = m[1][0] as '`' | '~'
           result += line
         } else if (INDENTED_CODE_LINE.test(line)) {
-          // Indented lines used to pass through entirely, which left 4-space
-          // indented command output (e.g. `ip a`) with no highlighting at all
-          // (issue #644). Brace/bracket colour still injects SGR noise that
-          // some TUI apps misinterpret, so keep skipping it here — but colour
-          // the remaining tokens (IP, number, path, …) normally.
+          // Brace/bracket colour injects SGR noise that some TUI apps
+          // misinterpret, so keep skipping it here — but colour the
+          // remaining tokens normally.
           result += highlightPlainText(line, { skipBrace: true })
         } else {
           result += highlightPlainText(line)

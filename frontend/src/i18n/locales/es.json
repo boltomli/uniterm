@@ -406,7 +406,7 @@
   "settings.testSuccess": "Conexión exitosa",
   "settings.testFailed": "Conexión fallida",
   "settings.highlight": "Resaltado de Texto",
-  "settings.highlightDesc": "Resaltar marcas de tiempo, IPs, palabras clave, cadenas, etc.",
+  "settings.highlightDesc": "Resaltar IPs, errores, advertencias y palabras clave en la salida del terminal (estilo MobaXterm)",
   "settings.showLineNumbers": "Mostrar números de línea",
   "settings.showLineNumbersDesc": "Muestra una columna con números de línea en el borde izquierdo del terminal. Las líneas envueltas quedan en blanco.",
   "settings.showTimestamps": "Mostrar marcas de tiempo",
