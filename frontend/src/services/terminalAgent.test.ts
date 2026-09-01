@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Use vi.hoisted to allow factory references to variables defined at top level
 const { mockSessionWrite } = vi.hoisted(() => {
@@ -16,20 +16,47 @@ vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   SessionWrite: mockSessionWrite,
 }))
 
-// ---- mock terminal manager (prompt-line capture) ----
+// ---- mock terminal manager (prompt-line capture + screen-buffer reads) ----
+// The fake terminal exposes a scripted screen buffer: `fakeScreen` models the
+// buffer rows xterm.js would hold after parsing the PTY stream. Tests set it
+// to the *final* screen state while feeding raw (possibly redraw-heavy) data
+// through the session:data events.
 const PROMPT = '[root@node140 ~]#'
-const mockGetManagedTerminal = vi.fn(() => ({
-  terminal: {
+
+let fakeScreen: string[] = [PROMPT + ' ']
+let fakeBufferType: 'normal' | 'alternate' = 'normal'
+
+function setFakeScreen(lines: string[], type: 'normal' | 'alternate' = 'normal') {
+  fakeScreen = lines
+  fakeBufferType = type
+}
+
+function makeFakeTerminal() {
+  const screen = fakeScreen
+  const type = fakeBufferType
+  return {
+    rows: screen.length,
     buffer: {
       active: {
+        type,
         baseY: 0,
         cursorY: 0,
-        getLine: (_n: number) => ({
-          translateToString: (_trim?: boolean) => PROMPT,
-        }),
+        length: screen.length,
+        getLine: (n: number) => {
+          if (n < 0 || n >= screen.length) return undefined
+          return {
+            translateToString: (trim?: boolean) =>
+              trim ? screen[n].replace(/\s+$/, '') : screen[n],
+          }
+        },
       },
     },
-  },
+  }
+}
+
+const mockGetManagedTerminal = vi.fn(() => ({
+  terminal: makeFakeTerminal(),
+  lineOffset: 0,
 }))
 vi.mock('../services/terminalManager', () => ({
   getManagedTerminal: (...args: any[]) => mockGetManagedTerminal(...(args as [])),
@@ -72,7 +99,7 @@ vi.mock('../stores/sessionStore', () => ({
 }))
 
 // ---- import after mocks ----
-import { watchOutput, executeCommand, truncateOutput } from './terminalAgent'
+import { watchOutput, executeCommand, truncateOutput, startCommand, sendTerminalKey } from './terminalAgent'
 import type { ExecuteResult, WatchResult } from './terminalAgent'
 // ---- helpers ----
 const MOCK_TIMESTAMP = 1700000000000
@@ -173,6 +200,7 @@ describe('ExecuteResult interface', () => {
 describe('watchOutput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setFakeScreen([PROMPT + ' '])
   })
 
   it('returns promise and cleanup', () => {
@@ -188,7 +216,10 @@ describe('watchOutput', () => {
       return () => { }
     })
 
-    const { promise } = watchOutput('s1', PROMPT, 5000)
+    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
+
+    // Final screen state after the command: echoed command, output, new prompt.
+    setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
 
     // Echoed command line, then output, then the prompt returns.
     capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
@@ -201,6 +232,48 @@ describe('watchOutput', () => {
     expect(result.output).not.toMatch(/\[root@node140 ~\]#\s*$/)
   })
 
+  it('captures the final screen state, not raw ConPTY redraw frames (issue 624)', async () => {
+    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+
+    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
+
+    // What the user actually sees on screen after the command completes.
+    setFakeScreen([
+      `${PROMPT} reg query X`,
+      'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server',
+      `${PROMPT} `,
+    ])
+
+    // Windows Server 2016 ConPTY redraws a wrapping line by moving the cursor
+    // left (ESC[nD) and re-emitting progressively shorter tails — the raw
+    // stream is full of intermediate redraw frames the screen never shows.
+    const redrawFragments = [
+      'Server\\WinStation\\SYSTEM\\CurrentControlSet\\Control\\Terminal',
+      'Server\\WinStationSYSTEM\\CurrentControlSet\\Control\\Terminal',
+      'Server\\WinStationYSTEM\\CurrentControlSet\\Control\\Terminal',
+      'Server\\WinStationM\\CurrentControlSet\\Control\\Terminal',
+      'Server\\WinStationtControlSet\\Control\\Terminal',
+    ].join('\r\n')
+    capturedCallback!({
+      data: fakeData(
+        's1',
+        `${PROMPT} reg query X\r\n${redrawFragments}\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\r\n${PROMPT} `
+      ),
+    })
+
+    const result: WatchResult = await promise
+    expect(result.timedOut).toBe(false)
+    expect(result.output).toBe(
+      `${PROMPT} reg query X\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server`
+    )
+    // None of the redraw fragments may leak into the AI-visible output.
+    expect(result.output).not.toContain('WinStation')
+  })
+
   it('resolves via idle heuristic when prompt differs (e.g. dynamic prompt)', async () => {
     vi.useFakeTimers()
     let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
@@ -211,8 +284,10 @@ describe('watchOutput', () => {
 
     const { promise } = watchOutput('s1', PROMPT, 5000)
 
+    setFakeScreen([`${PROMPT} echo hi`, 'hi', '[user@host ~]$ '])
     capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n[user@host ~]$ `) })
     vi.advanceTimersByTime(800)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: WatchResult = await promise
     expect(result.timedOut).toBe(false)
@@ -233,6 +308,7 @@ describe('watchOutput', () => {
     // Only the prompt so far (no echoed command line before it) → keep waiting.
     capturedCallback!({ data: fakeData('s1', `${PROMPT} `) })
     vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: WatchResult = await promise
     expect(result.timedOut).toBe(true)
@@ -250,8 +326,10 @@ describe('watchOutput', () => {
     const { promise } = watchOutput('s1', '', 1000)
 
     // Even output that looks like a prompt must not trigger detection.
+    setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
     capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
     vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: WatchResult = await promise
     expect(result.timedOut).toBe(true)
@@ -269,8 +347,10 @@ describe('watchOutput', () => {
 
     const { promise } = watchOutput('s1', PROMPT, 1000)
 
+    setFakeScreen(['partial output'])
     capturedCallback!({ data: fakeData('s1', 'partial output') })
     vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: WatchResult = await promise
     expect(result.timedOut).toBe(true)
@@ -286,10 +366,12 @@ describe('watchOutput', () => {
       return () => { }
     })
 
+    setFakeScreen([''])
     const { promise } = watchOutput('s1', PROMPT, 1000)
 
     capturedCallback!({ data: fakeData('s2', 'wrong session data') })
     vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: WatchResult = await promise
     expect(result.output).toBe('')
@@ -327,6 +409,13 @@ describe('executeCommand', () => {
     vi.mocked(mockGetRemoteOS).mockReturnValue(undefined)
     mockActiveTab.type = 'terminal'
     mockActiveTab.panelId = 'panel-1'
+    setFakeScreen([PROMPT + ' '])
+  })
+
+  // A failing assertion inside a fake-timer test must not leak fake timers
+  // into the next test (settle timers would never fire and it would hang).
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('throws when no active session', async () => {
@@ -359,6 +448,7 @@ describe('executeCommand', () => {
     expect(capturedCallback).not.toBeNull()
 
     // Prompt reappears after the echoed command + output → completion.
+    setFakeScreen([`${PROMPT} echo hello`, 'hello', `${PROMPT} `])
     capturedCallback!({ data: fakeData('test-session-id', `${PROMPT} echo hello\nhello\n${PROMPT} `) })
 
     const result = await cmdPromise
@@ -406,8 +496,13 @@ describe('executeCommand', () => {
     await Promise.resolve()
     expect(capturedCallback).not.toBeNull()
 
+    // Command still running at timeout: screen holds the output lines so far
+    // (no trailing prompt row yet). Five lines so head=2/tail=2 keeps
+    // line1+line2 and line4+line5.
+    setFakeScreen(['line1', 'line2', 'line3', 'line4', 'line5'])
     capturedCallback!({ data: fakeData('test-session-id', 'some output line1\nline2\nline3\nline4\nline5') })
     vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
 
     const result: ExecuteResult = await cmdPromise
     expect(result.exitCode).toBe(-1)
@@ -440,6 +535,8 @@ describe('executeCommand', () => {
     await Promise.resolve()
     expect(capturedCallback).not.toBeNull()
 
+    // Echoed command + long output + returning prompt on the final screen.
+    setFakeScreen([`${PROMPT} some-cmd`, ...lines, `${PROMPT} `])
     // Echoed command + long output + returning prompt triggers completion.
     capturedCallback!({ data: fakeData('test-session-id', `${PROMPT} some-cmd\n` + output + `\n${PROMPT} `) })
 
@@ -460,5 +557,81 @@ describe('executeCommand', () => {
     expect(result.output).not.toMatch(/\n\[root@node140 ~\]#\s*$/)
 
     restore()
+  })
+})
+
+describe('startCommand', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(Events.On).mockReturnValue(() => {})
+    setFakeScreen([PROMPT + ' '])
+  })
+
+  it('returns the screen content collected during the window', async () => {
+    vi.useFakeTimers()
+
+    const p = startCommand('tail -f app.log')
+
+    // startCommand awaits SessionWrite before subscribing/scheduling — flush.
+    await Promise.resolve()
+
+    // Output streams in during the 3s collect window and lands on screen.
+    setFakeScreen([`${PROMPT} tail -f app.log`, 'log line A', 'log line B'])
+    vi.advanceTimersByTime(3000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
+
+    const result = await p
+    expect(result.started).toBe(true)
+    expect(result.output).toContain('log line A')
+    expect(result.output).toContain('log line B')
+    vi.useRealTimers()
+  })
+
+  it('returns the final screen state even when the stream carries redraw frames', async () => {
+    vi.useFakeTimers()
+    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+
+    const p = startCommand('cmd-with-redraws')
+    await Promise.resolve() // flush the SessionWrite await inside startCommand
+
+    setFakeScreen([`${PROMPT} cmd-with-redraws`, 'final state only'])
+    capturedCallback!({
+      data: fakeData('test-session-id', 'frame1\rframe2\rframe3\r\nfinal state only'),
+    })
+    vi.advanceTimersByTime(3000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
+
+    const result = await p
+    expect(result.output).toBe(`${PROMPT} cmd-with-redraws\nfinal state only`)
+    expect(result.output).not.toContain('frame1')
+    vi.useRealTimers()
+  })
+})
+
+describe('sendTerminalKey', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(Events.On).mockReturnValue(() => {})
+    setFakeScreen([PROMPT + ' '])
+  })
+
+  it('captures the screen response after ctrl_c', async () => {
+    vi.useFakeTimers()
+
+    const p = sendTerminalKey(undefined, 'ctrl_c', true)
+    await Promise.resolve() // flush the SessionWrite await inside sendTerminalKey
+
+    // The interrupted program stops and the shell prompt returns.
+    setFakeScreen([`${PROMPT} ^C`, `${PROMPT} `])
+    vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
+
+    const result = await p
+    expect(result.output).toContain('^C')
+    vi.useRealTimers()
   })
 })

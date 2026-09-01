@@ -72,6 +72,95 @@ function toDisplayLines(clean: string): string[] {
   })
 }
 
+// Short wait before reading the xterm screen buffer after completion is
+// detected. xterm.js parses PTY writes asynchronously, so a chunk that is
+// queued when the detector fires may not be reflected in the buffer yet.
+const SCREEN_SETTLE_MS = 100
+
+// Prompt + absolute buffer-row snapshot taken right before a command is sent.
+// `startRow` is the row the command echo starts on, expressed as an absolute
+// row (buffer row + accumulated scrollback-trim offset) so it stays valid
+// even if rows scroll off the top of the buffer while the command runs.
+export interface PromptSnapshot {
+  promptLine: string
+  startRow: number
+}
+
+// Read the current prompt line and the absolute row it sits on. Called right
+// before a command is sent, when the cursor sits on the (freshly drawn)
+// prompt with no input yet, so the cursor line's text is exactly the prompt
+// string. ANSI sequences are stripped so the captured prompt matches the
+// stripped output used in watchOutput. Returns promptLine '' and startRow -1
+// when unavailable, which disables exact prompt detection and screen-buffer
+// capture for that command (idle heuristic still applies).
+function capturePromptSnapshot(sessionId: string): PromptSnapshot {
+  const managed = getManagedTerminal(sessionId)
+  const terminal = managed?.terminal
+  if (!terminal) return { promptLine: '', startRow: -1 }
+  const buffer = terminal.buffer.active
+  const line = buffer.getLine(buffer.baseY + buffer.cursorY)
+  const promptLine = line ? stripAnsi(line.translateToString(true)).trimEnd() : ''
+  const startRow = (managed.lineOffset || 0) + buffer.baseY + buffer.cursorY
+  return { promptLine, startRow }
+}
+
+// Read the visible command output from the xterm screen buffer, starting at
+// the absolute row captured before the command ran, down to the last
+// non-blank row. Unlike reconstructing text from the raw PTY stream, this
+// reflects what the user actually sees: ConPTY redraws (cursor-left re-emits
+// on old Windows Server builds, \r overwrites, erase sequences) have already
+// been resolved by the terminal emulator.
+//
+// Returns null when no terminal/buffer is available so callers can fall back
+// to raw-stream reconstruction.
+function readScreenFromRow(sessionId: string, absStartRow: number): string | null {
+  const managed = getManagedTerminal(sessionId)
+  const terminal = managed?.terminal
+  if (!terminal || absStartRow < 0) return null
+  const buffer = terminal.buffer.active
+  let first: number
+  let last: number
+  if (buffer.type === 'alternate') {
+    // Full-screen program (vim, top, ...): the viewport is the whole picture
+    // and absolute rows don't apply across the buffer switch.
+    first = buffer.baseY
+    last = buffer.length - 1
+  } else {
+    // Compensate for scrollback rows trimmed since the snapshot was taken.
+    first = Math.max(0, absStartRow - (managed.lineOffset || 0))
+    last = buffer.length - 1
+    while (last >= first && isRowBlank(buffer, last)) last--
+    if (last < first) return ''
+  }
+  const lines: string[] = []
+  for (let i = first; i <= last; i++) {
+    const line = buffer.getLine(i)
+    if (line) lines.push(line.translateToString(true))
+  }
+  return lines.join('\n')
+}
+
+function isRowBlank(
+  buffer: { getLine(n: number): { translateToString(trim?: boolean): string } | undefined },
+  row: number
+): boolean {
+  const line = buffer.getLine(row)
+  return !line || line.translateToString().trim() === ''
+}
+
+// Turn captured screen text into the output handed to the AI. On success the
+// trailing blank rows and the final prompt line are dropped (completion was
+// reported by the prompt reappearing — the prompt is terminal chrome, not
+// command output); on timeout everything is kept.
+function extractScreenOutput(screen: string, timedOut: boolean): string {
+  const lines = screen.split('\n')
+  if (!timedOut) {
+    while (lines.length > 0 && lines[lines.length - 1].trimEnd() === '') lines.pop()
+    if (lines.length > 0) lines.pop()
+  }
+  return lines.join('\n').trim()
+}
+
 // Watch session output and resolve when the command finishes.
 //
 // Completion is detected by the shell prompt reappearing: `promptLine` is the
@@ -96,13 +185,15 @@ export function watchOutput(
   sessionId: string,
   promptLine: string,
   timeoutMs: number,
-  shouldCancel?: () => boolean
+  shouldCancel?: () => boolean,
+  startRow: number = -1
 ): { promise: Promise<WatchResult>; cleanup: () => void } {
   const IDLE_MS = 800
   const CANCEL_POLL_MS = 150
   let timeoutId: ReturnType<typeof setTimeout>
   let idleTimeoutId: ReturnType<typeof setTimeout> | null = null
   let cancelPollId: ReturnType<typeof setTimeout> | null = null
+  let settleId: ReturnType<typeof setTimeout> | null = null
   let unsubscribe: (() => void) | null = null
   let resolved = false
   let output = ''
@@ -116,6 +207,10 @@ export function watchOutput(
     if (cancelPollId) {
       clearTimeout(cancelPollId)
       cancelPollId = null
+    }
+    if (settleId) {
+      clearTimeout(settleId)
+      settleId = null
     }
     unsubscribe?.()
     resolved = true
@@ -143,18 +238,33 @@ export function watchOutput(
         resolve({ output: '', timedOut: false, cancelled: true })
         return
       }
-      const lines = toDisplayLines(stripAnsi(output))
-      if (!timedOut) {
-        // The command finished when the shell prompt reappeared at the bottom.
-        // That prompt line belongs to the terminal, not the command output —
-        // completion is now reported explicitly by the caller's end-message
-        // (see executeCommand in agent.ts), so drop the prompt (and any
-        // trailing blanks) before returning the output to the AI.
-        while (lines.length > 0 && lines[lines.length - 1].trimEnd() === '') lines.pop()
-        if (lines.length > 0) lines.pop()
-      }
-      const normalized = lines.join('\n').trim()
-      resolve({ output: normalized, timedOut })
+      // Give xterm.js a moment to finish parsing writes that were queued when
+      // the detector fired, then read what the screen actually shows instead
+      // of reconstructing text from the raw stream — the raw stream carries
+      // every intermediate ConPTY redraw frame (cursor-left re-emits on old
+      // Windows Server builds, progress-bar \r overwrites, ...) that the
+      // screen never displays. Falls back to the raw stream when no terminal
+      // buffer is available.
+      settleId = setTimeout(() => {
+        settleId = null
+        const screen = readScreenFromRow(sessionId, startRow)
+        if (screen !== null) {
+          resolve({ output: extractScreenOutput(screen, timedOut), timedOut })
+          return
+        }
+        const lines = toDisplayLines(stripAnsi(output))
+        if (!timedOut) {
+          // The command finished when the shell prompt reappeared at the bottom.
+          // That prompt line belongs to the terminal, not the command output —
+          // completion is now reported explicitly by the caller's end-message
+          // (see executeCommand in agent.ts), so drop the prompt (and any
+          // trailing blanks) before returning the output to the AI.
+          while (lines.length > 0 && lines[lines.length - 1].trimEnd() === '') lines.pop()
+          if (lines.length > 0) lines.pop()
+        }
+        const normalized = lines.join('\n').trim()
+        resolve({ output: normalized, timedOut })
+      }, SCREEN_SETTLE_MS)
     }
 
     const checkIdle = () => {
@@ -313,22 +423,6 @@ function getShellNewline(shellPath?: string, remoteOS?: string): string {
   }
 }
 
-// Read the current prompt line from the terminal buffer. Called right before a
-// command is sent, when the cursor sits on the (freshly drawn) prompt with no
-// input yet, so the cursor line's text is exactly the prompt string. ANSI
-// sequences are stripped so the captured prompt matches the stripped output
-// used in watchOutput. Returns '' when unavailable, which disables exact prompt
-// detection for that command (idle heuristic still applies).
-function capturePromptLine(sessionId: string): string {
-  const managed = getManagedTerminal(sessionId)
-  const terminal = managed?.terminal
-  if (!terminal) return ''
-  const buffer = terminal.buffer.active
-  const line = buffer.getLine(buffer.baseY + buffer.cursorY)
-  if (!line) return ''
-  return stripAnsi(line.translateToString(true)).trimEnd()
-}
-
 export async function executeCommand(
   command: string,
   timeoutMs: number = 60000,
@@ -338,13 +432,15 @@ export async function executeCommand(
   panelTitle?: string
 ): Promise<ExecuteResult> {
   const { sessionId, shellPath, remoteOS } = resolveActiveSession(panelTitle)
-  const promptLine = capturePromptLine(sessionId)
+  // Snapshot the prompt + its buffer row BEFORE the command is written, so
+  // watchOutput knows where the command output starts on screen.
+  const { promptLine, startRow } = capturePromptSnapshot(sessionId)
   const fullCommand = buildCommand(command, shellPath, remoteOS)
   const newline = getShellNewline(shellPath, remoteOS)
 
   await SessionWrite(sessionId, fullCommand + newline)
 
-  const { promise } = watchOutput(sessionId, promptLine, timeoutMs, shouldCancel)
+  const { promise } = watchOutput(sessionId, promptLine, timeoutMs, shouldCancel, startRow)
   const result = await promise
 
   if (result.cancelled) {
@@ -378,6 +474,9 @@ export interface StartResult {
 
 export async function startCommand(command: string, panelTitle?: string): Promise<StartResult> {
   const { sessionId, shellPath, remoteOS } = resolveActiveSession(panelTitle)
+  // Snapshot the prompt row BEFORE the command is written so the screen read
+  // below starts where the command echo begins.
+  const { startRow } = capturePromptSnapshot(sessionId)
   const newline = getShellNewline(shellPath, remoteOS)
 
   await SessionWrite(sessionId, command + newline)
@@ -385,15 +484,18 @@ export async function startCommand(command: string, panelTitle?: string): Promis
   // Collect output for 3 seconds, then return
   return new Promise((resolve) => {
     let output = ''
-    const unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data; 
+    const unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
       if (payload.id !== sessionId) return
       output += payload.data
      })
 
     setTimeout(() => {
       unsubscribe()
+      // Prefer the screen buffer (redraw-resolved) over the raw stream; the
+      // 3s window is far past the parse settle time, so read directly.
+      const screen = readScreenFromRow(sessionId, startRow)
       resolve({
-        output: stripAnsi(output).trim(),
+        output: (screen !== null ? screen : stripAnsi(output)).trim(),
         started: true,
       })
     }, 3000)
@@ -462,9 +564,9 @@ export async function collectOutput(
   panelTitle?: string
 ): Promise<CollectResult> {
   const { sessionId } = resolveActiveSession(panelTitle)
-  const promptLine = capturePromptLine(sessionId)
+  const { promptLine, startRow } = capturePromptSnapshot(sessionId)
 
-  const { promise } = watchOutput(sessionId, promptLine, timeoutMs, shouldCancel)
+  const { promise } = watchOutput(sessionId, promptLine, timeoutMs, shouldCancel, startRow)
   const result = await promise
 
   if (result.cancelled) {
@@ -489,6 +591,10 @@ export async function sendTerminalKey(
   panelTitle?: string
 ): Promise<SendKeyResult> {
   const { sessionId, shellPath, remoteOS } = resolveActiveSession(panelTitle)
+
+  // Snapshot the prompt row before writing so the ctrl_c / ctrl_d response
+  // below can be read off the screen buffer.
+  const { startRow } = capturePromptSnapshot(sessionId)
 
   let data: string
   if (control) {
@@ -519,13 +625,16 @@ export async function sendTerminalKey(
   if (control === 'ctrl_c' || control === 'ctrl_d') {
     return new Promise((resolve) => {
       let output = ''
-      const unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data; 
+      const unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
         if (payload.id !== sessionId) return
         output += payload.data
        })
       setTimeout(() => {
         unsubscribe()
-        resolve({ output: stripAnsi(output).trim() || '(input sent)' })
+        // Prefer the screen buffer (redraw-resolved) over the raw stream; the
+        // 1s window is past the parse settle time, so read directly.
+        const screen = readScreenFromRow(sessionId, startRow)
+        resolve({ output: (screen !== null ? screen : stripAnsi(output)).trim() || '(input sent)' })
       }, 1000)
     })
   }
