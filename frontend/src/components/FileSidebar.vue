@@ -154,7 +154,7 @@ const localStateStore = useLocalStateStore()
 const connecting = ref(false)
 const connectError = ref('')
 // Transfer panel: default height (px), adjustable by dragging its top edge.
-const transferHeight = ref(200)
+const transferHeight = ref(130)
 
 const cwd = ref('')
 const files = ref<FileItem[]>([])

@@ -628,7 +628,6 @@ function onDragStart(event: DragEvent, row: FileItem) {
 .name-info {
   display: flex;
   flex-direction: column;
-  line-height: 1.3;
 }
 .file-name {
   color: var(--text-primary);

@@ -95,7 +95,7 @@ function onResizeStart(e: MouseEvent) {
   const startH = el.offsetHeight
   const maxH = el.parentElement ? Math.max(el.parentElement.clientHeight - 60, 120) : 720
   function onMove(ev: MouseEvent) {
-    emit('update:height', Math.min(Math.max(startH + (startY - ev.clientY), 120), maxH))
+    emit('update:height', Math.min(Math.max(startH + (startY - ev.clientY), 100), maxH))
   }
   function onUp() {
     document.removeEventListener('mousemove', onMove)
@@ -111,7 +111,7 @@ function onResizeStart(e: MouseEvent) {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 120px;
+  min-height: 100px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   flex-shrink: 0;
