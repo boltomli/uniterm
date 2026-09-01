@@ -130,7 +130,7 @@ type AppSettings struct {
 	// history/personalization). "connections" is always shown in the UI and
 	// never hidden. Pointer + omitempty so settings.json written by older
 	// builds (which lack this field) still load; a nil map means "use the
-	// frontend defaults" (everything visible except tunnels — issue #736).
+	// frontend defaults" (everything visible).
 	SidebarTabs map[string]bool `json:"sidebarTabs,omitempty"`
 }
 

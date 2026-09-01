@@ -1559,7 +1559,7 @@ const tunnelDialogVisible = ref(false)
 const editingTunnelId = ref<string | undefined>(undefined)
 const togglingTunnelId = ref<string | undefined>(undefined)
 
-// ── Sidebar tab visibility (issue #736) ──
+// ── Sidebar tab visibility ──
 // Writable computed over AppSettings.sidebarTabs. "connections" never appears
 // in the select (no option, no tag) — it is forced on at the data level.
 const visibleSidebarTabs = computed<string[]>({

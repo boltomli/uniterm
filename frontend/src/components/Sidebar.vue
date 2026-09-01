@@ -548,7 +548,7 @@ watch(
   },
 )
 
-// ── Sidebar tab visibility (issue #736) ──
+// ── Sidebar tab visibility ──
 // Single source of truth is AppSettings.sidebarTabs (editable in Settings →
 // basic); right-clicking the tab strip opens the same toggles as a shortcut.
 // "connections" is the primary view and can never be hidden.
