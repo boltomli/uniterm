@@ -1259,6 +1259,7 @@
   "db.exportStructure": "Nur Struktur exportieren",
   "db.exportStructureData": "Struktur und Daten exportieren",
   "db.exportDone": "{name} exportiert",
+  "db.exportResults": "Ergebnisse exportieren",
   "config.changeDir": "Verzeichnis ändern",
   "config.changeDone": "Master-Passwort geändert",
   "config.changePassword": "Master-Passwort ändern",

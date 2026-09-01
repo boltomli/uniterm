@@ -1259,6 +1259,7 @@
   "db.exportStructure": "構造のみエクスポート",
   "db.exportStructureData": "構造とデータをエクスポート",
   "db.exportDone": "{name} をエクスポートしました",
+  "db.exportResults": "結果をエクスポート",
   "config.changeDir": "ディレクトリを変更",
   "config.changeDone": "マスターパスワードを変更しました",
   "config.changePassword": "マスターパスワードを変更",

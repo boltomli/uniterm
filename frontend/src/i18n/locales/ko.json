@@ -1259,6 +1259,7 @@
   "db.exportStructure": "구조만 내보내기",
   "db.exportStructureData": "구조와 데이터 내보내기",
   "db.exportDone": "{name} 내보냄",
+  "db.exportResults": "결과 내보내기",
   "config.changeDir": "디렉터리 변경",
   "config.changeDone": "마스터 비밀번호 변경됨",
   "config.changePassword": "마스터 비밀번호 변경",

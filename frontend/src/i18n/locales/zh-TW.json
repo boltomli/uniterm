@@ -1259,6 +1259,7 @@
   "db.exportStructure": "匯出（僅結構）",
   "db.exportStructureData": "匯出（結構+資料）",
   "db.exportDone": "已匯出 {name}",
+  "db.exportResults": "匯出結果",
   "config.changeDir": "更改目錄",
   "config.changeDone": "主密碼已修改",
   "config.changePassword": "修改主密碼",
