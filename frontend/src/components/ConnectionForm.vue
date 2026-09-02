@@ -272,7 +272,12 @@
               </el-form-item>
 
               <el-form-item v-else :label="t('conn.k8sConfigInline')">
-                <el-input v-model="form.k8sConfigInline" type="textarea" :rows="6" placeholder="apiVersion: v1..." />
+                <SyntaxEditor
+                  :model-value="form.k8sConfigInline ?? ''"
+                  lang="yaml"
+                  class="kubeconfig-editor"
+                  @update:model-value="form.k8sConfigInline = $event"
+                />
               </el-form-item>
 
               <el-form-item :label="t('conn.k8sContext')">
@@ -637,6 +642,7 @@ import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
 import { Plus, Trash2, ChevronDown, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, Terminal, Monitor, Database, DatabaseZap, Layers, DatabaseSearch, SquareTerminal, Zap, Laptop, Cable, FolderUp, HardDrive, Cloud, Globe, MonitorCloud, MonitorSmartphone, Boxes, ShipWheel, AppWindow, ArrowLeftRight, CircleCheck, CircleX } from '@lucide/vue'
 import { listContexts } from '../services/k8sClient'
+import SyntaxEditor from './SyntaxEditor.vue'
 import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
@@ -1583,6 +1589,11 @@ function onConnect() {
 </script>
 
 <style scoped>
+/* Inline kubeconfig YAML editor (replaces the former plain textarea). */
+.kubeconfig-editor {
+  height: 140px;
+  width: 100%;
+}
 /* Color the connection-test status icon (rendered via el-button's `icon` prop,
    so spacing matches the native loading spinner) by result. */
 .test-status-btn.test-success :deep(.el-icon) {

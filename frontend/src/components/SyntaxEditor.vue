@@ -1,9 +1,9 @@
 <template>
-  <div ref="hostRef" class="syntax-editor" :class="{ compact }" />
+  <div ref="hostRef" class="syntax-editor" :class="{ compact, 'theme-dark': isDark }" />
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -27,6 +27,7 @@ import { clike } from '@codemirror/legacy-modes/mode/clike'
 import { go } from '@codemirror/legacy-modes/mode/go'
 import { rust } from '@codemirror/legacy-modes/mode/rust'
 import { ruby } from '@codemirror/legacy-modes/mode/ruby'
+import { useSettingsStore } from '../stores/settingsStore'
 
 const props = defineProps<{
   modelValue: string
@@ -34,6 +35,7 @@ const props = defineProps<{
   compact?: boolean
   lang?: string
   wrap?: boolean
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +47,10 @@ const hostRef = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
 let applyingExternal = false
 let resizeObserver: ResizeObserver | null = null
+
+// Follow the app theme (dark/deep-blue → dark, light/system → resolved).
+const settingsStore = useSettingsStore()
+const isDark = computed(() => settingsStore.resolvedAppTheme === 'dark')
 
 function extOf(path: string): string {
   const base = path.replace(/\\/g, '/').split('/').pop() || ''
@@ -163,8 +169,12 @@ function buildExtensions(path: string) {
     history(),
     foldGutter(),
     bracketMatching(),
+    // Dark: One Dark tokens; light: defaultHighlightStyle (light-tuned) takes
+    // over as the active highlighter via the fallback chain.
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-    oneDark,
+    ...(isDark.value ? [oneDark] : []),
+    EditorState.readOnly.of(!!props.readonly),
+    EditorView.editable.of(!props.readonly),
     props.lang ? languageFor(props.lang) : languageExtension(path),
     keymap.of([
       {
@@ -252,7 +262,16 @@ watch(() => props.modelValue, (v) => {
   setDoc(v ?? '')
 })
 
-watch(() => [props.filePath, props.lang, props.wrap], async () => {
+watch(() => [props.filePath, props.lang, props.wrap, props.readonly], async () => {
+  const text = view?.state.doc.toString() ?? props.modelValue
+  await nextTick()
+  createEditor()
+  if (text !== props.modelValue) setDoc(text)
+})
+
+// Theme swap needs a full rebuild: oneDark vs defaultHighlightStyle are
+// different extension sets, and EditorState extensions are immutable.
+watch(isDark, async () => {
   const text = view?.state.doc.toString() ?? props.modelValue
   await nextTick()
   createEditor()
@@ -295,8 +314,14 @@ defineExpose({
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   overflow: hidden;
-  background: #282c34;
+  background: var(--bg-base);
+  color: var(--text-primary);
   box-sizing: border-box;
+}
+/* Keep the container background in sync with the active CodeMirror theme. */
+.syntax-editor.theme-dark {
+  background: #282c34;
+  color: #abb2bf;
 }
 .syntax-editor.compact {
   height: 100%;
