@@ -464,6 +464,7 @@
   "importExport.file": "Файл",
   "importExport.importPassword": "Пароль импорта",
   "importExport.chooseFile": "Выбрать файл...",
+  "importExport.dbeaverPathHint": "Оставьте пустым для автоопределения workspace DBeaver или выберите data-sources.json / папку",
   "importExport.importedCount": "Импортировано подключений: {count}",
   "importExport.exported": "Успешно экспортировано",
   "settings.sync": "Облачная синхронизация",

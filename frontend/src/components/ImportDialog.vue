@@ -14,12 +14,20 @@
           <el-option label="SecureCRT (.xml)" value="securecrt" />
           <el-option label="WindTerm (.sessions)" value="windterm" />
           <el-option label="Xshell (.xts)" value="xshell" />
+          <el-option label="DBeaver (workspace)" value="dbeaver" />
+          <el-option label="Navicat (.ncx)" value="navicat" />
         </el-select>
       </el-form-item>
-      <el-form-item v-if="format !== 'openssh'" :label="t('importExport.file')">
+      <el-form-item v-if="format !== 'openssh' && format !== 'dbeaver'" :label="t('importExport.file')">
         <div style="display:flex;gap:8px;width:100%">
           <el-input v-model="srcPath" readonly :placeholder="t('importExport.chooseFile')" style="flex:1" />
           <el-button @click="pickFile">{{ t('importExport.chooseFile') }}</el-button>
+        </div>
+      </el-form-item>
+      <el-form-item v-if="format === 'dbeaver'" :label="t('importExport.file')">
+        <div style="display:flex;gap:8px;width:100%">
+          <el-input v-model="srcPath" readonly :placeholder="t('importExport.dbeaverPathHint')" style="flex:1" />
+          <el-button @click="pickDBeaverDir">{{ t('importExport.chooseFile') }}</el-button>
         </div>
       </el-form-item>
       <el-form-item v-if="format === 'uniterm' || format === 'windterm'" :label="t('importExport.importPassword')">
@@ -28,7 +36,7 @@
     </el-form>
     <template #footer>
       <el-button @click="onCancel">{{ t('common.cancel') }}</el-button>
-      <el-button type="primary" :loading="importing" :disabled="!srcPath && format !== 'openssh'" @click="onImport">{{ t('importExport.import') }}</el-button>
+      <el-button type="primary" :loading="importing" :disabled="!srcPath && format !== 'openssh' && format !== 'dbeaver'" @click="onImport">{{ t('importExport.import') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -37,7 +45,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
-import { ParseImportFile, ApplyImport, OpenFileDialogFiltered } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ParseImportFile, ApplyImport, OpenFileDialogFiltered, OpenDirectoryDialog } from '../../bindings/github.com/ys-ll/uniterm/app'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ (e: 'update:visible', v: boolean): void; (e: 'done', count: number): void }>()
@@ -54,6 +62,7 @@ const FILTERS: Record<string, { display: string; pattern: string }> = {
   mobaxterm: { display: 'MobaXterm (*.mxtsessions)', pattern: '*.mxtsessions' },
   windterm: { display: 'WindTerm (*.sessions)', pattern: '*.sessions' },
   securecrt: { display: 'SecureCRT (*.xml)', pattern: '*.xml' },
+  navicat: { display: 'Navicat (*.ncx)', pattern: '*.ncx' },
 }
 
 watch(() => props.visible, (v) => {
@@ -69,10 +78,17 @@ async function pickFile() {
   if (p) srcPath.value = p
 }
 
+async function pickDBeaverDir() {
+  const p = await OpenDirectoryDialog()
+  if (p) srcPath.value = p
+}
+
 async function onImport() {
   importing.value = true
   try {
-    const result = await ParseImportFile(format.value, srcPath.value,
+    // DBeaver with an empty path means "auto-detect the default workspace".
+    const path = (format.value === 'dbeaver' && !srcPath.value) ? '' : srcPath.value
+    const result = await ParseImportFile(format.value, path,
       (format.value === 'uniterm' || format.value === 'windterm') ? password.value : '')
     await ApplyImport({ groups: result.groups || [], connections: result.connections || [] } as any)
     const count = (result.connections || []).length

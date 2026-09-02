@@ -464,6 +464,7 @@
   "importExport.file": "ファイル",
   "importExport.importPassword": "インポートパスワード",
   "importExport.chooseFile": "ファイルを選択...",
+  "importExport.dbeaverPathHint": "空欄でDBeaverワークスペースを自動検出、または data-sources.json / フォルダを選択",
   "importExport.importedCount": "{count} 件の接続をインポートしました",
   "importExport.exported": "正常にエクスポートしました",
   "settings.sync": "クラウド同期",
