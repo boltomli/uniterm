@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "Betroffene Zeilen gesamt",
   "db.exportSQL": "SQL exportieren",
   "db.exportStructure": "Nur Struktur exportieren",
+  "db.exportData": "Nur Daten exportieren",
   "db.exportStructureData": "Struktur und Daten exportieren",
   "db.exportDone": "{name} exportiert",
   "config.changeDir": "Verzeichnis ändern",

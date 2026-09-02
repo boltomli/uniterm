@@ -70,6 +70,7 @@
         <MenuItem @click="onCtxCopyName">{{ t('db.copyName') }}</MenuItem>
         <MenuDivider />
         <MenuItem @click="onCtxExportStructure">{{ t('db.exportStructure') }}</MenuItem>
+        <MenuItem v-if="current.tableType !== 'view'" @click="onCtxExportData">{{ t('db.exportData') }}</MenuItem>
         <MenuItem v-if="current.tableType !== 'view'" @click="onCtxExportStructureData">{{ t('db.exportStructureData') }}</MenuItem>
         <MenuDivider />
         <template v-if="current.tableType === 'view'">
@@ -438,6 +439,10 @@ async function exportTable(withStructure: boolean, withData: boolean) {
 
 function onCtxExportStructure() {
   exportTable(true, false)
+}
+
+function onCtxExportData() {
+  exportTable(false, true)
 }
 
 function onCtxExportStructureData() {

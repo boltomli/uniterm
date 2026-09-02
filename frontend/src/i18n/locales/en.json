@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "Total affected rows",
   "db.exportSQL": "Export SQL",
   "db.exportStructure": "Export structure only",
+  "db.exportData": "Export data only",
   "db.exportStructureData": "Export structure and data",
   "db.exportDone": "{name} exported",
   "dataDir.title": "Choose data location",

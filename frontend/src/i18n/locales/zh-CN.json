@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "累计影响行数",
   "db.exportSQL": "导出 SQL",
   "db.exportStructure": "导出（仅结构）",
+  "db.exportData": "导出（仅数据）",
   "db.exportStructureData": "导出（结构+数据）",
   "db.exportDone": "已导出 {name}",
   "dataDir.title": "选择配置存储位置",

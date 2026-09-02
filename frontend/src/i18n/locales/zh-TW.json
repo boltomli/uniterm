@@ -1257,6 +1257,7 @@
   "db.affectedRowsTotal": "累計影響行數",
   "db.exportSQL": "匯出 SQL",
   "db.exportStructure": "匯出（僅結構）",
+  "db.exportData": "匯出（僅資料）",
   "db.exportStructureData": "匯出（結構+資料）",
   "db.exportDone": "已匯出 {name}",
   "config.changeDir": "更改目錄",
