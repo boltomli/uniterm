@@ -23,18 +23,28 @@
         <template v-else>
           <div class="doc-tabs">
             <div class="doc-tabs-scroll">
-              <button
-                v-for="doc in docs"
-                :key="doc.id"
-                class="doc-tab"
-                :class="{ active: doc.id === activeDocId }"
-                @click="activateDoc(doc.id)"
-                @auxclick.middle.prevent="closeDoc(doc.id)"
-                @contextmenu.prevent="onDocTabContextMenu($event, doc.id)"
-              >
-                <span class="doc-tab-title" :title="docTitle(doc)">{{ docTitle(doc) }}</span>
-                <span class="doc-tab-close" @click.stop="closeDoc(doc.id)">×</span>
-              </button>
+              <template v-for="(doc, index) in docs" :key="doc.id">
+                <div
+                  v-if="dragOverIndex === index && dragInsertAfter"
+                  class="doc-tab-indicator"
+                />
+                <button
+                  class="doc-tab"
+                  :class="{ active: doc.id === activeDocId }"
+                  draggable="true"
+                  @click="activateDoc(doc.id)"
+                  @auxclick.middle.prevent="closeDoc(doc.id)"
+                  @contextmenu.prevent="onDocTabContextMenu($event, doc.id)"
+                  @dragstart="onDocDragStart($event, doc.id)"
+                  @dragover.prevent="onDocDragOver($event, index)"
+                  @dragend="clearDragState"
+                  @drop.prevent="onDocDrop($event, index)"
+                >
+                  <span class="doc-tab-title" :title="docTitle(doc)">{{ docTitle(doc) }}</span>
+                  <span class="doc-tab-close" @click.stop="closeDoc(doc.id)">×</span>
+                </button>
+              </template>
+              <div v-if="dragOverIndex === docs.length - 1 && dragInsertAfter" class="doc-tab-indicator" />
             </div>
             <button class="doc-tab-new" :title="t('db.newQuery')" @click="onNewQuery()">+</button>
           </div>
@@ -303,6 +313,46 @@ function onCtxCloseAll() {
   ctxMenuVisible.value = false
 }
 
+// ── Tab drag reorder (mirrors TabsList's insert-indicator pattern) ──
+
+const dragId = ref('')
+const dragOverIndex = ref(-1)
+const dragInsertAfter = ref(false)
+
+function onDocDragStart(e: DragEvent, id: string) {
+  dragId.value = id
+  e.dataTransfer?.setData('application/db-tab-id', id)
+  e.dataTransfer!.effectAllowed = 'move'
+}
+
+function onDocDragOver(e: DragEvent, index: number) {
+  if (!e.dataTransfer?.types.includes('application/db-tab-id')) return
+  const el = e.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  dragOverIndex.value = index
+  dragInsertAfter.value = e.clientX >= rect.left + rect.width / 2
+  e.dataTransfer.dropEffect = 'move'
+}
+
+function onDocDrop(_e: DragEvent, index: number) {
+  const from = docs.value.findIndex(d => d.id === dragId.value)
+  clearDragState()
+  if (from < 0) return
+  // Drop on the left half of a tab means "insert before it", i.e. target index.
+  let to = dragInsertAfter.value ? index + 1 : index
+  // Moving right compacts the source slot out of the range first.
+  if (from < to) to -= 1
+  if (to === from) return
+  const [moved] = docs.value.splice(from, 1)
+  docs.value.splice(to, 0, moved)
+}
+
+function clearDragState() {
+  dragId.value = ''
+  dragOverIndex.value = -1
+  dragInsertAfter.value = false
+}
+
 function findTableDoc(dbName: string, tableName: string) {
   return docs.value.find(d => d.kind === 'table' && d.dbName === dbName && d.tableName === tableName)
 }
@@ -548,6 +598,16 @@ function onResizeEnd() {
 .doc-tab-close:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.doc-tab-indicator {
+  width: 2px;
+  min-width: 2px;
+  align-self: stretch;
+  background: var(--accent);
+  opacity: 0.8;
+  margin: 4px 0;
+  border-radius: 1px;
+  flex-shrink: 0;
 }
 .doc-tab-new {
   width: 32px;
