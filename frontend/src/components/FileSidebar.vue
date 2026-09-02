@@ -20,7 +20,7 @@
         @drop.prevent="onDropUpload"
       >
         <div v-if="dragOver" class="drop-overlay">
-          <span>{{ preparingUpload ? t('companion.preparingUpload') : t('sftp.dropHere') }}</span>
+          <span>{{ t('sftp.dropHere') }}</span>
         </div>
 
         <FileList
@@ -241,36 +241,12 @@ const nativeDrop = useNativeFileDrop({
 const bindFileDrop = nativeDrop.bind
 const unbindFileDrop = nativeDrop.unbind
 
-async function onDropUpload(e: DragEvent) {
+function onDropUpload(e: DragEvent) {
   e.preventDefault()
   clearDragState()
-  // When Wails native file-drop is bound, it owns the upload.
-  // Handling HTML5 drop as well causes duplicate transfer records.
-  if (nativeDrop.isBound()) return
-  if (nativeDrop.recentlyDropped()) return
-  if (!sessionId.value) return
-
-  const dropped = e.dataTransfer?.files
-  if (!dropped?.length) return
-
-  // Prefer native paths if WebView exposes them
-  const nativePaths: string[] = []
-  for (let i = 0; i < dropped.length; i++) {
-    const p = (dropped[i] as any).path as string | undefined
-    if (p) nativePaths.push(p)
-  }
-  if (nativePaths.length === dropped.length) {
-    await uploadPaths(nativePaths)
-    return
-  }
-
-  const fileList = Array.from(dropped).filter(f => f.size > 0 || f.type)
-  // Folder drops without native paths aren't supported via FileReader
-  if (!fileList.length) {
-    msg.warning(t('companion.folderDropHint'))
-    return
-  }
-  await uploadFileObjects(fileList)
+  // OS file drops are owned by the Wails native file-drop event
+  // (common:WindowFilesDropped, routed by element id) and uploaded by
+  // absolute path. Nothing to do on the HTML5 side.
 }
 
 // Open the current companion's SFTP as a standalone tab, mirroring the SSH
@@ -297,14 +273,14 @@ const { editorVisible, fileEditorRef } = editor
 
 // ── Shared panel logic (clipboard, dialogs, file ops) — mirrors the SFTP tab ──
 const {
-  clipboard, cutItemNames, clipboardCount, pasteLoading, preparingUpload,
+  clipboard, cutItemNames, clipboardCount, pasteLoading,
   onCopyToClipboard, onCutToClipboard, onClearClipboard, onCancelPaste, onPaste,
   onRename, onDelete, onMkdir, onNewFile,
   onUpload, onDownloadTo,
   onEditFile, onEditExternal,
   onCancelTransfer, onPauseTransfer, onResumeTransfer, clearFinishedTransfers,
   onSaveBookmark, onRemoveBookmark,
-  uploadPaths, uploadFileObjects,
+  uploadPaths,
 } = useFilePanel({
   sid: () => sessionId.value ?? undefined,
   cwd,

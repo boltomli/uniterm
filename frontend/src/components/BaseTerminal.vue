@@ -1,6 +1,8 @@
 <template>
   <div
     class="base-terminal"
+    :id="terminalDropId"
+    data-file-drop-target
     @dragover.prevent="onDragOver"
     @dragenter.prevent="onDragEnter"
     @dragleave="onDragLeave"
@@ -114,7 +116,8 @@ import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { SessionWrite, SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
-import { WriteFileBase64, SaveFileDialog, FrontendLog, WriteTempFile, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { useNativeFileDrop } from '../composables/useFilePanel'
 import { msg } from '../services/message'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
@@ -344,9 +347,18 @@ async function disposeZmodemService(sessionId: string, resetDirection = true, en
   }
 }
 
-// Native file drop handler (Wails provides real file paths via the OS,
-// bypassing WebView2's File.path limitation).
-let fileDropRegistered = false
+// OS file drops (resource manager) are delivered by Wails via the native
+// file-drop event (common:WindowFilesDropped) with real absolute paths,
+// routed here by this component's data-file-drop-target id. The HTML5 drop
+// handler below only clears overlay state — OS file drops never carry file
+// content into the webview.
+const terminalDropId = 'terminal-drop-' + (crypto.randomUUID?.() || Math.random().toString(36).slice(2))
+
+const nativeDrop = useNativeFileDrop({
+  elementId: terminalDropId,
+  isActive: () => !!props.sessionId && !zmodemStore.getActiveTransfer(props.sessionId),
+  upload: (paths) => onNativePathsDropped(paths),
+})
 
 function onDragOver(e: DragEvent) {
   if (!e.dataTransfer?.types.includes('Files')) return
@@ -373,15 +385,12 @@ function onDragLeave() {
 function onDragDrop(e: DragEvent) {
   dragOver.value = false
   dragEnterCount = 0
-  const files = e.dataTransfer?.files
-  if (!files || files.length === 0 || !props.sessionId) return
-
-  // Reject internal panel/tab drags — let them bubble to workspace handlers
+  // Internal panel/tab drags — let them bubble to workspace handlers
   if (e.dataTransfer?.types.includes('application/panel-id') ||
       e.dataTransfer?.types.includes('application/tab-id')) return
-
-  e.preventDefault()
-  handleDroppedFiles(props.sessionId, Array.from(files))
+  // OS file drops are handled by the native file-drop event; prevent the
+  // WebView from navigating and stop here.
+  if (e.dataTransfer?.types.includes('Files')) e.preventDefault()
 }
 
 // Convert a Windows native path to the format expected by the active shell.
@@ -407,40 +416,22 @@ function toShellPath(nativePath: string, shellPath?: string): string {
   return converted.includes(' ') ? `"${converted}"` : converted
 }
 
-async function handleDroppedFiles(sessionId: string, files: File[]) {
-  const paths: string[] = []
-  for (const f of files) {
-    const nativePath = (f as any).path as string | undefined
-    if (nativePath) {
-      paths.push(nativePath)
-    } else {
-      try {
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve((reader.result as string).split(',')[1])
-          reader.onerror = () => reject(reader.error)
-          reader.readAsDataURL(f)
-        })
-        paths.push(await WriteTempFile(f.name, base64))
-      } catch (err) {
-        terminal?.write(`\r\n\x1b[33mFailed to read "${f.name}": ${err}\x1b[0m\r\n`)
-      }
-    }
-  }
-  if (paths.length === 0) return
+// Called with real absolute paths from the native OS file-drop event.
+function onNativePathsDropped(paths: string[]) {
+  if (!props.sessionId || paths.length === 0) return
 
   // Local terminal: paste file paths as input, adapting format to the shell
   if (props.mode === 'local') {
     const panel = panelStore.getPanel(props.panelId || '')
     const shellPath = panel?.config?.shellPath
     const text = paths.map(p => toShellPath(p, shellPath)).join(' ')
-    SessionWrite(sessionId, text)
+    SessionWrite(props.sessionId, text)
     return
   }
 
   // Remote terminal: trigger zmodem upload
-  zmodemStore.setPendingUploadFiles(sessionId, paths)
-  SessionWrite(sessionId, 'rz -be\n')
+  zmodemStore.setPendingUploadFiles(props.sessionId, paths)
+  SessionWrite(props.sessionId, 'rz -be\n')
 }
 
 function onZmodemCancel() {
@@ -900,6 +891,7 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
 let bindListeners: (() => void) | null = null
 
 onMounted(() => {
+  nativeDrop.bind()
   if (!terminalRef.value) return
 
   // Acquire shared terminal from manager (or create if first mount)
@@ -1474,6 +1466,8 @@ onMounted(() => {
 onActivated(() => {
   // Component restored from KeepAlive cache.
 
+  nativeDrop.bind()
+
   // Replay session data that arrived while deactivated BEFORE
   // setting isActive = true. The session:data handler gates on
   // isActive, so new data would race with the gap replay and
@@ -1542,6 +1536,7 @@ onActivated(() => {
 onDeactivated(() => {
   // Component deactivated by KeepAlive (e.g. terminal tab moved into workspace).
   // Mark inactive so session event handlers become no-ops.
+  nativeDrop.unbind()
   isActive.value = false
   // Capture viewport position before listeners are torn down so reactivation
   // can restore the user's scroll position. Reading from the public IBuffer
@@ -1734,6 +1729,7 @@ onBeforeUnmount(() => {
 })
 
 onUnmounted(() => {
+  nativeDrop.unbind()
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
 
