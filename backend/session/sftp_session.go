@@ -861,6 +861,20 @@ func (s *SFTPSession) LocalMove(oldPath, newPath string) error {
 
 // PutContent writes raw content directly to a remote file via SFTP.
 func (s *SFTPSession) PutContent(remotePath string, content []byte) error {
+	type outcome struct{ err error }
+	ch := make(chan outcome, 1)
+	go func() {
+		ch <- outcome{s.putContentUnlocked(remotePath, content)}
+	}()
+	select {
+	case out := <-ch:
+		return out.err
+	case <-time.After(25 * time.Second):
+		return fmt.Errorf("write remote content timeout")
+	}
+}
+
+func (s *SFTPSession) putContentUnlocked(remotePath string, content []byte) error {
 	if err := s.requireClient(); err != nil {
 		return err
 	}
@@ -883,7 +897,28 @@ func (s *SFTPSession) PutContent(remotePath string, content []byte) error {
 }
 
 // GetContent reads the full content of a remote file.
+// Like ListRemote, it is bounded by a timeout: a wedged connection (remote
+// stall, half-open TCP) must surface an error instead of hanging the caller
+// — the external-editor open path blocks the UI on this call.
 func (s *SFTPSession) GetContent(remotePath string) ([]byte, error) {
+	type outcome struct {
+		b   []byte
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		b, err := s.getContentUnlocked(remotePath)
+		ch <- outcome{b, err}
+	}()
+	select {
+	case out := <-ch:
+		return out.b, out.err
+	case <-time.After(25 * time.Second):
+		return nil, fmt.Errorf("read remote content timeout")
+	}
+}
+
+func (s *SFTPSession) getContentUnlocked(remotePath string) ([]byte, error) {
 	if err := s.requireClient(); err != nil {
 		return nil, err
 	}
@@ -1299,7 +1334,7 @@ func (s *SFTPSession) downloadDir(remoteDir, localDir string, task *TransferTask
 				return err
 			}
 		} else {
-			if err := s.transferFile(task, rp, lp, "download"); err != nil {
+			if err := s.transferFile(task, lp, rp, "download"); err != nil {
 				return err
 			}
 		}

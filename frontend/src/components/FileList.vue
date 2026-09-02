@@ -16,11 +16,11 @@
       <button class="filter-icon-btn" @click="emit('refresh')" :title="t('sftp.refresh')">
         <el-icon><RefreshCw :size="14" /></el-icon>
       </button>
-      <button class="filter-icon-btn" :class="{ active: showHidden }" @click="showHidden = !showHidden" :title="showHidden ? t('sftp.hideHidden') : t('sftp.showHidden')">
-        <el-icon><Eye :size="14" /></el-icon>
-      </button>
       <button v-if="mode === 'remote'" class="filter-icon-btn" @click="emit('upload')" :title="t('sftp.upload')">
         <el-icon><Upload :size="14" /></el-icon>
+      </button>
+      <button class="filter-icon-btn" @click.stop="moreMenuRef?.toggle($event.currentTarget as HTMLElement)" :title="t('sftp.more')">
+        <el-icon><MoreHorizontal :size="14" /></el-icon>
       </button>
     </div>
     <PathBreadcrumb
@@ -113,7 +113,7 @@
           <MenuItem @click="doCutToClipboard">{{ t('sftp.cut') }}</MenuItem>
           <MenuItem :class="{ disabled: !clipboardCount }" @click="clipboardCount && doPaste()">{{ t('sftp.paste') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
+          <MenuItem v-if="props.showSendToOther !== false" @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doDownloadTo">{{ t('sftp.downloadTo') }}</MenuItem>
           <MenuDivider />
           <MenuItem @click="doRename">{{ t('sftp.rename') }}</MenuItem>
@@ -128,7 +128,7 @@
           <MenuItem @click="doCutToClipboard">{{ t('sftp.cut') }}</MenuItem>
           <MenuItem :class="{ disabled: !clipboardCount }" @click="clipboardCount && doPaste()">{{ t('sftp.paste') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
+          <MenuItem v-if="props.showSendToOther !== false" @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doDownloadTo">{{ t('sftp.downloadTo') }}</MenuItem>
           <MenuDivider />
           <MenuItem @click="doRename">{{ t('sftp.rename') }}</MenuItem>
@@ -140,7 +140,7 @@
           <MenuItem @click="doCutToClipboard">{{ t('sftp.cut') }}</MenuItem>
           <MenuItem :class="{ disabled: !clipboardCount }" @click="clipboardCount && doPaste()">{{ t('sftp.paste') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
+          <MenuItem v-if="props.showSendToOther !== false" @click="doSendToOther">{{ t(sendToKey) }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doDownloadTo">{{ t('sftp.downloadTo') }}</MenuItem>
           <MenuDivider />
           <MenuItem v-if="mode === 'remote'" class="disabled">{{ t('sftp.renameDisabled') }}</MenuItem>
@@ -155,12 +155,22 @@
           <MenuItem :class="{ disabled: !clipboardCount }" @click="clipboardCount && doPaste()">{{ t('sftp.paste') }}</MenuItem>
         </template>
     </Menu>
+
+    <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible">
+      <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
+      <MenuItem @click="doMkdir">{{ t('sftp.newDirectory') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem class="iconic" :class="{ active: showHidden }" @click="toggleShowHidden">
+        <el-icon><Eye :size="14" /></el-icon>
+        {{ showHidden ? t('sftp.hideHidden') : t('sftp.showHidden') }}
+      </MenuItem>
+    </Menu>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
-import { Folder, File, Link, RefreshCw, Eye, Upload } from '@lucide/vue'
+import { Folder, File, Link, RefreshCw, Eye, Upload, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import PathBreadcrumb from './PathBreadcrumb.vue'
 import Menu from './Menu.vue'
@@ -186,6 +196,8 @@ const props = defineProps<{
   cutItemNames?: string[]
   clipboardCount?: number
   clipboardMode?: 'copy' | 'cut'
+  /** Hide the "send to other pane" entry — for hosts with a single pane. */
+  showSendToOther?: boolean
   breadcrumbMode?: 'local' | 'remote'
   breadcrumbPath?: string
   breadcrumbSavedPaths?: string[]
@@ -221,10 +233,21 @@ const { t, locale } = useI18n()
 const filterText = ref('')
 const showHidden = ref(false)
 const selectedItems = ref<FileItem[]>([])
+// Keep the selection pointing at live row objects: after a refresh the list is
+// rebuilt with new objects, and stale ones would carry outdated fields (e.g.
+// the old permission mode when re-opening the chmod dialog).
+watch(() => props.files, (fresh) => {
+  if (!selectedItems.value.length) return
+  selectedItems.value = selectedItems.value
+    .map(sel => fresh.find(f => f.name === sel.name))
+    .filter((f): f is FileItem => !!f)
+})
 const lastClickedIndex = ref(-1)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const ctxMenuVisible = ref(false)
 const menuType = ref<'file' | 'dir' | 'batch' | 'empty'>('file')
+const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreMenuVisible = ref(false)
 const tableRef = ref<any>(null)
 
 const targetSide = computed(() => props.mode === 'local' ? t('sftp.remote') : t('sftp.local'))
@@ -518,13 +541,12 @@ function doDelete() { emit('delete', [...selectedItems.value]); ctxMenuVisible.v
 function doChmod() { emit('chmod', selectedItems.value[0]); ctxMenuVisible.value = false }
 function doEdit() { emit('edit', selectedItems.value[0]); ctxMenuVisible.value = false }
 function doEditExternal() { emit('editExternal', selectedItems.value[0]); ctxMenuVisible.value = false }
-function doNewFile() { emit('newFile'); ctxMenuVisible.value = false }
-function doMkdir() { emit('mkdir'); ctxMenuVisible.value = false }
+function doNewFile() { emit('newFile'); ctxMenuVisible.value = false; moreMenuVisible.value = false }
+function doMkdir() { emit('mkdir'); ctxMenuVisible.value = false; moreMenuVisible.value = false }
+function toggleShowHidden() { showHidden.value = !showHidden.value }
 function doCopyToClipboard() { emit('copyToClipboard', [...selectedItems.value]); ctxMenuVisible.value = false }
 function doCutToClipboard() { emit('cutToClipboard', [...selectedItems.value]); ctxMenuVisible.value = false }
 function doPaste() { emit('paste'); ctxMenuVisible.value = false }
-function doUpload() { emit('upload'); ctxMenuVisible.value = false }
-function doRefresh() { emit('refresh'); ctxMenuVisible.value = false }
 
 function getRowClassName({ row }: { row: FileItem }): string {
   const cls: string[] = []

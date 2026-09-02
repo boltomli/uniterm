@@ -680,6 +680,7 @@ func (a *App) shutdown() {
 	if a.sessionManager != nil {
 		a.sessionManager.CloseAll()
 	}
+	cleanupExtEditsOnExit()
 	session.CleanupSSHX11Server()
 	if a.terminalHistoryStore != nil {
 		_ = a.terminalHistoryStore.Close()
