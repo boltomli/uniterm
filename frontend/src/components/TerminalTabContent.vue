@@ -3,7 +3,7 @@
     class="terminal-tab-content"
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
-    @drop.stop="onDrop"
+    @drop="onDrop"
   >
     <Panel
       v-if="panel"
@@ -104,9 +104,17 @@ function onDragLeave(e: DragEvent) {
 
 function onDrop(e: DragEvent) {
   e.preventDefault()
-  e.stopPropagation()
   dragOver.value = false
   dropPos.value = null
+
+  // OS file drops must keep bubbling to the document: the Wails runtime's
+  // document-level drop handler resolves the real file paths and re-emits
+  // them as common:WindowFilesDropped (consumed by BaseTerminal's native
+  // drop binding). Only consume panel/tab drags here.
+  const types = e.dataTransfer?.types ? Array.from(e.dataTransfer.types) : []
+  if (types.includes('Files')) return
+
+  e.stopPropagation()
 
   const draggedTabId = e.dataTransfer?.getData('application/tab-id')
   const draggedPanelId = e.dataTransfer?.getData('application/panel-id')
