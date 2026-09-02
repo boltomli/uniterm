@@ -26,13 +26,15 @@
         <FileList
           mode="remote"
           breadcrumb-mode="remote"
+          :show-send-to-other="false"
           :breadcrumb-path="cwd"
           :breadcrumb-saved-paths="settingsStore.sftpBookmarks.remotePaths"
           :files="files"
           :loading="loading"
-          :paste-loading="false"
-          :cut-item-names="[]"
-          :clipboard-count="0"
+          :paste-loading="pasteLoading"
+          :cut-item-names="cutItemNames"
+          :clipboard-count="clipboardCount"
+          :clipboard-mode="clipboard?.mode"
           @navigate="onNavigate"
           @refresh="onRefresh"
           @upload="onUpload"
@@ -45,11 +47,11 @@
           @edit="onEditFile"
           @edit-external="onEditExternal"
           @new-file="onNewFile"
-          @copy-to-clipboard="() => {}"
-          @cut-to-clipboard="() => {}"
-          @paste="() => {}"
-          @clear-clipboard="() => {}"
-          @cancel-paste="() => {}"
+          @copy-to-clipboard="onCopyToClipboard"
+          @cut-to-clipboard="onCutToClipboard"
+          @paste="onPaste"
+          @clear-clipboard="onClearClipboard"
+          @cancel-paste="onCancelPaste"
           @open="onEditFile"
           @cancel-load="onCancelLoad"
           @save-bookmark="onSaveBookmark"
@@ -121,20 +123,20 @@
 
 <script setup lang="ts">
 import { ExternalLink } from '@lucide/vue'
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { useCompanionStore } from '../stores/companionStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import {
-  SftpListRemote, SftpChangeRemoteDir,
-  SftpMakeDir, SftpRemove, SftpRename, SftpChmod, SftpPutContent,
-  SftpGet, SftpPut, SftpOpenExternalEditor, WriteTempFile, CreateTempUpload, AppendTempUpload,
-  SftpCancelTransfer, SftpPauseTransfer, SftpResumeTransfer,
-  OpenMultipleFilesDialog, OpenDirectoryDialog, ListSessions,
+  SftpListRemote, SftpChangeRemoteDir, SftpOpenExternalEditor, ListSessions,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
-import { useLocalStateStore } from '../stores/localStateStore'
+import {
+  useFilePanel, useConflictDialog, useFileDialogs, useFileListing, useChmodDialog,
+  useEditorBridge, useDragOver, useNativeFileDrop, remoteFileOps, resolveRemoteTarget, joinPath,
+} from '../composables/useFilePanel'
+import { bindExtEditUploadedToast } from '../composables/useFilePanel'
 import FileList from './FileList.vue'
 import type { FileItem } from './FileList.vue'
 import TransferPanel from './TransferPanel.vue'
@@ -146,28 +148,18 @@ import { Events } from '@wailsio/runtime'
 import { useTransferTaskEvents } from '../composables/useTransferTasks'
 
 const { t } = useI18n()
+bindExtEditUploadedToast()
 const companionStore = useCompanionStore()
 const panelStore = usePanelStore()
 const settingsStore = useSettingsStore()
-const localStateStore = useLocalStateStore()
 
 const connecting = ref(false)
 const connectError = ref('')
 // Transfer panel: default height (px), adjustable by dragging its top edge.
 const transferHeight = ref(130)
 
-const cwd = ref('')
-const files = ref<FileItem[]>([])
-const loading = ref(false)
-const dragOver = ref(false)
-const preparingUpload = ref(false)
-let dragEnterCount = 0
-let loadVersion = 0
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let refreshDebounce: ReturnType<typeof setTimeout> | null = null
-let lastWailsDropAt = 0
-let fileDropBound = false
-let fileDropUnsub: (() => void) | null = null
 // Unique id on this component's drop zone. Wails v3 forwards the id of the
 // element the file was dropped on via common:WindowFilesDropped, so keep only
 // the drops that actually landed on this sidebar (SFTP panes are also targets).
@@ -181,30 +173,7 @@ const transferEvents = useTransferTaskEvents(
   () => sessionId.value,
   (status) => { if (status === 'done') scheduleRefresh(400) },
 )
-const activeTransferCount = computed(() =>
-  transferTasks.value.filter(t => t.status === 'running' || t.status === 'paused').length
-)
-
-const fileCount = computed(() => files.value.filter(f => !f.isDir && f.name !== '..').length)
-const folderCount = computed(() => files.value.filter(f => f.isDir && f.name !== '..').length)
-
 const LIST_TIMEOUT_MS = 20000
-const REMOVE_TIMEOUT_MS = 60000
-
-function joinPath(base: string, name: string): string {
-  if (base.endsWith('/')) return base + name
-  return base + '/' + name
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms)
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v) },
-      (e) => { clearTimeout(timer); reject(e) },
-    )
-  })
-}
 
 function scheduleRefreshRetry() {
   if (refreshTimer) clearTimeout(refreshTimer)
@@ -238,288 +207,48 @@ async function ensureConnected() {
   }
 }
 
-async function onRefresh() {
-  const sid = sessionId.value
-  if (!sid) return
-  const version = ++loadVersion
-  loading.value = true
-  try {
-    const result = await withTimeout(
-      SftpListRemote(sid, cwd.value || ''),
-      LIST_TIMEOUT_MS,
-      'list',
-    )
-    if (version !== loadVersion) return
-    files.value = result.files || []
-    if (result.dir) cwd.value = result.dir
-    connectError.value = ''
-  } catch (e: any) {
-    if (version !== loadVersion) return
-    const err = e?.toString() || t('companion.listFailed')
-    if (/not connected/i.test(err)) {
-      scheduleRefreshRetry()
-      return
-    }
-    if (/timeout/i.test(err)) {
-      msg.warning(t('companion.refreshTimeout'))
-      return
-    }
-    msg.error(err)
-  } finally {
-    if (version === loadVersion) loading.value = false
-  }
-}
+// Listing / navigation engine (refresh coalescing + retry glue stays here).
+const listing = useFileListing({
+  sid: () => sessionId.value ?? undefined,
+  list: SftpListRemote,
+  changeDir: SftpChangeRemoteDir,
+  resolveTarget: resolveRemoteTarget,
+  listTimeoutMs: LIST_TIMEOUT_MS,
+  onListSuccess: () => { connectError.value = '' },
+  onListError: (err) => {
+    if (/not connected/i.test(err)) { scheduleRefreshRetry(); return true }
+    if (/timeout/i.test(err)) { msg.warning(t('companion.refreshTimeout')); return true }
+    return false
+  },
+})
+const { cwd, files, loading, onRefresh, onNavigate, onCancelLoad } = listing
 
-function onCancelLoad() {
-  loadVersion++
-  loading.value = false
-}
+// Shared dialog + conflict plumbing and the per-panel file actions live in
+// the useFilePanel composable (same implementation as the SFTP tab's panes).
+const conflicts = useConflictDialog()
+const { conflictVisible, conflictFiles, onConflictResolve } = conflicts
+const fileDialogs = useFileDialogs()
+const { dlg: genDlg, onGenericConfirm, onGenericCancel } = fileDialogs
 
-async function onNavigate(path: string) {
-  const sid = sessionId.value
-  if (!sid) return
-  let fullPath: string
-  if (path === '..') {
-    fullPath = '/' + cwd.value.split('/').filter(Boolean).slice(0, -1).join('/')
-  } else if (!path.startsWith('/')) {
-    fullPath = joinPath(cwd.value, path)
-  } else {
-    fullPath = path
-  }
-  const version = ++loadVersion
-  loading.value = true
-  try {
-    const result = await SftpChangeRemoteDir(sid, fullPath)
-    if (version !== loadVersion) return
-    files.value = result.files || []
-    cwd.value = result.dir || fullPath
-  } catch (e: any) {
-    if (version !== loadVersion) return
-    msg.error(e?.toString() || t('companion.navFailed'))
-  } finally {
-    if (version === loadVersion) loading.value = false
-  }
-}
-
-function onSaveBookmark(path: string) {
-  settingsStore.addSftpBookmark('remote', path)
-}
-
-function onRemoveBookmark(path: string) {
-  settingsStore.removeSftpBookmark('remote', path)
-}
-
-async function onUpload() {
-  const sid = sessionId.value
-  if (!sid) return
-  try {
-    const localFiles = await OpenMultipleFilesDialog()
-    if (!localFiles?.length) return
-    const names = localFiles.map(fp => fp.replace(/\\/g, '/').split('/').pop() || 'upload')
-    const action = await resolveConflicts(names)
-    if (action === 'cancel') return
-    const existing = files.value.map(f => f.name)
-        for (let i = 0; i < localFiles.length; i++) {
-      let name = names[i]
-      if (action === 'rename' && existing.includes(name)) {
-        name = autoRename(name, existing)
-      }
-      existing.push(name)
-      SftpPut(sid, localFiles[i], joinPath(cwd.value, name), false)
-    }
-  } catch (e) {
-    console.error('upload:', e)
-  }
-}
-
-function autoRename(targetName: string, existingNames: string[]): string {
-  if (!existingNames.includes(targetName)) return targetName
-  const dotIdx = targetName.lastIndexOf('.')
-  const base = dotIdx > 0 ? targetName.slice(0, dotIdx) : targetName
-  const ext = dotIdx > 0 ? targetName.slice(dotIdx) : ''
-  let n = 1
-  let candidate: string
-  do {
-    candidate = `${base} (${n})${ext}`
-    n++
-  } while (existingNames.includes(candidate))
-  return candidate
-}
-
-// --- Shared dialogs (rename / new dir / new file / delete / conflict) ---
-const genDlg = reactive<{
-  visible: boolean
-  type: 'input' | 'message'
-  title: string
-  inputValue: string
-  placeholder: string
-  message: string
-  resolve: ((r: { ok: boolean; value?: string }) => void) | null
-}>({ visible: false, type: 'input', title: '', inputValue: '', placeholder: '', message: '', resolve: null })
-
-function openGeneric(opts: { type?: 'input' | 'message'; title: string; inputValue?: string; placeholder?: string; message?: string }): Promise<{ ok: boolean; value?: string }> {
-  return new Promise((resolve) => {
-    genDlg.type = opts.type || 'input'
-    genDlg.title = opts.title
-    genDlg.inputValue = opts.inputValue || ''
-    genDlg.placeholder = opts.placeholder || ''
-    genDlg.message = opts.message || ''
-    genDlg.resolve = resolve
-    genDlg.visible = true
-  })
-}
-
-function onGenericConfirm() {
-  const value = genDlg.inputValue
-  const resolve = genDlg.resolve
-  genDlg.visible = false
-  genDlg.resolve = null
-  resolve?.({ ok: true, value })
-}
-
-function onGenericCancel() {
-  const resolve = genDlg.resolve
-  genDlg.visible = false
-  genDlg.resolve = null
-  resolve?.({ ok: false })
-}
-
-const conflictVisible = ref(false)
-const conflictFiles = ref<string[]>([])
-let conflictResolve: ((a: 'overwrite' | 'rename' | 'cancel') => void) | null = null
-
-function showConflictDialog(conflicts: string[]): Promise<'overwrite' | 'rename' | 'cancel'> {
-  return new Promise((resolve) => {
-    conflictFiles.value = conflicts
-    conflictResolve = resolve
-    conflictVisible.value = true
-  })
-}
-
-function onConflictResolve(action: 'overwrite' | 'rename' | 'cancel') {
-  conflictVisible.value = false
-  if (conflictResolve) { conflictResolve(action); conflictResolve = null }
-}
-
-async function resolveConflicts(fileNames: string[]): Promise<'overwrite' | 'rename' | 'cancel'> {
-  const existing = files.value.map(f => f.name)
-  const conflicts = fileNames.filter(n => existing.includes(n))
-  if (!conflicts.length) return 'overwrite'
-  return showConflictDialog(conflicts)
-}
-
-function onDragEnter(e: DragEvent) {
-  if (!e.dataTransfer?.types?.includes('Files')) return
-  dragEnterCount++
-  dragOver.value = true
-}
-
-function onDragLeave() {
-  dragEnterCount--
-  if (dragEnterCount <= 0) {
-    dragEnterCount = 0
-    dragOver.value = false
-  }
-}
-
-function onDragOver(e: DragEvent) {
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
-}
-
-function clearDragState() {
-  dragOver.value = false
-  dragEnterCount = 0
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  const chunk = 0x8000
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-  return btoa(binary)
-}
-
-function yieldToUI(): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, 0))
-}
-
-/** Chunked temp write — avoids freezing UI on large drops without native path. */
-async function readAndUploadChunked(file: File, remotePath: string) {
-  const sid = sessionId.value
-  if (!sid) return
-  try {
-    const tmpPath = await CreateTempUpload(file.name)
-    const chunkSize = 512 * 1024
-    for (let offset = 0; offset < file.size; offset += chunkSize) {
-      const blob = file.slice(offset, Math.min(offset + chunkSize, file.size))
-      const buf = await blob.arrayBuffer()
-      await AppendTempUpload(tmpPath, arrayBufferToBase64(buf))
-      await yieldToUI()
-    }
-    SftpPut(sid, tmpPath, remotePath, false)
-  } catch {
-    msg.error(t('companion.uploadFailed'))
-  }
-}
-
-async function readAndUpload(file: File, remotePath: string): Promise<void> {
-  // Small files: single WriteTempFile is fine; larger: chunk to keep UI responsive
-  if (file.size > 256 * 1024) {
-    return readAndUploadChunked(file, remotePath)
-  }
-  const sid = sessionId.value
-  if (!sid) return
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = async () => {
-      const base64 = (reader.result as string).split(',')[1]
-      try {
-        const tmpPath = await WriteTempFile(file.name, base64)
-        SftpPut(sid, tmpPath, remotePath, false)
-      } catch {
-        msg.error(t('companion.uploadFailed'))
-      } finally {
-        resolve()
-      }
-    }
-    reader.onerror = () => {
-      msg.error(t('companion.uploadFailed'))
-      resolve()
-    }
-    reader.readAsDataURL(file)
-  })
-}
-
-async function uploadLocalPaths(localPaths: string[]) {
-  const sid = sessionId.value
-  if (!sid || !localPaths.length) return
-  const names = localPaths.map(fp => fp.replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || 'upload')
-  const action = await resolveConflicts(names)
-  if (action === 'cancel') return
-  const existing = files.value.map(f => f.name)
-    for (let i = 0; i < localPaths.length; i++) {
-    let name = names[i]
-    if (action === 'rename' && existing.includes(name)) {
-      name = autoRename(name, existing)
-    }
-    existing.push(name)
-    // false = single file; backend auto-upgrades to recursive for directories
-    SftpPut(sid, localPaths[i], joinPath(cwd.value, name), false)
-  }
-}
+// Drag-hover + native (OS) file-drop routing. The Wails native drop owns the
+// upload when bound; HTML5 drop handling backs off while it is active.
+const { dragOver, onDragEnter, onDragLeave, onDragOver, clearDragState } = useDragOver()
+const nativeDrop = useNativeFileDrop({
+  elementId: FILE_DROP_ID,
+  isActive: () => !!companionStore.filesVisible && !!sessionId.value,
+  upload: (paths) => { clearDragState(); uploadPaths(paths) },
+})
+const bindFileDrop = nativeDrop.bind
+const unbindFileDrop = nativeDrop.unbind
 
 async function onDropUpload(e: DragEvent) {
   e.preventDefault()
   clearDragState()
   // When Wails native file-drop is bound, it owns the upload.
   // Handling HTML5 drop as well causes duplicate transfer records.
-  if (fileDropBound) return
-  if (Date.now() - lastWailsDropAt < 800) return
-
-  const sid = sessionId.value
-  if (!sid) return
+  if (nativeDrop.isBound()) return
+  if (nativeDrop.recentlyDropped()) return
+  if (!sessionId.value) return
 
   const dropped = e.dataTransfer?.files
   if (!dropped?.length) return
@@ -531,7 +260,7 @@ async function onDropUpload(e: DragEvent) {
     if (p) nativePaths.push(p)
   }
   if (nativePaths.length === dropped.length) {
-    await uploadLocalPaths(nativePaths)
+    await uploadPaths(nativePaths)
     return
   }
 
@@ -541,53 +270,7 @@ async function onDropUpload(e: DragEvent) {
     msg.warning(t('companion.folderDropHint'))
     return
   }
-
-  const names = fileList.map(f => f.name)
-  const action = await resolveConflicts(names)
-  if (action === 'cancel') return
-
-  const existing = files.value.map(f => f.name)
-  preparingUpload.value = true
-    try {
-    for (const f of fileList) {
-      let resolvedName = f.name
-      if (action === 'rename' && existing.includes(f.name)) {
-        resolvedName = autoRename(f.name, existing)
-      }
-      existing.push(resolvedName)
-      const remotePath = joinPath(cwd.value, resolvedName)
-      await readAndUpload(f, remotePath)
-    }
-  } finally {
-    preparingUpload.value = false
-  }
-}
-
-function bindFileDrop() {
-  if (fileDropBound) return
-  try {
-    fileDropUnsub = Events.On('common:WindowFilesDropped', (ev) => {
-      const d = ev.data as { x: number; y: number; elementId?: string; filenames: string[] }
-      if (!companionStore.filesVisible || !sessionId.value) return
-      if (!d?.filenames?.length) return
-      // Only react to drops that landed on this sidebar's own drop zone; the
-      // SFTP tab's remote pane is also a data-file-drop-target and shares the
-      // same event.
-      if (d.elementId && d.elementId !== FILE_DROP_ID) return
-      lastWailsDropAt = Date.now()
-      clearDragState()
-      uploadLocalPaths(d.filenames)
-    })
-    fileDropBound = true
-  } catch {
-    // runtime may be unavailable in browser preview
-  }
-}
-
-function unbindFileDrop() {
-  if (!fileDropBound) return
-  try { fileDropUnsub?.(); fileDropUnsub = null } catch { /* ignore */ }
-  fileDropBound = false
+  await uploadFileObjects(fileList)
 }
 
 // Open the current companion's SFTP as a standalone tab, mirroring the SSH
@@ -598,178 +281,43 @@ function openStandaloneSftp() {
   window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: panel }))
 }
 
-function clearFinishedTransfers() {
-  const tasks = transferTasks.value
-  for (let i = tasks.length - 1; i >= 0; i--) {
-    const st = tasks[i].status
-    if (st === 'done' || st === 'error' || st === 'cancelled') {
-      tasks.splice(i, 1)
-    }
-  }
-}
+// ── Change-permission dialog (shared FileChmodDialog) ──
+const chmod = useChmodDialog({
+  target: (item) => {
+    const sid = sessionId.value
+    return sid ? { sid, path: joinPath(cwd.value, item.name) } : null
+  },
+  refresh: scheduleRefresh,
+})
+const { chmodVisible, chmodItem, onChmod, onChmodConfirm } = chmod
 
-async function onDownloadTo(items: FileItem[]) {
-  const sid = sessionId.value
-  if (!sid) return
-  try {
-    const dir = await OpenDirectoryDialog()
-    if (!dir) return
-        for (const item of items) {
-      if (item.name === '..') continue
-      const remotePath = joinPath(cwd.value, item.name)
-      const localPath = (dir + '/' + item.name).replace(/\\/g, '/')
-      SftpGet(sid, remotePath, localPath, item.isDir)
-    }
-  } catch (e) {
-    console.error('downloadTo:', e)
-  }
-}
+// ── Editor dialog bridge (shared FileEditorDialog) ──
+const editor = useEditorBridge({ saved: () => onRefresh() })
+const { editorVisible, fileEditorRef } = editor
 
-async function onRename(item: FileItem) {
-  const sid = sessionId.value
-  if (!sid) return
-  const r = await openGeneric({ title: t('sftp.rename'), inputValue: item.name })
-  if (!r.ok || !r.value || r.value === item.name) return
-  await SftpRename(sid, joinPath(cwd.value, item.name), joinPath(cwd.value, r.value))
-  scheduleRefresh()
-}
-
-async function onDelete(items: FileItem[]) {
-  const sid = sessionId.value
-  if (!sid) return
-  const targets = items.filter(i => i.name !== '..')
-  if (!targets.length) return
-  const r = await openGeneric({ type: 'message', title: t('sftp.dialog.deleteTitle'), message: t('sftp.dialog.deleteConfirmMixed', { count: targets.length }) })
-  if (!r.ok) return
-    const names = new Set(targets.map(i => i.name))
-    // Stop any in-flight upload/download of these files first — otherwise
-    // SftpRemove can block forever while the transfer holds the SFTP handle.
-    for (const task of [...transferTasks.value]) {
-      if ((task.status === 'running' || task.status === 'paused') && names.has(task.name)) {
-        try { await SftpCancelTransfer(sid, task.id) } catch { /* ignore */ }
-        task.status = 'cancelled'
-      }
-    }
-
-    // Optimistic UI — remove from list immediately so delete never "looks stuck"
-    files.value = files.value.filter(f => !names.has(f.name))
-
-    for (const item of targets) {
-      try {
-        await withTimeout(
-          SftpRemove(sid, joinPath(cwd.value, item.name), item.isDir),
-          REMOVE_TIMEOUT_MS,
-          'remove',
-        )
-      } catch (e: any) {
-        const err = e?.toString?.() || String(e)
-        // File may already be gone — ignore not-found; otherwise put back & report
-        if (!/no such file|not found|no such file or directory|timeout/i.test(err)) {
-          msg.error(err)
-          if (!files.value.some(f => f.name === item.name)) {
-            files.value = [...files.value, item]
-          }
-        } else if (/timeout/i.test(err)) {
-          // Likely deleted on server but reply stalled — keep optimistic removal
-          msg.warning(t('companion.deleteTimeout'))
-        }
-      }
-    }
-    scheduleRefresh(300)
-}
-
-async function onMkdir() {
-  const sid = sessionId.value
-  if (!sid) return
-  const r = await openGeneric({ title: t('sftp.newDirectory') })
-  if (!r.ok || !r.value) return
-  await SftpMakeDir(sid, joinPath(cwd.value, r.value))
-  scheduleRefresh()
-}
-
-async function onNewFile() {
-  const sid = sessionId.value
-  if (!sid) return
-  const r = await openGeneric({ title: t('sftp.newFile') })
-  if (!r.ok || !r.value) return
-  await SftpPutContent(sid, joinPath(cwd.value, r.value), '', 'utf-8')
-  scheduleRefresh()
-}
-
-const chmodVisible = ref(false)
-const chmodItem = ref<FileItem | null>(null)
-
-function onChmod(item: FileItem) {
-  chmodItem.value = item
-  chmodVisible.value = true
-}
-
-async function onChmodConfirm(octal: string) {
-  const sid = sessionId.value
-  const item = chmodItem.value
-  if (!sid || !item) return
-  chmodItem.value = null
-  try {
-    await SftpChmod(sid, joinPath(cwd.value, item.name), octal)
-    scheduleRefresh()
-  } catch { /* ignore */ }
-}
-
-// ── Remote file editor (shared FileEditorDialog) ──
-const editorVisible = ref(false)
-const fileEditorRef = ref<{ open: (path: string, title: string, mode?: 'remote' | 'local') => Promise<void> } | null>(null)
-
-async function onEditFile(item: FileItem) {
-  if (item.isDir) return
-  const sid = sessionId.value
-  if (!sid) return
-  if (item.size > 5 * 1024 * 1024) {
-    msg.warning(t('sftp.edit.fileTooLarge'))
-    return
-  }
-  const path = joinPath(cwd.value, item.name)
-  await fileEditorRef.value?.open(path, t('sftp.dialog.editTitle', { path }), 'remote')
-}
-
-// onEditExternal opens a remote file in the configured external editor with
-// backend auto-upload (same flow as the SFTP tab's remote pane).
-async function onEditExternal(item: FileItem) {
-  if (item.isDir) return
-  const sid = sessionId.value
-  if (!sid) return
-  if (item.size > 5 * 1024 * 1024) {
-    msg.warning(t('sftp.edit.fileTooLarge'))
-    return
-  }
-  const editorCmd = localStateStore.state.externalEditor?.trim()
-  if (!editorCmd) {
-    msg.warning(t('sftp.editExternalNotConfigured'))
-    return
-  }
-  const path = joinPath(cwd.value, item.name)
-  try {
-    await SftpOpenExternalEditor(sid, path, editorCmd)
-    msg.info(t('sftp.editExternalStart', { path }))
-  } catch (e: any) {
-    msg.error(e?.toString() || 'Failed to open external editor')
-  }
-}
-
-async function onCancelTransfer(taskId: string) {
-  const sid = sessionId.value
-  if (!sid) return
-  try { await SftpCancelTransfer(sid, taskId) } catch {}
-}
-async function onPauseTransfer(taskId: string) {
-  const sid = sessionId.value
-  if (!sid) return
-  try { await SftpPauseTransfer(sid, taskId) } catch {}
-}
-async function onResumeTransfer(taskId: string) {
-  const sid = sessionId.value
-  if (!sid) return
-  try { await SftpResumeTransfer(sid, taskId) } catch {}
-}
+// ── Shared panel logic (clipboard, dialogs, file ops) — mirrors the SFTP tab ──
+const {
+  clipboard, cutItemNames, clipboardCount, pasteLoading, preparingUpload,
+  onCopyToClipboard, onCutToClipboard, onClearClipboard, onCancelPaste, onPaste,
+  onRename, onDelete, onMkdir, onNewFile,
+  onUpload, onDownloadTo,
+  onEditFile, onEditExternal,
+  onCancelTransfer, onPauseTransfer, onResumeTransfer, clearFinishedTransfers,
+  onSaveBookmark, onRemoveBookmark,
+  uploadPaths, uploadFileObjects,
+} = useFilePanel({
+  sid: () => sessionId.value ?? undefined,
+  cwd,
+  files,
+  refresh: scheduleRefresh,
+  ops: remoteFileOps,
+  conflicts,
+  dialogs: fileDialogs,
+  bookmarkMode: 'remote',
+  transferTasks: () => transferTasks.value,
+  openEditor: (path, title) => editor.openEditor(path, title, 'remote'),
+  openExternal: (sid, path, cmd) => SftpOpenExternalEditor(sid, path, cmd),
+})
 
 let unsubStatus: (() => void) | null = null
 let unsubData: (() => void) | null = null
@@ -800,13 +348,10 @@ function bindListeners() {
   // External-editor status events (started / uploaded / closed): refresh the
   // listing when edits land back on the remote, like the SFTP tab does.
   unsubExtEdit = Events.On('sftp:extedit', (ev) => {
-    const payload = ev?.data as { sessionId?: string; status?: string }
+    const payload = ev?.data as { sessionId?: string; path?: string; status?: string }
     if (payload?.sessionId !== sessionId.value) return
     if (payload.status === 'uploaded') {
-      msg.success(t('sftp.editExternalUploaded'))
       onRefresh()
-    } else if (payload.status === 'closed') {
-      msg.success(t('sftp.editExternalClosed'))
     }
   })
 
