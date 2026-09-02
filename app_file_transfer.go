@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/session"
@@ -335,20 +336,94 @@ func (a *App) SftpMove(sessionID, oldPath, newPath string) error {
 // Upload strategy is a hybrid:
 //   - live auto-upload: while the editor is open, a stable change (file not
 //     modified for ~1.2s) is pushed back automatically;
-//   - final upload: when the editor process exits, the last state is pushed
+//   - final upload: when the editing session ends, the last state is pushed
 //     once more as a safety net.
 //
 // The upload is skipped whenever the temp file content hash is unchanged, so
 // merely opening the editor won't produce a redundant upload.
+//
+// The temp file uses a deterministic name per (session, remote path), so
+// reopening the same file reuses the same local path — this matters because
+// single-instance editors receive files through a short-lived launcher
+// process (issue #737): the launched process exiting does NOT mean the editor
+// closed. The editor's lifetime is therefore not tracked at all: the watcher
+// and the temp file live as long as the session, and cleanup happens on
+// session close, app exit (all dirs of this PID), or the stale-age sweep at
+// the next app start.
 // ---------------------------------------------------------------------------
 
-// extEditSessions tracks active external-edit runs per session (keyed by temp
-// file path) so they can be cancelled — killing the editor process and letting
-// each goroutine clean its temp file — when a session closes.
+// extEditSessions tracks active external-edit runs per session (keyed by a
+// unique per-run key) so they can be cancelled — killing the editor process —
+// when a session closes. Temp files are NOT deleted here: they use stable,
+// deterministic names per (session, remote path) and stay on disk until the
+// session's scratch dir is wiped (session close), the app exits, or the age
+// sweep at app start, so a single-instance editor that was handed the file
+// never loses it while it is being edited.
 var (
 	extEditMu       sync.Mutex
 	extEditSessions = map[string]map[string]context.CancelFunc{}
+	extEditRunSeq   atomic.Uint64
+	// extEditWatchers holds the single live watcher per temp file. Reopening
+	// the same remote file must REUSE the watcher (re-baselining its hash) —
+	// stacking one watcher per open would make every save upload (and toast)
+	// once per watcher.
+	extEditWatchers = map[string]*extEditWatcher{}
 )
+
+// extEditWatcher is the shared upload baseline for one temp file's watcher.
+type extEditWatcher struct {
+	lastUploaded string // content hash already pushed to the remote
+}
+
+// extEditRootDir is the scratch root for external-edit temp files; each
+// session gets a subdirectory keyed by its sanitized ID.
+func extEditRootDir() string {
+	return filepath.Join(os.TempDir(), "uniterm-extedit")
+}
+
+// extEditSessionDir is a session's scratch dir. The PID prefix attributes the
+// dir to the app instance that created it — visible on disk without logs,
+// including after that instance has exited.
+func extEditSessionDir(sessionID string) string {
+	return filepath.Join(extEditRootDir(), fmt.Sprintf("%d-%s", os.Getpid(), sanitizePart(sessionID)))
+}
+
+const (
+	// Scratch dirs older than this are leftovers from a run that exited
+	// without cleanup (crash / force-kill) and are swept at app startup.
+	extEditStaleAge = 7 * 24 * time.Hour
+)
+
+// writeExtEditTemp writes the local temp copy for a remote file and returns
+// its path. The preferred name is deterministic per (session, remote path)
+// — reopening the same remote file reuses the same local path, so an editor
+// that receives it through a single-instance handoff never finds it deleted
+// underneath. The hash suffix sits BEFORE the extension so editors keep the
+// extension for syntax highlighting. A stale copy may still be held open by
+// an editor instance (its tab still open): overwrite-in-place then fails on
+// Windows, so fall back to a unique suffixed name — this open then behaves
+// like the old unique-name scheme instead of failing outright.
+func writeExtEditTemp(dir, stem string, sum []byte, ext string, content []byte) (string, error) {
+	tmp := filepath.Join(dir, fmt.Sprintf("%s-%x%s", stem, sum, ext))
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		// Locked by a live editor copy: fall back to a unique name.
+		tmp = filepath.Join(dir, stem+"-"+hex.EncodeToString(sum)+"-"+strconv.FormatUint(extEditRunSeq.Add(1), 10)+ext)
+		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return "", err
+		}
+	}
+	_, werr := f.Write(content)
+	cerr := f.Close()
+	if werr != nil {
+		return "", werr
+	}
+	if cerr != nil {
+		return "", cerr
+	}
+	return tmp, nil
+}
 
 // SftpOpenExternalEditor opens a remote file in a configurable external editor
 // and starts background auto-upload of changes back to the remote path.
@@ -372,41 +447,35 @@ func (a *App) SftpOpenExternalEditor(sessionID, remotePath, editorCmd string) er
 		return errors.New("refusing to open binary file in external editor")
 	}
 
-	// Temp file in a per-session scratch dir (unique per invocation).
-	dir := filepath.Join(os.TempDir(), "uniterm-extedit", sanitizePart(sessionID))
+	// Temp file in a per-session scratch dir (name built below).
+	dir := extEditSessionDir(sessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, sanitizePart(path.Base(remotePath))+"-*")
+	base := sanitizePart(path.Base(remotePath))
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	sum := sha256.Sum256([]byte(remotePath))
+	tmp, err := writeExtEditTemp(dir, stem, sum[:4], ext, content)
 	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	if _, err = f.Write(content); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err = f.Close(); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 
+	runKey := fmt.Sprintf("%s#%d", tmp, extEditRunSeq.Add(1))
+
 	prog, args, err := splitCommand(editorCmd)
 	if err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	args = append(args, tmp)
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	registerExternalEdit(sessionID, tmp, cancel)
+	registerExternalEdit(sessionID, runKey, cancel)
 
 	cmd := exec.CommandContext(runCtx, prog, args...)
 	hideProcWindow(cmd)
 	if err := cmd.Start(); err != nil {
-		unregisterExternalEdit(sessionID, tmp, cancel)
-		os.Remove(tmp)
+		unregisterExternalEdit(sessionID, runKey)
 		return fmt.Errorf("failed to start external editor %s: %w", prog, err)
 	}
 
@@ -417,8 +486,23 @@ func (a *App) SftpOpenExternalEditor(sessionID, remotePath, editorCmd string) er
 		"tmp":       tmp,
 	})
 
-	go a.pollExternalEditor(runCtx, sessionID, fs, remotePath, tmp, cmd, cancel,
-		content)
+	// One watcher per temp file: reopening the same remote file re-baselines
+	// the existing watcher (the fresh download is already the remote content)
+	// instead of stacking another one beside it.
+	h := hashBytes(content)
+	extEditMu.Lock()
+	w := extEditWatchers[tmp]
+	if w != nil {
+		w.lastUploaded = h
+	}
+	extEditMu.Unlock()
+	if w == nil {
+		w = &extEditWatcher{lastUploaded: h}
+		extEditMu.Lock()
+		extEditWatchers[tmp] = w
+		extEditMu.Unlock()
+		go a.pollExternalEditor(runCtx, sessionID, fs, remotePath, tmp, w, content)
+	}
 	return nil
 }
 
@@ -444,39 +528,32 @@ func (a *App) OpenExternalEditorLocal(localPath, editorCmd string) error {
 	return nil
 }
 
-// pollExternalEditor watches the temp file until the editor exits, pushing
-// changes back to the remote path (debounced live uploads + a final upload).
+// pollExternalEditor watches the temp file until the session ends, pushing
+// changes back to the remote path (debounced live uploads). The editor's
+// lifetime is deliberately NOT tracked: the watcher runs for the whole
+// session, so changes land on the remote no matter how often the editor is
+// opened and closed — including through single-instance editor hand-offs
+// (issue #737), which is why the temp file also stays put while editing.
 func (a *App) pollExternalEditor(runCtx context.Context, sessionID string,
-	fs fileTransferSession, remotePath, tmp string, cmd *exec.Cmd, cancel context.CancelFunc,
-	initial []byte) {
+	fs fileTransferSession, remotePath, tmp string, w *extEditWatcher, initial []byte) {
 
-	defer unregisterExternalEdit(sessionID, tmp, cancel)
-	defer os.Remove(tmp)
-	defer cancel()
+	defer func() {
+		extEditMu.Lock()
+		if extEditWatchers[tmp] == w {
+			delete(extEditWatchers, tmp)
+		}
+		extEditMu.Unlock()
+	}()
 
-	lastUploaded := hashBytes(initial)
+	lastUploaded := w.lastUploaded
 	var dirty bool
 	var lastSeenMtime time.Time
-
 	poll := time.NewTicker(400 * time.Millisecond)
 	defer poll.Stop()
-	editorDone := make(chan error, 1)
-	go func() { editorDone <- cmd.Wait() }()
 
 	for {
 		select {
 		case <-runCtx.Done():
-			return
-		case <-editorDone:
-			if b, err := os.ReadFile(tmp); err == nil {
-				if h := hashBytes(b); h != lastUploaded {
-					if perr := fs.PutContent(remotePath, b); perr == nil {
-						lastUploaded = h
-						a.emitExtEdit(sessionID, remotePath, "uploaded")
-					}
-				}
-			}
-			a.emitExtEdit(sessionID, remotePath, "closed")
 			return
 		case <-poll.C:
 			st, err := os.Stat(tmp)
@@ -500,13 +577,27 @@ func (a *App) pollExternalEditor(runCtx context.Context, sessionID string,
 				dirty = false
 				continue
 			}
+			dirty = false
 			if h := hashBytes(b); h != lastUploaded {
-				if perr := fs.PutContent(remotePath, b); perr == nil {
+				// Update the shared baseline under the registry lock so a
+				// concurrent watcher of the same temp file can never push a
+				// duplicate upload of identical content.
+				extEditMu.Lock()
+				if w.lastUploaded == h {
+					extEditMu.Unlock()
+					lastUploaded = h
+					continue
+				}
+				perr := fs.PutContent(remotePath, b)
+				if perr == nil {
+					w.lastUploaded = h
+					extEditMu.Unlock()
 					lastUploaded = h
 					a.emitExtEdit(sessionID, remotePath, "uploaded")
+				} else {
+					extEditMu.Unlock()
 				}
 			}
-			dirty = false
 		}
 	}
 }
@@ -519,21 +610,22 @@ func (a *App) emitExtEdit(sessionID, remotePath, status string) {
 	})
 }
 
-// registerExternalEdit records the cancel func for a session + temp file.
-func registerExternalEdit(sessionID, tmp string, cancel context.CancelFunc) {
+// registerExternalEdit records one edit run (keyed by a unique per-run key,
+// since several runs may watch the same temp file).
+func registerExternalEdit(sessionID, runKey string, cancel context.CancelFunc) {
 	extEditMu.Lock()
 	defer extEditMu.Unlock()
 	if extEditSessions[sessionID] == nil {
 		extEditSessions[sessionID] = map[string]context.CancelFunc{}
 	}
-	extEditSessions[sessionID][tmp] = cancel
+	extEditSessions[sessionID][runKey] = cancel
 }
 
-func unregisterExternalEdit(sessionID, tmp string, cancel context.CancelFunc) {
+func unregisterExternalEdit(sessionID, runKey string) {
 	extEditMu.Lock()
 	defer extEditMu.Unlock()
 	if m, ok := extEditSessions[sessionID]; ok {
-		delete(m, tmp)
+		delete(m, runKey)
 		if len(m) == 0 {
 			delete(extEditSessions, sessionID)
 		}
@@ -542,14 +634,57 @@ func unregisterExternalEdit(sessionID, tmp string, cancel context.CancelFunc) {
 
 // cancelExternalEdits stops every active external edit for a session (called
 // when the session is unregistered / closed), killing editor processes and
-// letting each goroutine clean its temp file.
+// wiping the session's temp scratch dir. The dir name is unique per session,
+// so concurrent app instances never clash.
 func cancelExternalEdits(sessionID string) {
 	extEditMu.Lock()
-	defer extEditMu.Unlock()
 	for _, cancel := range extEditSessions[sessionID] {
 		cancel()
 	}
 	delete(extEditSessions, sessionID)
+	extEditMu.Unlock()
+	// Best-effort wipe of the session's scratch dir — no watcher references
+	// its files anymore.
+	_ = os.RemoveAll(extEditSessionDir(sessionID))
+}
+
+// cleanupExtEditsOnExit deletes every external-edit scratch dir belonging to
+// this process, identified by the PID prefix of the dir name. Best-effort:
+// a file still held open by an editor fails the removal and is left for the
+// startup age sweep.
+func cleanupExtEditsOnExit() {
+	pidPrefix := fmt.Sprintf("%d-", os.Getpid())
+	entries, err := os.ReadDir(extEditRootDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), pidPrefix) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(extEditRootDir(), e.Name()))
+	}
+}
+
+// sweepStaleExtEditDirs removes external-edit scratch dirs left behind by
+// previous runs that exited without cleanup (crash / force-kill). Dirs newer
+// than extEditStaleAge are kept — another concurrently running instance may
+// still be using them. Runs once at app startup.
+func sweepStaleExtEditDirs() {
+	entries, err := os.ReadDir(extEditRootDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || time.Since(info.ModTime()) < extEditStaleAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(extEditRootDir(), e.Name()))
+	}
 }
 
 // isBinaryExt heuristically rejects binary content (mirrors the frontend check).

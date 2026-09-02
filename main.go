@@ -114,6 +114,14 @@ func main() {
 		macTitleBar = application.MacTitleBarDefault
 	}
 
+	// Clean external-edit scratch dirs left behind by previous runs that
+	// exited without cleanup (crash / force-kill). Old dirs only: a
+	// concurrently running instance keeps its own. Async: it only ever
+	// touches dirs older than the stale age, which no new session can
+	// collide with (fresh PID + fresh session ID), so startup never waits
+	// on it.
+	go sweepStaleExtEditDirs()
+
 	w3app := application.New(application.Options{
 		Name:       "uniTerm",
 		Assets:     application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
