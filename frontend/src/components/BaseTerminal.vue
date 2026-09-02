@@ -275,6 +275,7 @@ let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
 let onVisibilityChange: (() => void) | null = null
+let onWindowFocus: (() => void) | null = null
 
 // Reset xterm's internal IME composition state. When the terminal is moved in
 // the DOM (KeepAlive tab switch) or hidden (display:none), the OS IME can
@@ -1540,6 +1541,23 @@ onMounted(() => {
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
 
+  // When the app window regains focus (user switches back from another app),
+  // blur+focus the textarea to reset the IME candidate window position.
+  // On Windows, the IME window can drift to the screen origin (top-left)
+  // when the textarea is moved/reparented while the IME was active. The
+  // blur+focus cycle forces the OS to recalculate the IME position from
+  // the textarea's current cursor location, fixing the orphaned IME window
+  // that causes duplicate input.
+  onWindowFocus = () => {
+    if (!isActive.value || !terminal) return
+    const el = terminal.textarea
+    if (el && el.offsetParent != null) {
+      el.blur()
+      el.focus()
+    }
+  }
+  window.addEventListener('focus', onWindowFocus)
+
   resizeObserver = new ResizeObserver(() => {
     if (isResizing || splitResizing || Date.now() < suppressResizeUntil) return
     const el = terminalRef.value
@@ -1622,13 +1640,26 @@ onActivated(() => {
   }, d))
   // Re-initialize zmodem service only if it was disposed in onDeactivated.
   // If a transfer was active, the service is still running — skip recreate.
-  // safe: no focus() call here, avoids WebView2 crash race with native dialogs.
   if (props.sessionId && props.mode === 'ssh' && !zmodemService) {
     initZmodemService(props.sessionId)
   }
-  // Note: focus() is intentionally skipped here. Calling focus() during
-  // activation can race with native dialogs (OpenDirectoryDialog etc.)
-  // and trigger a WebView2 crash (edge.Chromium.Focus parameter error).
+  // Delayed focus: during activation, calling focus() immediately can race
+  // with native dialogs (OpenDirectoryDialog etc.) and crash WebView2.
+  // But skipping focus() entirely leaves the textarea unfocused, which means
+  // the IME candidate window loses its cursor position reference and drifts
+  // to the screen origin (top-left). When the IME window is orphaned like
+  // this, input events take an异常 path that causes character duplication.
+  // A delayed focus() after the resize retries gives native dialogs time to
+  // close while still resetting the IME position before the user starts typing.
+  setTimeout(() => {
+    if (!isActive.value || !terminal) return
+    // Only focus if the terminal is actually visible — don't steal focus
+    // from a dialog or input the user is currently interacting with.
+    const el = terminal.textarea
+    if (el && el.offsetParent != null && document.activeElement !== el) {
+      focus()
+    }
+  }, 700)
 })
 
 onDeactivated(() => {
@@ -1871,6 +1902,8 @@ onUnmounted(() => {
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
   if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange)
   onVisibilityChange = null
+  if (onWindowFocus) window.removeEventListener('focus', onWindowFocus)
+  onWindowFocus = null
   suggestions.close()
   if (!zmodemStore.getActiveTransfer(props.sessionId || '')) {
     disposeZmodemService(props.sessionId || '')
