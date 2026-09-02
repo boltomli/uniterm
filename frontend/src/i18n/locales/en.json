@@ -1260,6 +1260,7 @@
   "db.exportData": "Export data only",
   "db.exportStructureData": "Export structure and data",
   "db.exportDone": "{name} exported",
+  "db.exportResults": "Export results",
   "dataDir.title": "Choose data location",
   "dataDir.default": "System default directory (recommended for installed version)",
   "dataDir.portable": "Program directory (portable, must be in a writable location)",

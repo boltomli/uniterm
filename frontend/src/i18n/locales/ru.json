@@ -1260,6 +1260,7 @@
   "db.exportData": "Экспорт только данные",
   "db.exportStructureData": "Экспорт структуру и данные",
   "db.exportDone": "{name} экспортировано",
+  "db.exportResults": "Экспорт результатов",
   "config.changeDir": "Изменить каталог",
   "config.changeDone": "Мастер-пароль изменён",
   "config.changePassword": "Изменить мастер-пароль",

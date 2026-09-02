@@ -81,6 +81,23 @@
           :placeholder="t('db.filterResults')"
         />
         <div class="result-toolbar-right">
+          <button
+            ref="exportBtnRef"
+            class="btn btn-ghost btn-icon btn-sm"
+            :title="t('db.exportResults')"
+            @click.stop="exportMenuRef?.toggle($event.currentTarget)"
+          >
+            <Download :size="14" />
+          </button>
+          <Menu
+            ref="exportMenuRef"
+            v-model:visible="exportMenuVisible"
+            align="end"
+          >
+            <MenuItem @click="onExportResults('csv')">CSV</MenuItem>
+            <MenuItem @click="onExportResults('txt')">TXT</MenuItem>
+            <MenuItem @click="onExportResults('json')">JSON</MenuItem>
+          </Menu>
           <span class="result-count">
             {{ displayRows.length }}{{ resultFilter ? ` / ${queryResult.rows.length}` : '' }} {{ t('db.rows') }}
             <span v-if="lastDurationMs != null"> ? {{ lastDurationMs }}ms</span>
@@ -180,12 +197,14 @@
 
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
-import { Sparkles, History, FolderOpen } from '@lucide/vue'
+import { Sparkles, History, FolderOpen, Download } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import SyntaxEditor from './SyntaxEditor.vue'
 import DBResultGrid from './DBResultGrid.vue'
-import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import Menu from './Menu.vue'
+import MenuItem from './MenuItem.vue'
+import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
@@ -276,6 +295,60 @@ const browsePageTotal = computed(() => {
   if (browseHasMore.value) return (page.value + 1) * pageSize.value + 1
   return page.value * pageSize.value + rows
 })
+
+// ── Export result rows as CSV / TXT / JSON ──
+
+const exportMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const exportMenuVisible = ref(false)
+
+function csvCell(v: unknown): string {
+  if (v == null) return ''
+  const s = String(v)
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+}
+
+function fmtCell(v: unknown): string {
+  if (v == null) return 'NULL'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
+function buildExportText(format: 'csv' | 'txt' | 'json'): string {
+  const cols = queryResult.value?.columns.map(c => c.name) || []
+  const rows = displayRows.value
+  if (format === 'json') {
+    return JSON.stringify(rows.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? null]))), null, 2)
+  }
+  if (format === 'txt') {
+    // Tab-separated with a header line; matches what spreadsheet tools paste back.
+    return [cols.join('\t'), ...rows.map(r => cols.map(c => fmtCell(r[c])).join('\t'))].join('\n')
+  }
+  // BOM so Excel detects UTF-8; CRLF per RFC 4180.
+  return '﻿' + [cols.map(csvCell).join(','), ...rows.map(r => cols.map(c => csvCell(r[c])).join(','))].join('\r\n')
+}
+
+async function onExportResults(format: 'csv' | 'txt' | 'json') {
+  exportMenuVisible.value = false
+  if (!queryResult.value?.rows.length) return
+  try {
+    const ext = format === 'json' ? 'json' : format === 'txt' ? 'txt' : 'csv'
+    const label = format === 'json' ? 'JSON File' : format === 'txt' ? 'Text File' : 'CSV File'
+    const defaultName = `${props.tableName || 'query_result'}_${new Date().toISOString().slice(0, 10)}.${ext}`
+    const path = await SaveFileDialogFiltered(t('db.exportResults'), defaultName, label, `*.${ext}`)
+    if (!path) return
+    await WriteFileBase64(path, encodeBase64(buildExportText(format)))
+    msg.success(t('db.exportDone', { name: path.split('/').pop() || defaultName }))
+  } catch (e: any) {
+    msg.error(e?.message || String(e))
+  }
+}
+
+function encodeBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
 
 function refreshHistory() {
   history.value = loadSqlHistory(props.sessionId)

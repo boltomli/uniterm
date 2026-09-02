@@ -1260,6 +1260,7 @@
   "db.exportData": "Exportar solo datos",
   "db.exportStructureData": "Exportar estructura y datos",
   "db.exportDone": "{name} exportado",
+  "db.exportResults": "Exportar resultados",
   "config.changeDir": "Cambiar directorio",
   "config.changeDone": "Contraseña maestra cambiada",
   "config.changePassword": "Cambiar contraseña maestra",
