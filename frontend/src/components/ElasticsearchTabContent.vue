@@ -92,11 +92,11 @@
               />
             </div>
             <div v-else class="query-editor-wrap">
-              <textarea
+              <SyntaxEditor
                 v-model="dslBody"
-                class="query-textarea"
-                :placeholder='`{\n  "query": { "match_all": {} }\n}`'
-                @keydown="onDslKeydown"
+                lang="json"
+                compact
+                @execute="runSearch"
               />
             </div>
             <div class="docs-actions">
@@ -125,7 +125,7 @@
                   border
                   size="small"
                   style="width:100%"
-                  highlight-current-row
+                  class="db-result-table"
                   :empty-text="t('db.noData')"
                   @row-click="onRowClick"
                   @row-dblclick="onRowDblClick"
@@ -139,7 +139,10 @@
                     show-overflow-tooltip
                   >
                     <template #default="{ row }">
-                      <span class="cell-value">{{ formatCellValue(row[col]) }}</span>
+                      <span
+                        class="cell-value"
+                        :class="{ 'cell-null': row[col] === null || row[col] === undefined }"
+                      >{{ formatCellValue(row[col]) }}</span>
                     </template>
                   </el-table-column>
                   <el-table-column width="80" fixed="right">
@@ -194,11 +197,11 @@
             <input v-model="restPath" class="rest-path" placeholder="/_cluster/health" @keydown.enter="runRest" />
             <button class="btn btn-primary btn-sm" @click="runRest" :disabled="restLoading">{{ t('es.send') }}</button>
           </div>
-          <textarea
+          <SyntaxEditor
             v-model="restBody"
+            lang="json"
             class="rest-body"
-            :placeholder="t('es.restBodyPlaceholder')"
-            :disabled="restMethod === 'GET' || restMethod === 'DELETE'"
+            :readonly="restMethod === 'GET' || restMethod === 'DELETE'"
           />
           <div class="rest-result">
             <div class="rest-status" v-if="restResult">HTTP {{ restResult.status }}</div>
@@ -232,7 +235,7 @@
           <el-input v-model="docEditId" :placeholder="t('es.documentIdAuto')" />
         </el-form-item>
       </el-form>
-      <textarea v-model="docEditText" class="doc-editor" spellcheck="false" />
+      <SyntaxEditor v-model="docEditText" lang="json" class="doc-editor" />
       <template #footer>
         <button class="btn btn-default" @click="docDialogVisible = false">{{ t('settings.cancel') }}</button>
         <button class="btn btn-primary" @click="saveDocument" :disabled="docSaving">{{ t('redis.save') }}</button>
@@ -246,7 +249,7 @@
           <el-input v-model="newIndexName" />
         </el-form-item>
         <el-form-item :label="t('es.indexBody')">
-          <textarea v-model="newIndexBody" class="doc-editor" style="min-height:160px" :placeholder='`{\n  "settings": { "number_of_shards": 1 }\n}`' />
+          <SyntaxEditor v-model="newIndexBody" lang="json" class="doc-editor index-body" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -263,6 +266,7 @@ import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
 import Menu from './Menu.vue'
+import SyntaxEditor from './SyntaxEditor.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import {
@@ -458,13 +462,6 @@ function onPageSizeChange(size: number) {
   pageSize.value = size
   pageFrom.value = 0
   runSearch()
-}
-
-function onDslKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-    e.preventDefault()
-    runSearch()
-  }
 }
 
 function formatCellValue(v: unknown): string {
@@ -910,20 +907,6 @@ function onTopResizeStart(e: MouseEvent) {
 .query-mode-row { display: flex; }
 .simple-query { flex: 1; }
 .query-editor-wrap { flex: 1; min-height: 0; display: flex; }
-.query-textarea {
-  width: 100%;
-  height: 100%;
-  min-height: 60px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  resize: none;
-  outline: none;
-}
 .docs-actions {
   display: flex;
   align-items: center;
@@ -960,9 +943,24 @@ function onTopResizeStart(e: MouseEvent) {
   min-height: 0;
   overflow: auto;
 }
+/* 结果表格主题变量与 DBResultGrid 保持一致 */
+.db-result-table {
+  --el-table-header-bg-color: var(--bg-elevated, var(--bg-surface));
+  --el-table-tr-bg-color: var(--bg-surface);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-bg-color: var(--bg-surface);
+  font-size: 12px;
+}
 .cell-value {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+.cell-null {
+  color: var(--text-muted);
+  font-style: italic;
 }
 .pagination {
   padding-top: 8px;
@@ -1047,15 +1045,6 @@ function onTopResizeStart(e: MouseEvent) {
 }
 .rest-body {
   height: 140px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  resize: vertical;
-  outline: none;
   flex-shrink: 0;
 }
 .rest-result {
@@ -1076,16 +1065,10 @@ function onTopResizeStart(e: MouseEvent) {
 
 .doc-editor {
   width: 100%;
-  min-height: 280px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  resize: vertical;
-  outline: none;
+  height: 320px;
+}
+.doc-editor.index-body {
+  height: 180px;
 }
 
 </style>
