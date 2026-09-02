@@ -72,7 +72,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
         const pendingPaths = store.getPendingUploadFiles(sessionId)
         const uploadPaths = pendingPaths && pendingPaths.length > 0
           ? Promise.resolve(pendingPaths)
-          : OpenMultipleFilesDialog()
+          : OpenMultipleFilesDialog().catch((err: any) => dialogCancelToEmpty(err, []))
 
         uploadPaths.then(async (paths) => {
           if (!paths || paths.length === 0) {
@@ -90,7 +90,9 @@ export function startZmodemService(options: ZmodemServiceOptions) {
       } else {
         // ── Download (sz) ────────────────────────────────────────
         dialogLocks.add(sessionId)
-        OpenDirectoryDialog().then(async (saveDir: string) => {
+        OpenDirectoryDialog()
+          .catch((err: any) => dialogCancelToEmpty(err, ''))
+          .then(async (saveDir: string) => {
           if (!saveDir) {
             zsession.abort()
             await SessionEndZmodem(sessionId).catch(() => {})
@@ -394,6 +396,16 @@ async function handleReceive(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+// Wails v3 rejects the dialog promise with "cancelled by user" when the
+// user dismisses the picker, instead of resolving with an empty result.
+// Translate that rejection into the empty-selection flow (abort zsession,
+// end zmodem mode, onComplete) so the remote rz/sz exits cleanly; real
+// dialog errors keep propagating to onError.
+function dialogCancelToEmpty<T>(err: unknown, empty: T): T {
+  if (String(err).toLowerCase().includes('cancel')) return empty
+  throw err
+}
 
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = atob(base64)

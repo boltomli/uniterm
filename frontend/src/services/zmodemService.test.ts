@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const {
   mockAppendFileBase64,
   mockOpenDirectoryDialog,
+  mockOpenMultipleFilesDialog,
   mockSessionEndZmodem,
   mockSessionWrite,
   mockSessionWriteBinary,
@@ -13,6 +14,7 @@ const {
   return {
     mockAppendFileBase64: vi.fn().mockResolvedValue(undefined),
     mockOpenDirectoryDialog: vi.fn().mockResolvedValue('C:\\Downloads'),
+    mockOpenMultipleFilesDialog: vi.fn().mockResolvedValue([]),
     mockSessionEndZmodem: vi.fn().mockResolvedValue(undefined),
     mockSessionWrite: vi.fn().mockResolvedValue(undefined),
     mockSessionWriteBinary: vi.fn().mockResolvedValue(undefined),
@@ -37,7 +39,7 @@ vi.mock('@wailsio/runtime', () => ({
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   AppendFileBase64: mockAppendFileBase64,
   OpenDirectoryDialog: mockOpenDirectoryDialog,
-  OpenMultipleFilesDialog: vi.fn(),
+  OpenMultipleFilesDialog: mockOpenMultipleFilesDialog,
   ReadFileBase64: vi.fn(),
   SessionEndZmodem: mockSessionEndZmodem,
   SessionWrite: mockSessionWrite,
@@ -109,11 +111,24 @@ function makeDownload(chunks: number[][]) {
   return state
 }
 
+// Builds a fake zmodem 'send' session (the local side of an rz upload).
+function makeUpload() {
+  const zsession = {
+    type: 'send',
+    on: vi.fn(),
+    abort: vi.fn(),
+    close: vi.fn(),
+    send_offer: vi.fn(),
+  }
+  return { zsession }
+}
+
 describe('startZmodemService', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sentryInstances.length = 0
     mockOpenDirectoryDialog.mockResolvedValue('C:\\Downloads')
+    mockOpenMultipleFilesDialog.mockResolvedValue([])
     mockAppendFileBase64.mockResolvedValue(undefined)
   })
 
@@ -201,5 +216,51 @@ describe('startZmodemService', () => {
 
     expect(onComplete).toHaveBeenCalledWith(['C:\\Downloads\\large.bin'])
     expect(mockSessionEndZmodem).toHaveBeenCalledWith('s1')
+  })
+
+  // Wails v3 rejects the dialog promise with "cancelled by user" when the
+  // user dismisses the picker. The service must treat that as a cancel:
+  // abort the zsession (so the remote rz exits), end zmodem mode, and fire
+  // the cancel path — not report an error.
+  it('treats upload dialog rejection as a user cancel', async () => {
+    vi.useFakeTimers()
+    const u = makeUpload()
+    const onComplete = vi.fn()
+    const onError = vi.fn()
+    mockOpenMultipleFilesDialog.mockRejectedValue(
+      Object.assign(new Error('cancelled by user'), { name: 'RuntimeError' }),
+    )
+
+    startZmodemService({ sessionId: 's1', onComplete, onError })
+    sentryInstances[0].on_detect({ confirm: () => u.zsession })
+    await sleepTicks()
+    await vi.runOnlyPendingTimersAsync()
+    vi.useRealTimers()
+
+    expect(u.zsession.abort).toHaveBeenCalled()
+    expect(mockSessionEndZmodem).toHaveBeenCalledWith('s1')
+    expect(onComplete).toHaveBeenCalledWith([])
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('treats download dialog rejection as a user cancel', async () => {
+    vi.useFakeTimers()
+    const s = makeDownload([[1, 2, 3]])
+    const onComplete = vi.fn()
+    const onError = vi.fn()
+    mockOpenDirectoryDialog.mockRejectedValue(
+      Object.assign(new Error('cancelled by user'), { name: 'RuntimeError' }),
+    )
+
+    startZmodemService({ sessionId: 's1', onComplete, onError })
+    sentryInstances[0].on_detect({ confirm: () => s.zsession })
+    await sleepTicks()
+    await vi.runOnlyPendingTimersAsync()
+    vi.useRealTimers()
+
+    expect(s.zsession.abort).toHaveBeenCalled()
+    expect(mockSessionEndZmodem).toHaveBeenCalledWith('s1')
+    expect(onComplete).toHaveBeenCalledWith([])
+    expect(onError).not.toHaveBeenCalled()
   })
 })

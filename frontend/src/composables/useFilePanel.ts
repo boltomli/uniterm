@@ -7,7 +7,6 @@ import {
   SftpLocalCopy, SftpLocalMove, SftpLocalRename, SftpLocalRemove, SftpLocalMkdir, SftpLocalPutContent,
   SftpCancelTransfer, SftpPauseTransfer, SftpResumeTransfer,
   OpenMultipleFilesDialog, OpenDirectoryDialog,
-  CreateTempUpload, AppendTempUpload, WriteTempFile,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import { useLocalStateStore } from '../stores/localStateStore'
@@ -565,66 +564,7 @@ export function useFilePanel(opts: FilePanelOptions) {
     }
   }
 
-  // --- Drag-drop upload (HTML5 File objects -> temp upload) -----------------
-
-  const preparingUpload = ref(false)
-
-  function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer)
-    const chunk = 0x8000
-    let binary = ''
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-    }
-    return btoa(binary)
-  }
-
-  function yieldToUI(): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, 0))
-  }
-
-  /** Chunked temp write — avoids freezing the UI on large drops. */
-  async function readAndUploadChunked(id: string, file: File, remotePath: string) {
-    try {
-      const tmpPath = await CreateTempUpload(file.name)
-      const chunkSize = 512 * 1024
-      for (let offset = 0; offset < file.size; offset += chunkSize) {
-        const blob = file.slice(offset, Math.min(offset + chunkSize, file.size))
-        const buf = await blob.arrayBuffer()
-        await AppendTempUpload(tmpPath, arrayBufferToBase64(buf))
-        await yieldToUI()
-      }
-      SftpPut(id, tmpPath, remotePath, false)
-    } catch {
-      msg.error(t('companion.uploadFailed'))
-    }
-  }
-
-  async function readAndUpload(id: string, file: File, remotePath: string): Promise<void> {
-    // Small files: single WriteTempFile is fine; larger: chunk to keep UI responsive
-    if (file.size > 256 * 1024) {
-      return readAndUploadChunked(id, file, remotePath)
-    }
-    return new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(',')[1]
-        try {
-          const tmpPath = await WriteTempFile(file.name, base64)
-          SftpPut(id, tmpPath, remotePath, false)
-        } catch {
-          msg.error(t('companion.uploadFailed'))
-        } finally {
-          resolve()
-        }
-      }
-      reader.onerror = () => {
-        msg.error(t('companion.uploadFailed'))
-        resolve()
-      }
-      reader.readAsDataURL(file)
-    })
-  }
+  // --- Drag-drop upload (native OS paths) -----------------------------------
 
   /** Upload absolute local paths (native drop / file dialog) into cwd. */
   async function uploadPaths(localPaths: string[]) {
@@ -642,29 +582,6 @@ export function useFilePanel(opts: FilePanelOptions) {
       existing.push(name)
       // false = single file; backend auto-upgrades to recursive for directories
       ops.put(id, localPaths[i], joinPath(cwd.value, name), false)
-    }
-  }
-
-  /** Upload HTML5 File objects (web drop without native paths). */
-  async function uploadFileObjects(fileList: File[]) {
-    const id = sid()
-    if (!id) return
-    const names = fileList.map(f => f.name)
-    const action = await conflicts.resolveConflicts(names, files.value.map(f => f.name))
-    if (action === 'cancel') return
-    const existing = files.value.map(f => f.name)
-    preparingUpload.value = true
-    try {
-      for (const f of fileList) {
-        let resolvedName = f.name
-        if (action === 'rename' && existing.includes(f.name)) {
-          resolvedName = autoRename(f.name, existing)
-        }
-        existing.push(resolvedName)
-        await readAndUpload(id, f, joinPath(cwd.value, resolvedName))
-      }
-    } finally {
-      preparingUpload.value = false
     }
   }
 
@@ -691,7 +608,7 @@ export function useFilePanel(opts: FilePanelOptions) {
     // bookmarks
     onSaveBookmark, onRemoveBookmark,
     // drag-drop upload
-    preparingUpload, uploadPaths, uploadFileObjects,
+    uploadPaths,
   }
 }
 
@@ -883,7 +800,6 @@ export function useNativeFileDrop(opts: {
 }) {
   let bound = false
   let unsub: (() => void) | null = null
-  let lastAt = 0
 
   function bind() {
     if (bound) return
@@ -892,7 +808,6 @@ export function useNativeFileDrop(opts: {
         const d = ev.data as { elementId?: string; filenames: string[] }
         if (!opts.isActive() || !d?.filenames?.length) return
         if (d.elementId && opts.elementId && d.elementId !== opts.elementId) return
-        lastAt = Date.now()
         opts.upload(d.filenames)
       })
       bound = true
@@ -907,15 +822,5 @@ export function useNativeFileDrop(opts: {
     bound = false
   }
 
-  function isBound(): boolean {
-    return bound
-  }
-
-  /** True right after a native drop — HTML5 drop handling must back off to
-   *  avoid duplicate transfer records. */
-  function recentlyDropped(): boolean {
-    return Date.now() - lastAt < 800
-  }
-
-  return { bind, unbind, isBound, recentlyDropped }
+  return { bind, unbind }
 }
