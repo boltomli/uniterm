@@ -3,9 +3,6 @@
     v-show="visible"
     class="terminal-screen-preview"
     :style="popupStyle"
-    @mouseenter="onPopupEnter"
-    @mouseleave="hide"
-    @click="onJump"
   >
     <div
       v-for="(row, i) in lines"
@@ -52,15 +49,18 @@ import {
   buildPalette,
   lineToRuns,
   computePreviewStart,
+  computePreviewWindowStart,
+  computeTrackClickRatio,
+  computeSliderHeight,
   pickVerticalTrackIndex,
+  type PreviewPalette,
   type PreviewStyleRun,
 } from '../services/screenPreview'
 
-const props = defineProps<{ sessionId: string; enabled?: boolean }>()
+const props = defineProps<{ sessionId: string }>()
 
 const PREVIEW_ROWS = 10
 const HOVER_DELAY = 250
-const HIDE_DELAY = 150
 
 const settingsStore = useSettingsStore()
 const showLineNumbers = computed(() => settingsStore.settings.terminal.showLineNumbers ?? false)
@@ -73,6 +73,10 @@ const pos = ref({ left: 0, top: 0 })
 const size = ref({ width: 0, height: 0 })
 const cellHeightPx = ref('1.5em')
 const bgColor = ref('#1e1e1e')
+// Terminal's resolved default foreground. Cells without an explicit color
+// have no inline style — the popup container must carry the terminal's
+// foreground, or they inherit the app UI's text color instead.
+const fgColor = ref('#cccccc')
 const fontCss = ref({ fontSize: '13px', fontFamily: 'monospace' })
 const numColWidth = ref('')
 const timeColWidth = ref('')
@@ -82,7 +86,10 @@ const popupStyle = computed(() => ({
   top: `${pos.value.top}px`,
   width: `${size.value.width}px`,
   height: `${size.value.height}px`,
-  background: bgColor.value,
+  // Translucent background + CSS backdrop blur (see .terminal-screen-preview)
+  // gives a frosted-glass popup that lets the content beneath show through.
+  background: withAlpha(bgColor.value, 0.7),
+  color: fgColor.value,
   fontSize: fontCss.value.fontSize,
   fontFamily: fontCss.value.fontFamily,
 }))
@@ -103,6 +110,39 @@ function getTerminal(): Terminal | null {
 }
 
 /**
+ * Palette for the preview popup. xterm resolves `options.theme` against its
+ * built-in defaults — a theme may override only a few keys, so the popup must
+ * read the RESOLVED colors from the theme service (what the terminal actually
+ * paints), not the raw option; reading the raw option left the preview stuck
+ * on fixed fallback colors after switching terminal themes.
+ */
+function buildLivePalette(t: Terminal): PreviewPalette {
+  try {
+    const colors = (t as any)._core?._themeService?.colors
+    if (Array.isArray(colors?.ansi) && colors.ansi.length >= 16) {
+      return {
+        defaultFg: colors.foreground?.css ?? '#ffffff',
+        defaultBg: colors.background?.css ?? '#000000',
+        ansi16: colors.ansi.slice(0, 16).map((c: { css: string }) => c.css),
+      }
+    }
+  } catch { /* internal API — fall through */ }
+  return buildPalette(t.options.theme)
+}
+
+/** Add alpha to a hex color (e.g. popup background); non-hex passes through. */
+function withAlpha(color: string, alpha: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
+  if (!m) return color
+  let hex = m[1]
+  if (hex.length === 3) {
+    hex = hex.split('').map((ch) => ch + ch).join('')
+  }
+  const n = parseInt(hex, 16)
+  return `rgba(${(n >> 16) & 0xff}, ${(n >> 8) & 0xff}, ${n & 0xff}, ${alpha})`
+}
+
+/**
  * Locate xterm's scrollbar element. xterm v6 renders a VS Code-style overlay
  * scrollbar (`.xterm-scrollable-element > .scrollbar`) that is a *sibling* of
  * `.xterm-viewport` — hovering it never produces events on the viewport, so
@@ -119,18 +159,20 @@ function findScrollbar(t: Terminal): HTMLElement | null {
 
 let host: HTMLElement | null = null
 let hoverTimer: number | undefined
-let hideTimer: number | undefined
+/** Click-equivalent scroll fraction (slider-centered mapping). */
 let lastRatio = 0
+/** The pointer's own vertical fraction within the track ≙ viewport row. */
+let lastPointerFraction = 0
+/** Viewport top line the track click will land on. */
+let jumpTopLine = 0
 let lastClientY = 0
+/** True between pointerdown and pointerup on the track (preview visible). */
+let trackDragging = false
 
 function clearTimers() {
   if (hoverTimer !== undefined) {
     clearTimeout(hoverTimer)
     hoverTimer = undefined
-  }
-  if (hideTimer !== undefined) {
-    clearTimeout(hideTimer)
-    hideTimer = undefined
   }
 }
 
@@ -142,11 +184,13 @@ function bind() {
   host = el
   el.addEventListener('mousemove', onMouseMove)
   el.addEventListener('mouseleave', onMouseLeave)
+  el.addEventListener('pointerdown', onPointerDownCapture, true)
 }
 
 function unbind() {
   host?.removeEventListener('mousemove', onMouseMove)
   host?.removeEventListener('mouseleave', onMouseLeave)
+  host?.removeEventListener('pointerdown', onPointerDownCapture, true)
   host = null
   clearTimers()
   visible.value = false
@@ -176,8 +220,17 @@ function charWidth(t: Terminal): number {
  * A small tolerance on the left edge makes the narrow (14px) strip easier to
  * hit. Hovering the thumb (slider) returns null — the thumb marks the content
  * that is already on screen, so there is nothing to preview there.
+ *
+ * Returns the track rect plus the slider's real height: the preview maps the
+ * hover point to buffer rows with the same slider-centered formula xterm uses
+ * for track clicks (see computeTrackClickRatio), so the slider height is part
+ * of the math. Falls back to ScrollbarState's own max(20, …) formula when the
+ * slider element can't be measured.
  */
-function scrollbarRect(t: Terminal, e: MouseEvent): DOMRect | null {
+function scrollbarRect(
+  t: Terminal,
+  e: MouseEvent,
+): { track: DOMRect; sliderHeight: number } | null {
   const sb = findScrollbar(t)
   if (!sb) return null
   const r = sb.getBoundingClientRect()
@@ -190,32 +243,42 @@ function scrollbarRect(t: Terminal, e: MouseEvent): DOMRect | null {
   ) {
     return null
   }
-  const slider = sb.querySelector('.slider')
+  const slider = sb.querySelector('.slider') as HTMLElement | null
   if (slider) {
     const s = slider.getBoundingClientRect()
     const PAD = 4
     if (e.clientY >= s.top - PAD && e.clientY <= s.bottom + PAD) return null
+    return { track: r, sliderHeight: s.height }
   }
-  return r
+  const total = t.buffer.active.length
+  return {
+    track: r,
+    sliderHeight: computeSliderHeight(r.height, r.height, total * cellHeight(t)),
+  }
 }
 
 function onMouseMove(e: MouseEvent) {
-  if (!props.enabled) return hide()
   const t = getTerminal()
   if (!t || !host) return hide()
 
-  const rect = scrollbarRect(t, e)
-  if (!rect) return hide()
+  const hit = scrollbarRect(t, e)
+  if (!hit) return hide()
+  const rect = hit.track
   // Alt-screen apps (vim, htop) have no scrollback to preview.
   if (t.buffer.active.type === 'alternate') return hide()
   const total = t.buffer.active.length
   if (total <= t.rows) return hide()
 
-  lastRatio = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height))
+  // Same mapping xterm applies to a track click at this point, so the
+  // previewed lines are exactly what the user would see after clicking.
+  lastRatio = computeTrackClickRatio(e.clientY - rect.top, rect.height, hit.sliderHeight)
+  lastPointerFraction = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height))
   lastClientY = e.clientY
   clearTimers()
   if (visible.value) {
     show(t, rect)
+    // Pointer held down on the track: keep jumping while it drags.
+    if (trackDragging) scrollToPreviewTop(t)
   } else {
     hoverTimer = window.setTimeout(() => {
       hoverTimer = undefined
@@ -227,13 +290,21 @@ function onMouseMove(e: MouseEvent) {
 
 function show(t: Terminal, sbRect: DOMRect) {
   const total = t.buffer.active.length
-  const start = computePreviewStart(lastRatio, total, t.rows, PREVIEW_ROWS)
+  // Model the outcome of clicking the track at the hover point. The popup
+  // hangs above the pointer and previews the block that reappears below it:
+  // after the click, the line under the pointer is the viewport's top line
+  // plus the pointer's row within the viewport (the pointer stays put on
+  // screen while content scrolls underneath it).
+  const clickTop = computePreviewStart(lastRatio, total, t.rows, PREVIEW_ROWS)
+  const start = computePreviewWindowStart(clickTop, t.rows, lastPointerFraction, total, PREVIEW_ROWS)
   startRow.value = start
+  jumpTopLine = clickTop
 
-  const palette = buildPalette(t.options.theme)
+  const palette = buildLivePalette(t)
   const buf = t.buffer.active
   const managed = getManagedTerminal(props.sessionId)
   const lineOffset = managed?.lineOffset ?? 0
+
   const withNumbers = showLineNumbers.value
   const withTimestamps = showTimestamps.value && managed
   const tsFormat = settingsStore.settings.terminal.timestampFormat || 'HH:mm:ss'
@@ -267,7 +338,9 @@ function show(t: Terminal, sbRect: DOMRect) {
     })
   }
   lines.value = rendered
-  bgColor.value = t.options.theme?.background || '#1e1e1e'
+  // Resolved (not raw-option) colors — same source the cells were styled from.
+  bgColor.value = palette.defaultBg
+  fgColor.value = palette.defaultFg
   fontCss.value = {
     fontSize: `${t.options.fontSize ?? 13}px`,
     fontFamily: typeof t.options.fontFamily === 'string' ? t.options.fontFamily : 'monospace',
@@ -319,10 +392,13 @@ function show(t: Terminal, sbRect: DOMRect) {
     : Math.max(4, sbRect.left - width - POPUP_H_CHROME - 6 - base.left)
   const height = PREVIEW_ROWS * lh
   size.value = { width, height }
+  // Center the popup vertically on the pointer, to the LEFT of the scrollbar:
+  // its middle row is the line that lands under the pointer after the click
+  // (see computePreviewWindowStart).
   pos.value = {
     left,
     top: Math.min(
-      Math.max(4, lastClientY - lh * 2 - base.top),
+      Math.max(4, lastClientY - height / 2 - base.top),
       Math.max(4, base.height - height - 8),
     ),
   }
@@ -331,18 +407,7 @@ function show(t: Terminal, sbRect: DOMRect) {
 
 function onMouseLeave() {
   clearTimers()
-  // Grace period so moving onto the popup itself doesn't close it.
-  hideTimer = window.setTimeout(() => {
-    hideTimer = undefined
-    hide()
-  }, HIDE_DELAY)
-}
-
-function onPopupEnter() {
-  if (hideTimer !== undefined) {
-    clearTimeout(hideTimer)
-    hideTimer = undefined
-  }
+  hide()
 }
 
 function hide() {
@@ -350,23 +415,52 @@ function hide() {
   visible.value = false
 }
 
-function onJump() {
+/**
+ * Take over track clicks while the preview popup is up: jump so the previewed
+ * content lands at the pointer, exactly as shown. xterm's own track handling
+ * (slider-centering on stale buffer indices) is suppressed for this click.
+ * Without the popup, native xterm behavior is untouched; dragging the thumb
+ * is unaffected (pointerdown on the slider never reaches here — the popup
+ * hides when the pointer moves onto the slider).
+ */
+function onPointerDownCapture(e: MouseEvent) {
+  trackDragging = false
+  if (!visible.value || e.button !== 0) return
   const t = getTerminal()
-  if (t) t.scrollToLine(startRow.value)
-  hide()
+  if (!t) return
+  const hit = scrollbarRect(t, e)
+  if (!hit) return
+  e.preventDefault()
+  e.stopPropagation()
+  trackDragging = true
+  window.addEventListener(
+    'pointerup',
+    () => {
+      trackDragging = false
+    },
+    { once: true },
+  )
+  lastRatio = computeTrackClickRatio(e.clientY - hit.track.top, hit.track.height, hit.sliderHeight)
+  lastPointerFraction = Math.min(1, Math.max(0, (e.clientY - hit.track.top) / hit.track.height))
+  lastClientY = e.clientY
+  show(t, hit.track)
+  scrollToPreviewTop(t)
+}
+
+/** Instant, animation-free jump to the previewed viewport top. */
+function scrollToPreviewTop(t: Terminal) {
+  const vp = (t as any)?._core?._viewport
+  if (typeof vp?.scrollToLine === 'function') {
+    vp.scrollToLine(jumpTopLine, true)
+  } else {
+    t.scrollToLine(jumpTopLine)
+  }
 }
 
 watch(
   () => props.sessionId,
   () => nextTick(bind),
   { immediate: false },
-)
-
-watch(
-  () => props.enabled,
-  (on) => {
-    if (!on) hide()
-  },
 )
 
 onMounted(() => nextTick(bind))
@@ -383,8 +477,13 @@ onBeforeUnmount(unbind)
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   padding: 2px 4px;
   box-sizing: content-box;
-  pointer-events: auto;
-  cursor: pointer;
+  /* Frosted glass: translucent background (inline, theme-tinted) + backdrop
+     blur so the content beneath the popup shows through, blurred. */
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  /* Display-only: never intercepts the mouse, so hovering/clicking near it
+     keeps working and the preview keeps refreshing underneath. */
+  pointer-events: none;
 }
 
 .preview-line {

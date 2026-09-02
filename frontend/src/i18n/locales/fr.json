@@ -359,8 +359,6 @@
   "settings.rightClickMenu": "Afficher le menu contextuel",
   "settings.rightClickPaste": "Coller le presse-papiers",
   "settings.maxHistory": "Lignes d'historique max",
-  "settings.screenPreview": "Aperçu de l'écran",
-  "settings.screenPreviewDesc": "Affiche un aperçu de l'historique au survol de la barre de défilement ; cliquez pour y accéder",
   "settings.themeDesc": "Choisir le thème de l'interface",
   "settings.languageDesc": "Changer la langue d'affichage",
   "settings.colorSchemeDesc": "Palette de couleurs du terminal",

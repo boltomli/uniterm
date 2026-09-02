@@ -602,16 +602,6 @@
 
           <div class="setting-card">
             <div class="setting-info">
-              <div class="setting-title">{{ t('settings.screenPreview') }}</div>
-              <div class="setting-desc">{{ t('settings.screenPreviewDesc') }}</div>
-            </div>
-            <div class="setting-control">
-              <el-switch :model-value="settingsStore.settings.terminal.screenPreview ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.screenPreview = v; settingsStore.save() }" />
-            </div>
-          </div>
-
-          <div class="setting-card">
-            <div class="setting-info">
               <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
               <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
             </div>

@@ -359,8 +359,6 @@
   "settings.rightClickMenu": "コンテキストメニューを表示",
   "settings.rightClickPaste": "クリップボードを貼り付け",
   "settings.maxHistory": "履歴行数の上限",
-  "settings.screenPreview": "スクリーンプレビュー",
-  "settings.screenPreviewDesc": "スクロールバーにホバーするとその位置の履歴内容をプレビュー表示し、クリックでジャンプできます",
   "settings.themeDesc": "インターフェースのテーマを選択",
   "settings.languageDesc": "表示言語を切り替え",
   "settings.colorSchemeDesc": "ターミナルのカラースキーム",

@@ -359,8 +359,6 @@
   "settings.rightClickMenu": "弹出右键菜单",
   "settings.rightClickPaste": "粘贴剪贴板中内容",
   "settings.maxHistory": "最大历史行数",
-  "settings.screenPreview": "屏幕回看",
-  "settings.screenPreviewDesc": "鼠标悬停终端滚动条时，弹出该位置的历史内容预览，点击可跳转",
   "settings.themeDesc": "选择界面主题风格",
   "settings.languageDesc": "切换界面显示语言",
   "settings.colorSchemeDesc": "终端窗口的配色方案",
