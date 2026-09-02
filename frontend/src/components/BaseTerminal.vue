@@ -103,10 +103,7 @@
     <ZmodemTransfer :session-id="props.sessionId || ''" @cancel="onZmodemCancel" />
 
     <!-- Screen preview on scrollbar hover (issue #729) -->
-    <TerminalScreenPreview
-      :session-id="props.sessionId || ''"
-      :enabled="settingsStore.settings.terminal.screenPreview ?? true"
-    />
+    <TerminalScreenPreview :session-id="props.sessionId || ''" />
   </div>
 </template>
 

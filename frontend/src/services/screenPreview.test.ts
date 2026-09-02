@@ -11,6 +11,9 @@ import {
   colorToCss,
   lineToRuns,
   computePreviewStart,
+  computePreviewWindowStart,
+  computeTrackClickRatio,
+  computeSliderHeight,
   pickVerticalTrackIndex,
   type PreviewPalette,
   type PreviewBufferCell,
@@ -254,6 +257,105 @@ describe('computePreviewStart', () => {
 
   it('returns 0 for buffers with no scroll room', () => {
     expect(computePreviewStart(0.5, 10, rows, previewRows)).toBe(0)
+  })
+})
+
+describe('computeTrackClickRatio', () => {
+  // Real-world geometry: 14px track, ~600px tall, VS Code's minimum slider
+  // size of 20px (long scrollback shrinks the slider to the floor).
+  const track = 600
+  const slider = 20
+
+  it('centers the slider on the click point, like ScrollbarState does', () => {
+    // offset 310 = slider top 300 + half slider: the slider's center lands on
+    // the click, so the fraction is exactly 300 / (600 - 20).
+    expect(computeTrackClickRatio(310, track, slider)).toBeCloseTo(300 / 580, 10)
+  })
+
+  it('does NOT use the naive full-track ratio (regression: preview vs click offset)', () => {
+    // Naive ratio at offset 150 would be 0.25; the slider-centered mapping
+    // gives (150 - 10) / 580 ≈ 0.2414. At 2500 lines of scrollback that
+    // difference is ~40 lines — more than a screen.
+    expect(computeTrackClickRatio(150, track, slider)).not.toBe(150 / track)
+    expect(computeTrackClickRatio(150, track, slider)).toBeCloseTo(140 / 580, 10)
+  })
+
+  it('clamps clicks that push the slider past its travel range', () => {
+    // 10px above the track top: slider top would be negative → clamp to 0.
+    expect(computeTrackClickRatio(5, track, slider)).toBe(0)
+    // 10px above the bottom: slider bottom would pass the track → clamp to 1.
+    expect(computeTrackClickRatio(595, track, slider)).toBe(1)
+  })
+
+  it('is monotonic across the track', () => {
+    const a = computeTrackClickRatio(100, track, slider)
+    const b = computeTrackClickRatio(300, track, slider)
+    const c = computeTrackClickRatio(500, track, slider)
+    expect(a).toBeLessThan(b)
+    expect(b).toBeLessThan(c)
+  })
+
+  it('returns 0 for degenerate geometry', () => {
+    expect(computeTrackClickRatio(300, 0, 20)).toBe(0)
+    expect(computeTrackClickRatio(300, 20, 20)).toBe(0) // no travel room
+    expect(computeTrackClickRatio(300, 600, 600)).toBe(0) // slider fills the track
+  })
+})
+
+describe('computeSliderHeight', () => {
+  it('replicates ScrollbarState: max(20, floor(viewport × track / scroll))', () => {
+    // 600px viewport+track, 50800px scroll (2540 lines × 20px cell) → 7 → min 20.
+    expect(computeSliderHeight(600, 600, 50800)).toBe(20)
+    // Short scrollback: 2000px viewport, 600px track, 2400px scroll → 500.
+    expect(computeSliderHeight(2000, 600, 2400)).toBe(500)
+  })
+
+  it('falls back to the 20px minimum for degenerate inputs', () => {
+    expect(computeSliderHeight(600, 600, 0)).toBe(20)
+    expect(computeSliderHeight(0, 0, 0)).toBe(20)
+  })
+})
+
+describe('preview ↔ scrollbar click consistency', () => {
+  // The contract: the popup is vertically centered on the pointer and its
+  // MIDDLE row previews the line that lands under the pointer after clicking
+  // the track at the same point — clickTop + the pointer's own viewport row
+  // (pointerFraction × rows), NOT always the screen's middle. Mirrors
+  // Viewport._handleScroll's round(scrollTop / cellHeight) on top of
+  // ScrollbarState's click mapping.
+  it('popup middle row equals the post-click line under the pointer', () => {
+    const total = 2540 // default 2500 scrollback + screen
+    const rows = 30
+    const previewRows = 10
+    const cellHeight = 20
+    const track = 600
+    const slider = 20
+
+    for (const offset of [0, 50, 150, 310, 450, 590, 600]) {
+      const pointerFraction = offset / track
+      const frac = computeTrackClickRatio(offset, track, slider)
+      const scrollTopPx = frac * (total - rows) * cellHeight
+      const clickTop = Math.round(scrollTopPx / cellHeight)
+      expect(computePreviewStart(frac, total, rows, previewRows)).toBe(clickTop)
+
+      const start = computePreviewWindowStart(clickTop, rows, pointerFraction, total, previewRows)
+      const unclamped =
+        clickTop + Math.round(pointerFraction * rows) - Math.floor(previewRows / 2)
+      expect(start).toBe(Math.min(Math.max(0, unclamped), total - previewRows))
+      expect(start + previewRows).toBeLessThanOrEqual(total)
+    }
+  })
+
+  it('keeps the preview window inside the buffer at the extremes', () => {
+    const total = 2540
+    const rows = 30
+    // Top of the track: anchor row would be negative → clamped to 0.
+    expect(computePreviewWindowStart(0, 30, 0, total, 10)).toBe(0)
+    // Bottom of the track with the pointer low: anchor overruns the buffer
+    // → clamped to the last previewRows lines.
+    expect(computePreviewWindowStart(total - rows, rows, 0.9, total, 10)).toBe(total - 10)
+    // A tiny buffer: pointerRow 6 → anchor 6-5=1, within the 5-row maxStart.
+    expect(computePreviewWindowStart(0, 12, 0.5, 15, 10)).toBe(1)
   })
 })
 

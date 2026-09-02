@@ -359,8 +359,6 @@
   "settings.rightClickMenu": "Показать контекстное меню",
   "settings.rightClickPaste": "Вставить из буфера обмена",
   "settings.maxHistory": "Макс. строк истории",
-  "settings.screenPreview": "Просмотр экрана",
-  "settings.screenPreviewDesc": "Показывает предпросмотр истории при наведении на полосу прокрутки; клик выполняет переход",
   "settings.themeDesc": "Выберите тему интерфейса",
   "settings.languageDesc": "Переключить язык интерфейса",
   "settings.colorSchemeDesc": "Цветовая схема терминала",

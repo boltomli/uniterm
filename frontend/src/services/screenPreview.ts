@@ -67,7 +67,7 @@ export function buildPalette(theme?: Partial<ITheme>): PreviewPalette {
     'blue', 'magenta', 'cyan', 'white',
     'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
     'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
-  ].map((key) => theme?.[key] || FALLBACK_ANSI16.shift() || '#888888') as string[]
+  ].map((key, i) => theme?.[key] || FALLBACK_ANSI16[i] || '#888888') as string[]
   return {
     defaultFg: theme?.foreground || '#ffffff',
     defaultBg: theme?.background || '#000000',
@@ -162,9 +162,46 @@ function sameStyle(a: PreviewStyleRun, b: PreviewStyleRun): boolean {
 }
 
 /**
- * Map a scrollbar hover ratio (0 = top, 1 = bottom) to the first buffer row
- * the preview window should show. The window is clamped so that
- * `start + previewRows` never exceeds `totalLines`.
+ * Fraction (0..1) of the scrollable range that xterm v6's scrollbar actually
+ * produces when the track is clicked at `offset` px from the track's top.
+ *
+ * xterm v6 embeds VS Code's Scrollable widget, whose mapping is NOT the naive
+ * `offset / trackHeight` ratio over the full track: the slider travels only
+ * `trackHeight - sliderHeight` px and is *centered* on the click point
+ * (ScrollbarState.getDesiredScrollPositionFromOffset). Using the naive ratio
+ * made the hover preview disagree with the resulting scroll position by up to
+ * ~sliderHeight / (2 × track) of the whole scroll range — over a screen of
+ * content at default scrollback sizes.
+ */
+export function computeTrackClickRatio(
+  offset: number,
+  trackHeight: number,
+  sliderHeight: number,
+): number {
+  const travel = trackHeight - sliderHeight
+  if (travel <= 0) return 0
+  const r = (offset - sliderHeight / 2) / travel
+  return Math.min(1, Math.max(0, r))
+}
+
+/**
+ * Fallback slider height replicating ScrollbarState._computeValues: the
+ * slider is artificially enlarged to `max(20, viewport × track / scroll)` so
+ * it stays grabbable. Used only when the real `.slider` rect can't be read.
+ */
+export function computeSliderHeight(
+  viewportHeight: number,
+  trackHeight: number,
+  scrollHeight: number,
+): number {
+  if (scrollHeight <= 0) return 20
+  return Math.max(20, Math.floor((viewportHeight * trackHeight) / scrollHeight))
+}
+
+/**
+ * Map a scrollbar click-equivalent ratio (0 = top, 1 = bottom, as produced by
+ * `computeTrackClickRatio`) to the line that will sit at the viewport's TOP
+ * after the user clicks the track at that point.
  */
 export function computePreviewStart(
   ratio: number,
@@ -176,6 +213,28 @@ export function computePreviewStart(
   const maxScroll = Math.max(0, totalLines - rows)
   const maxStart = Math.max(0, totalLines - previewRows)
   return Math.min(Math.round(r * maxScroll), maxStart)
+}
+
+/**
+ * First buffer row the preview popup should show. The popup is vertically
+ * centered on the pointer, and its MIDDLE row previews the line that lands
+ * under the pointer after the click: that line is the viewport's top line
+ * plus the pointer's own row within the viewport (`pointerFraction × rows` —
+ * the pointer stays at its screen position while the content scrolls beneath
+ * it; it is NOT always the screen's middle row). Clamped so the window stays
+ * inside the buffer.
+ */
+export function computePreviewWindowStart(
+  clickTopLine: number,
+  rows: number,
+  pointerFraction: number,
+  totalLines: number,
+  previewRows: number,
+): number {
+  const pointerRow = Math.round(Math.min(1, Math.max(0, pointerFraction)) * rows)
+  const anchorRow = pointerRow - Math.floor(previewRows / 2)
+  const maxStart = Math.max(0, totalLines - previewRows)
+  return Math.min(Math.max(0, clickTopLine + anchorRow), maxStart)
 }
 
 /**
