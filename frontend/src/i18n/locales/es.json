@@ -464,6 +464,7 @@
   "importExport.file": "Archivo",
   "importExport.importPassword": "Contraseña de importación",
   "importExport.chooseFile": "Elegir archivo...",
+  "importExport.dbeaverPathHint": "Deje vacío para detectar el workspace de DBeaver o elija data-sources.json / carpeta",
   "importExport.importedCount": "Se importaron {count} conexiones",
   "importExport.exported": "Exportado correctamente",
   "settings.sync": "Sincronización en la nube",

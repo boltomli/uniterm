@@ -8,10 +8,16 @@ import (
 
 // Parse reads the source file and dispatches to the matching provider. Providers
 // return groups/connections with freshly generated ids and restored group paths.
-// OpenSSH uses the default ~/.ssh/config when no path is given.
+// OpenSSH uses the default ~/.ssh/config when no path is given; DBeaver
+// auto-detects its default workspace when no path is given.
 func Parse(format, srcPath string, opts ParseOptions) (*ImportResult, error) {
 	if format == FormatOpenSSH && srcPath == "" {
 		srcPath = defaultSSHConfigPath()
+	}
+	if format == FormatDBeaver && srcPath == "" {
+		// parseDBeaver resolves the platform-default workspace itself; pass a
+		// sentinel so the generic ReadFile below is skipped.
+		return parseDBeaver("", opts)
 	}
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
@@ -30,6 +36,10 @@ func Parse(format, srcPath string, opts ParseOptions) (*ImportResult, error) {
 		return parseSecureCRT(data)
 	case FormatOpenSSH:
 		return parseOpenSSH(data)
+	case FormatDBeaver:
+		return parseDBeaver(srcPath, opts)
+	case FormatNavicat:
+		return parseNavicat(srcPath, ParseOptions{})
 	default:
 		return nil, fmt.Errorf("unknown import format %q", format)
 	}
