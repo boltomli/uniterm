@@ -274,6 +274,38 @@ let onExport: ((e: Event) => void) | null = null
 let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
+let onVisibilityChange: (() => void) | null = null
+
+// Reset xterm's internal IME composition state. When the terminal is moved in
+// the DOM (KeepAlive tab switch) or hidden (display:none), the OS IME can
+// remain active offscreen. Its candidate window keeps sending events to the
+// textarea, but the stale CompositionHelper state (isComposing, pending
+// setTimeout in _finalizeComposition) causes characters to be duplicated.
+// Blurring the textarea ends the composition at the OS level, clearing the
+// textarea value via xterm's blur handler. Accessing _core._compositionHelper
+// directly is fragile but necessary because xterm exposes no public API for
+// this; the guard ensures we only act when composition is actually active.
+function resetIMEComposition() {
+  if (!terminal) return
+  const core = (terminal as any)._core
+  const ch = core?._compositionHelper
+  if (!ch) return
+  // Only reset when there's actually an active composition — avoid disrupting
+  // normal idle keystrokes.
+  if (!ch._isComposing && !ch._isSendingComposition) return
+  // Cancel any pending deferred send from _finalizeComposition
+  ch._isSendingComposition = false
+  ch._isComposing = false
+  ch._dataAlreadySent = ''
+  // Hide the composition overlay view
+  const cv = core?._helperContainer?.querySelector?.('.composition-view')
+  if (cv) cv.classList.remove('active')
+  // Clear the textarea and end the OS-level composition
+  if (terminal.textarea) {
+    terminal.textarea.value = ''
+    terminal.textarea.blur()
+  }
+}
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
@@ -771,8 +803,37 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
     (props.mode === 'ssh' || props.mode === 'local')
   ) {
     e.preventDefault()
+    // terminal.input() sends the character via triggerDataEvent. Tell
+    // xterm's internal _keyDownHandled flag that this key was already
+    // processed so _keyPress won't fire a second triggerDataEvent.
+    // Without this, _keyPress fires because _keyDownHandled is never set
+    // in the workaround path → same character sent twice.
+    ;(terminal as any)._keyDownHandled = true
     terminal?.input(e.key)
     return false
+  }
+
+  // Stale IME composition guard: when the terminal's textarea is hidden or
+  // offscreen (e.g. tab switched, window minimized), the OS IME can keep its
+  // candidate window active and continue feeding events. xterm's internal
+  // CompositionHelper accumulates state (isComposing, _dataAlreadySent) that
+  // causes the next real keystroke to be duplicated. Detect the mismatch
+  // between the browser's isComposing and xterm's isComposing, or detect
+  // an invisible textarea with stale composition state, and reset.
+  if (e.type === 'keydown' && terminal && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const core = (terminal as any)._core
+    const ch = core?._compositionHelper
+    if (ch) {
+      const xtermComposing = ch._isComposing || ch._isSendingComposition
+      const browserComposing = e.isComposing || e.keyCode === 229
+      const textareaVisible = terminal.textarea?.offsetParent != null
+      // Reset when xterm thinks it's composing but the browser/IME says it
+      // isn't, OR when the textarea is hidden (offscreen/hidden by CSS) with
+      // stale composition state — both indicate the composition state is stale.
+      if ((xtermComposing && !browserComposing) || (!textareaVisible && xtermComposing)) {
+        resetIMEComposition()
+      }
+    }
   }
 
   // A bare modifier key (Shift/Ctrl/Alt/Meta held alone) produces no input, yet
@@ -1017,6 +1078,11 @@ onMounted(() => {
     const sidNow = props.sessionId
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
+    // IME offscreen dedup state (per-component)
+    const IME_DEDUP_MS = 50
+    let lastSentChar = ''
+    let lastSentTime = 0
+
     keyHandlerDispose = terminal.attachCustomKeyEventHandler(handleTerminalKey)
 
     // Input handling
@@ -1028,6 +1094,27 @@ onMounted(() => {
       const curGen = sidNow ? (getManagedTerminal(sidNow)?.onDataGeneration ?? gen) : gen
       if (gen !== curGen) {
         return
+      }
+
+      // ── IME offscreen deduplication ──
+      // When the IME candidate window is offscreen (tab switch, window
+      // minimize), xterm's CompositionHelper can send the same character
+      // twice: once via _finalizeComposition (compositionend) and once via
+      // _handleAnyTextareaChanges (keyCode 229 path). Both fire within a
+      // few ms. Suppress the second occurrence of the same single character.
+      // Multi-character strings (escape sequences, pastes) are never suppressed.
+      const now = Date.now()
+      if (data.length === 1 && lastSentChar === data && now - lastSentTime < IME_DEDUP_MS) {
+        lastSentChar = ''
+        lastSentTime = 0
+        return
+      }
+      if (data.length === 1) {
+        lastSentChar = data
+        lastSentTime = now
+      } else {
+        lastSentChar = ''
+        lastSentTime = 0
       }
 
       if (props.mode === 'ssh' || props.mode === 'local') {
@@ -1442,6 +1529,17 @@ onMounted(() => {
 
   bindListeners()
 
+  // When the browser tab/page becomes hidden (user switches to another app
+  // or another browser tab), reset IME composition state. This prevents the
+  // OS IME from continuing to feed characters into the hidden textarea,
+  // which causes input duplication when the user returns.
+  onVisibilityChange = () => {
+    if (document.hidden && isActive.value) {
+      resetIMEComposition()
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
+
   resizeObserver = new ResizeObserver(() => {
     if (isResizing || splitResizing || Date.now() < suppressResizeUntil) return
     const el = terminalRef.value
@@ -1538,6 +1636,11 @@ onDeactivated(() => {
   // Mark inactive so session event handlers become no-ops.
   nativeDrop.unbind()
   isActive.value = false
+  // Reset IME composition state so the OS IME doesn't continue feeding
+  // characters into the textarea while the terminal is hidden. Without
+  // this, the stale composition state causes input duplication when the
+  // user switches back (issue: IME offscreen duplicate input).
+  resetIMEComposition()
   // Capture viewport position before listeners are torn down so reactivation
   // can restore the user's scroll position. Reading from the public IBuffer
   // API avoids depending on internal _core field shape.
@@ -1766,6 +1869,8 @@ onUnmounted(() => {
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
   if (onTerminalCopy) window.removeEventListener('terminal:copy', onTerminalCopy)
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
+  if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange)
+  onVisibilityChange = null
   suggestions.close()
   if (!zmodemStore.getActiveTransfer(props.sessionId || '')) {
     disposeZmodemService(props.sessionId || '')
