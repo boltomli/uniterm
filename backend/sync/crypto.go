@@ -45,52 +45,25 @@ func EncryptConfigFiles(srcDir, destDir string, key []byte, kc *Keychain, ps Pas
 		return err
 	}
 
-	if err := encryptConnectionsFile(
-		filepath.Join(srcDir, "connections.json"),
-		filepath.Join(destDir, "connections.json"),
-		key, kc, ps,
-	); err != nil {
-		return fmt.Errorf("encrypt connections: %w", err)
-	}
-
-	if err := encryptSettingsFile(
-		filepath.Join(srcDir, "settings.json"),
-		filepath.Join(destDir, "settings.json"),
-		key, kc, ps,
-	); err != nil {
-		return fmt.Errorf("encrypt settings: %w", err)
-	}
-
-	if err := encryptGenericFile(
-		filepath.Join(srcDir, "quickCommands.json"),
-		filepath.Join(destDir, "quickCommands.json"),
-		key,
-	); err != nil {
-		return fmt.Errorf("encrypt quick commands: %w", err)
-	}
-
-	if err := encryptGenericFile(
-		filepath.Join(srcDir, "tunnels.json"),
-		filepath.Join(destDir, "tunnels.json"),
-		key,
-	); err != nil {
-		return fmt.Errorf("encrypt tunnels: %w", err)
-	}
-
-	if err := encryptIdentitiesFile(
-		filepath.Join(srcDir, "identities.json"),
-		filepath.Join(destDir, "identities.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("encrypt identities: %w", err)
-	}
-
-	if err := encryptProxiesFile(
-		filepath.Join(srcDir, "proxies.json"),
-		filepath.Join(destDir, "proxies.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("encrypt proxies: %w", err)
+	for _, name := range syncedFiles {
+		src := filepath.Join(srcDir, name)
+		dest := filepath.Join(destDir, name)
+		var err error
+		switch name {
+		case "connections.json":
+			err = encryptConnectionsFile(src, dest, key, kc, ps)
+		case "settings.json":
+			err = encryptSettingsFile(src, dest, key, kc, ps)
+		case "identities.json":
+			err = encryptIdentitiesFile(src, dest, key, ps)
+		case "proxies.json":
+			err = encryptProxiesFile(src, dest, key, ps)
+		default:
+			err = encryptGenericFile(src, dest, key)
+		}
+		if err != nil {
+			return fmt.Errorf("encrypt %s: %w", name, err)
+		}
 	}
 
 	return nil
@@ -266,52 +239,25 @@ func DecryptConfigFiles(srcDir, destDir string, key []byte, ps PasswordStore) er
 		return err
 	}
 
-	if err := decryptConnectionsFile(
-		filepath.Join(srcDir, "connections.json"),
-		filepath.Join(destDir, "connections.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("decrypt connections: %w", err)
-	}
-
-	if err := decryptSettingsFile(
-		filepath.Join(srcDir, "settings.json"),
-		filepath.Join(destDir, "settings.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("decrypt settings: %w", err)
-	}
-
-	if err := decryptGenericFile(
-		filepath.Join(srcDir, "quickCommands.json"),
-		filepath.Join(destDir, "quickCommands.json"),
-		key,
-	); err != nil {
-		return fmt.Errorf("decrypt quick commands: %w", err)
-	}
-
-	if err := decryptGenericFile(
-		filepath.Join(srcDir, "tunnels.json"),
-		filepath.Join(destDir, "tunnels.json"),
-		key,
-	); err != nil {
-		return fmt.Errorf("decrypt tunnels: %w", err)
-	}
-
-	if err := decryptIdentitiesFile(
-		filepath.Join(srcDir, "identities.json"),
-		filepath.Join(destDir, "identities.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("decrypt identities: %w", err)
-	}
-
-	if err := decryptProxiesFile(
-		filepath.Join(srcDir, "proxies.json"),
-		filepath.Join(destDir, "proxies.json"),
-		key, ps,
-	); err != nil {
-		return fmt.Errorf("decrypt proxies: %w", err)
+	for _, name := range syncedFiles {
+		src := filepath.Join(srcDir, name)
+		dest := filepath.Join(destDir, name)
+		var err error
+		switch name {
+		case "connections.json":
+			err = decryptConnectionsFile(src, dest, key, ps)
+		case "settings.json":
+			err = decryptSettingsFile(src, dest, key, ps)
+		case "identities.json":
+			err = decryptIdentitiesFile(src, dest, key, ps)
+		case "proxies.json":
+			err = decryptProxiesFile(src, dest, key, ps)
+		default:
+			err = decryptGenericFile(src, dest, key)
+		}
+		if err != nil {
+			return fmt.Errorf("decrypt %s: %w", name, err)
+		}
 	}
 
 	return nil

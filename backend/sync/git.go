@@ -98,14 +98,12 @@ func (g *GitRepo) StageAndCommit(msg string) (bool, error) {
 		return false, nil
 	}
 
-	// Whitelist only known config filenames so stray files dropped in
+	// Whitelist the synced config files (single source of truth in
+	// synced_files.go) plus repo metadata, so stray files dropped in
 	// the sync repo (e.g. an SSH key) are NOT committed plaintext
 	// (SYNC-P1-9).
-	for _, name := range []string{
-		"connections.json", "settings.json",
-		"ai-sessions.json", "skills.json",
-		"quickCommands.json", "identities.json", "proxies.json", ".sync-salt", "README.md",
-	} {
+	commitWhitelist := append(syncedFiles[:len(syncedFiles):len(syncedFiles)], ".sync-salt", "README.md")
+	for _, name := range commitWhitelist {
 		if _, err := os.Stat(filepath.Join(g.repoPath, name)); err != nil {
 			continue
 		}
@@ -178,51 +176,107 @@ func (g *GitRepo) ReadRemoteFile(branch, filePath string) ([]byte, error) {
 	return []byte(content), nil
 }
 
-// CompareHeads returns sync direction after fetching.
-func (g *GitRepo) CompareHeads(branch string) (SyncDirection, *time.Time, *time.Time, error) {
+// BranchHeads is the resolved state of the sync branch after a fetch.
+// A nil Local means HEAD is still unborn (no commits yet); a nil Remote
+// means the remote branch does not exist (empty repository).
+type BranchHeads struct {
+	Local  *plumbing.Hash
+	Remote *plumbing.Hash
+}
+
+// ResolveBranchHeads returns the local HEAD hash and the origin/<branch>
+// hash without assuming either exists.
+func (g *GitRepo) ResolveBranchHeads(branch string) (BranchHeads, error) {
+	var heads BranchHeads
+
 	localRef, err := g.repo.Head()
 	if err != nil {
-		return SyncNone, nil, nil, fmt.Errorf("local head: %w", err)
+		if err != plumbing.ErrReferenceNotFound {
+			return heads, fmt.Errorf("local head: %w", err)
+		}
+		// Unborn HEAD — no local commits yet.
+	} else {
+		h := localRef.Hash()
+		heads.Local = &h
 	}
-	localHash := localRef.Hash()
 
 	remoteRef, err := g.repo.Reference(
 		plumbing.NewRemoteReferenceName("origin", branch), true,
 	)
 	if err != nil {
-		if err == plumbing.ErrReferenceNotFound {
-			return SyncPush, nil, nil, nil
+		if err != plumbing.ErrReferenceNotFound {
+			return heads, fmt.Errorf("remote ref: %w", err)
 		}
-		return SyncNone, nil, nil, fmt.Errorf("remote ref: %w", err)
-	}
-	remoteHash := remoteRef.Hash()
-
-	if localHash == remoteHash {
-		return SyncNone, nil, nil, nil
+	} else {
+		h := remoteRef.Hash()
+		heads.Remote = &h
 	}
 
-	localCommit, err := g.repo.CommitObject(localHash)
+	return heads, nil
+}
+
+// MergeBase returns the best common ancestor of the two commits, or nil
+// when they share no history.
+func (g *GitRepo) MergeBase(a, b plumbing.Hash) (*plumbing.Hash, error) {
+	ca, err := g.repo.CommitObject(a)
 	if err != nil {
-		return SyncNone, nil, nil, fmt.Errorf("local commit: %w", err)
+		return nil, fmt.Errorf("commit %s: %w", a, err)
 	}
-	remoteCommit, err := g.repo.CommitObject(remoteHash)
+	cb, err := g.repo.CommitObject(b)
 	if err != nil {
-		return SyncNone, nil, nil, fmt.Errorf("remote commit: %w", err)
+		return nil, fmt.Errorf("commit %s: %w", b, err)
 	}
-
-	localTime := localCommit.Committer.When
-	remoteTime := remoteCommit.Committer.When
-
-	localAncestor, _ := localCommit.IsAncestor(remoteCommit)
-	remoteAncestor, _ := remoteCommit.IsAncestor(localCommit)
-
-	if remoteAncestor {
-		return SyncPush, &localTime, &remoteTime, nil
+	bases, err := ca.MergeBase(cb)
+	if err != nil {
+		return nil, fmt.Errorf("merge base: %w", err)
 	}
-	if localAncestor {
-		return SyncPull, &localTime, &remoteTime, nil
+	if len(bases) == 0 {
+		return nil, nil
 	}
-	return SyncConflict, &localTime, &remoteTime, nil
+	h := bases[0].Hash
+	return &h, nil
+}
+
+// CommitTime returns the committer timestamp of the given commit.
+func (g *GitRepo) CommitTime(h plumbing.Hash) (time.Time, error) {
+	commit, err := g.repo.CommitObject(h)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("commit %s: %w", h, err)
+	}
+	return commit.Committer.When, nil
+}
+
+// ExtractCommitFiles writes the synced config files as committed at hash
+// into destDir. The extracted files are still encrypted — the caller
+// decrypts them. Files absent from that commit's tree are skipped.
+func (g *GitRepo) ExtractCommitFiles(hash plumbing.Hash, destDir string) error {
+	commit, err := g.repo.CommitObject(hash)
+	if err != nil {
+		return fmt.Errorf("commit %s: %w", hash, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return fmt.Errorf("tree: %w", err)
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+	for _, name := range syncedFiles {
+		file, err := tree.File(name)
+		if err != nil {
+			// Not present in this commit (e.g. the merge base predates
+			// the file) — nothing to extract.
+			continue
+		}
+		content, err := file.Contents()
+		if err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(destDir, name), []byte(content), 0600); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // PushToBranch pushes the current HEAD to the specified remote branch.
@@ -238,11 +292,6 @@ func (g *GitRepo) PushToBranch(branch, username, token string) error {
 		return nil
 	}
 	return err
-}
-
-// ForcePush pushes with force, overwriting remote.
-func (g *GitRepo) ForcePush(username, token string) error {
-	return g.repo.Push(&git.PushOptions{Auth: buildAuth(username, token), Force: true})
 }
 
 // ResetToRemote resets local HEAD to match remote branch.

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
+	ggittransport "github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/ys-ll/uniterm/backend/utils"
 )
 
@@ -157,7 +159,16 @@ func (s *SyncService) getToken() string {
 	return token
 }
 
-// Sync runs a full sync cycle: clone/open → encrypt → commit → fetch → compare → push/pull → decrypt.
+// Sync runs a full sync cycle: clone/open → fetch → three-way content
+// analysis → commit/pull/push → decrypt.
+//
+// The remote state is fetched BEFORE anything is committed locally: the
+// old commit-then-fetch order turned "not pulled yet" into a local commit
+// on a stale head, so two machines used alternately diverged and hit the
+// conflict dialog on every open. Content is then analyzed three-way
+// (local data dir vs merge base vs remote head) so that "merely out of
+// date" is a silent pull and only a genuine both-sides edit surfaces the
+// conflict dialog.
 func (s *SyncService) Sync() (*SyncResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,76 +193,137 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 	username := config.Username
 	token := s.getToken()
 
-	// 1. Clone or open repo
+	// 1. Clone or open repo.
 	repo, err := CloneOrOpen(s.repoPath, config.RepoURL, config.Branch, username, token)
 	if err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("open repo: %v", err))
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
 
-	// 2. Encrypt and commit only if local config has actually changed.
-	// A decrypt error means the stored master password / key cannot
-	// open the remote ciphertext (wrong password or corrupted blob);
-	// refuse to push and surface the error to the user rather than
-	// overwriting the only good remote copy with locally-derived
-	// ciphertext (SYNC-P1-11).
-	committed := false
-	same, cmpErr := s.compareLocalWithRepo(encKey)
-	if cmpErr != nil {
-		s.updateLastSyncResult("password_mismatch", cmpErr.Error())
-		return nil, cmpErr
-	}
-	if !same {
-		if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
-			s.updateLastSyncResult("failed", fmt.Sprintf("encrypt files: %v", err))
-			return nil, fmt.Errorf("encrypt files: %w", err)
-		}
-
-		committed, err = repo.StageAndCommit(commitMsg("uniTerm config sync"))
-		if err != nil {
-			s.updateLastSyncResult("failed", fmt.Sprintf("commit: %v", err))
-			return nil, fmt.Errorf("commit: %w", err)
+	// SYNC-P1-11: a key that cannot open the existing ciphertext (wrong
+	// master password, corrupted blob) must abort the sync before any
+	// locally-derived ciphertext can be pushed over the only good copy.
+	if repoHasFiles(s.repoPath) {
+		if err := verifyDecryption(s.repoPath, encKey); err != nil {
+			s.updateLastSyncResult("password_mismatch", err.Error())
+			return nil, err
 		}
 	}
 
-	// 4. Fetch
+	// 2. Fetch on a truly empty remote returns ErrEmptyRemoteRepository —
+	// treat as "remote has no branch yet", not as an error.
 	if err := repo.Fetch(username, token); err != nil {
-		if committed {
-			if pushErr := repo.Push(username, token); pushErr != nil {
-				s.updateLastSyncResult("failed", fmt.Sprintf("push: %v", pushErr))
-				return nil, fmt.Errorf("push to empty remote: %w", pushErr)
-			}
-			s.updateLastSyncResult("success", "")
-			return &SyncResult{Direction: SyncPush, Message: "配置已上传"}, nil
+		if !errors.Is(err, ggittransport.ErrEmptyRemoteRepository) {
+			s.updateLastSyncResult("failed", fmt.Sprintf("fetch: %v", err))
+			return nil, fmt.Errorf("fetch: %w", err)
 		}
-		s.updateLastSyncResult("success", "")
-		return &SyncResult{Message: "已是最新"}, nil
 	}
 
-	// 5. Compare heads
-	direction, localTime, remoteTime, err := repo.CompareHeads(config.Branch)
+	heads, err := repo.ResolveBranchHeads(config.Branch)
 	if err != nil {
-		s.updateLastSyncResult("failed", fmt.Sprintf("compare: %v", err))
-		return nil, fmt.Errorf("compare: %w", err)
+		s.updateLastSyncResult("failed", fmt.Sprintf("resolve heads: %v", err))
+		return nil, fmt.Errorf("resolve heads: %w", err)
 	}
 
-	switch direction {
-	case SyncNone:
+	// 3. Bootstrap cases.
+	if heads.Local == nil && heads.Remote == nil {
+		// Nothing anywhere: publish the local config as the initial commit.
+		return s.pushLocalConfig(repo, encKey, username, token)
+	}
+	if heads.Local == nil {
+		// Fresh local repo — adopt the remote silently.
+		if err := repo.ResetToRemote(config.Branch); err != nil {
+			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
+			return nil, fmt.Errorf("reset: %w", err)
+		}
+		if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
+			return nil, fmt.Errorf("decrypt files: %w", err)
+		}
+		s.updateLastSyncResult("success", "")
+		return &SyncResult{Direction: SyncPull, Message: "配置已下载"}, nil
+	}
+	if heads.Remote == nil {
+		// The remote branch does not exist (wiped or force-emptied) —
+		// re-publish the local config on top of it.
+		return s.pushLocalConfig(repo, encKey, username, token)
+	}
+
+	// 4. Heads in sync — only local data drift can require a push.
+	if *heads.Local == *heads.Remote {
+		same, err := s.dataMatchesCommit(repo, encKey, *heads.Local)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
+		}
+		if same {
+			s.updateLastSyncResult("success", "")
+			return &SyncResult{Message: "已是最新"}, nil
+		}
+		return s.pushLocalConfig(repo, encKey, username, token)
+	}
+
+	// 5. Heads diverged or fast-forwardable — three-way content analysis
+	// against the merge base, so "only the remote moved" is a silent pull
+	// and only a genuine both-sides edit surfaces the conflict dialog.
+	base, err := repo.MergeBase(*heads.Local, *heads.Remote)
+	if err != nil {
+		s.updateLastSyncResult("failed", fmt.Sprintf("merge base: %v", err))
+		return nil, fmt.Errorf("merge base: %w", err)
+	}
+
+	baseDir, cleanupBase, err := s.decryptCommitToDir(repo, encKey, base)
+	if err != nil {
+		s.updateLastSyncResult("failed", err.Error())
+		return nil, err
+	}
+	defer cleanupBase()
+	remoteDir, cleanupRemote, err := s.decryptCommitToDir(repo, encKey, heads.Remote)
+	if err != nil {
+		s.updateLastSyncResult("failed", err.Error())
+		return nil, err
+	}
+	defer cleanupRemote()
+
+	localChanged, err := dirsDiffer(s.dataDir, baseDir, s.keychain, s.passwordStore)
+	if err != nil {
+		s.updateLastSyncResult("failed", err.Error())
+		return nil, err
+	}
+	remoteChanged, err := dirsDiffer(remoteDir, baseDir, nil, nil)
+	if err != nil {
+		s.updateLastSyncResult("failed", err.Error())
+		return nil, err
+	}
+
+	switch {
+	case !localChanged && !remoteChanged:
+		// Content identical on both sides, heads diverged anyway (e.g.
+		// re-encrypt noise from older builds) — heal the history
+		// silently; no data changes.
+		if err := repo.ResetToRemote(config.Branch); err != nil {
+			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
+			return nil, fmt.Errorf("reset: %w", err)
+		}
 		s.updateLastSyncResult("success", "")
 		return &SyncResult{Message: "已是最新"}, nil
 
-	case SyncPush:
-		if err := repo.Push(username, token); err != nil {
-			s.updateLastSyncResult("failed", fmt.Sprintf("push: %v", err))
-			return nil, fmt.Errorf("push: %w", err)
+	case localChanged && !remoteChanged:
+		// Only the local content is newer. Re-anchor the clone on the
+		// remote head and publish the local content as one commit on top
+		// of it, so the push is a fast-forward (any unpushed local
+		// commits are squashed — they were never shared).
+		if err := repo.ResetToRemote(config.Branch); err != nil {
+			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
+			return nil, fmt.Errorf("reset: %w", err)
 		}
-		s.updateLastSyncResult("success", "")
-		return &SyncResult{Direction: SyncPush, Message: "配置已上传"}, nil
+		return s.pushLocalConfig(repo, encKey, username, token)
 
-	case SyncPull:
-		if err := repo.Pull(username, token); err != nil {
-			s.updateLastSyncResult("failed", fmt.Sprintf("pull: %v", err))
-			return nil, fmt.Errorf("pull: %w", err)
+	case !localChanged && remoteChanged:
+		// Only the remote moved — silent pull.
+		if err := repo.ResetToRemote(config.Branch); err != nil {
+			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
+			return nil, fmt.Errorf("reset: %w", err)
 		}
 		if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
@@ -260,25 +332,103 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 		s.updateLastSyncResult("success", "")
 		return &SyncResult{Direction: SyncPull, Message: "配置已下载"}, nil
 
-	case SyncConflict:
-		if localTime == nil {
-			t := time.Time{}
-			localTime = &t
+	default:
+		// Both sides changed content since the merge base — a genuine
+		// conflict; let the user pick a direction.
+		localTime, err := repo.CommitTime(*heads.Local)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
 		}
-		if remoteTime == nil {
-			t := time.Time{}
-			remoteTime = &t
+		remoteTime, err := repo.CommitTime(*heads.Remote)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
 		}
+		s.updateLastSyncResult("conflict", "")
 		return &SyncResult{
 			Direction: SyncConflict,
 			Conflict: &ConflictInfo{
-				LocalTime:  *localTime,
-				RemoteTime: *remoteTime,
+				LocalTime:  localTime,
+				RemoteTime: remoteTime,
 			},
 		}, nil
 	}
+}
 
-	return &SyncResult{Message: "已是最新"}, nil
+// pushLocalConfig encrypts the local config into the repo, commits it on
+// top of the current HEAD and pushes.
+func (s *SyncService) pushLocalConfig(repo *GitRepo, encKey []byte, username, token string) (*SyncResult, error) {
+	if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+		s.updateLastSyncResult("failed", fmt.Sprintf("encrypt files: %v", err))
+		return nil, fmt.Errorf("encrypt files: %w", err)
+	}
+	if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync")); err != nil {
+		s.updateLastSyncResult("failed", fmt.Sprintf("commit: %v", err))
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	if err := repo.Push(username, token); err != nil {
+		s.updateLastSyncResult("failed", fmt.Sprintf("push: %v", err))
+		return nil, fmt.Errorf("push: %w", err)
+	}
+	s.updateLastSyncResult("success", "")
+	return &SyncResult{Direction: SyncPush, Message: "配置已上传"}, nil
+}
+
+// dataMatchesCommit compares the local config dir with the config as
+// committed at hash. A decrypt error is surfaced, not swallowed
+// (SYNC-P1-11).
+func (s *SyncService) dataMatchesCommit(repo *GitRepo, encKey []byte, hash plumbing.Hash) (bool, error) {
+	dir, cleanup, err := s.decryptCommitToDir(repo, encKey, &hash)
+	if err != nil {
+		return false, err
+	}
+	defer cleanup()
+	same, err := compareConfigDirs(s.dataDir, dir, s.keychain, s.passwordStore)
+	if err != nil {
+		return false, err
+	}
+	return same, nil
+}
+
+// decryptCommitToDir extracts the synced files as committed at hash and
+// decrypts them into a fresh temp dir. A nil hash yields an empty dir
+// (nothing committed at that side). The caller owns cleanup via the
+// returned function.
+func (s *SyncService) decryptCommitToDir(repo *GitRepo, encKey []byte, hash *plumbing.Hash) (string, func(), error) {
+	cipherDir, err := os.MkdirTemp("", "sync-cipher-")
+	if err != nil {
+		return "", nil, err
+	}
+	plainDir, err := os.MkdirTemp("", "sync-plain-")
+	if err != nil {
+		os.RemoveAll(cipherDir)
+		return "", nil, err
+	}
+	cleanup := func() {
+		os.RemoveAll(cipherDir)
+		os.RemoveAll(plainDir)
+	}
+	if hash != nil {
+		if err := repo.ExtractCommitFiles(*hash, cipherDir); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		if err := DecryptConfigFiles(cipherDir, plainDir, encKey, nil); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("decrypt commit: %w", err)
+		}
+	}
+	return plainDir, cleanup, nil
+}
+
+// dirsDiffer reports whether the two decrypted config directories differ.
+func dirsDiffer(a, b string, kc *Keychain, ps PasswordStore) (bool, error) {
+	same, err := compareConfigDirs(a, b, kc, ps)
+	if err != nil {
+		return false, err
+	}
+	return !same, nil
 }
 
 // ResolveConflict handles a conflict by forcing push or reset.
@@ -307,24 +457,55 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 		return nil, fmt.Errorf("encryption key: %w", err)
 	}
 
+	// SYNC-P1-11: same guard as Sync — a key that cannot open the
+	// existing ciphertext must abort before anything is pushed.
+	if repoHasFiles(s.repoPath) {
+		if err := verifyDecryption(s.repoPath, encKey); err != nil {
+			s.updateLastSyncResult("password_mismatch", err.Error())
+			return nil, err
+		}
+	}
+
+	// Learn the remote state first — same ordering rule as Sync.
+	if err := repo.Fetch(username, token); err != nil {
+		if !errors.Is(err, ggittransport.ErrEmptyRemoteRepository) {
+			return nil, fmt.Errorf("fetch: %w", err)
+		}
+	}
+	heads, err := repo.ResolveBranchHeads(config.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve heads: %w", err)
+	}
+
 	if useLocal {
+		// Re-anchor the clone on the remote head and publish the local
+		// content as one commit on top of it. The push is then a
+		// fast-forward — force-pushing here orphaned the other machines'
+		// heads and made them conflict again on their next open, creating
+		// an endless resolve-conflict ping-pong.
+		if heads.Remote != nil {
+			if err := repo.ResetToRemote(config.Branch); err != nil {
+				return nil, fmt.Errorf("reset: %w", err)
+			}
+		}
 		if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
 			return nil, fmt.Errorf("encrypt files: %w", err)
 		}
 		if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync (resolve conflict)")); err != nil {
 			return nil, fmt.Errorf("commit: %w", err)
 		}
-		if err := repo.ForcePush(username, token); err != nil {
-			return nil, fmt.Errorf("force push: %w", err)
+		if err := repo.Push(username, token); err != nil {
+			return nil, fmt.Errorf("push: %w", err)
 		}
 		s.updateLastSyncResult("success", "")
 		return &SyncResult{Direction: SyncPush, Message: "已用本地配置覆盖远端"}, nil
 	}
 
-	if err := repo.ResetToRemote(config.Branch); err != nil {
-		return nil, fmt.Errorf("reset to remote: %w", err)
+	if heads.Remote != nil {
+		if err := repo.ResetToRemote(config.Branch); err != nil {
+			return nil, fmt.Errorf("reset: %w", err)
+		}
 	}
-
 	if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 		return nil, fmt.Errorf("decrypt files: %w", err)
 	}
@@ -554,12 +735,14 @@ func getConfigModTime(dir string) time.Time {
 }
 
 // isConfigDirEmpty returns true if the config dir has no meaningful data.
-// Counts every persisted JSON the app cares about — not only connections —
-// so a user with settings / AI / quick-commands but no connections is not
-// treated as "empty" and silently overwritten on first sync
-// (SYNC-P0-1).
+// Counts every synced JSON — not only connections — so a user with settings
+// / quick-commands but no connections is not treated as "empty" and silently
+// overwritten on first sync (SYNC-P0-1). Uses syncedFiles rather than every
+// persisted JSON: ai-sessions.json / skills.json are local-only and never
+// synced, so their presence must not block a first-sync pull (their files
+// are not touched by decrypt either).
 func isConfigDirEmpty(dir string) bool {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "ai-sessions.json", "skills.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -589,7 +772,7 @@ func isConfigDirEmpty(dir string) bool {
 // normalized to plaintext on the local side before comparison so both sides
 // are comparable.
 func compareConfigDirs(localDir, remoteDir string, kc *Keychain, ps PasswordStore) (bool, error) {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		same, err := compareConfigFiles(filepath.Join(localDir, name), filepath.Join(remoteDir, name), kc, ps)
 		if err != nil {
 			return false, err
@@ -787,8 +970,7 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 	// Re-encrypt every existing repo ciphertext: decrypt with oldKey,
 	// re-encrypt with newKey, atomic rename. A crash before the rename
 	// leaves the original ciphertext intact and decryptable with oldKey.
-	repoFiles := []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"}
-	for _, name := range repoFiles {
+	for _, name := range syncedFiles {
 		srcPath := filepath.Join(s.repoPath, name)
 		ciphertext, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -870,29 +1052,9 @@ func commitMsg(action string) string {
 	return fmt.Sprintf("%s | %s", action, time.Now().Format(time.RFC3339))
 }
 
-// compareLocalWithRepo decrypts repo files and compares them with local config.
-// Returns true if the local config content matches what's already in the repo.
-// A decrypt error is surfaced (not swallowed) so callers can refuse to push
-// over an undecryptable remote (SYNC-P1-11).
-func (s *SyncService) compareLocalWithRepo(encKey []byte) (bool, error) {
-	if !repoHasFiles(s.repoPath) {
-		return false, nil
-	}
-	tmpDir, err := os.MkdirTemp("", "sync-cmp")
-	if err != nil {
-		return false, err
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := DecryptConfigFiles(s.repoPath, tmpDir, encKey, nil); err != nil {
-		return false, fmt.Errorf("decrypt remote: %w", err)
-	}
-	return compareConfigDirs(s.dataDir, tmpDir, s.keychain, s.passwordStore)
-}
-
 // repoHasFiles returns true if the repo directory contains encrypted config files.
 func repoHasFiles(repoPath string) bool {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		if _, err := os.Stat(filepath.Join(repoPath, name)); os.IsNotExist(err) {
 			return false
 		}
