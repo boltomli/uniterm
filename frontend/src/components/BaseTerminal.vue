@@ -277,31 +277,31 @@ let onTerminalPaste: ((e: Event) => void) | null = null
 let onVisibilityChange: (() => void) | null = null
 let onWindowFocus: (() => void) | null = null
 
-// Reset xterm's internal IME composition state. When the terminal is moved in
-// the DOM (KeepAlive tab switch) or hidden (display:none), the OS IME can
-// remain active offscreen. Its candidate window keeps sending events to the
-// textarea, but the stale CompositionHelper state (isComposing, pending
-// setTimeout in _finalizeComposition) causes characters to be duplicated.
-// Blurring the textarea ends the composition at the OS level, clearing the
-// textarea value via xterm's blur handler. Accessing _core._compositionHelper
-// directly is fragile but necessary because xterm exposes no public API for
-// this; the guard ensures we only act when composition is actually active.
-function resetIMEComposition() {
-  if (!terminal) return
+// Reset xterm's internal IME composition state. Two variants:
+// - resetIMEState:        only clears internal flags (safe during active typing)
+// - resetIMEComposition:  also blurs textarea to end OS-level composition (for
+//                         deactivation / visibility change when terminal is hidden)
+//
+// Accessing _core._compositionHelper is fragile but necessary — xterm exposes
+// no public API for this. The guard ensures we only act when composition is
+// actually active.
+function resetIMEState(): boolean {
+  if (!terminal) return false
   const core = (terminal as any)._core
   const ch = core?._compositionHelper
-  if (!ch) return
-  // Only reset when there's actually an active composition — avoid disrupting
-  // normal idle keystrokes.
-  if (!ch._isComposing && !ch._isSendingComposition) return
-  // Cancel any pending deferred send from _finalizeComposition
+  if (!ch) return false
+  if (!ch._isComposing && !ch._isSendingComposition) return false
   ch._isSendingComposition = false
   ch._isComposing = false
   ch._dataAlreadySent = ''
-  // Hide the composition overlay view
   const cv = core?._helperContainer?.querySelector?.('.composition-view')
   if (cv) cv.classList.remove('active')
-  // Clear the textarea and end the OS-level composition
+  return true
+}
+
+function resetIMEComposition() {
+  if (!resetIMEState()) return
+  // Clear the textarea and end the OS-level composition via blur.
   if (terminal.textarea) {
     terminal.textarea.value = ''
     terminal.textarea.blur()
@@ -832,7 +832,9 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
       // isn't, OR when the textarea is hidden (offscreen/hidden by CSS) with
       // stale composition state — both indicate the composition state is stale.
       if ((xtermComposing && !browserComposing) || (!textareaVisible && xtermComposing)) {
-        resetIMEComposition()
+        // Only reset internal state — do NOT blur here; the user is actively
+        // typing and blur would steal focus mid-keystroke.
+        resetIMEState()
       }
     }
   }
@@ -1548,10 +1550,15 @@ onMounted(() => {
   // blur+focus cycle forces the OS to recalculate the IME position from
   // the textarea's current cursor location, fixing the orphaned IME window
   // that causes duplicate input.
+  //
+  // Only act when the textarea is already focused — if it's not (e.g. user
+  // is interacting with another input, or this is a KeepAlive reactivation
+  // where onActivated's delayed focus will handle it), skip to avoid
+  // stealing focus from whatever the user is doing.
   onWindowFocus = () => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
-    if (el && el.offsetParent != null) {
+    if (el && document.activeElement === el && el.offsetParent != null) {
       el.blur()
       el.focus()
     }
@@ -1648,7 +1655,7 @@ onActivated(() => {
   // But skipping focus() entirely leaves the textarea unfocused, which means
   // the IME candidate window loses its cursor position reference and drifts
   // to the screen origin (top-left). When the IME window is orphaned like
-  // this, input events take an异常 path that causes character duplication.
+  // this, input events take an abnormal path that causes character duplication.
   // A delayed focus() after the resize retries gives native dialogs time to
   // close while still resetting the IME position before the user starts typing.
   setTimeout(() => {
