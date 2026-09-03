@@ -13,12 +13,23 @@ export const useCredentialStore = defineStore('credential', () => {
   const dataDirInfo = ref<DataDirInfo>({ dataDir: '', type: 'default', firstRun: false })
   const status = ref<CredentialStatus>({ mode: '', unlocked: false, needsSetup: true, keychainLost: false, existingSecrets: 0 })
   const firstRun = ref(false)
+  // False when backend calls reject — i.e. the frontend is served to a plain
+  // browser (wails3 dev browser preview). The status placeholder above must
+  // NOT be trusted in that case (needsSetup:true would pop the encryption
+  // dialog), so the startup flow checks this before resolving dialogs.
+  const backendAvailable = ref(true)
 
   async function loadDataDir() {
-    try { dataDirInfo.value = (await GetDataDirInfo()) as DataDirInfo } catch { /* ignore */ }
+    try {
+      dataDirInfo.value = (await GetDataDirInfo()) as DataDirInfo
+      backendAvailable.value = true
+    } catch { backendAvailable.value = false }
   }
   async function loadStatus() {
-    try { status.value = (await GetCredentialStatus()) as CredentialStatus } catch { /* ignore */ }
+    try {
+      status.value = (await GetCredentialStatus()) as CredentialStatus
+      backendAvailable.value = true
+    } catch { backendAvailable.value = false }
   }
   async function selectDataDir(kind: string, customDir: string, migrate: boolean) {
     await SetDataDir(kind, customDir, migrate)
@@ -56,7 +67,7 @@ export const useCredentialStore = defineStore('credential', () => {
   }
 
   return {
-    dataDirInfo, status, firstRun,
+    dataDirInfo, status, firstRun, backendAvailable,
     loadDataDir, loadStatus, selectDataDir, setup, unlock, switchMode, changeMasterPassword, reset,
     watchEvents, dispose,
   }

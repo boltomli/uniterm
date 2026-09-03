@@ -180,6 +180,15 @@ func main() {
 			Red: 27, Green: 38, Blue: 54, Alpha: 1,
 		},
 		EnableFileDrop: true,
+		// Open the WebView2 inspector when the window is first shown. Wails
+		// disables browser accelerator keys on Windows (F12 / Ctrl+Shift+I
+		// never reach us), and the app's custom context menus hide the
+		// default "Inspect" entry — without this there is NO way to open
+		// DevTools, even in dev builds. Inert in production: the wails
+		// runtime only honors it when built without the `production` tag.
+		// (Deliberately NOT a window KeyBinding for F12: that would be
+		// window-global and could swallow F12 from TUI apps.)
+		OpenInspectorOnStartup: true,
 		Mac: application.MacWindow{
 			TitleBar: macTitleBar,
 		},

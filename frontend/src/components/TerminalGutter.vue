@@ -163,18 +163,13 @@ function compute() {
     : 0
 
   const viewport = Math.max(0, Math.min(buf.baseY, currentViewportY))
-  const lineOffset = buf.type === 'alternate' ? 0 : (managed?.lineOffset ?? 0)
+  const alternate = buf.type === 'alternate'
+  const lineOffset = alternate ? 0 : (managed?.lineOffset ?? 0)
   const theme = t.options.theme ?? {}
   const fg = theme?.foreground
 
-  const maxDigits = String(Math.max(lineOffset + buf.baseY + 1, 1)).length
   const tsFormat = settingsStore.settings.terminal.timestampFormat || 'HH:mm:ss'
-  const timeWidth = props.showTimestamps
-    ? Math.ceil(cellWidth * formatTimestampMs(TIMESTAMP_WIDTH_SAMPLE_MS, tsFormat).length) + 2
-    : 0
-  const numWidth = props.showLineNumbers
-    ? Math.max(Math.ceil(cellWidth * maxDigits) + 8, 24)
-    : 0
+  const registry = managed?.lineRegistry
 
   const result = buildGutterLines({
     rows: t.rows,
@@ -183,9 +178,23 @@ function compute() {
     showTimestamps: props.showTimestamps,
     cursorAbsoluteY: buf.baseY + buf.cursorY,
     getLine: (n) => buf.getLine(n),
-    getTimestamp: (abs) => (managed && buf.type !== 'alternate' ? managed.lineTimestamps.get(abs) : undefined),
+    getMeta: (abs) => {
+      // Alternate screen lines are transient — fall back to per-screen
+      // positional numbers, no timestamps.
+      if (alternate) return { number: abs + 1 }
+      return registry?.entries.get(abs)
+    },
+    maxNumberHint: registry && !alternate ? registry.nextNumber - 1 : 0,
     formatTimestamp: (ms) => formatTimestampMs(ms, tsFormat),
   })
+
+  const maxDigits = String(Math.max(result.maxLineNumber, 1)).length
+  const timeWidth = props.showTimestamps
+    ? Math.ceil(cellWidth * formatTimestampMs(TIMESTAMP_WIDTH_SAMPLE_MS, tsFormat).length) + 2
+    : 0
+  const numWidth = props.showLineNumbers
+    ? Math.max(Math.ceil(cellWidth * maxDigits) + 8, 24)
+    : 0
 
   layout.value = {
     lines: result.lines,
