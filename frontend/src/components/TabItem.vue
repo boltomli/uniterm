@@ -185,7 +185,7 @@ const tabIcon = computed(() => {
   if (t.type === 'vnc') return MonitorSmartphone
   if (t.type === 'spice') return MonitorCloud
   if (t.type === 'x11-desktop') return AppWindow
-  if (t.type === 'database' || t.type === 'mongodb' || t.type === 'elasticsearch') {
+  if (t.type === 'database' || t.type === 'redis' || t.type === 'mongodb' || t.type === 'elasticsearch') {
     const panel = panelStore.getPanel(t.panelId)
     if (panel?.config?.dbType === 'redis') return DatabaseZap
     if (panel?.config?.dbType === 'mongodb') return Layers
@@ -276,7 +276,7 @@ const TTY_RECONNECT_TYPES: readonly string[] = ['ssh', 'telnet', 'serial', 'mosh
 const canReconnect = computed(() => {
   const type = props.tab.type
   if (type === 'rdp' || type === 'vnc' || type === 'spice' || type === 'x11-desktop') return true
-  if (type === 'database' || type === 'mongodb' || type === 'redis' || type === 'sftp' || type === 'monitor') {
+  if (type === 'database' || type === 'redis' || type === 'mongodb' || type === 'elasticsearch' || type === 'sftp' || type === 'monitor') {
     return 'panelId' in props.tab && !!panelStore.getPanel(props.tab.panelId)
   }
   if (type === 'k8s' || type === 'container') {

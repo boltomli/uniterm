@@ -1824,6 +1824,7 @@ async function reconnectDatabasePanel(panel: { id: string; sessionId: string | n
   let sessionType = 'database'
   if (cfg.dbType === 'redis') sessionType = 'redis'
   else if (cfg.dbType === 'mongodb') sessionType = 'mongodb'
+  else if (cfg.dbType === 'elasticsearch') sessionType = 'elasticsearch'
   try {
     const info = await CreateSession(sessionType, cfg)
     panelStore.bindSession(panel.id, info.id)
