@@ -226,7 +226,11 @@ import {
   Plus, Play, Clipboard, Copy,
   ChevronDown, ChevronRight
 } from '@lucide/vue'
-import { useQuickCommandStore, type QuickCommand, type QuickCommandGroup } from '../stores/quickCommandStore'
+import {
+  useQuickCommandStore, type QuickCommand, type QuickCommandGroup,
+  expandedFromCollapsed, collapsedFromExpanded
+} from '../stores/quickCommandStore'
+import { useLocalStateStore } from '../stores/localStateStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { SessionWrite } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -240,6 +244,7 @@ import MenuDivider from './MenuDivider.vue'
 
 const { t } = useI18n()
 const store = useQuickCommandStore()
+const localState = useLocalStateStore()
 const tabStore = useTabStore()
 const panelStore = usePanelStore()
 
@@ -251,6 +256,19 @@ const searchQuery = ref('')
 const expandedGroups = ref<Set<string>>(new Set())
 
 const dragOverGroupId = ref<string | null>(null)
+
+// All expandable ids: group ids plus the "__ungrouped__" sentinel.
+function allExpandableIds(): string[] {
+  return [...store.groups.map(g => g.id), '__ungrouped__']
+}
+
+// Persist only collapsed ids (like the connections sidebar) so new or
+// renamed groups stay expanded by default.
+function persistCollapsedGroups() {
+  localState.update({
+    collapsedQuickCommandGroupIds: collapsedFromExpanded(allExpandableIds(), expandedGroups.value)
+  })
+}
 
 const ctxMenuVisible = ref(false)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
@@ -275,14 +293,18 @@ const editingCmdRemark = ref<string | undefined>(undefined)
 
 onMounted(async () => {
   await store.load()
-  store.groups.forEach(g => expandedGroups.value.add(g.id))
-  expandedGroups.value.add('__ungrouped__')
+  await localState.init()
+  expandedGroups.value = expandedFromCollapsed(
+    allExpandableIds(),
+    localState.state.collapsedQuickCommandGroupIds ?? []
+  )
 })
 
 
 function toggleGroup(id: string) {
   if (expandedGroups.value.has(id)) expandedGroups.value.delete(id)
   else expandedGroups.value.add(id)
+  persistCollapsedGroups()
 }
 
 function matchesSearch(cmd: QuickCommand): boolean {
