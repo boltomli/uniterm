@@ -11,6 +11,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/ys-ll/uniterm/backend/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -263,7 +264,8 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 	// Get the IME context from the focused window (0 = thread's focused control).
 	himc, _, _ := procImmGetContext.Call(0)
 	if himc == 0 {
-		return nil // no active IME context
+		log.Writef("[IME] ImmGetContext returned 0 — no active IME context (x=%.0f y=%.0f)", x, y)
+		return nil
 	}
 	defer procImmReleaseContext.Call(0, himc)
 
@@ -282,6 +284,7 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 		himc,
 		uintptr(unsafe.Pointer(&cf)),
 	)
+	log.Writef("[IME] ImmSetCandidateWindow pos=(%.0f, %.0f) size=(%.0f, %.0f)", x+1, y, width, height)
 	return nil
 }
 

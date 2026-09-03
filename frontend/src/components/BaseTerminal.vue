@@ -324,14 +324,27 @@ function resetIMEComposition() {
 // location via Win32 ImmSetCandidateWindow. Called after resize, focus, and
 // activation — the only moments where the textarea moves but the IME doesn't
 // follow. No-op on non-Windows or when the textarea is not visible.
+//
+// Uses requestAnimationFrame to ensure the browser has applied the latest
+// layout before reading getBoundingClientRect — without this, the rect may
+// reflect a pre-resize position that sends the candidate window to the wrong
+// screen location (visible as a bottom-edge flicker before it corrects).
 function syncIMEPosition() {
   if (!terminal) return
-  const el = terminal.textarea
-  if (!el || el.offsetParent == null) return
-  const r = el.getBoundingClientRect()
-  if (r.width <= 0 || r.height <= 0) return
-  // x + 1 to avoid degenerate zero-width caret edge case.
-  SetIMECandidatePosition(r.x + 1, r.y, r.width, r.height).catch(() => {})
+  // Two rAFs: first flushes pending style/layout, second reads the settled rect.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!terminal) return
+      const el = terminal.textarea
+      if (!el || el.offsetParent == null) return
+      const r = el.getBoundingClientRect()
+      if (r.width <= 0 || r.height <= 0) return
+      // Guard: skip if rect is off-screen (stale/zeroed position).
+      if (r.x + r.width < 0 || r.y + r.height < 0 ||
+          r.x > window.innerWidth || r.y > window.innerHeight) return
+      SetIMECandidatePosition(r.x + 1, r.y, r.width, r.height).catch(() => {})
+    })
+  })
 }
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
@@ -1543,10 +1556,16 @@ onMounted(() => {
   // On Windows, the IME window can drift to the screen origin when the
   // textarea moved while the app was unfocused. ImmSetCandidateWindow fixes
   // the orphaned position without blur/focus flicker.
+  //
+  // Do NOT require document.activeElement === el: when the user drags the
+  // window without clicking into the terminal first, the textarea is not
+  // focused but the IME may still be tracking a stale position. Sync anyway
+  // so the candidate window is correct when the user later focuses the
+  // terminal and starts composing.
   onWindowFocus = () => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
-    if (el && document.activeElement === el && el.offsetParent != null) {
+    if (el && el.offsetParent != null) {
       syncIMEPosition()
     }
   }
