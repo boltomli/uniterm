@@ -12,11 +12,14 @@ type LocalState struct {
 	SidebarVisible    bool     `json:"sidebarVisible"`
 	AISidebarVisible  bool     `json:"aiSidebarVisible"`
 	CollapsedGroupIds []string `json:"collapsedGroupIds"`
-	WindowX           int      `json:"windowX"`
-	WindowY           int      `json:"windowY"`
-	WindowWidth       int      `json:"windowWidth"`
-	WindowHeight      int      `json:"windowHeight"`
-	WindowMaximised   bool     `json:"windowMaximised"`
+	// Collapsed quick-command group ids (plus "__ungrouped__"). Local-only
+	// UI state, never synced; groups absent from the list stay expanded.
+	CollapsedQuickCommandGroupIds []string `json:"collapsedQuickCommandGroupIds"`
+	WindowX                       int      `json:"windowX"`
+	WindowY                       int      `json:"windowY"`
+	WindowWidth                   int      `json:"windowWidth"`
+	WindowHeight                  int      `json:"windowHeight"`
+	WindowMaximised               bool     `json:"windowMaximised"`
 	// Background image — local-only appearance, never synced.
 	BackgroundEnabled bool   `json:"backgroundEnabled"`
 	BackgroundImage   string `json:"backgroundImage"`
@@ -53,11 +56,12 @@ func (s *LocalStateStore) Save(state LocalState) error {
 
 func defaultLocalState() LocalState {
 	return LocalState{
-		SidebarVisible:    true,
-		AISidebarVisible:  true,
-		BackgroundOpacity: 60,
-		BackgroundBlur:    3,
-		BackgroundFit:     "cover",
+		SidebarVisible:                true,
+		AISidebarVisible:              true,
+		CollapsedQuickCommandGroupIds: []string{},
+		BackgroundOpacity:             60,
+		BackgroundBlur:                3,
+		BackgroundFit:                 "cover",
 	}
 }
 

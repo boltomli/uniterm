@@ -28,6 +28,18 @@ function genId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++idCounter}`
 }
 
+// Expand/collapse bookkeeping for the quick-commands panel, kept pure so it
+// can be unit-tested. Mirrors the connections sidebar: only collapsed group
+// ids are persisted, so new/unknown groups default to expanded.
+export function expandedFromCollapsed(allIds: string[], collapsedIds: string[]): Set<string> {
+  const collapsed = new Set(collapsedIds)
+  return new Set(allIds.filter(id => !collapsed.has(id)))
+}
+
+export function collapsedFromExpanded(allIds: string[], expanded: Set<string>): string[] {
+  return allIds.filter(id => !expanded.has(id))
+}
+
 export const useQuickCommandStore = defineStore('quickCommands', () => {
   const groups = ref<QuickCommandGroup[]>([])
   const commands = ref<QuickCommand[]>([])
