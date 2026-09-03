@@ -98,9 +98,11 @@ const popupStyle = computed(() => ({
   top: `${pos.value.top}px`,
   width: `${size.value.width}px`,
   height: `${size.value.height}px`,
-  // Translucent background + CSS backdrop blur (see .terminal-screen-preview)
-  // gives a frosted-glass popup that lets the content beneath show through.
-  background: withAlpha(bgColor.value, 0.7),
+  // Mix the terminal background toward a light blue so the popup reads as a
+  // distinct overlay instead of blending with the terminal; rendered
+  // translucent + CSS backdrop blur (see .terminal-screen-preview) for a
+  // frosted-glass look.
+  background: withAlpha(tintBlue(bgColor.value, 0.3), 0.85),
   color: fgColor.value,
   fontSize: fontCss.value.fontSize,
   fontFamily: fontCss.value.fontFamily,
@@ -152,6 +154,29 @@ function withAlpha(color: string, alpha: number): string {
   }
   const n = parseInt(hex, 16)
   return `rgba(${(n >> 16) & 0xff}, ${(n >> 8) & 0xff}, ${n & 0xff}, ${alpha})`
+}
+
+/**
+ * Blend a hex color toward a light-blue tint: the preview popup must not read
+ * as part of the terminal background, so shift it toward a pale blue.
+ * Non-hex colors pass through unchanged.
+ */
+function tintBlue(color: string, ratio: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
+  if (!m) return color
+  let hex = m[1]
+  if (hex.length === 3) {
+    hex = hex.split('').map((ch) => ch + ch).join('')
+  }
+  const n = parseInt(hex, 16)
+  const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff
+  const mix = (c: number, t: number) => Math.round(c + (t - c) * ratio)
+  return (
+    '#' +
+    [mix(r, 0xa0), mix(g, 0xc8), mix(b, 0xe8)]
+      .map((v) => v.toString(16).padStart(2, '0'))
+      .join('')
+  )
 }
 
 /**
@@ -391,9 +416,9 @@ function show(t: Terminal, sbRect: DOMRect) {
   if (!termRect) return
 
   // box-sizing: content-box — `width` IS the content area, so text lines up
-  // with the terminal regardless of padding. CHROME (padding 4px ×2 + border
-  // 1px ×2) only matters for the outer footprint when positioning/clamping.
-  const POPUP_H_CHROME = 10
+  // with the terminal regardless of padding. CHROME (padding 4px ×2, no side
+  // borders) only matters for the outer footprint when positioning/clamping.
+  const POPUP_H_CHROME = 8
   // Base the content width on the actual rendered text area (.xterm-screen),
   // NOT the `.xterm` root: the root's width also spans the scrollbar strip,
   // which left a blank margin at the right edge of every preview line.
@@ -493,8 +518,12 @@ onBeforeUnmount(unbind)
   position: absolute;
   z-index: 30;
   overflow: hidden;
-  border: 1px solid var(--el-border-color, rgba(255, 255, 255, 0.2));
-  border-radius: 6px;
+  /* No left/right borders: the popup sits flush against the scrollbar, so
+     side borders read as an extra divider next to it. Only top/bottom edges
+     are drawn to keep the block visually bounded. */
+  border: none;
+  border-top: 1px solid var(--el-border-color, rgba(255, 255, 255, 0.2));
+  border-bottom: 1px solid var(--el-border-color, rgba(255, 255, 255, 0.2));
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   padding: 2px 4px;
   box-sizing: content-box;
