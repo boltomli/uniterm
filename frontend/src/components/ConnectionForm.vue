@@ -110,6 +110,12 @@
             <el-form-item v-if="form.type !== 'local' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : '')" />
             </el-form-item>
+            <el-form-item v-if="form.type === 'rdp' && isWindows" :label="t('conn.rdpAdminSession')">
+              <el-select v-model="form.rdpAdminSession" style="width: 100%">
+                <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
+                <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
+              </el-select>
+            </el-form-item>
             <template v-if="isElasticsearch">
               <el-form-item :label="t('conn.esUseSsl')">
                 <el-switch v-model="form.esUseSsl" />
@@ -944,6 +950,7 @@ const form = reactive<ConnectionConfig>({
   rdpFixedHeight: undefined,
   rdpSmartSizing: true,
   rdpEnableNLA: true,
+  rdpAdminSession: false,
   dbType: '',
   dbName: '',
   dbParams: '',
@@ -1107,6 +1114,7 @@ watch(() => props.editConfig, (config) => {
     }
     // Existing connections without the field default to NLA off (old behavior).
     form.rdpEnableNLA = config.rdpEnableNLA ?? false
+    form.rdpAdminSession = config.rdpAdminSession ?? false
     form.x11Forwarding = config.x11Forwarding ?? false
     postLoginMode.value = (config.postLoginExpectSteps?.length || 0) > 0 ? 'expect' : 'script'
     selectedGroupId.value = config.groupId || undefined
@@ -1238,6 +1246,7 @@ function resetForm() {
   form.rdpFixedHeight = undefined
   form.rdpSmartSizing = true
   form.rdpEnableNLA = true
+  form.rdpAdminSession = false
   form.dbType = ''
   form.dbName = ''
   form.dbParams = ''

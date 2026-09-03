@@ -434,6 +434,12 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 				// A minimized RDP window has no taskbar entry to restore from, so it
 				// would become unrecoverable. Supported in AdvancedSettings6+.
 				a.PutProperty("ConnectionBarShowMinimizeButton", false)
+				// ConnectToAdministerServer (AdvancedSettings8+) is the ActiveX
+				// equivalent of "mstsc /admin": attach to the remote console
+				// (admin) session instead of a fresh virtual session.
+				if config.RdpAdminSession {
+					a.PutProperty("ConnectToAdministerServer", true)
+				}
 				a.Release()
 			}
 		}
