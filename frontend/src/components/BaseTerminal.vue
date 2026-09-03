@@ -326,6 +326,7 @@ let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // resizeTimer so it never cancels another handler's pending resize.
 let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
+let unsubMoveResizeStart: (() => void) | null = null
 let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
@@ -1534,6 +1535,19 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
+  // Native window move/resize START (WM_ENTERSIZEMOVE). This fires before the
+  // OS enters its modal move/size loop, which is the earliest reliable point to
+  // end any active IME composition. During the modal loop the textarea's screen
+  // position changes but the IME candidate window can't follow; the OS then
+  // cancels/completes the composition chaotically when the loop settles, leaving
+  // xterm's CompositionHelper with stale state that double-sends the next input
+  // (issue: window drag causes duplicate input). resetIMEComposition() is a
+  // guarded no-op unless a composition is actually active, and clears the
+  // textarea so any late compositionend finalize reads an empty value and sends
+  // nothing.
+  unsubMoveResizeStart = Events.On('rdp:move-resize-start', () => {
+    if (isActive.value) resetIMEComposition()
+  })
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1974,6 +1988,8 @@ onUnmounted(() => {
   window.removeEventListener('split:resize-end', onSplitResizeEnd)
   unsubNativeResizeEnd?.()
   unsubNativeResizeEnd = null
+  unsubMoveResizeStart?.()
+  unsubMoveResizeStart = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
