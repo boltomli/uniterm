@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "尚未配置外部编辑器，请在设置中配置。",
   "settings.externalEditor": "外部编辑器",
   "settings.externalEditorDesc": "外部编辑器命令，临时文件路径自动追加。含空格的路径需用双引号包裹。",
-  "sftp.edit.saveClose": "保存并关闭"
+  "sftp.edit.saveClose": "保存并关闭",
+  "backendErrors.invalid_private_key": "所选文件不是有效的私钥（未识别到 PEM 私钥头）",
+  "backendErrors.ssh_key_unavailable": "密钥 {0} 不存在、无权限或口令错误",
+  "backendErrors.sftp_start_marker_missing": "未在服务器输出中找到 SFTP 起始标记（sftp-server 可能不存在或被拒绝执行）",
+  "backendErrors.sftp_subsystem_polluted": "服务器 SFTP 子系统启动失败：登录脚本在非交互会话中产生了输出，污染了 SFTP 协议流；已尝试自动 fallback 到 exec sftp-server 但未成功。请清理服务器上 /etc/profile、/etc/profile.d/*、~/.bashrc、~/.ssh/rc、/etc/ssh/sshrc 以及 $BASH_ENV 指向的脚本里向 stdout 的打印（用 `case $- in *i*)` 判断仅交互 shell 才输出）。subsystem 错误：{0}；fallback 错误：{1}",
+  "backendErrors.vault_locked": "本地凭证库未解锁，无法同步",
+  "backendErrors.repo_not_configured": "仓库地址未设置",
+  "backendErrors.master_password_mismatch": "主密码错误，无法解密远端配置",
+  "backendErrors.salt_missing": "远端仓库数据异常，缺少密钥盐值",
+  "backendErrors.current_password_mismatch": "当前密码错误"
 }

@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "外部エディタが設定されていません。設定で指定してください。",
   "settings.externalEditor": "外部エディタ",
   "settings.externalEditorDesc": "外部エディタのコマンド。一時ファイルのパスは自動的に付加されます。空白を含むパスは二重引用符で囲んでください。",
-  "sftp.edit.saveClose": "保存して閉じる"
+  "sftp.edit.saveClose": "保存して閉じる",
+  "backendErrors.invalid_private_key": "選択したファイルは有効な秘密鍵ではありません（PEM 秘密鍵ヘッダーが見つかりません）。",
+  "backendErrors.ssh_key_unavailable": "キー {0} が存在しない、読み取れない、またはパスフレーズが誤っています。",
+  "backendErrors.sftp_start_marker_missing": "サーバー出力に SFTP 開始マーカーが見つかりません（sftp-server が存在しないか実行を拒否された可能性があります）。",
+  "backendErrors.sftp_subsystem_polluted": "SFTP サブシステムの起動に失敗しました：ログインスクリプトが非対話セッションで出力を行い、SFTP プロトコルストリームを汚染しています。exec sftp-server への自動フォールバックも失敗しました。/etc/profile、/etc/profile.d/*、~/.bashrc、~/.ssh/rc、/etc/ssh/sshrc および $BASH_ENV が指すスクリプトから非対話シェル向けの stdout 出力を取り除いてください（`case $- in *i*)` で対話シェルのみ出力するようガードできます）。subsystem エラー：{0}；fallback エラー：{1}",
+  "backendErrors.vault_locked": "ローカルの資格情報ボールトがロックされているため、同期できません。",
+  "backendErrors.repo_not_configured": "リポジトリ URL が設定されていません。",
+  "backendErrors.master_password_mismatch": "マスターパスワードが正しくないため、リモート設定を復号できません。",
+  "backendErrors.salt_missing": "リモートリポジトリのデータが破損しています：鍵ソルトファイルが見つかりません。",
+  "backendErrors.current_password_mismatch": "現在のパスワードが正しくありません。"
 }

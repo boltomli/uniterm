@@ -1,9 +1,9 @@
 package session
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/ys-ll/uniterm/backend/utils"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -39,7 +39,7 @@ func buildAuthMethods(config ConnectionConfig) ([]ssh.AuthMethod, error) {
 	case "key", "keyText":
 		signer, ok := parseAuthKeySigner(config)
 		if !ok {
-			return nil, fmt.Errorf("parse key: %s 不存在、无权限或口令错误", keySourceLabel(config))
+			return nil, utils.UserErr("ssh_key_unavailable", keySourceLabel(config))
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	default: // "", "password", "agent" and any unknown type fall back to password

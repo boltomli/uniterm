@@ -13,6 +13,7 @@ import {
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import { SyncConfig } from '../../bindings/github.com/ys-ll/uniterm/backend/sync/models'
+import { backendErrorText } from '../utils/backendError'
 // Module-level un-subscribers for sync:conflict / sync:completed listeners.
 // Tracked at module scope so re-imports under HMR can detach the previous
 // listener before re-subscribing (FE-03).
@@ -120,7 +121,7 @@ export const useSyncStore = defineStore('sync', () => {
         conflict: conflict.value ?? undefined,
       }
     } catch (e: any) {
-      lastResult.value = e?.message || String(e)
+      lastResult.value = backendErrorText(e)
       await loadConfig()
       return null
     } finally {
@@ -140,7 +141,7 @@ export const useSyncStore = defineStore('sync', () => {
         message: result.message ?? (result as any).Message ?? '',
       }
     } catch (e: any) {
-      lastResult.value = e?.message || String(e)
+      lastResult.value = backendErrorText(e)
       return null
     } finally {
       syncing.value = false
@@ -153,7 +154,7 @@ export const useSyncStore = defineStore('sync', () => {
       await SyncTestConnection()
       return null
     } catch (e: any) {
-      return e?.message || String(e)
+      return backendErrorText(e)
     } finally {
       testingConnection.value = false
     }

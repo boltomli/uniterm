@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "Внешний редактор не настроен. Укажите его в настройках.",
   "settings.externalEditor": "Внешний редактор",
   "settings.externalEditorDesc": "Команда внешнего редактора; путь временного файла добавляется автоматически. Пути с пробелами заключайте в двойные кавычки.",
-  "sftp.edit.saveClose": "Сохранить и закрыть"
+  "sftp.edit.saveClose": "Сохранить и закрыть",
+  "backendErrors.invalid_private_key": "Выбранный файл не является допустимым приватным ключом (заголовок PEM приватного ключа не найден).",
+  "backendErrors.ssh_key_unavailable": "Ключ {0} не существует, недоступен для чтения или парольная фраза неверна.",
+  "backendErrors.sftp_start_marker_missing": "Начальный маркер SFTP не найден в выводе сервера (sftp-server может отсутствовать или его выполнение запрещено).",
+  "backendErrors.sftp_subsystem_polluted": "Не удалось запустить подсистему SFTP: сценарий входа вывел данные, повредившие поток протокола SFTP; автоматический откат к exec sftp-server также не удался. Удалите вывод в stdout для неинтерактивных оболочек из /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc и сценариев, на которые указывает $BASH_ENV (защитите их через `case $- in *i*)`). Ошибка подсистемы: {0}; ошибка отката: {1}",
+  "backendErrors.vault_locked": "Локальное хранилище учётных данных заблокировано; синхронизация недоступна.",
+  "backendErrors.repo_not_configured": "URL репозитория не настроен.",
+  "backendErrors.master_password_mismatch": "Неверный мастер-пароль: не удалось расшифровать удалённую конфигурацию.",
+  "backendErrors.salt_missing": "Данные удалённого репозитория повреждены: отсутствует файл соли ключа.",
+  "backendErrors.current_password_mismatch": "Текущий пароль неверен."
 }

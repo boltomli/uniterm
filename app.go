@@ -30,6 +30,7 @@ import (
 	"github.com/ys-ll/uniterm/backend/store"
 	"github.com/ys-ll/uniterm/backend/sync"
 	"github.com/ys-ll/uniterm/backend/update"
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 type App struct {
@@ -1396,7 +1397,7 @@ func validatePrivateKeyText(content string) error {
 	// so accept anything that carries the private-key envelope and reject
 	// content that never looked like a key to begin with.
 	if !looksLikePrivateKeyPEM(data) {
-		return fmt.Errorf("所选文件不是有效的私钥（未识别到 PEM 私钥头）")
+		return utils.UserErr("invalid_private_key")
 	}
 	return nil
 }

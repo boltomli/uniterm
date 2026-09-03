@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ys-ll/uniterm/backend/utils"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
@@ -207,7 +208,7 @@ func skipToMarker(r *bufio.Reader, marker string) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("未在服务器输出中找到 SFTP 起始标记（sftp-server 可能不存在或被拒绝执行）")
+			return utils.UserErr("sftp_start_marker_missing")
 		}
 	}
 }
@@ -219,11 +220,13 @@ func skipToMarker(r *bufio.Reader, marker string) error {
 // 的失败原因(便于诊断到底卡在哪一步)。
 func hintSFTPStartupError(subErr, fbErr error) error {
 	if isSFTPStreamPolluted(subErr) {
-		return fmt.Errorf("服务器 SFTP 子系统启动失败：登录脚本在非交互会话中产生了输出，"+
-			"污染了 SFTP 协议流；已尝试自动 fallback 到 exec sftp-server 但未成功。"+
-			"请清理服务器上 /etc/profile、/etc/profile.d/*、~/.bashrc、~/.ssh/rc、/etc/ssh/sshrc "+
-			"以及 $BASH_ENV 指向的脚本里向 stdout 的打印（用 `case $- in *i*)` 判断仅交互 shell 才输出）。"+
-			"subsystem 错误：%v；fallback 错误：%w", subErr, fbErr)
+		// Full remediation guidance lives in the i18n template
+		// (backendErrors.sftp_subsystem_polluted); only the raw subsystem /
+		// fallback errors are passed through as template args.
+		if fbErr == nil {
+			return utils.UserErr("sftp_subsystem_polluted", subErr.Error(), "")
+		}
+		return utils.UserErr("sftp_subsystem_polluted", subErr.Error(), fbErr.Error())
 	}
 	if fbErr != nil {
 		return fbErr

@@ -45,6 +45,7 @@ import { Loader } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 import { CreateSession, CloseSession, RDPHide, RDPSetFullScreen } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 import { Events } from '@wailsio/runtime'
 import { usePanelStore } from '../stores/panelStore'
 
@@ -106,7 +107,7 @@ async function connect() {
     panelStore.bindSession(props.panelId, info.id)
   } catch (e) {
     console.error('RDP connect error:', e)
-    errorMessage.value = String(e)
+    errorMessage.value = backendErrorText(e)
     status.value = 'error'
     clearConnectTimer()
   }
@@ -161,7 +162,7 @@ onMounted(() => {
       case 'error':
         clearConnectTimer()
         status.value = 'error'
-        errorMessage.value = data.errorMessage || ''
+        errorMessage.value = backendErrorTextOf(data.errorMessage || '')
         if (currentSessionId.value) RDPHide(currentSessionId.value)
         break
     }

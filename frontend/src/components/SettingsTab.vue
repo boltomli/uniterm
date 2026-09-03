@@ -1091,6 +1091,7 @@ import { useI18n, locale } from '../i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
+import { backendErrorText } from '../utils/backendError'
 import SkillsManager from './SkillsManager.vue'
 import CommandsManager from './CommandsManager.vue'
 import type { AIModelConfig, ShortcutAction, KeyBinding, KeyboardSettings } from '../types/settings'
@@ -1189,7 +1190,7 @@ async function doSetupMaster() {
     else await credStore.switchMode('master-password', setupPw.value)
     showSetupMaster.value = false
     msg.success(t('config.switchDone'))
-  } catch (e: any) { setupError.value = e?.message || String(e) }
+  } catch (e: any) { setupError.value = backendErrorText(e) }
   finally { setupSubmitting.value = false }
 }
 
@@ -1207,7 +1208,7 @@ async function doVerifyMaster() {
     await credStore.switchMode('keychain', verifyPw.value)
     showVerifyMaster.value = false
     msg.success(t('config.switchDone'))
-  } catch (e: any) { verifyError.value = e?.message || String(e) }
+  } catch (e: any) { verifyError.value = backendErrorText(e) }
   finally { verifySubmitting.value = false }
 }
 
@@ -1216,7 +1217,7 @@ async function doSetupKeychain() {
   try {
     await credStore.setup('keychain', '')
     msg.success(t('config.switchDone'))
-  } catch (e: any) { msg.error(e?.message || String(e)) }
+  } catch (e: any) { msg.error(backendErrorText(e)) }
 }
 
 const oldPw = ref(''); const newPw = ref(''); const newPw2 = ref('')
@@ -1242,7 +1243,7 @@ async function doChangePassword() {
     await credStore.changeMasterPassword(oldPw.value, newPw.value)
     showChangePassword.value = false
     msg.success(t('config.changeDone'))
-  } catch (e: any) { changePwError.value = e?.message || String(e) }
+  } catch (e: any) { changePwError.value = backendErrorText(e) }
   finally { changePwSubmitting.value = false }
 }
 
@@ -1727,7 +1728,7 @@ async function testConnection() {
     msg.success(t('settings.testSuccess'))
   } catch (e: any) {
     testResult.value = false
-    testError.value = e?.message || String(e)
+    testError.value = backendErrorText(e)
     msg.error(t('settings.testFailed'))
   } finally {
     testingConnection.value = false

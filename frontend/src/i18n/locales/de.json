@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "Kein externer Editor konfiguriert. Bitte in den Einstellungen festlegen.",
   "settings.externalEditor": "Externer Editor",
   "settings.externalEditorDesc": "Externer-Editor-Befehl; der Pfad der temporären Datei wird angehängt. Pfade mit Leerzeichen in doppelte Anführungszeichen setzen.",
-  "sftp.edit.saveClose": "Speichern und schließen"
+  "sftp.edit.saveClose": "Speichern und schließen",
+  "backendErrors.invalid_private_key": "Die ausgewählte Datei ist kein gültiger privater Schlüssel (kein PEM-Header für private Schlüssel gefunden).",
+  "backendErrors.ssh_key_unavailable": "Schlüssel {0} existiert nicht, ist nicht lesbar oder die Passphrase ist falsch.",
+  "backendErrors.sftp_start_marker_missing": "SFTP-Startmarker wurde in der Ausgabe des Servers nicht gefunden (sftp-server fehlt möglicherweise oder wurde verweigert).",
+  "backendErrors.sftp_subsystem_polluted": "Start des SFTP-Subsystems fehlgeschlagen: Ein Login-Skript hat in einer nicht-interaktiven Sitzung ausgegeben und den SFTP-Protokollstrom verunreinigt; der automatische Fallback auf exec sftp-server schlug ebenfalls fehl. Entfernen Sie stdout-Ausgaben für nicht-interaktive Shells aus /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc und Skripten, auf die $BASH_ENV verweist (schützen Sie sie mit `case $- in *i*)`). Subsystem-Fehler: {0}; Fallback-Fehler: {1}",
+  "backendErrors.vault_locked": "Der lokale Anmeldeinformationsspeicher ist gesperrt; Synchronisierung nicht möglich.",
+  "backendErrors.repo_not_configured": "Die Repository-URL ist nicht konfiguriert.",
+  "backendErrors.master_password_mismatch": "Falsches Master-Passwort: Die Remote-Konfiguration konnte nicht entschlüsselt werden.",
+  "backendErrors.salt_missing": "Remote-Repository-Daten sind beschädigt: Die Schlüssel-Salz-Datei fehlt.",
+  "backendErrors.current_password_mismatch": "Das aktuelle Passwort ist falsch."
 }
