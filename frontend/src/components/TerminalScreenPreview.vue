@@ -13,12 +13,12 @@
       <span
         v-if="showTimestamps"
         class="preview-col-time"
-        :style="{ width: timeColWidth }"
+        :style="{ width: timeColWidth, color: timeColor, borderRight: dividerOnTime ? dividerCss : undefined }"
       >{{ row.timestamp }}&nbsp;</span>
       <span
         v-if="showLineNumbers"
         class="preview-col-num"
-        :style="{ width: numColWidth }"
+        :style="{ width: numColWidth, color: numColor, marginRight: numColGap, borderRight: dividerOnNum ? dividerCss : undefined }"
       >{{ row.lineNumber }}</span>
       <span class="preview-content">
         <template v-if="row.runs.length">
@@ -44,7 +44,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import { getManagedTerminal } from '../services/terminalManager'
 import { useSettingsStore } from '../stores/settingsStore'
-import { formatTimestampMs, resolveRowTimestamp } from '../utils/terminalGutter'
+import { formatTimestampMs, resolveRowMeta } from '../utils/terminalGutter'
 import {
   buildPalette,
   lineToRuns,
@@ -80,6 +80,18 @@ const fgColor = ref('#cccccc')
 const fontCss = ref({ fontSize: '13px', fontFamily: 'monospace' })
 const numColWidth = ref('')
 const timeColWidth = ref('')
+// Gutter-mirroring colors: same alphas the main gutter uses (time 0.85,
+// number 0.6, divider 0.16 of the terminal foreground) so the preview's
+// columns read exactly like the terminal's.
+const timeColor = ref('')
+const numColor = ref('')
+const dividerColor = ref('')
+const numColGap = ref('')
+const dividerCss = computed(() => `1px solid ${dividerColor.value}`)
+// The divider sits after the LAST gutter column (number, when numbers are
+// shown; otherwise the time column).
+const dividerOnNum = computed(() => showLineNumbers.value)
+const dividerOnTime = computed(() => showTimestamps.value && !showLineNumbers.value)
 
 const popupStyle = computed(() => ({
   left: `${pos.value.left}px`,
@@ -308,6 +320,10 @@ function show(t: Terminal, sbRect: DOMRect) {
   const withNumbers = showLineNumbers.value
   const withTimestamps = showTimestamps.value && managed
   const tsFormat = settingsStore.settings.terminal.timestampFormat || 'HH:mm:ss'
+  const alternate = buf.type === 'alternate'
+  const registry = managed?.lineRegistry
+  const getMeta = (abs: number) =>
+    alternate ? { number: abs + 1 } : registry?.entries.get(abs)
 
   const rendered: Array<{ runs: PreviewStyleRun[]; lineNumber: string; timestamp: string }> = []
   for (let i = 0; i < PREVIEW_ROWS; i++) {
@@ -315,49 +331,54 @@ function show(t: Terminal, sbRect: DOMRect) {
     const line = buf.getLine(bufferLine)
     const isWrapped = line?.isWrapped ?? false
     const runs = line ? lineToRuns(line, t.cols, palette) : []
-    // Mirror the gutter's semantics: wrapped continuation rows belong to the
-    // line above, so they carry no number/timestamp of their own.
+    // Mirror the gutter's semantics: numbers/timestamps come from the logical
+    // line registry; wrapped continuation rows belong to the line above, so
+    // they carry no number/timestamp of their own.
     const numbered = withNumbers && !isWrapped
     const stamped = withTimestamps && !isWrapped
+    const meta = (numbered || stamped) && managed
+      ? resolveRowMeta(bufferLine, lineOffset, (y) => buf.getLine(y), getMeta)
+      : undefined
     rendered.push({
       runs,
-      lineNumber: numbered ? String(lineOffset + bufferLine + 1) : '',
-      timestamp: stamped
-        ? (() => {
-            const ts = managed
-              ? resolveRowTimestamp(
-                  bufferLine,
-                  lineOffset,
-                  (y) => buf.getLine(y),
-                  (abs) => managed.lineTimestamps.get(abs),
-                )
-              : undefined
-            return ts ? formatTimestampMs(ts, tsFormat) : ''
-          })()
-        : '',
+      lineNumber: numbered && meta ? String(meta.number) : '',
+      timestamp: stamped && meta?.ts ? formatTimestampMs(meta.ts, tsFormat) : '',
     })
   }
   lines.value = rendered
   // Resolved (not raw-option) colors — same source the cells were styled from.
   bgColor.value = palette.defaultBg
   fgColor.value = palette.defaultFg
+  // Mirror the gutter's column palette (TerminalGutter.vue): same alphas of
+  // the terminal foreground for time, number and the divider line.
+  timeColor.value = withAlpha(palette.defaultFg, 0.85)
+  numColor.value = withAlpha(palette.defaultFg, 0.6)
+  dividerColor.value = withAlpha(palette.defaultFg, 0.16)
   fontCss.value = {
     fontSize: `${t.options.fontSize ?? 13}px`,
     fontFamily: typeof t.options.fontFamily === 'string' ? t.options.fontFamily : 'monospace',
   }
-  const maxDigits = String(lineOffset + Math.max(total - 1, 0) + 1).length
-  // Column widths in px from the terminal's measured character width — the
-  // CSS `ch` unit measures the '0' glyph and drifts from the real cell size.
+  // Column width from the largest line number handed out (registry counter);
+  // falls back to the buffer extent when there is no registry data (alt screen).
+  const maxNumberHint = registry && !alternate ? registry.nextNumber - 1 : total
+  const maxDigits = String(Math.max(maxNumberHint, 1)).length
+  // Column widths mirror the gutter's formulas (TerminalGutter.vue): time =
+  // ceil(cellWidth × format length) + 2px padding; number = max(ceil(cellWidth
+  // × digits) + 8px padding, 24); 12px gap between the two columns; the
+  // character width comes from the terminal's measured cell — the CSS `ch`
+  // unit measures the '0' glyph and drifts from the real cell size.
   const cw = charWidth(t)
-  numColWidth.value = withNumbers ? `${maxDigits * cw}px` : ''
-  timeColWidth.value = withTimestamps ? `${(tsFormat.length + 1) * cw}px` : ''
+  const timeW = withTimestamps ? Math.ceil(cw * tsFormat.length) + 2 : 0
+  const numW = withNumbers ? Math.max(Math.ceil(cw * maxDigits) + 8, 24) : 0
+  const gap = withTimestamps && withNumbers ? 12 : 0
+  timeColWidth.value = withTimestamps ? `${timeW}px` : ''
+  numColWidth.value = withNumbers ? `${numW}px` : ''
+  numColGap.value = gap ? `${gap}px` : ''
   // The number/timestamp columns live INSIDE the popup, so the popup must be
-  // wider than the terminal by exactly those columns — otherwise the content
-  // area shrinks and the right-hand side of each line gets clipped. The left
-  // gutter area of the terminal provides this extra room.
-  const colsExtra =
-    (withNumbers ? maxDigits * cw : 0) +
-    (withTimestamps ? (tsFormat.length + 1) * cw : 0)
+  // wider than the terminal by exactly those columns (+1px divider) —
+  // otherwise the content area shrinks and the right-hand side of each line
+  // gets clipped. The left gutter area of the terminal provides this room.
+  const colsExtra = timeW + gap + numW + 1
 
   const lh = cellHeight(t)
   cellHeightPx.value = `${lh}px`
@@ -490,17 +511,20 @@ onBeforeUnmount(unbind)
   display: flex;
   white-space: pre;
   overflow: hidden;
+  /* Same tabular figures as the gutter so digits line up column-wide. */
+  font-variant-numeric: tabular-nums;
 }
 
 .preview-col-time {
   flex: none;
-  opacity: 0.75;
+  text-align: right;
+  padding-right: 2px;
 }
 
 .preview-col-num {
   flex: none;
   text-align: right;
-  opacity: 0.55;
+  padding-right: 8px;
 }
 
 .preview-content {

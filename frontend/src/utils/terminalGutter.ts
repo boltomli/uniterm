@@ -1,8 +1,14 @@
 /**
- * Pure line-number computation for the terminal gutter.
+ * Pure line-number/timestamp computation for the terminal gutter.
  *
  * Kept free of DOM/xterm so the numbering rules can be unit-tested without a
  * terminal instance. The gutter component adapts xterm's buffer to this model.
+ *
+ * Numbers and timestamps are NOT derived from buffer positions — they come
+ * from the logical-line registry (services/terminalTimestamps), where each
+ * line got a fixed sequential number and birth time when it first received
+ * characters. Wrapped continuation rows carry neither; resize reflows never
+ * renumber anything.
  */
 
 /** Default timestamp format, e.g. "12:34:56". */
@@ -21,23 +27,32 @@ export interface GutterLineSource {
   isWrapped: boolean
 }
 
+/** Per-logical-line data the gutter reads from the registry. */
+export interface GutterMeta {
+  number: number
+  ts?: number
+}
+
 export interface BuildGutterLinesOptions {
   /** Number of visible rows on the terminal screen (terminal.rows). */
   rows: number
   /** Index of the top visible buffer row (terminal.buffer.active.viewportY). */
   viewportY: number
   /** Absolute-row offset accumulated from scrollback trimming
-   * (0 in the alternate screen, where numbering restarts from 1). */
+   * (0 in the alternate screen). */
   lineOffset: number
   /** Absolute index of the cursor row (baseY + cursorY); rows below it
    * have not been rendered yet and carry no number. */
   cursorAbsoluteY: number
   /** Fetch the wrapping flag for a given absolute buffer row. */
   getLine: (bufferLine: number) => GutterLineSource | null | undefined
-  /** When true and a getTimestamp is provided, populate the time column. */
+  /** Look up a logical line's meta by its absolute start row. */
+  getMeta?: (absoluteStartIndex: number) => GutterMeta | undefined
+  /** When true and a getTimestamp-style meta is present, populate the column. */
   showTimestamps?: boolean
-  /** Birth timestamp (ms) of a logical line by its absolute start index. */
-  getTimestamp?: (absoluteStartIndex: number) => number | undefined
+  /** Largest line number handed out so far — keeps the column width stable
+   * even when the viewport shows only low numbers. */
+  maxNumberHint?: number
   /** Convert a birth timestamp to display text. Defaults to [HH:mm:ss]. */
   formatTimestamp?: (ms: number) => string
 }
@@ -72,30 +87,29 @@ export function formatTimestampMs(ms: number, format: string = DEFAULT_TIMESTAMP
 export const TIMESTAMP_WIDTH_SAMPLE_MS = new Date(2099, 11, 28, 23, 59, 59).getTime()
 
 /**
- * Resolve the birth timestamp of a visible row's logical line. Walks back
- * through the wrapped group: the timestamp lives on the first (non-wrapped)
- * row, so wrapped continuation rows inherit the group's start.
+ * Resolve the meta of a visible row's logical line. Walks back through the
+ * wrapped group: the meta lives on the first (non-wrapped) row, so wrapped
+ * continuation rows inherit their group's number and timestamp.
  */
-export function resolveRowTimestamp(
+export function resolveRowMeta(
   bufferLine: number,
   lineOffset: number,
   getLine: (bufferLine: number) => GutterLineSource | null | undefined,
-  getTimestamp: (absoluteStartIndex: number) => number | undefined,
-): number | undefined {
+  getMeta: (absoluteStartIndex: number) => GutterMeta | undefined,
+): GutterMeta | undefined {
   let y = bufferLine
   for (;;) {
-    const ts = getTimestamp(lineOffset + y)
-    if (ts) return ts
+    const meta = getMeta(lineOffset + y)
+    if (meta) return meta
     const line = getLine(y)
-    if (!line?.isWrapped) break
+    if (!line?.isWrapped) return undefined
     y -= 1
   }
-  return undefined
 }
 
 export function buildGutterLines(opts: BuildGutterLinesOptions): GutterBuildResult {
   const lines: GutterRow[] = []
-  let maxLineNumber = 1
+  let maxLineNumber = Math.max(opts.maxNumberHint ?? 0, 1)
   const fmt = opts.formatTimestamp ?? formatTimestampMs
 
   for (let i = 0; i < opts.rows; i += 1) {
@@ -104,24 +118,23 @@ export function buildGutterLines(opts: BuildGutterLinesOptions): GutterBuildResu
     const isRendered = bufferLine <= opts.cursorAbsoluteY
 
     // Wrapped continuation rows and rows the cursor hasn't reached yet get no
-    // number — the former would otherwise look like fresh lines, the latter
-    // would show a phantom number below the last written row.
+    // number — the former belong to the line above, the latter haven't been
+    // written (nor registered) yet.
     const showNumber = isRendered && !isWrapped
     const key = opts.lineOffset + bufferLine
 
+    let lineNumber = ''
     let timestamp = ''
-    if (opts.showTimestamps && showNumber && opts.getTimestamp) {
-      const ts = resolveRowTimestamp(bufferLine, opts.lineOffset, opts.getLine, opts.getTimestamp)
-      if (ts) timestamp = fmt(ts)
+    if (showNumber && opts.getMeta) {
+      const meta = resolveRowMeta(bufferLine, opts.lineOffset, opts.getLine, opts.getMeta)
+      if (meta) {
+        lineNumber = String(meta.number)
+        maxLineNumber = Math.max(maxLineNumber, meta.number)
+        if (opts.showTimestamps && meta.ts) timestamp = fmt(meta.ts)
+      }
     }
 
-    if (showNumber) {
-      const number = opts.lineOffset + bufferLine + 1
-      maxLineNumber = Math.max(maxLineNumber, number)
-      lines.push({ key, lineNumber: String(number), timestamp })
-    } else {
-      lines.push({ key, lineNumber: '', timestamp })
-    }
+    lines.push({ key, lineNumber, timestamp })
   }
 
   return { lines, maxLineNumber }

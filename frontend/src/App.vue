@@ -338,6 +338,13 @@ async function checkCredentials() {
   credStore.watchEvents()
   await credStore.loadDataDir()
   await credStore.loadStatus()
+  // Backend unreachable (wails3 dev browser preview): every binding call
+  // rejects and the placeholder status would wrongly pop the encryption
+  // dialog. Skip the whole credential flow so the UI renders for debugging.
+  if (!credStore.backendAvailable) {
+    console.warn('[uniTerm] Backend unreachable — browser debug mode: credential flow skipped')
+    return
+  }
   if (credStore.firstRun || credStore.dataDirInfo.firstRun) {
     dataDirVisible.value = true
     return

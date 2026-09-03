@@ -44,6 +44,29 @@ type TerminalSettings struct {
 	// separators. Empty means the frontend falls back to its built-in
 	// default. Mirrors the `wordSeparator` Terminal option.
 	WordSeparator string `json:"wordSeparator,omitempty"`
+	// FallbackFont is the secondary font family for glyphs the primary font
+	// lacks (most useful for CJK). Empty means no explicit fallback.
+	FallbackFont string `json:"fallbackFont,omitempty"`
+	// FontWeight is the CSS weight of regular terminal text. Pointer +
+	// omitempty so older settings.json files still load; the frontend
+	// defaults to 400 when nil.
+	FontWeight *int `json:"fontWeight,omitempty"`
+	// CursorStyle is the focused-terminal cursor shape (block/underline/bar).
+	// Empty means the frontend falls back to `block`.
+	CursorStyle string `json:"cursorStyle,omitempty"`
+	// MinimumContrast is xterm's text/background contrast boost (1 = off).
+	// Pointer + omitempty so older settings.json files still load; the
+	// frontend defaults to 4.5 when nil.
+	MinimumContrast *float64 `json:"minimumContrast,omitempty"`
+	// ShowLineNumbers / ShowTimestamps toggle the gutter columns in front of
+	// the terminal. Pointer + omitempty so settings.json written by older
+	// builds (which lack these fields) still loads; the frontend defaults
+	// to false when nil.
+	ShowLineNumbers *bool `json:"showLineNumbers,omitempty"`
+	ShowTimestamps  *bool `json:"showTimestamps,omitempty"`
+	// TimestampFormat renders the gutter time column (e.g. "HH:mm:ss").
+	// Empty means the frontend falls back to its built-in default.
+	TimestampFormat string `json:"timestampFormat,omitempty"`
 }
 
 // TerminalThemeColors mirrors xterm.js's ITheme shape: the 4 base colors
@@ -96,6 +119,9 @@ type AIModelConfig struct {
 	BaseURL  string `json:"baseURL"`
 	Model    string `json:"model"`
 	Protocol string `json:"protocol"`
+	// UserAgent overrides the HTTP User-Agent for this model's API calls.
+	// Empty means the frontend/protocol default.
+	UserAgent string `json:"userAgent,omitempty"`
 }
 
 type AISettings struct {
