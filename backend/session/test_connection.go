@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,17 @@ func ProbeConnection(config ConnectionConfig) (string, error) {
 	case "mongodb":
 		return probeMongo(config)
 	case "database":
+		// redis/mongodb/elasticsearch are stored as type "database" with a
+		// dbType discriminator (mirroring the SQL family). Route them to their
+		// dedicated probes; the rest go through the SQL provider registry.
+		switch config.DBType {
+		case "redis":
+			return probeRedis(config)
+		case "mongodb":
+			return probeMongo(config)
+		case "elasticsearch":
+			return probeElasticsearch(config)
+		}
 		return probeDatabase(config)
 	default:
 		return "", fmt.Errorf("connection type %q does not support connection testing", config.Type)
@@ -250,6 +262,64 @@ func probeMongo(config ConnectionConfig) (string, error) {
 		return "", fmt.Errorf("mongodb ping: %w", err)
 	}
 	return fmt.Sprintf("mongodb: connected to %s:%d", config.Host, config.Port), nil
+}
+
+// probeElasticsearch probes the cluster with GET / using the same URL, TLS and
+// auth construction as ElasticsearchSession.Connect (basic and ApiKey auth).
+func probeElasticsearch(config ConnectionConfig) (string, error) {
+	host := config.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := config.Port
+	if port == 0 {
+		port = 9200
+	}
+	scheme := "http"
+	if config.EsUseSSL {
+		scheme = "https"
+	}
+	prefix := strings.TrimSuffix(config.EsPathPrefix, "/")
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	if config.EsUseSSL {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: config.EsSkipVerify, //nolint:gosec // intentional user opt-in
+		}
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: transport,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s://%s:%d%s", scheme, host, port, prefix), nil)
+	if err != nil {
+		return "", fmt.Errorf("elasticsearch connect: %w", err)
+	}
+	if auth := buildEsAuthHeader(config); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("elasticsearch connect: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("elasticsearch connect: HTTP %s", resp.Status)
+	}
+	return fmt.Sprintf("elasticsearch: connected to %s:%d", host, port), nil
 }
 
 func probeDatabase(config ConnectionConfig) (string, error) {
