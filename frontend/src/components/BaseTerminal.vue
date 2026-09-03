@@ -691,6 +691,15 @@ function onWindowResize() {
     isResizing = false
     el.classList.remove('resizing')
     resize()
+    // Reset IME position after window resize — the textarea moved but the
+    // IME candidate window may not have followed.
+    if (terminal) {
+      const ta = terminal.textarea
+      if (ta && ta.offsetParent != null) {
+        ta.blur()
+        ta.focus()
+      }
+    }
   }, 400)
 }
 
@@ -705,6 +714,18 @@ function onNativeResizeEnd() {
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
   resizeTimer = setTimeout(() => resize(), 100)
+  // After a native window drag/resize, the textarea position changes but
+  // the IME candidate window does not follow (Windows modal loop blocks
+  // position updates). The orphaned IME window causes duplicate input.
+  // Blur+focus the textarea to force the OS to recalculate IME position.
+  setTimeout(() => {
+    if (!isActive.value || !terminal) return
+    const el = terminal.textarea
+    if (el && el.offsetParent != null) {
+      el.blur()
+      el.focus()
+    }
+  }, 200)
 }
 
 function onSplitResizeStart() {
@@ -724,6 +745,16 @@ function onSplitResizeEnd() {
       resize()
     }, 0)
   })
+  // Same as onNativeResizeEnd: split pane resize moves the textarea but the
+  // IME candidate window stays at the old position → reset after resize settles.
+  setTimeout(() => {
+    if (!isActive.value || !terminal) return
+    const el = terminal.textarea
+    if (el && el.offsetParent != null) {
+      el.blur()
+      el.focus()
+    }
+  }, 300)
 }
 
 // Strip OSC sequences that xterm.js generates internally (color queries etc.)
