@@ -16,6 +16,10 @@ build/windows/installer/*
 !build/darwin/
 build/darwin/*
 !build/darwin/Taskfile.yml
+!build/darwin/Info.plist
+!build/darwin/Info.dev.plist
+# icns ships prebuilt so `wails dev`/`run` show the real icon before generate:icns ever runs
+!build/darwin/icons.icns
 uniTerm.exe
 __debug*
 
