@@ -1410,5 +1410,14 @@
   "sftp.editExternalNotConfigured": "Aucun éditeur externe configuré. Configurez-en un dans les paramètres.",
   "settings.externalEditor": "Éditeur externe",
   "settings.externalEditorDesc": "Commande de l'éditeur externe ; le chemin du fichier temporaire est ajouté automatiquement. Les chemins avec espaces doivent être entre guillemets doubles.",
-  "sftp.edit.saveClose": "Enregistrer et fermer"
+  "sftp.edit.saveClose": "Enregistrer et fermer",
+  "backendErrors.invalid_private_key": "Le fichier sélectionné n'est pas une clé privée valide (en-tête PEM de clé privée introuvable).",
+  "backendErrors.ssh_key_unavailable": "La clé {0} n'existe pas, n'est pas lisible ou la phrase secrète est incorrecte.",
+  "backendErrors.sftp_start_marker_missing": "Marqueur de démarrage SFTP introuvable dans la sortie du serveur (sftp-server peut être absent ou refusé).",
+  "backendErrors.sftp_subsystem_polluted": "Échec du démarrage du sous-système SFTP : un script de connexion a produit une sortie qui a corrompu le flux du protocole SFTP ; le repli automatique sur exec sftp-server a également échoué. Supprimez les sorties stdout pour les shells non interactifs de /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc et des scripts pointés par $BASH_ENV (protégez-les avec `case $- in *i*)`). Erreur du sous-système : {0} ; erreur de repli : {1}",
+  "backendErrors.vault_locked": "Le coffre d'identifiants local est verrouillé ; la synchronisation est indisponible.",
+  "backendErrors.repo_not_configured": "L'URL du dépôt n'est pas configurée.",
+  "backendErrors.master_password_mismatch": "Mot de passe maître incorrect : impossible de déchiffrer la configuration distante.",
+  "backendErrors.salt_missing": "Les données du dépôt distant sont corrompues : le fichier de sel de clé est manquant.",
+  "backendErrors.current_password_mismatch": "Le mot de passe actuel est incorrect."
 }

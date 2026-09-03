@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "No hay editor externo configurado. Configúralo en Ajustes.",
   "settings.externalEditor": "Editor externo",
   "settings.externalEditorDesc": "Comando del editor externo; la ruta del archivo temporal se añade automáticamente. Las rutas con espacios deben ir entre comillas dobles.",
-  "sftp.edit.saveClose": "Guardar y cerrar"
+  "sftp.edit.saveClose": "Guardar y cerrar",
+  "backendErrors.invalid_private_key": "El archivo seleccionado no es una clave privada válida (no se encontró cabecera PEM de clave privada).",
+  "backendErrors.ssh_key_unavailable": "La clave {0} no existe, no se puede leer o la frase de contraseña es incorrecta.",
+  "backendErrors.sftp_start_marker_missing": "No se encontró el marcador de inicio de SFTP en la salida del servidor (es posible que sftp-server no exista o se haya denegado su ejecución).",
+  "backendErrors.sftp_subsystem_polluted": "Error al iniciar el subsistema SFTP: un script de inicio de sesión produjo salida que corrompió el flujo del protocolo SFTP; la reserva automática a exec sftp-server también falló. Elimine las salidas a stdout para shells no interactivos de /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc y de los scripts apuntados por $BASH_ENV (protéjalos con `case $- in *i*)`). Error del subsistema: {0}; error de reserva: {1}",
+  "backendErrors.vault_locked": "El almacén local de credenciales está bloqueado; la sincronización no está disponible.",
+  "backendErrors.repo_not_configured": "La URL del repositorio no está configurada.",
+  "backendErrors.master_password_mismatch": "Contraseña maestra incorrecta: no se pudo descifrar la configuración remota.",
+  "backendErrors.salt_missing": "Los datos del repositorio remoto están dañados: falta el archivo de sal de clave.",
+  "backendErrors.current_password_mismatch": "La contraseña actual es incorrecta."
 }

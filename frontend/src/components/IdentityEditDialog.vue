@@ -85,6 +85,7 @@ import { ref, reactive, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { ElMessage } from 'element-plus'
 import { OpenFileDialog, OpenPrivateKeyFile } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { backendErrorText } from '../utils/backendError'
 import { FolderOpen, Eye, EyeOff } from '@lucide/vue'
 import { useIdentityStore } from '../stores/identityStore'
 import type { Identity } from '../types/identity'
@@ -142,7 +143,7 @@ async function importKeyText() {
       keyContentRevealed.value = true
     }
   } catch (e: any) {
-    ElMessage.error(String(e?.message || e))
+    ElMessage.error(backendErrorText(e))
   }
 }
 

@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "외부 편집기가 구성되지 않았습니다. 설정에서 지정하세요.",
   "settings.externalEditor": "외부 편집기",
   "settings.externalEditorDesc": "외부 편집기 명령. 임시 파일 경로가 자동으로 추가됩니다. 공백이 포함된 경로는 큰따옴표로 감싸세요.",
-  "sftp.edit.saveClose": "저장 후 닫기"
+  "sftp.edit.saveClose": "저장 후 닫기",
+  "backendErrors.invalid_private_key": "선택한 파일은 유효한 개인 키가 아닙니다(PEM 개인 키 헤더를 찾을 수 없음).",
+  "backendErrors.ssh_key_unavailable": "키 {0} 이(가) 없거나 읽을 수 없거나 암호구가 잘못되었습니다.",
+  "backendErrors.sftp_start_marker_missing": "서버 출력에서 SFTP 시작 마커를 찾을 수 없습니다(sftp-server 가 없거나 실행이 거부되었을 수 있습니다).",
+  "backendErrors.sftp_subsystem_polluted": "SFTP 서브시스템 시작 실패: 로그인 스크립트가 비대화형 세션에서 출력을 내보내 SFTP 프로토콜 스트림을 오염했습니다. exec sftp-server 로의 자동 폴백도 실패했습니다. /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc 및 $BASH_ENV 가 가리키는 스크립트에서 비대화형 셸용 stdout 출력을 제거하세요(`case $- in *i*)` 로 대화형 셸에서만 출력하도록 감쌀 수 있습니다). subsystem 오류: {0}; fallback 오류: {1}",
+  "backendErrors.vault_locked": "로컬 자격 증명 볼트가 잠겨 있어 동기화할 수 없습니다.",
+  "backendErrors.repo_not_configured": "저장소 URL이 설정되지 않았습니다.",
+  "backendErrors.master_password_mismatch": "마스터 비밀번호가 잘못되어 원격 구성을 복호화할 수 없습니다.",
+  "backendErrors.salt_missing": "원격 저장소 데이터가 손상되었습니다: 키 솔트 파일이 없습니다.",
+  "backendErrors.current_password_mismatch": "현재 비밀번호가 올바르지 않습니다."
 }

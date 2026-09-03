@@ -653,6 +653,7 @@ import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
 import { isSqlDbType } from '../utils/quickConnect'
+import { backendErrorText } from '../utils/backendError'
 import type { Identity } from '../types/identity'
 import type { Proxy } from '../types/proxy'
 
@@ -1371,7 +1372,7 @@ async function importKeyText() {
       keyContentRevealed.value = true
     }
   } catch (e: any) {
-    msg.error(String(e?.message || e))
+    msg.error(backendErrorText(e))
   }
 }
 
@@ -1547,7 +1548,7 @@ async function onTest() {
     msg.success(desc)
   } catch (e: any) {
     testStatus.value = 'error'
-    msg.error(String(e?.message || e))
+    msg.error(backendErrorText(e))
   }
 }
 

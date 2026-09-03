@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 var ErrWrongSyncPassword = errors.New("WRONG_SYNC_PASSWORD")
@@ -130,7 +132,7 @@ func (s *SyncService) requireUnlocked() error {
 		return nil
 	}
 	if !s.passwordStore.Unlocked() {
-		return errors.New("本地凭证库未解锁，无法同步")
+		return utils.UserErr("vault_locked")
 	}
 	return nil
 }
@@ -338,7 +340,7 @@ func (s *SyncService) TestConnection() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if config.RepoURL == "" {
-		return fmt.Errorf("仓库地址未设置")
+		return utils.UserErr("repo_not_configured")
 	}
 	username := config.Username
 	token := s.getToken()
@@ -394,7 +396,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		// Existing repo: verify password, then compare remote vs local
 		encKey = DeriveKey(masterPassword, salt)
 		if err := verifyDecryption(s.repoPath, encKey); err != nil {
-			return nil, fmt.Errorf("主密码错误，无法解密远端配置")
+			return nil, utils.UserErr("master_password_mismatch")
 		}
 
 		if err := s.keychain.StoreEncryptionKey(encKey); err != nil {
@@ -713,7 +715,7 @@ func (s *SyncService) VerifySyncPassword(password, username, token string) error
 		return fmt.Errorf("read salt: %w", err)
 	}
 	if salt == nil {
-		return fmt.Errorf("远端仓库数据异常，缺少密钥盐值")
+		return utils.UserErr("salt_missing")
 	}
 
 	var key []byte
@@ -763,13 +765,13 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 		return fmt.Errorf("read salt: %w", err)
 	}
 	if oldSalt == nil {
-		return fmt.Errorf("远端仓库数据异常，缺少密钥盐值")
+		return utils.UserErr("salt_missing")
 	}
 
 	// Verify old password can decrypt the repo.
 	oldKey := DeriveKey(oldPassword, oldSalt)
 	if err := verifyDecryption(s.repoPath, oldKey); err != nil {
-		return fmt.Errorf("当前密码错误")
+		return utils.UserErr("current_password_mismatch")
 	}
 
 	// Fresh 16-byte salt via crypto/rand (SYNC-P1-6).

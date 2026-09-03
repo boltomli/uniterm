@@ -1413,5 +1413,14 @@
   "sftp.editExternalNotConfigured": "No external editor configured. Set one in Settings.",
   "settings.externalEditor": "External Editor",
   "settings.externalEditorDesc": "External editor command; temp file path is appended. Wrap paths with spaces in double quotes.",
-  "sftp.edit.saveClose": "Save and Close"
+  "sftp.edit.saveClose": "Save and Close",
+  "backendErrors.invalid_private_key": "The selected file is not a valid private key (no PEM private key header found).",
+  "backendErrors.ssh_key_unavailable": "Key {0} does not exist, is not readable, or the passphrase is wrong.",
+  "backendErrors.sftp_start_marker_missing": "SFTP start marker not found in the server output (sftp-server may be missing or refused).",
+  "backendErrors.sftp_subsystem_polluted": "Failed to start the SFTP subsystem: a login script produced output that corrupted the SFTP protocol stream; automatic fallback to exec sftp-server also failed. Remove stdout prints for non-interactive shells from /etc/profile, /etc/profile.d/*, ~/.bashrc, ~/.ssh/rc, /etc/ssh/sshrc and any script pointed to by $BASH_ENV (guard them with `case $- in *i*)`). Subsystem error: {0}; fallback error: {1}",
+  "backendErrors.vault_locked": "The local credential vault is locked; sync is unavailable.",
+  "backendErrors.repo_not_configured": "The repository URL is not configured.",
+  "backendErrors.master_password_mismatch": "Wrong master password: unable to decrypt the remote configuration.",
+  "backendErrors.salt_missing": "Remote repository data is corrupt: the key salt file is missing.",
+  "backendErrors.current_password_mismatch": "The current password is incorrect."
 }
