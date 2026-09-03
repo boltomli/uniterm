@@ -938,7 +938,7 @@
               <el-button link @click="editModel(model)">
                 <el-icon><Pencil :size="14" /></el-icon>
               </el-button>
-              <el-button link type="danger" @click="settingsStore.removeModel(model.id)">
+              <el-button link type="danger" @click="removeModelConfirm(model)">
                 <el-icon><Trash2 :size="14" /></el-icon>
               </el-button>
             </div>
@@ -1638,6 +1638,18 @@ function editModel(model: AIModelConfig) {
   showModelForm.value = true
 }
 
+async function removeModelConfirm(model: AIModelConfig) {
+  try {
+    await ElMessageBox.confirm(
+      t('settings.modelDeleteConfirm', { name: model.name }),
+      t('common.delete')
+    )
+    settingsStore.removeModel(model.id)
+  } catch {
+    // user cancelled
+  }
+}
+
 function saveModel() {
   if (editingModel.value) {
     settingsStore.updateModel(editingModel.value.id, { ...modelForm })
@@ -1843,6 +1855,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 
 .settings-section {
+  min-width: 400px;
   max-width: 1000px;
   margin: 0 auto;
 }
