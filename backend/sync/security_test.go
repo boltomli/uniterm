@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/zalando/go-keyring"
 )
 
@@ -29,13 +30,26 @@ func initLocalRepoWithBareRemote(t *testing.T) (*SyncService, string) {
 		t.Fatalf("mkdir remote: %v", err)
 	}
 
-	if _, err := git.PlainInit(remotePath, true); err != nil {
+	bare, err := git.PlainInit(remotePath, true)
+	if err != nil {
 		t.Fatalf("init bare: %v", err)
+	}
+	// Align both HEADs with config.Branch ("main") — PlainInit defaults to
+	// master, which would desync every branch reference in the flow tests.
+	if err := bare.Storer.SetReference(
+		plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main")),
+	); err != nil {
+		t.Fatalf("set bare HEAD: %v", err)
 	}
 
 	work, err := git.PlainInit(repoPath, false)
 	if err != nil {
 		t.Fatalf("init work: %v", err)
+	}
+	if err := work.Storer.SetReference(
+		plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main")),
+	); err != nil {
+		t.Fatalf("set work HEAD: %v", err)
 	}
 	if _, err := work.CreateRemote(&config.RemoteConfig{
 		Name: "origin",
@@ -66,35 +80,14 @@ func initLocalRepoWithBareRemote(t *testing.T) (*SyncService, string) {
 	return s, repoPath
 }
 
-// TestCompareLocalWithRepo_WrongKeyReturnsError is the file-level half of the
-// SYNC-P1-11 guard: when Sync() hands compareLocalWithRepo an encKey that
-// cannot decrypt the remote ciphertext (wrong master password, corrupted
-// blob), the helper must surface the error rather than return false (which
-// would let Sync() push locally-derived ciphertext over the only good copy).
-func TestCompareLocalWithRepo_WrongKeyReturnsError(t *testing.T) {
-	s, repoPath := initLocalRepoWithBareRemote(t)
+// TestCompareLocalWithRepo_WrongKeyReturnsError was folded into
+// TestSync_WrongPasswordSetsPasswordMismatchStatus: the wrong-key abort is
+// now the verifyDecryption guard inside Sync() itself.
 
-	realKey := DeriveKey("correct-password", []byte("0123456789abcdef"))
-	wrongKey := DeriveKey("WRONG-password", []byte("0123456789abcdef"))
-
-	srcDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(srcDir, "connections.json"),
-		[]byte(`{"connections":[]}`), 0600); err != nil {
-		t.Fatalf("write src connections: %v", err)
-	}
-	if err := EncryptConfigFiles(srcDir, repoPath, realKey, nil, nil); err != nil {
-		t.Fatalf("encrypt with realKey: %v", err)
-	}
-
-	_, err := s.compareLocalWithRepo(wrongKey)
-	if err == nil {
-		t.Fatal("compareLocalWithRepo with wrong key returned nil error — SYNC-P1-11 regression")
-	}
-}
-
-// TestSync_WrongPasswordSetsPasswordMismatchStatus drives Sync() to the
-// compareLocalWithRepo branch and asserts the on-disk status record reflects
-// the password_mismatch outcome (not a generic "failed").
+// TestSync_WrongPasswordSetsPasswordMismatchStatus drives Sync() with an
+// encKey that cannot open the existing ciphertext and asserts the on-disk
+// status record reflects the password_mismatch outcome (not a generic
+// "failed").
 func TestSync_WrongPasswordSetsPasswordMismatchStatus(t *testing.T) {
 	s, repoPath := initLocalRepoWithBareRemote(t)
 
