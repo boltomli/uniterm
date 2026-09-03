@@ -43,9 +43,14 @@ func initTestRepo(t *testing.T, repoPath string) *GitRepo {
 }
 
 // TestStageAndCommitWhitelist verifies SYNC-P1-9: StageAndCommit only stages
-// the nine whitelisted filenames, never wt.Add("."). A stray file
-// representing an SSH key (id_rsa) dropped into the sync dir must NOT be
-// committed plaintext.
+// the synced config files (syncedFiles, shared with encrypt/decrypt/compare)
+// plus the repo metadata files .sync-salt and README.md — never wt.Add(".").
+// A stray file representing an SSH key (id_rsa) dropped into the sync dir
+// must NOT be committed plaintext.
+//
+// tunnels.json is an explicit regression guard: it was missing from the old
+// hand-written commit whitelist, so tunnel changes were encrypted into the
+// repo but never committed or synced.
 func TestStageAndCommitWhitelist(t *testing.T) {
 	repoPath := t.TempDir()
 	g := initTestRepo(t, repoPath)
@@ -53,15 +58,11 @@ func TestStageAndCommitWhitelist(t *testing.T) {
 	// Whitelisted files — should be staged. The list mirrors the
 	// exact names StageAndCommit iterates over.
 	whitelisted := map[string]string{
-		"connections.json":   `{"connections":[]}`,
-		"settings.json":      `{"theme":"dark"}`,
-		"ai-sessions.json":   `[]`,
-		"skills.json":        `[]`,
-		"quickCommands.json": `[]`,
-		"identities.json":    `{"identities":[]}`,
-		"proxies.json":       `{"proxies":[]}`,
-		".sync-salt":         base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")),
-		"README.md":          "# sync repo\n",
+		".sync-salt": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")),
+		"README.md":  "# sync repo\n",
+	}
+	for _, name := range syncedFiles {
+		whitelisted[name] = "{}"
 	}
 	for name, content := range whitelisted {
 		if err := os.WriteFile(filepath.Join(repoPath, name), []byte(content), 0600); err != nil {
@@ -70,12 +71,15 @@ func TestStageAndCommitWhitelist(t *testing.T) {
 	}
 
 	// Stray files — must NOT be staged. Models an attacker dropping
-	// ~/.ssh/id_rsa into the sync directory.
+	// ~/.ssh/id_rsa into the sync directory, plus the local-only store
+	// files that must never ride along into the sync repo.
 	stray := map[string]string{
-		"id_rsa":     "-----BEGIN RSA PRIVATE KEY-----\nMOCK\n-----END RSA PRIVATE KEY-----",
-		"secret.txt": "internal passwords",
-		"notes.md":   "echo pwned",
-		"backup.tgz": "binary",
+		"id_rsa":           "-----BEGIN RSA PRIVATE KEY-----\nMOCK\n-----END RSA PRIVATE KEY-----",
+		"secret.txt":       "internal passwords",
+		"notes.md":         "echo pwned",
+		"backup.tgz":       "binary",
+		"ai-sessions.json": `[]`,
+		"skills.json":      `[]`,
 	}
 	for name, content := range stray {
 		if err := os.WriteFile(filepath.Join(repoPath, name), []byte(content), 0600); err != nil {

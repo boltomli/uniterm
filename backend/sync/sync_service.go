@@ -554,12 +554,14 @@ func getConfigModTime(dir string) time.Time {
 }
 
 // isConfigDirEmpty returns true if the config dir has no meaningful data.
-// Counts every persisted JSON the app cares about — not only connections —
-// so a user with settings / AI / quick-commands but no connections is not
-// treated as "empty" and silently overwritten on first sync
-// (SYNC-P0-1).
+// Counts every synced JSON — not only connections — so a user with settings
+// / quick-commands but no connections is not treated as "empty" and silently
+// overwritten on first sync (SYNC-P0-1). Uses syncedFiles rather than every
+// persisted JSON: ai-sessions.json / skills.json are local-only and never
+// synced, so their presence must not block a first-sync pull (their files
+// are not touched by decrypt either).
 func isConfigDirEmpty(dir string) bool {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "ai-sessions.json", "skills.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -589,7 +591,7 @@ func isConfigDirEmpty(dir string) bool {
 // normalized to plaintext on the local side before comparison so both sides
 // are comparable.
 func compareConfigDirs(localDir, remoteDir string, kc *Keychain, ps PasswordStore) (bool, error) {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		same, err := compareConfigFiles(filepath.Join(localDir, name), filepath.Join(remoteDir, name), kc, ps)
 		if err != nil {
 			return false, err
@@ -787,8 +789,7 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 	// Re-encrypt every existing repo ciphertext: decrypt with oldKey,
 	// re-encrypt with newKey, atomic rename. A crash before the rename
 	// leaves the original ciphertext intact and decryptable with oldKey.
-	repoFiles := []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"}
-	for _, name := range repoFiles {
+	for _, name := range syncedFiles {
 		srcPath := filepath.Join(s.repoPath, name)
 		ciphertext, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -892,7 +893,7 @@ func (s *SyncService) compareLocalWithRepo(encKey []byte) (bool, error) {
 
 // repoHasFiles returns true if the repo directory contains encrypted config files.
 func repoHasFiles(repoPath string) bool {
-	for _, name := range []string{"connections.json", "settings.json", "quickCommands.json", "tunnels.json", "identities.json", "proxies.json"} {
+	for _, name := range syncedFiles {
 		if _, err := os.Stat(filepath.Join(repoPath, name)); os.IsNotExist(err) {
 			return false
 		}

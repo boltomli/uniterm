@@ -98,14 +98,12 @@ func (g *GitRepo) StageAndCommit(msg string) (bool, error) {
 		return false, nil
 	}
 
-	// Whitelist only known config filenames so stray files dropped in
+	// Whitelist the synced config files (single source of truth in
+	// synced_files.go) plus repo metadata, so stray files dropped in
 	// the sync repo (e.g. an SSH key) are NOT committed plaintext
 	// (SYNC-P1-9).
-	for _, name := range []string{
-		"connections.json", "settings.json",
-		"ai-sessions.json", "skills.json",
-		"quickCommands.json", "identities.json", "proxies.json", ".sync-salt", "README.md",
-	} {
+	commitWhitelist := append(syncedFiles[:len(syncedFiles):len(syncedFiles)], ".sync-salt", "README.md")
+	for _, name := range commitWhitelist {
 		if _, err := os.Stat(filepath.Join(g.repoPath, name)); err != nil {
 			continue
 		}
