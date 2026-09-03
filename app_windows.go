@@ -226,6 +226,65 @@ func (a *App) unsubclassMainWindow() {
 	a.originalWndProc = 0
 }
 
+// CANDIDATEFORM and IME constants for ImmSetCandidateWindow.
+const (
+	cfsCandidatePos = 0x0008
+)
+
+// point and candidateForm mirror the Win32 POINT and CANDIDATEFORM structs
+// for passing to ImmSetCandidateWindow via unsafe.Pointer.
+type point struct {
+	x, y int32
+}
+
+type candidateForm struct {
+	dwIndex       uint32
+	dwStyle       uint32
+	ptCurrentPos  point
+	rcArea        [4]int32 // left, top, right, bottom — unused for CFS_CANDIDATEPOS
+}
+
+// SetIMECandidatePosition repositions the IME candidate window to follow the
+// textarea. Called from the frontend after resize, focus, and activation — the
+// only moments where the textarea moves but the IME doesn't follow.
+//
+// The frontend supplies the textarea's screen-space bounding rect; this method
+// uses ImmSetCandidateWindow(CFS_CANDIDATEPOS) to tell the IME where the text
+// insertion point is, preventing the candidate window from drifting to the
+// screen origin (0,0) or going off-screen.
+//
+// No-op when imm32.dll is unavailable (non-Windows builds via cross-compile).
+func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
+	imm32 := windows.NewLazySystemDLL("imm32.dll")
+	procImmGetContext := imm32.NewProc("ImmGetContext")
+	procImmSetCandidateWindow := imm32.NewProc("ImmSetCandidateWindow")
+	procImmReleaseContext := imm32.NewProc("ImmReleaseContext")
+
+	// Get the IME context from the focused window (0 = thread's focused control).
+	himc, _, _ := procImmGetContext.Call(0)
+	if himc == 0 {
+		return nil // no active IME context
+	}
+	defer procImmReleaseContext.Call(0, himc)
+
+	// Position candidate window at the caret location (left edge + a pixel
+	// for the cursor, top of the textarea). Width/height are unused for
+	// CFS_CANDIDATEPOS but the struct must be properly sized.
+	cf := candidateForm{
+		dwIndex: 0,
+		dwStyle: cfsCandidatePos,
+		ptCurrentPos: point{
+			x: int32(x + 1), // +1 avoids degenerate zero-width caret edge
+			y: int32(y),
+		},
+	}
+	procImmSetCandidateWindow.Call(
+		himc,
+		uintptr(unsafe.Pointer(&cf)),
+	)
+	return nil
+}
+
 // configureMacKeyRepeat is a no-op on Windows; the press-and-hold accent
 // picker only exists on macOS. See app_darwin.go for details.
 func (a *App) configureMacKeyRepeat() {}

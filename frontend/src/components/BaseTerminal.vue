@@ -123,7 +123,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, on
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { SessionWrite, SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionWrite, SessionResize, SessionEndZmodem, SetIMECandidatePosition } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { msg } from '../services/message'
@@ -320,13 +320,26 @@ function resetIMEComposition() {
   }
 }
 
+// Sync the IME candidate window position to the textarea's current screen
+// location via Win32 ImmSetCandidateWindow. Called after resize, focus, and
+// activation — the only moments where the textarea moves but the IME doesn't
+// follow. No-op on non-Windows or when the textarea is not visible.
+function syncIMEPosition() {
+  if (!terminal) return
+  const el = terminal.textarea
+  if (!el || el.offsetParent == null) return
+  const r = el.getBoundingClientRect()
+  if (r.width <= 0 || r.height <= 0) return
+  // x + 1 to avoid degenerate zero-width caret edge case.
+  SetIMECandidatePosition(r.x + 1, r.y, r.width, r.height).catch(() => {})
+}
+
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // Trailing resize for size changes observed while a resize gate (window
 // resize debounce / split drag / suppress window) was active. Separate from
 // resizeTimer so it never cancels another handler's pending resize.
 let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
-let unsubMoveResizeStart: (() => void) | null = null
 let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
@@ -715,15 +728,6 @@ function onWindowResize() {
     isResizing = false
     el.classList.remove('resizing')
     resize()
-    // Reset IME position after window resize — the textarea moved but the
-    // IME candidate window may not have followed.
-    if (terminal) {
-      const ta = terminal.textarea
-      if (ta && ta.offsetParent != null) {
-        ta.blur()
-        ta.focus()
-      }
-    }
   }, 400)
 }
 
@@ -738,18 +742,10 @@ function onNativeResizeEnd() {
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
   resizeTimer = setTimeout(() => resize(), 100)
-  // After a native window drag/resize, the textarea position changes but
-  // the IME candidate window does not follow (Windows modal loop blocks
-  // position updates). The orphaned IME window causes duplicate input.
-  // Blur+focus the textarea to force the OS to recalculate IME position.
-  setTimeout(() => {
-    if (!isActive.value || !terminal) return
-    const el = terminal.textarea
-    if (el && el.offsetParent != null) {
-      el.blur()
-      el.focus()
-    }
-  }, 200)
+  // After a native window drag/resize, the textarea position changed but the
+  // IME candidate window may not have followed (Windows modal loop blocks
+  // position updates). Sync the candidate position via Win32 API.
+  setTimeout(() => syncIMEPosition(), 200)
 }
 
 function onSplitResizeStart() {
@@ -770,15 +766,8 @@ function onSplitResizeEnd() {
     }, 0)
   })
   // Same as onNativeResizeEnd: split pane resize moves the textarea but the
-  // IME candidate window stays at the old position → reset after resize settles.
-  setTimeout(() => {
-    if (!isActive.value || !terminal) return
-    const el = terminal.textarea
-    if (el && el.offsetParent != null) {
-      el.blur()
-      el.focus()
-    }
-  }, 300)
+  // IME candidate window stays at the old position → sync after resize settles.
+  setTimeout(() => syncIMEPosition(), 300)
 }
 
 // Strip OSC sequences that xterm.js generates internally (color queries etc.)
@@ -867,31 +856,6 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
     ;(terminal as any)._keyDownHandled = true
     terminal?.input(e.key)
     return false
-  }
-
-  // Stale IME composition guard: when the terminal's textarea is hidden or
-  // offscreen (e.g. tab switched, window minimized), the OS IME can keep its
-  // candidate window active and continue feeding events. xterm's internal
-  // CompositionHelper accumulates state (isComposing, _dataAlreadySent) that
-  // causes the next real keystroke to be duplicated. Detect the mismatch
-  // between the browser's isComposing and xterm's isComposing, or detect
-  // an invisible textarea with stale composition state, and reset.
-  if (e.type === 'keydown' && terminal && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const core = (terminal as any)._core
-    const ch = core?._compositionHelper
-    if (ch) {
-      const xtermComposing = ch._isComposing || ch._isSendingComposition
-      const browserComposing = e.isComposing || e.keyCode === 229
-      const textareaVisible = terminal.textarea?.offsetParent != null
-      // Reset when xterm thinks it's composing but the browser/IME says it
-      // isn't, OR when the textarea is hidden (offscreen/hidden by CSS) with
-      // stale composition state — both indicate the composition state is stale.
-      if ((xtermComposing && !browserComposing) || (!textareaVisible && xtermComposing)) {
-        // Only reset internal state — do NOT blur here; the user is actively
-        // typing and blur would steal focus mid-keystroke.
-        resetIMEState()
-      }
-    }
   }
 
   // A bare modifier key (Shift/Ctrl/Alt/Meta held alone) produces no input, yet
@@ -1136,11 +1100,6 @@ onMounted(() => {
     const sidNow = props.sessionId
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
-    // IME offscreen dedup state (per-component)
-    const IME_DEDUP_MS = 50
-    let lastSentChar = ''
-    let lastSentTime = 0
-
     keyHandlerDispose = terminal.attachCustomKeyEventHandler(handleTerminalKey)
 
     // Input handling
@@ -1152,27 +1111,6 @@ onMounted(() => {
       const curGen = sidNow ? (getManagedTerminal(sidNow)?.onDataGeneration ?? gen) : gen
       if (gen !== curGen) {
         return
-      }
-
-      // ── IME offscreen deduplication ──
-      // When the IME candidate window is offscreen (tab switch, window
-      // minimize), xterm's CompositionHelper can send the same character
-      // twice: once via _finalizeComposition (compositionend) and once via
-      // _handleAnyTextareaChanges (keyCode 229 path). Both fire within a
-      // few ms. Suppress the second occurrence of the same single character.
-      // Multi-character strings (escape sequences, pastes) are never suppressed.
-      const now = Date.now()
-      if (data.length === 1 && lastSentChar === data && now - lastSentTime < IME_DEDUP_MS) {
-        lastSentChar = ''
-        lastSentTime = 0
-        return
-      }
-      if (data.length === 1) {
-        lastSentChar = data
-        lastSentTime = now
-      } else {
-        lastSentChar = ''
-        lastSentTime = 0
       }
 
       if (props.mode === 'ssh' || props.mode === 'local') {
@@ -1535,19 +1473,9 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
-  // Native window move/resize START (WM_ENTERSIZEMOVE). This fires before the
-  // OS enters its modal move/size loop, which is the earliest reliable point to
-  // end any active IME composition. During the modal loop the textarea's screen
-  // position changes but the IME candidate window can't follow; the OS then
-  // cancels/completes the composition chaotically when the loop settles, leaving
-  // xterm's CompositionHelper with stale state that double-sends the next input
-  // (issue: window drag causes duplicate input). resetIMEComposition() is a
-  // guarded no-op unless a composition is actually active, and clears the
-  // textarea so any late compositionend finalize reads an empty value and sends
-  // nothing.
-  unsubMoveResizeStart = Events.On('rdp:move-resize-start', () => {
-    if (isActive.value) resetIMEComposition()
-  })
+  // Native window move/resize START (WM_ENTERSIZEMOVE). No IME action needed
+  // here — the candidate position is synced after the modal loop ends
+  // (onNativeResizeEnd → syncIMEPosition).
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1611,24 +1539,15 @@ onMounted(() => {
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
 
-  // When the app window regains focus (user switches back from another app),
-  // blur+focus the textarea to reset the IME candidate window position.
-  // On Windows, the IME window can drift to the screen origin (top-left)
-  // when the textarea is moved/reparented while the IME was active. The
-  // blur+focus cycle forces the OS to recalculate the IME position from
-  // the textarea's current cursor location, fixing the orphaned IME window
-  // that causes duplicate input.
-  //
-  // Only act when the textarea is already focused — if it's not (e.g. user
-  // is interacting with another input, or this is a KeepAlive reactivation
-  // where onActivated's delayed focus will handle it), skip to avoid
-  // stealing focus from whatever the user is doing.
+  // When the app window regains focus, sync the IME candidate window position.
+  // On Windows, the IME window can drift to the screen origin when the
+  // textarea moved while the app was unfocused. ImmSetCandidateWindow fixes
+  // the orphaned position without blur/focus flicker.
   onWindowFocus = () => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
     if (el && document.activeElement === el && el.offsetParent != null) {
-      el.blur()
-      el.focus()
+      syncIMEPosition()
     }
   }
   window.addEventListener('focus', onWindowFocus)
@@ -1734,12 +1653,8 @@ onActivated(() => {
   }
   // Delayed focus: during activation, calling focus() immediately can race
   // with native dialogs (OpenDirectoryDialog etc.) and crash WebView2.
-  // But skipping focus() entirely leaves the textarea unfocused, which means
-  // the IME candidate window loses its cursor position reference and drifts
-  // to the screen origin (top-left). When the IME window is orphaned like
-  // this, input events take an abnormal path that causes character duplication.
   // A delayed focus() after the resize retries gives native dialogs time to
-  // close while still resetting the IME position before the user starts typing.
+  // close. After focus, sync the IME candidate position via Win32 API.
   setTimeout(() => {
     if (!isActive.value || !terminal) return
     // Only focus if the terminal is actually visible — don't steal focus
@@ -1747,6 +1662,7 @@ onActivated(() => {
     const el = terminal.textarea
     if (el && el.offsetParent != null && document.activeElement !== el) {
       focus()
+      syncIMEPosition()
     }
   }, 700)
 })
@@ -1988,8 +1904,6 @@ onUnmounted(() => {
   window.removeEventListener('split:resize-end', onSplitResizeEnd)
   unsubNativeResizeEnd?.()
   unsubNativeResizeEnd = null
-  unsubMoveResizeStart?.()
-  unsubMoveResizeStart = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
