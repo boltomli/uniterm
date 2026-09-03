@@ -47,6 +47,13 @@ export interface CustomTerminalTheme {
   colors: TerminalThemeColors
 }
 
+// ⚠️ PERSISTENCE CONTRACT — every field added to this interface (and to
+// AppSettings / AISettings / AIModelConfig below) MUST get a matching field
+// in `backend/store/settings_store.go` (TerminalSettings / AppSettings / ...),
+// otherwise the value silently fails to persist: settings round-trip through
+// the Go struct on Save/Load, and Go drops unknown JSON keys. Add it with a
+// pointer + omitempty for optional fields so older settings.json files still
+// load, then run `wails3 generate bindings`.
 export interface TerminalSettings {
   theme: TerminalTheme | string
   fontFamily: string
@@ -68,9 +75,6 @@ export interface TerminalSettings {
   // #671) for scroll-sensitive mice; defaults to enabled.
   ctrlWheelZoom?: boolean
   maxHistoryLines: number
-  // Issue #729: WindTerm/Termora-style screen preview — hovering the terminal
-  // scrollbar pops up a read-only preview of the scrollback at that position.
-  screenPreview?: boolean
   smartCompletion: boolean
   aiTranscription: boolean
   highlightEnabled: boolean
@@ -111,6 +115,8 @@ export interface AIModelConfig {
   baseURL: string
   model: string
   protocol: 'anthropic' | 'openai' | 'responses'
+  // See the persistence-contract note on TerminalSettings: this field MUST
+  // also exist in the Go AIModelConfig (backend/store/settings_store.go).
   userAgent?: string
 }
 
@@ -261,7 +267,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     rightClickAction: 'menu',
     middleClickAction: 'paste',
     maxHistoryLines: 2500,
-    screenPreview: true,
     smartCompletion: true,
     aiTranscription: true,
     highlightEnabled: true,

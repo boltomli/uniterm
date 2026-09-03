@@ -30,12 +30,11 @@
           </div>
           <div class="query-panel">
             <div class="query-editor-wrap">
-              <textarea
-                ref="queryTextareaRef"
+              <SyntaxEditor
                 v-model="filterText"
-                class="query-textarea"
-                :placeholder="t('mongodb.filter')"
-                @keydown="onQueryKeydown"
+                lang="json"
+                compact
+                @execute="executeQuery"
               />
               <div class="exec-btn-wrapper">
                 <button class="btn btn-primary exec-btn-overlay" @click="executeQuery">
@@ -73,8 +72,9 @@
               border
               size="small"
               style="width:100%"
+              class="db-result-table"
               :empty-text="t('db.noData')"
-              @row-dblclick="onRowDblClick"
+              @row-click="onRowClick"
             >
               <el-table-column
                 v-for="col in columns"
@@ -85,15 +85,18 @@
                 show-overflow-tooltip
               >
                 <template #default="{ row }">
-                  <span class="cell-value">{{ formatCellValue(row[col]) }}</span>
+                  <span
+                    class="cell-value"
+                    :class="{ 'cell-null': row[col] === null || row[col] === undefined }"
+                  >{{ formatCellValue(row[col]) }}</span>
                 </template>
               </el-table-column>
               <el-table-column width="80" fixed="right">
                 <template #default="{ row }">
-                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--text-secondary)" @click="onRowDblClick(row)">
+                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--text-secondary)" @click.stop="onRowClick(row)">
                     <Pencil :size="14" />
                   </button>
-                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--error)" @click="deleteDocument(row)">
+                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--error)" @click.stop="deleteDocument(row)">
                     <Trash2 :size="14" />
                   </button>
                 </template>
@@ -184,11 +187,10 @@
       :title="docDialogMode === 'insert' ? t('mongodb.newDocument') : t('mongodb.editDocument')"
       width="600px"
     >
-      <textarea
+      <SyntaxEditor
         v-model="docEditorText"
-        class="doc-editor-textarea"
-        placeholder="{}"
-        rows="14"
+        lang="json"
+        class="doc-editor"
       />
       <div v-if="docEditorError" class="error-msg" style="margin-top:8px">{{ docEditorError }}</div>
       <template #footer>
@@ -218,6 +220,7 @@ import {
   MongoDropIndex,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { MongoIndexInfo, MongoQueryResult } from '../types/mongodb'
+import SyntaxEditor from './SyntaxEditor.vue'
 
 defineOptions({ name: 'MongoDBCollectionView' })
 
@@ -264,7 +267,6 @@ const queryLoading = ref(false)
 const queryError = ref('')
 const queryResult = ref<MongoQueryResult | null>(null)
 const currentSkip = ref(0)
-const queryTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
 const totalDocs = computed(() => queryResult.value?.total || 0)
 
@@ -309,13 +311,6 @@ const docSaving = ref(false)
 const editingRow = ref<any>(null)
 
 // ── Query methods ──
-function onQueryKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.key === 'Enter') {
-    e.preventDefault()
-    executeQuery()
-  }
-}
-
 function onNLKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === 'Enter') {
     e.preventDefault()
@@ -405,7 +400,7 @@ function openNewDocument() {
   docDialogVisible.value = true
 }
 
-function onRowDblClick(row: any) {
+function onRowClick(row: any) {
   docDialogMode.value = 'edit'
   docEditorText.value = JSON.stringify(row, null, 2)
   docEditorError.value = ''
@@ -645,23 +640,9 @@ watch(() => [props.dbName, props.collectionName], () => {
   flex: 1;
   display: flex;
 }
-.query-textarea {
-  flex: 1;
-  width: 100%;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--bg-base);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 8px 80px 36px 8px;
-  resize: none;
-  transition: border-color 0.15s ease;
-}
-.query-textarea:focus {
-  border-color: var(--accent);
-  outline: none;
+/* Keep query text clear of the overlaying execute button */
+.query-editor-wrap :deep(.cm-content) {
+  padding-bottom: 44px;
 }
 .exec-btn-wrapper {
   position: absolute;
@@ -761,10 +742,26 @@ watch(() => [props.dbName, props.collectionName], () => {
   overflow: auto;
   min-height: 0;
 }
+/* 结果表格主题变量与 DBResultGrid 保持一致 */
+.db-result-table {
+  --el-table-header-bg-color: var(--bg-elevated, var(--bg-surface));
+  --el-table-tr-bg-color: var(--bg-surface);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-bg-color: var(--bg-surface);
+  font-size: 12px;
+}
 .cell-value {
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   word-break: break-all;
   cursor: default;
+}
+.cell-null {
+  color: var(--text-muted);
+  font-style: italic;
 }
 .pagination {
   display: flex;
@@ -804,20 +801,7 @@ watch(() => [props.dbName, props.collectionName], () => {
   font-size: 14px;
 }
 
-.doc-editor-textarea {
-  width: 100%;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--bg-base);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 8px;
-  resize: vertical;
-}
-.doc-editor-textarea:focus {
-  border-color: var(--accent);
-  outline: none;
+.doc-editor {
+  height: 320px;
 }
 </style>

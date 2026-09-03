@@ -58,6 +58,10 @@ type ConnectionConfig struct {
 	RdpFixedHeight int  `json:"rdpFixedHeight,omitempty"`
 	RdpSmartSizing bool `json:"rdpSmartSizing"`
 	RdpEnableNLA   bool `json:"rdpEnableNLA"`
+	// RdpAdminSession connects to the remote console (admin) session, the
+	// equivalent of "mstsc /admin". Mapped to the ActiveX
+	// IMsRdpClientAdvancedSettings8::ConnectToAdministerServer property.
+	RdpAdminSession bool `json:"rdpAdminSession"`
 	// Local terminal shell path
 	ShellPath string `json:"shellPath,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)

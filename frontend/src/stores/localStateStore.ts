@@ -7,6 +7,7 @@ const DEFAULT: LocalState = {
   sidebarVisible: true,
   aiSidebarVisible: true,
   collapsedGroupIds: [],
+  collapsedQuickCommandGroupIds: [],
   windowX: 0,
   windowY: 0,
   windowWidth: 0,

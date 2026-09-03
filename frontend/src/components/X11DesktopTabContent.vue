@@ -52,6 +52,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import type { ConnectionConfig } from '../types/session'
 import { Events } from '@wailsio/runtime'
 import { CreateSession, CloseSession, GetPlatform, X11DesktopConnect } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -111,7 +112,7 @@ async function start() {
     status.value = 'connected'
   } catch (e: any) {
     console.error('X11 desktop connect error:', e)
-    lastError.value = e?.message || String(e)
+    lastError.value = backendErrorText(e)
     status.value = 'error'
   }
 }
@@ -156,7 +157,7 @@ onMounted(() => {
         if (status.value !== 'error') status.value = 'disconnected'
         break
       case 'error':
-        if (!lastError.value) lastError.value = data.errorMessage || ''
+        if (!lastError.value) lastError.value = backendErrorTextOf(data.errorMessage || '')
         status.value = 'error'
         break
     }

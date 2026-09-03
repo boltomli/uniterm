@@ -8,6 +8,12 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import type { CustomTerminalTheme } from '../types/settings'
 import { formatFontFamily } from '../utils/formatFontFamily'
+import {
+  bufferRowSource,
+  createLineRegistry,
+  realignRegistry,
+  type LineRegistryState,
+} from './terminalTimestamps'
 
 export interface TerminalOptions {
   fontSize?: number
@@ -37,16 +43,20 @@ export interface ManagedTerminal {
    * double input when multiple KeepAlive-cached components share the same
    * terminal instance. */
   onDataGeneration: number
-  /** Birth time (Date.now()) of buffer rows, keyed by absolute row index
-   * (lineOffset-compensated), used by the timestamp gutter column. Kept on
-   * the shared terminal so it survives KeepAlive and drag-across-panes. */
-  lineTimestamps: Map<number, number>
+  /** Logical-line registry (sequential number + birth/completion time per
+   * shell line), keyed by absolute row index (lineOffset-compensated). Backs
+   * the gutter's line-number and time columns. Kept on the shared terminal so
+   * it survives KeepAlive and drag-across-panes. */
+  lineRegistry: LineRegistryState
   /** Absolute-row offset accumulated from scrollback trimming, so both the
    * line-number and timestamp columns stay continuous as old lines drop off
    * the top of the buffer. */
   lineOffset: number
   /** Subscription to the normal-buffer line-collection onTrim event. */
   trimDispose: { dispose(): void } | null
+  /** Subscription to terminal.onResize — reflows the buffer, so the registry
+   * must be re-keyed to the rows lines now start at. */
+  resizeDispose: { dispose(): void } | null
 }
 
 const terminals = new Map<string, ManagedTerminal>()
@@ -167,9 +177,10 @@ export function acquireTerminal(
       disposeTimer: null,
       isNew: true,
       onDataGeneration: 0,
-      lineTimestamps: new Map(),
+      lineRegistry: createLineRegistry(),
       lineOffset: 0,
       trimDispose: null,
+      resizeDispose: null,
     }
 
     // Track scrollback trimming so line-numbers / timestamps stay continuous
@@ -182,10 +193,30 @@ export function acquireTerminal(
       const lines = core?._bufferService?.buffers?.normal?.lines
       if (typeof lines?.onTrim === 'function') {
         m.trimDispose = lines.onTrim((amount: number) => {
+          // NOTE: deliberately no entry pruning here. "key < lineOffset ⇒
+          // off-buffer" only holds for append+trim growth; a resize reflow
+          // also fires trims while INSERTING physical rows for wrapped lines,
+          // so surviving content's absolute coordinates shift and live
+          // entries would be deleted (tail lines lose their number/time).
+          // Off-buffer entries are bounded by the size cap in the registry
+          // and dropped wholesale by realignRegistry on the next resize.
           m.lineOffset += amount
         })
       }
     } catch { /* noop */ }
+
+    // A resize reflows the (normal) buffer: physical rows move but logical
+    // lines keep their identity. Re-key the registry so each entry points at
+    // the row its line now starts at. Uses the normal buffer explicitly so a
+    // resize while an alternate-screen app is up still realigns.
+    m.resizeDispose = terminal.onResize(() => {
+      const buf = terminal.buffer.normal
+      realignRegistry(m.lineRegistry, {
+        lineOffset: m.lineOffset,
+        cursorAbs: m.lineOffset + buf.baseY + buf.cursorY,
+        source: bufferRowSource(buf),
+      })
+    })
 
     terminals.set(sessionId, m)
   }
@@ -206,6 +237,8 @@ export function releaseTerminal(sessionId: string, ref: string): void {
     managed.disposeTimer = setTimeout(() => {
       managed.trimDispose?.dispose()
       managed.trimDispose = null
+      managed.resizeDispose?.dispose()
+      managed.resizeDispose = null
       managed.terminal.dispose()
       terminals.delete(sessionId)
     }, 500)
@@ -220,6 +253,8 @@ export function disposeTerminal(sessionId: string): void {
   }
   managed.trimDispose?.dispose()
   managed.trimDispose = null
+  managed.resizeDispose?.dispose()
+  managed.resizeDispose = null
   managed.terminal.dispose()
   terminals.delete(sessionId)
 }

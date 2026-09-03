@@ -18,13 +18,24 @@ func init() {
 }
 
 func (p *sqlserverProvider) DSN(host string, port int, user, password, dbName string, extraParams map[string]string) string {
-	if port <= 0 {
+	// A named instance ("server\instance") must not go into url.URL.Host:
+	// url.URL.String() escapes the backslash to %5C and the driver's
+	// url.Parse then rejects the DSN. The driver instead expects the
+	// instance as the URL path (sqlserver://host/instance). With an
+	// instance and no explicit port, omit the port so the driver resolves
+	// the instance's dynamic port via SQL Browser (a forced 1433 would
+	// bypass the Browser and almost always fail).
+	u := &url.URL{Scheme: "sqlserver", User: url.UserPassword(user, password)}
+	if server, instance, found := strings.Cut(host, `\`); found {
+		u.Path = "/" + instance
+		host = server
+	} else if port <= 0 {
 		port = 1433
 	}
-	u := &url.URL{
-		Scheme: "sqlserver",
-		User:   url.UserPassword(user, password),
-		Host:   fmt.Sprintf("%s:%d", host, port),
+	if port > 0 {
+		u.Host = fmt.Sprintf("%s:%d", host, port)
+	} else {
+		u.Host = host
 	}
 	q := u.Query()
 	if dbName != "" {

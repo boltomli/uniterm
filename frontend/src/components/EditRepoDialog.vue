@@ -60,6 +60,7 @@ import { Lock } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { useSyncStore } from '../stores/syncStore'
 import { SyncVerifyPassword } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { backendErrorText } from '../utils/backendError'
 import { msg } from '../services/message'
 
 const { t } = useI18n()
@@ -123,7 +124,7 @@ async function handleSubmit() {
     syncStore.showEditRepo = false
     resetForm()
   } catch (e: any) {
-    const msg = e?.message || String(e)
+    const msg = backendErrorText(e)
     errorMsg.value = msg === 'WRONG_SYNC_PASSWORD' ? t('editRepo.wrongPassword') : msg
   } finally {
     submitting.value = false

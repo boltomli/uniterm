@@ -45,7 +45,7 @@
           </template>
         </div>
         <pre v-if="!editing" class="k8s-yaml-drawer-body" @contextmenu="copyMenu.onContextMenu">{{ yamlText }}</pre>
-        <textarea v-else v-model="draft" class="k8s-yaml-drawer-body yaml-edit" spellcheck="false"></textarea>
+        <SyntaxEditor v-else v-model="draft" lang="yaml" compact />
         <div v-if="saveError" class="yaml-error">{{ saveError }}</div>
       </div>
     </template>
@@ -91,6 +91,7 @@ import { getResource, genericDetailSections, type DetailSection } from '../servi
 import { requestJSON, startLogStream, type LogHandle } from '../services/k8sClient'
 import { useI18n } from '../i18n'
 import Menu from './Menu.vue'
+import SyntaxEditor from './SyntaxEditor.vue'
 import { Clipboard } from '@wailsio/runtime'
 import MenuItem from './MenuItem.vue'
 
@@ -451,7 +452,6 @@ onBeforeUnmount(stopLogs)
 .detail-section-title { font-weight: 600; color: var(--text-secondary); margin: 8px 0 4px; }
 .yaml-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .yaml-actions { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); }
-.yaml-edit { width: 100%; box-sizing: border-box; resize: none; background: transparent; color: var(--text-primary); border: none; outline: none; }
 .yaml-error { color: var(--el-color-danger, #f56); padding: 8px 12px; font-size: 12px; }
 
 .detail-drawer.wide { width: 640px; }

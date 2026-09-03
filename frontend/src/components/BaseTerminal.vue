@@ -10,6 +10,7 @@
   >
     <div class="terminal-area" @contextmenu="onTerminalContextMenu">
       <TerminalGutter
+        ref="gutterRef"
         :session-id="props.sessionId"
         :show-line-numbers="showLineNumbers"
         :show-timestamps="showTimestamps"
@@ -87,6 +88,16 @@
       <MenuItem v-if="isSsh" @click="openMonitor">{{ t('sidebar.connectMonitor') }}</MenuItem>
     </Menu>
 
+    <!-- Gutter context menu — right-click on the line-number/time columns -->
+    <Menu ref="gutterMenuRef" v-model:visible="gutterMenuVisible" root-class="right-shortcuts">
+      <MenuItem :shortcut="menuShortcut('toggleLineNumbers')" @click="toggleLineNumbers">
+        {{ showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
+      </MenuItem>
+      <MenuItem :shortcut="menuShortcut('toggleTimestamps')" @click="toggleTimestamps">
+        {{ showTimestamps ? t('settings.hideTimestamps') : t('settings.showTimestamps') }}
+      </MenuItem>
+    </Menu>
+
     <!-- Terminal suggestions popup -->
     <TerminalSuggestion
       :visible="suggestions.state.value.visible"
@@ -103,10 +114,7 @@
     <ZmodemTransfer :session-id="props.sessionId || ''" @cancel="onZmodemCancel" />
 
     <!-- Screen preview on scrollbar hover (issue #729) -->
-    <TerminalScreenPreview
-      :session-id="props.sessionId || ''"
-      :enabled="settingsStore.settings.terminal.screenPreview ?? true"
-    />
+    <TerminalScreenPreview :session-id="props.sessionId || ''" />
   </div>
 </template>
 
@@ -156,7 +164,7 @@ import { useSuggestions, quickCommandCache } from '../composables/useSuggestions
 import TerminalSuggestion from './TerminalSuggestion.vue'
 import TerminalGutter from './TerminalGutter.vue'
 import { startZmodemService } from '../services/zmodemService'
-import { stampWrittenLines, stampCommandLine, currentAbsoluteLine } from '../services/terminalTimestamps'
+import { recordWrite, stampCommandLine, currentAbsoluteLine } from '../services/terminalTimestamps'
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
@@ -210,9 +218,11 @@ const showLineNumbers = computed(() => settingsStore.settings.terminal.showLineN
 // Whether the timestamp column is enabled (from the persistent setting).
 const showTimestamps = computed(() => settingsStore.settings.terminal.showTimestamps ?? false)
 
-// Write terminal data and stamp the rows it writes with their arrival time for
-// the timestamp column. Capture the cursor line before the write and stamp up
-// to where it ends after xterm finishes parsing (no-op when timestamps are off).
+// Write terminal data and fold it into the logical-line registry for the
+// gutter's number/time columns: lines that just received characters get the
+// next sequential number and the arrival time; lines the cursor moved past
+// get their timestamp fixed to the completion time. `before` is an absolute
+// row index, so a trim inside the write doesn't skew the band.
 function writeStamped(data: string) {
   const t = terminal
   const sid = props.sessionId
@@ -220,7 +230,7 @@ function writeStamped(data: string) {
   const ts = Date.now()
   const before = currentAbsoluteLine(sid)
   t.write(data, () => {
-    stampWrittenLines(sid, before, currentAbsoluteLine(sid), ts)
+    recordWrite(sid, before, ts)
   })
 }
 
@@ -232,11 +242,13 @@ function getTerminalHost(): HTMLElement | null {
 
 function toggleLineNumbers() {
   menu.closeMenu()
+  gutterMenuVisible.value = false
   settingsStore.updateTerminal({ showLineNumbers: !showLineNumbers.value })
 }
 
 function toggleTimestamps() {
   menu.closeMenu()
+  gutterMenuVisible.value = false
   settingsStore.updateTerminal({ showTimestamps: !showTimestamps.value })
 }
 
@@ -309,6 +321,10 @@ function resetIMEComposition() {
 }
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
+// Trailing resize for size changes observed while a resize gate (window
+// resize debounce / split drag / suppress window) was active. Separate from
+// resizeTimer so it never cancels another handler's pending resize.
+let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
 let isResizing = false
 let splitResizing = false
@@ -567,6 +583,13 @@ function resize() {
     // Skip resize when the component is hidden (e.g. during tab switching
     // with KeepAlive). A zero-size resize would corrupt xterm.js buffers.
     if (rect.width === 0 || rect.height === 0) return
+
+    // Heal any stale scroll offset on the host: a focus()-driven auto-scroll
+    // during a resize transition can leave it scrolled (content displaced
+    // upward, blank space below). The host is never scrolled deliberately.
+    if (el.scrollTop !== 0) {
+      el.scrollTop = 0
+    }
 
     // Always fit first to update CSS dimensions on the .xterm element.
     // Without this, stale inline pixel dimensions from a previous fit()
@@ -1597,7 +1620,21 @@ onMounted(() => {
   window.addEventListener('focus', onWindowFocus)
 
   resizeObserver = new ResizeObserver(() => {
-    if (isResizing || splitResizing || Date.now() < suppressResizeUntil) return
+    // A size change landing inside a resize gate must not be dropped: if it
+    // were the last event (e.g. maximize/restore right after a split-drag),
+    // the terminal would keep its old pixel size — blank space below — with
+    // no further trigger. Park a trailing resize that runs once the gate
+    // clears; harmless if another handler (window debounce, native resize
+    // end) already fits at the settled size.
+    if (isResizing || splitResizing || Date.now() < suppressResizeUntil) {
+      if (deferredResizeTimer) clearTimeout(deferredResizeTimer)
+      deferredResizeTimer = setTimeout(() => {
+        deferredResizeTimer = null
+        if (isResizing || splitResizing || Date.now() < suppressResizeUntil) return
+        resize()
+      }, Math.max(0, suppressResizeUntil - Date.now()) + 150)
+      return
+    }
     const el = terminalRef.value
     if (!el) return
     if (resizeTimer) clearTimeout(resizeTimer)
@@ -1904,6 +1941,10 @@ onUnmounted(() => {
   nativeDrop.unbind()
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
+  if (deferredResizeTimer) {
+    clearTimeout(deferredResizeTimer)
+    deferredResizeTimer = null
+  }
 
   // Dispose per-component listeners BEFORE releasing terminal.
   // The terminal instance may outlive this component if another
@@ -2038,6 +2079,19 @@ async function refreshOutputLogState() {
 }
 
 function onTerminalContextMenu(e: MouseEvent) {
+  // Right-click on the gutter (line-number/time columns) opens the gutter
+  // toggle menu instead of the terminal menu. The gutter itself is
+  // pointer-events: none, so the event surfaces on .terminal-area and is
+  // routed here by hit-testing the click position against the gutter rect.
+  if (showLineNumbers.value || showTimestamps.value) {
+    const g = gutterRef.value?.$el as HTMLElement | null
+    const r = g?.getBoundingClientRect()
+    if (r && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+      e.preventDefault()
+      gutterMenuRef.value?.openAt(e.clientX, e.clientY)
+      return
+    }
+  }
   if (supportsOutputLog.value) {
     refreshOutputLogState()
   }
@@ -2109,6 +2163,11 @@ function openMonitor() {
 }
 
 const terminalMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+// Gutter context menu (right-click on the line-number/time columns) and the
+// gutter component ref, for hit-testing where a right-click landed.
+const gutterMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const gutterMenuVisible = ref(false)
+const gutterRef = ref<{ $el: HTMLElement } | null>(null)
 const menu = useTerminalMenu({
   getSelection,
   openAt: (x, y) => terminalMenuRef.value?.openAt(x, y),
@@ -2165,7 +2224,12 @@ defineExpose({
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  /* `clip` (not `hidden`): a hidden box is still programmatically scrollable,
+   * so a focus()-driven auto-scroll during a resize transition could leave a
+   * stale scrollTop here and shove the whole .xterm up, leaving blank space
+   * below (it is never scrolled deliberately — xterm scrolls its own layers).
+   * `clip` makes the box a non-scroll-container, so the offset cannot exist. */
+  overflow: clip;
   position: relative;
 }
 

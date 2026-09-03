@@ -880,6 +880,13 @@ body::before {
   display: none !important;
 }
 
+/* Tooltips are visual-only: let mouse events pass through to underlying
+   elements. Dark effect = tooltips; light poppers stay interactive. */
+.el-popper.is-dark {
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Tab transitions */
 .tab-fade-enter-active,
 .tab-fade-leave-active {

@@ -110,6 +110,12 @@
             <el-form-item v-if="form.type !== 'local' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : '')" />
             </el-form-item>
+            <el-form-item v-if="form.type === 'rdp' && isWindows" :label="t('conn.rdpAdminSession')">
+              <el-select v-model="form.rdpAdminSession" style="width: 100%">
+                <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
+                <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
+              </el-select>
+            </el-form-item>
             <template v-if="isElasticsearch">
               <el-form-item :label="t('conn.esUseSsl')">
                 <el-switch v-model="form.esUseSsl" />
@@ -272,7 +278,12 @@
               </el-form-item>
 
               <el-form-item v-else :label="t('conn.k8sConfigInline')">
-                <el-input v-model="form.k8sConfigInline" type="textarea" :rows="6" placeholder="apiVersion: v1..." />
+                <SyntaxEditor
+                  :model-value="form.k8sConfigInline ?? ''"
+                  lang="yaml"
+                  class="kubeconfig-editor"
+                  @update:model-value="form.k8sConfigInline = $event"
+                />
               </el-form-item>
 
               <el-form-item :label="t('conn.k8sContext')">
@@ -637,10 +648,12 @@ import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
 import { Plus, Trash2, ChevronDown, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, Terminal, Monitor, Database, DatabaseZap, Layers, DatabaseSearch, SquareTerminal, Zap, Laptop, Cable, FolderUp, HardDrive, Cloud, Globe, MonitorCloud, MonitorSmartphone, Boxes, ShipWheel, AppWindow, ArrowLeftRight, CircleCheck, CircleX } from '@lucide/vue'
 import { listContexts } from '../services/k8sClient'
+import SyntaxEditor from './SyntaxEditor.vue'
 import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
 import { isSqlDbType } from '../utils/quickConnect'
+import { backendErrorText } from '../utils/backendError'
 import type { Identity } from '../types/identity'
 import type { Proxy } from '../types/proxy'
 
@@ -938,6 +951,7 @@ const form = reactive<ConnectionConfig>({
   rdpFixedHeight: undefined,
   rdpSmartSizing: true,
   rdpEnableNLA: true,
+  rdpAdminSession: false,
   dbType: '',
   dbName: '',
   dbParams: '',
@@ -1101,6 +1115,7 @@ watch(() => props.editConfig, (config) => {
     }
     // Existing connections without the field default to NLA off (old behavior).
     form.rdpEnableNLA = config.rdpEnableNLA ?? false
+    form.rdpAdminSession = config.rdpAdminSession ?? false
     form.x11Forwarding = config.x11Forwarding ?? false
     postLoginMode.value = (config.postLoginExpectSteps?.length || 0) > 0 ? 'expect' : 'script'
     selectedGroupId.value = config.groupId || undefined
@@ -1232,6 +1247,7 @@ function resetForm() {
   form.rdpFixedHeight = undefined
   form.rdpSmartSizing = true
   form.rdpEnableNLA = true
+  form.rdpAdminSession = false
   form.dbType = ''
   form.dbName = ''
   form.dbParams = ''
@@ -1356,7 +1372,7 @@ async function importKeyText() {
       keyContentRevealed.value = true
     }
   } catch (e: any) {
-    msg.error(String(e?.message || e))
+    msg.error(backendErrorText(e))
   }
 }
 
@@ -1532,7 +1548,7 @@ async function onTest() {
     msg.success(desc)
   } catch (e: any) {
     testStatus.value = 'error'
-    msg.error(String(e?.message || e))
+    msg.error(backendErrorText(e))
   }
 }
 
@@ -1583,6 +1599,11 @@ function onConnect() {
 </script>
 
 <style scoped>
+/* Inline kubeconfig YAML editor (replaces the former plain textarea). */
+.kubeconfig-editor {
+  height: 140px;
+  width: 100%;
+}
 /* Color the connection-test status icon (rendered via el-button's `icon` prop,
    so spacing matches the native loading spinner) by result. */
 .test-status-btn.test-success :deep(.el-icon) {
