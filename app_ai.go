@@ -8,12 +8,41 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	stdsync "sync"
 	"time"
 
+	"github.com/mattn/go-ieproxy"
 	"github.com/ys-ll/uniterm/backend/store"
 )
+
+// llmProxy is the Proxy function for the shared LLM transport. It resolves
+// the OS system proxy (Windows registry / macOS system config, including PAC
+// scripts) and falls back to the HTTP_PROXY/HTTPS_PROXY environment
+// variables — http.ProxyFromEnvironment alone misses users who enable
+// "system proxy" mode in tools like Clash, which never sets env vars.
+// ieproxy caches the system config on first read, so refresh it periodically
+// via ReloadConf to pick up toggles made while the app is running.
+// ReloadConf is not goroutine-safe, so all access is serialized here.
+const llmProxyRefreshInterval = 30 * time.Second
+
+var (
+	llmProxyMu      stdsync.Mutex
+	llmProxyFn      func(*http.Request) (*url.URL, error)
+	llmProxyRefresh time.Time
+)
+
+func llmProxy(req *http.Request) (*url.URL, error) {
+	llmProxyMu.Lock()
+	defer llmProxyMu.Unlock()
+	if llmProxyFn == nil || time.Since(llmProxyRefresh) >= llmProxyRefreshInterval {
+		ieproxy.ReloadConf()
+		llmProxyFn = ieproxy.GetProxyFunc()
+		llmProxyRefresh = time.Now()
+	}
+	return llmProxyFn(req)
+}
 
 // llmHTTPClient returns the App-wide *http.Client used by every
 // LLM-bound call. F-208: hoisted here so three back-to-back
@@ -23,6 +52,7 @@ import (
 func (a *App) llmHTTPClient() *http.Client {
 	a.httpClientOnce.Do(func() {
 		tr := &http.Transport{
+			Proxy:                 llmProxy,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   8,
 			IdleConnTimeout:       90 * time.Second,
@@ -119,8 +149,9 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 0}
-	res, err := client.Do(req)
+	// Use the shared client so this path honors the same system/env proxy
+	// resolution and connection pool as the OpenAI/Responses paths.
+	res, err := a.llmHTTPClient().Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("AI_REQUEST_TIMEOUT")
@@ -1154,8 +1185,9 @@ func (a *App) FetchModels(apiKey, baseURL, protocol string) ([]ModelInfo, error)
 
 	// F-208: share the same transport as the LLM clients so the model
 	// list call also benefits from the keep-alive pool; the request
-	// itself carries its own 10s deadline via the per-request context.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// itself carries its own deadline via the per-request context —
+	// generous enough to cover a slow first proxy handshake.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 	res, err := a.llmHTTPClient().Do(req)

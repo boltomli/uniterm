@@ -14,6 +14,7 @@ require (
 	github.com/jlaffaye/ftp v0.2.1
 	github.com/kevinburke/ssh_config v1.4.0
 	github.com/lib/pq v1.12.3
+	github.com/mattn/go-ieproxy v0.0.12
 	github.com/microsoft/go-mssqldb v1.10.0
 	github.com/pkg/sftp v1.13.10
 	github.com/redis/go-redis/v9 v9.21.0
