@@ -3,7 +3,6 @@ module github.com/ys-ll/uniterm
 go 1.26.2
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/cloudsoda/go-smb2 v0.0.0-20260701064823-d8c5600d73b8
 	github.com/creack/pty v1.1.24
@@ -23,7 +22,7 @@ require (
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/studio-b12/gowebdav v0.12.0
 	github.com/unixshells/mosh-go v0.5.2
-	github.com/wailsapp/wails/v3 v3.0.0-beta.12
+	github.com/wailsapp/wails/v3 v3.0.0-beta.16
 	github.com/zalando/go-keyring v0.2.8
 	go.bug.st/serial v1.7.1
 	go.mongodb.org/mongo-driver v1.17.9

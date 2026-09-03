@@ -30,7 +30,7 @@
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@lucide/vue": "^1.16.0",
     "@novnc/novnc": "^1.7.0",
-    "@wailsio/runtime": "^3.0.0-beta.12",
+    "@wailsio/runtime": "^3.0.0-beta.16",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-unicode11": "^0.9.0",
