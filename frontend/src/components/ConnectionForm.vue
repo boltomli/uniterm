@@ -547,8 +547,9 @@
                   <el-option
                     v-for="p in proxyStore.proxies"
                     :key="p.id"
-                    :label="`${p.name} (${p.kind} ${p.host}:${p.port})`"
+                    :label="proxyOptionLabel(p)"
                     :value="p.id"
+                    :disabled="p.enabled === false"
                   />
                 </el-select>
                 <el-button class="inline-add-btn" :title="t('conn.newProxy')" @click="openNewProxyDialog">
@@ -1053,6 +1054,13 @@ const proxyDialogVisible = ref(false)
 
 function openNewIdentityDialog() {
   identityDialogVisible.value = true
+}
+
+// Enable toggle (issue #749): disabled proxies are dimmed and unselectable for
+// NEW connections; existing connections referencing one dial directly (backend).
+function proxyOptionLabel(p: Proxy): string {
+  const base = `${p.name} (${p.kind} ${p.host}:${p.port})`
+  return p.enabled === false ? `${base} — ${t('conn.proxyDisabled')}` : base
 }
 
 function openNewProxyDialog() {

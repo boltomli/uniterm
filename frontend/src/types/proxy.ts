@@ -6,6 +6,7 @@ export interface Proxy {
   port: number
   user?: string
   pass?: string
+  enabled?: boolean
 }
 
 export interface ProxyStoreData {
