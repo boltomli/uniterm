@@ -11,7 +11,6 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/ys-ll/uniterm/backend/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -152,11 +151,6 @@ func (a *App) findMainWindow() uintptr {
 		return 1 // continue
 	})
 	procEnumWindows.Call(cb, 0)
-	if best == 0 {
-		log.Writef("[IME] findMainWindow: no visible window found for pid=%v", pid)
-	} else {
-		log.Writef("[IME] findMainWindow: hwnd=%v area=%v", best, bestArea)
-	}
 	return best
 }
 
@@ -266,12 +260,10 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 	procGetClassNameW := user32.NewProc("GetClassNameW")
 
 	var result uintptr
-	var allChildren []string
 	cb := windows.NewCallback(func(child windows.HWND, _ uintptr) uintptr {
 		buf := make([]uint16, 256)
 		procGetClassNameW.Call(uintptr(child), uintptr(unsafe.Pointer(&buf[0])), 255)
 		name := windows.UTF16ToString(buf)
-		allChildren = append(allChildren, name)
 		if strings.Contains(name, "WebView") {
 			result = uintptr(child)
 			return 0 // stop
@@ -279,11 +271,6 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 		return 1 // continue
 	})
 	procEnumChildWindows.Call(a.mainHwnd, cb, 0)
-	if result == 0 {
-		log.Writef("[IME] findWebView2HWND: no match. children=%v", allChildren)
-	} else {
-		log.Writef("[IME] findWebView2HWND: found hwnd=%v", result)
-	}
 	return result
 }
 
@@ -310,7 +297,6 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 	hwnd := a.findWebView2HWND(user32)
 	if hwnd == 0 {
 		hwnd = a.mainHwnd // fallback: try main window
-		log.Writef("[IME] using mainHwnd=%v as fallback", hwnd)
 	}
 	if hwnd == 0 {
 		return nil
@@ -318,7 +304,6 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 
 	himc, _, _ := procImmGetContext.Call(hwnd)
 	if himc == 0 {
-		log.Writef("[IME] ImmGetContext returned 0 for hwnd=%v (x=%.0f y=%.0f)", hwnd, x, y)
 		return nil
 	}
 	defer procImmReleaseContext.Call(hwnd, himc)
@@ -338,7 +323,6 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 		himc,
 		uintptr(unsafe.Pointer(&cf)),
 	)
-	log.Writef("[IME] ImmSetCandidateWindow pos=(%.0f, %.0f) size=(%.0f, %.0f)", x+1, y, width, height)
 	return nil
 }
 
