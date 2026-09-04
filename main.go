@@ -222,6 +222,19 @@ func main() {
 	app.window = window
 	w3app.RegisterService(application.NewService(app))
 
+	// Show the window as soon as the page's DOM is committed (content starts
+	// rendering) instead of waiting for Wails' default, which defers Show until
+	// WebViewDidFinishNavigation — i.e. after the multi-MB bundle is parsed and
+	// executed. On macOS the window is created hidden and only shown via that
+	// late callback, so users see the dock icon for seconds before anything
+	// appears. Commit fires well before that; the body background (dark in
+	// style.css) is already the right colour, so the early show paints a clean
+	// dark window instead of white. Finish-navigation still runs its own
+	// Show(), which is idempotent.
+	window.OnWindowEvent(events.Mac.WebViewDidCommitNavigation, func(*application.WindowEvent) {
+		window.Show()
+	})
+
 	err := w3app.Run()
 	if err != nil {
 		log.Writef("Wails run error: %v", err)
