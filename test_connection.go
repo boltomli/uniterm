@@ -48,6 +48,16 @@ func (a *App) TestConnection(config session.ConnectionConfig) (string, error) {
 	case "container":
 		return a.testContainerConnection(mc)
 	default:
+		// Honor the jump-host tunnel exactly like a real session connect
+		// (CreateSession): establish the local forward first, point the
+		// probe at the listener, then tear the tunnel down when done.
+		if mc.TunnelSSHConnID != "" {
+			key := uuid.New().String()
+			if err := a.setupJumpHostTunnel(key, mc.Type, &mc); err != nil {
+				return "", err
+			}
+			defer a.tunnelService.Stop(key)
+		}
 		return session.ProbeConnection(mc)
 	}
 }
