@@ -255,10 +255,12 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 	procGetClassNameW := user32.NewProc("GetClassNameW")
 
 	var result uintptr
+	var allChildren []string
 	cb := windows.NewCallback(func(child windows.HWND, _ uintptr) uintptr {
 		buf := make([]uint16, 256)
 		procGetClassNameW.Call(uintptr(child), uintptr(unsafe.Pointer(&buf[0])), 255)
 		name := windows.UTF16ToString(buf)
+		allChildren = append(allChildren, name)
 		if strings.Contains(name, "WebView") {
 			result = uintptr(child)
 			return 0 // stop
@@ -266,6 +268,11 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 		return 1 // continue
 	})
 	procEnumChildWindows.Call(a.mainHwnd, cb, 0)
+	if result == 0 {
+		log.Writef("[IME] findWebView2HWND: no match. children=%v", allChildren)
+	} else {
+		log.Writef("[IME] findWebView2HWND: found hwnd=%v", result)
+	}
 	return result
 }
 
@@ -292,6 +299,7 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 	hwnd := a.findWebView2HWND(user32)
 	if hwnd == 0 {
 		hwnd = a.mainHwnd // fallback: try main window
+		log.Writef("[IME] using mainHwnd=%v as fallback", hwnd)
 	}
 	if hwnd == 0 {
 		return nil
