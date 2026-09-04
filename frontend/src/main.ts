@@ -8,6 +8,7 @@ import App from './App.vue'
 import './style.css'
 import { Window } from '@wailsio/runtime'
 import { useSettingsStore } from './stores/settingsStore'
+import { setLocale } from './i18n'
 
 Window.SetTitle('uniTerm')
 
@@ -22,7 +23,17 @@ app.use(pinia)
 app.use(ElementPlus)
 
 const settingsStore = useSettingsStore()
-await settingsStore.init()
+// Sync locale from navigator before mount (default 'system' → resolves from
+// navigator.language, zero IPC) so the first paint is already in the user's
+// language; init() re-resolves with the persisted preference once loaded.
+setLocale('system')
+// Fire settings init without awaiting: top-level await here used to block the
+// module's completion, which delayed the page load event, which delayed Wails'
+// window Show() — seconds of dock-icon-but-no-window on slow first paint. All
+// settings consumers are reactive (computed/watch/template), so values apply
+// themselves once init lands. applyTheme() on the loaded defaults runs before
+// mount anyway (init() calls it synchronously after its awaits settle).
+settingsStore.init()
 
 app.mount('#app')
 
