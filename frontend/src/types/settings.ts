@@ -118,6 +118,9 @@ export interface AIModelConfig {
   // See the persistence-contract note on TerminalSettings: this field MUST
   // also exist in the Go AIModelConfig (backend/store/settings_store.go).
   userAgent?: string
+  // Reference to a saved outbound proxy (proxies.json) for all traffic to
+  // this model's baseURL. Empty/undefined = direct connection.
+  proxyId?: string
 }
 
 export const USER_AGENT_PRESETS: { label: string; value: string }[] = [

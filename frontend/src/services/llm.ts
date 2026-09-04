@@ -58,6 +58,7 @@ export async function chat(options: ChatOptions): Promise<void> {
   const model = activeModel?.model || ''
   const protocol = activeModel?.protocol || 'anthropic'
   const userAgent = activeModel?.userAgent || ''
+  const proxyId = activeModel?.proxyId || ''
 
   if (!apiKey) throw new Error('API key not configured')
 
@@ -84,7 +85,7 @@ export async function chat(options: ChatOptions): Promise<void> {
     if (text) streamedText += text
    })
   try {
-    responseText = await ChatCompletion(apiKey, baseURL, model, requestJSON, protocol, userAgent)
+    responseText = await ChatCompletion(apiKey, baseURL, model, requestJSON, protocol, userAgent, proxyId)
   } catch (e: any) {
     const raw = e?.message || String(e)
     if (isCancellationError(raw)) {
