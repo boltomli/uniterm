@@ -1,12 +1,28 @@
 # Changelog
 
-## v1.9.2-alpha
+## v1.9.2
 
 ### What's Changed
 
 **New Features**
-- Terminal: screen preview on scrollbar hover — hovering the scrollbar pops up a preview of the history output at that position; click to jump there. New setting, on by default.
+- Terminal: screen preview on scrollbar hover — hovering the scrollbar pops up a preview of the history output at that position. On by default; always enabled, display-only.
 - Sidebar: the tunnels tab is back. Right-click the tab strip to toggle tab visibility; also configurable in Settings. Visible by default.
+- AI: session management — sessions in the history dropdown can be renamed via a button; right-click a message bubble to export the conversation as Markdown, delete that message only, or delete it and everything after it (context rollback). (@surenwuyuwuqiu)
+- Import: one-click import of connections from DBeaver workspaces and Navicat `.ncx` exports, with password decryption and folder / group restore. (@surenwuyuwuqiu)
+- Database: export query results as CSV / TXT / JSON; drag to reorder doc tabs; new data-only table export option (besides structure-only and structure+data). (@surenwuyuwuqiu)
+- AI models & SSH: new "system proxy" option that resolves the OS system proxy (registry / system config, PAC scripts, env fallback) against the actual target — for AI model requests (model list, connection test, chat) and SSH-family connections; the model form gains a quick-create "+" button for proxies.
+- RDP: admin (console) session mode (mstsc /admin equivalent), editable domain field, custom desktop resolution, and new connections default to fullscreen.
+
+**Improvements**
+- User-facing backend errors (private key validation, SSH key auth, SFTP, sync) are now localized on the frontend instead of showing hardcoded Chinese text.
+- Terminal: gutter line numbers / timestamps are now fixed logical-line numbers — wrapped rows don't consume numbers and they survive resizing; right-click the gutter to toggle numbers and timestamps.
+- Upload: dragging OS files onto an SSH terminal (rz) or the SFTP sidebar uploads directly from the source file via native paths — no size cap, no webview memory overhead.
+- File sidebar: clipboard support (copy / cut / paste with conflict handling) and a reworked toolbar with a "more" menu (hidden files, new file / directory).
+- Header main menu: added import / export entries. (@surenwuyuwuqiu)
+- Quick commands: collapsed groups are remembered across restarts.
+- Editors: Mongo / ES / K8s / kubeconfig code & YAML editors unified on a shared CodeMirror component that follows the app theme.
+- Proxy: per-proxy on/off toggle — a disabled proxy is skipped and connections referencing it dial directly instead of failing. (@surenwuyuwuqiu)
+- Database: MongoDB / Elasticsearch views unified with the database style — row insert/edit dialogs redesigned as aligned tables, row actions moved to the result toolbar and footer bar, Elasticsearch gains multi-tab with per-index views and a cluster tab, wheel scrolling and an overflow menu on doc tab bars.
 
 **Bug Fixes**
 - Terminal: restored the Backspace default to 0x7F (DEL), fixing whole-word deletion in Windows 11 ConPTY PowerShell/CMD and `bash read` erasing nothing over SSH. Existing connections that already saved a backspace option need to be manually switched back to DEL in the connection settings.
@@ -16,15 +32,44 @@
 - AI: command output is now captured from the terminal screen buffer instead of the raw PTY stream, fixing duplicated/shifted fragments from ConPTY redraws.
 - AI: the tool timeout badge now always shows the effective wait, and model-provided timeouts are honored as-is instead of being clamped.
 - Terminal: text highlighting is now optimized based on MobaXterm's color scheme — improved IP coloring, curated keyword colors for errors / success / warnings / info; arbitrary numbers are no longer highlighted.
+- Sync: the remote is fetched before committing, so two machines used alternately no longer hit the conflict dialog on every open; resolving a conflict no longer force-pushes, which previously re-broke the other machine on its next open.
+- Sync: fixed synced-file-list drift — tunnel changes are now actually committed to the sync repo; AI sessions and skills stay local-only.
+- Database: connection tests and reconnect for Redis / MongoDB / Elasticsearch now route to their dedicated probes instead of failing.
+- SQL Server: named-instance hosts (server\instance) now connect; the port is resolved via SQL Browser when omitted.
+- Connection test now goes through the configured jump-host tunnel for all connection types, not just k8s / container.
+- AI: LLM requests route through the OS system proxy (with env fallback), so model list / test / chat work behind system-level proxies.
+- SFTP: external editor lifecycle rework — reopening the same file keeps a stable temp path, file watchers no longer stack, auto-upload survives editor open/close; 25 s timeouts on content operations; fixed folder downloads silently transferring nothing.
+- Zmodem: cancelling the file picker dialog now aborts cleanly instead of leaving the terminal stuck.
+- Terminal: the screen preview popup now aligns with the scrollbar click position, follows the terminal theme, and reads as a distinct overlay with a pale-blue tinted background and no side borders; fixed the blank area below the terminal after maximize / restore; tooltips no longer block clicks or linger under the cursor.
+- Settings: deleting an AI model now asks for confirmation; the "Second Font" option is renamed to "Fallback Font"; other copy fixes.
+- macOS: the real app icon now shows in dev builds and packaged .app bundles. (@surenwuyuwuqiu)
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
 
+Thanks to @surenwuyuwuqiu for their contribution to this release.
+
 ### 更新内容
 
 **新功能**
-- 终端：滚动条悬停预览——悬停滚动条即弹出该位置历史输出的预览，点击可跳转。新增设置项，默认开启。
+- 终端：滚动条悬停预览——悬停滚动条即弹出该位置历史输出的预览。默认开启，始终启用，仅供预览。
 - 侧边栏：隧道标签页回归；右键标签栏可开关显示各标签页，设置中也可配置。默认显示。
+- AI：会话管理——历史下拉列表中的会话支持按钮重命名；右键消息气泡可导出会话为 Markdown、仅删除该条消息，或删除它及其后所有消息（上下文回滚）。（@surenwuyuwuqiu）
+- 导入：支持从 DBeaver 工作区和 Navicat `.ncx` 导出文件一键导入连接，含密码解密与文件夹 / 分组还原。（@surenwuyuwuqiu）
+- 数据库：查询结果可导出为 CSV / TXT / JSON；文档标签页支持拖拽排序；表导出新增「仅数据」选项（原有「仅结构」「结构+数据」不变）。（@surenwuyuwuqiu）
+- AI 模型与 SSH：新增「系统代理」选项——按实际目标解析操作系统系统代理（注册表 / 系统配置、PAC 脚本、环境变量兜底），适用于 AI 模型请求（模型列表、连接测试、对话）和 SSH 系连接；模型表单新增代理快速创建「+」按钮。
+- RDP：新增管理员（console）会话模式（等价 mstsc /admin）、可编辑的域名字段、自定义桌面分辨率；新建 RDP 连接默认全屏。
+
+**改进**
+- 后端返回的用户可见报错（私钥校验、SSH 密钥认证、SFTP、云同步等）改为前端 i18n 本地化，不再显示写死的中文。
+- 终端：行号 / 时间戳改为固定逻辑行号——折行不再占用行号，窗口缩放后保持不变；右键行号栏可开关行号与时间戳。
+- 上传：拖拽系统文件到 SSH 终端（rz）或 SFTP 边栏，改为通过原生路径直接从源文件上传——无大小限制，不再占用 WebView 内存。
+- 文件边栏：支持剪贴板（复制 / 剪切 / 粘贴，含冲突处理与自动重命名）；工具栏重构，新增「更多」菜单（显示隐藏文件、新建文件 / 目录）。
+- 顶部主菜单：新增导入 / 导出入口。（@surenwuyuwuqiu）
+- 快捷命令：分组折叠状态跨重启记忆。
+- 编辑器：Mongo / ES / K8s / kubeconfig 的代码与 YAML 编辑器统一为共享 CodeMirror 组件，并跟随应用主题。
+- 代理：每个代理支持启用/禁用开关——禁用的代理会被跳过，引用它的连接改为直连而不再报错。（@surenwuyuwuqiu）
+- 数据库：MongoDB / Elasticsearch 界面统一为数据库风格——行插入/编辑弹窗重排为对齐表格，行操作移至结果工具栏与底部栏，Elasticsearch 新增多标签（每索引视图 + 集群标签），文档标签栏支持滚轮滚动与溢出菜单。
 
 **Bug 修复**
 - 终端：退格键默认值恢复为 0x7F（DEL），修复 Windows 11 ConPTY 下 PowerShell/CMD 退格删整词、SSH `bash read` 无法删除字符的问题。存量连接若已保存退格键设置，需手动在连接配置中改回 DEL。
@@ -34,9 +79,22 @@
 - AI：命令输出改为从终端屏幕缓冲区捕获，修复 ConPTY 重绘导致的重复/错位片段。
 - AI：工具超时徽标现在始终显示实际等待时间，模型提供的超时值按原值生效、不再被钳制。
 - 终端：文本高亮基于 MobaXterm 配色方案进行优化——优化 IP 配色、错误/成功/警告/提示关键词配色；不再高亮任意数字。
+- 云同步：改为先拉取远端再提交，两台机器交替使用不再每次打开都弹冲突对话框；解决冲突不再 force-push（此前会导致另一台机器下次打开再次冲突）。
+- 云同步：修复同步文件清单不一致——隧道变更现在会真正提交到同步仓库；AI 会话与技能保持仅本地。
+- 数据库：Redis / MongoDB / Elasticsearch 的连接测试与重连改为路由到各自的探测逻辑，不再报「不支持」。
+- SQL Server：支持 `server\instance` 命名实例主机；未填端口时通过 SQL Browser 解析。
+- 连接测试现在对所有连接类型都走配置的跳板机隧道（此前仅 k8s / 容器生效）。
+- AI：LLM 请求走操作系统系统代理（环境变量兜底），系统级代理环境下模型列表 / 测试 / 对话不再失败。
+- SFTP：重构外部编辑器生命周期——同一文件重复打开使用固定临时路径、文件监听不再叠加、自动上传在编辑器反复开关后依然有效；内容操作增加 25 秒超时；修复目录下载静默传输 0 个文件的问题。
+- Zmodem：取消文件选择对话框现在会干净地中止，不再导致终端卡死。
+- 终端：屏幕预览弹窗与滚动条点击位置对齐，颜色跟随终端主题，并以淡蓝色调背景、去除左右边框使其视觉上更独立；修复窗口最大化 / 还原后终端下方空白；tooltip 不再阻挡点击、不再滞留。
+- 设置：删除 AI 模型增加确认；「第二字体」改名「回退字体」；其他文案修正。
+- macOS：开发模式与打包 .app 显示真实应用图标。（@surenwuyuwuqiu）
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+
+感谢 @surenwuyuwuqiu 对本版本的贡献。
 
 ## v1.9.1
 
