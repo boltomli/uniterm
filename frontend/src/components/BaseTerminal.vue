@@ -123,7 +123,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, on
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { SessionWrite, SessionResize, SessionEndZmodem, SetIMECandidatePosition } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionWrite, SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { msg } from '../services/message'
@@ -318,33 +318,6 @@ function resetIMEComposition() {
     terminal.textarea.value = ''
     terminal.textarea.blur()
   }
-}
-
-// Sync the IME candidate window position to the textarea's current screen
-// location via Win32 ImmSetCandidateWindow. Called after resize, focus, and
-// activation — the only moments where the textarea moves but the IME doesn't
-// follow. No-op on non-Windows or when the textarea is not visible.
-//
-// Uses requestAnimationFrame to ensure the browser has applied the latest
-// layout before reading getBoundingClientRect — without this, the rect may
-// reflect a pre-resize position that sends the candidate window to the wrong
-// screen location (visible as a bottom-edge flicker before it corrects).
-function syncIMEPosition() {
-  if (!terminal) return
-  // Two rAFs: first flushes pending style/layout, second reads the settled rect.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!terminal) return
-      const el = terminal.textarea
-      if (!el || el.offsetParent == null) return
-      const r = el.getBoundingClientRect()
-      if (r.width <= 0 || r.height <= 0) return
-      // Guard: skip if rect is off-screen (stale/zeroed position).
-      if (r.x + r.width < 0 || r.y + r.height < 0 ||
-          r.x > window.innerWidth || r.y > window.innerHeight) return
-      SetIMECandidatePosition(r.x + 1, r.y, r.width, r.height).catch(() => {})
-    })
-  })
 }
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
@@ -757,16 +730,16 @@ function onNativeResizeEnd() {
   resizeTimer = setTimeout(() => resize(), 100)
   // After a native window drag/resize, the textarea position changed but the
   // IME candidate window may not have followed (Windows modal loop blocks
-  // position updates). Re-focus textarea if it lost focus during the drag
-  // (title bar click steals focus), then sync the candidate position.
+  // position updates). Blur+focus forces WebView2 to recalculate the IME
+  // position from the textarea's current location. Safe here: no composition
+  // is active during a window drag.
   setTimeout(() => {
-    if (terminal) {
-      const el = terminal.textarea
-      if (el && el.offsetParent != null && document.activeElement !== el) {
-        el.focus()
-      }
+    if (!isActive.value || !terminal) return
+    const el = terminal.textarea
+    if (el && el.offsetParent != null) {
+      el.blur()
+      el.focus()
     }
-    syncIMEPosition()
   }, 200)
 }
 
@@ -788,8 +761,15 @@ function onSplitResizeEnd() {
     }, 0)
   })
   // Same as onNativeResizeEnd: split pane resize moves the textarea but the
-  // IME candidate window stays at the old position → sync after resize settles.
-  setTimeout(() => syncIMEPosition(), 300)
+  // IME candidate window stays at the old position → reset after resize settles.
+  setTimeout(() => {
+    if (!isActive.value || !terminal) return
+    const el = terminal.textarea
+    if (el && el.offsetParent != null) {
+      el.blur()
+      el.focus()
+    }
+  }, 300)
 }
 
 // Strip OSC sequences that xterm.js generates internally (color queries etc.)
@@ -1496,8 +1476,7 @@ onMounted(() => {
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
   // Native window move/resize START (WM_ENTERSIZEMOVE). No IME action needed
-  // here — the candidate position is synced after the modal loop ends
-  // (onNativeResizeEnd → syncIMEPosition).
+  // here — onNativeResizeEnd handles the post-drag blur+focus reset.
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1561,25 +1540,17 @@ onMounted(() => {
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
 
-  // When the app window regains focus, restore textarea focus and sync the
-  // IME candidate window position.
-  //
-  // Critical: when the user drags the window by the title bar, the textarea
-  // loses focus. On window-focus, we must re-focus the textarea BEFORE
-  // calling ImmSetCandidateWindow — otherwise ImmGetContext(0) returns 0
-  // (no active IME context) and the position sync is silently skipped,
-  // leaving the candidate window orphaned at its old off-screen location.
+  // When the app window regains focus, reset IME position. WebView2 handles
+  // this correctly for normal window-switch scenarios. Only intervene when
+  // the textarea lost focus (e.g. during a title-bar drag) — blur+focus
+  // forces WebView2 to recalculate the IME candidate window position.
   onWindowFocus = () => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
-    if (!el || el.offsetParent == null) return
-    // Re-focus the textarea if it lost focus during the drag (title bar
-    // click steals focus from the webview's textarea). Must happen before
-    // syncIMEPosition so ImmGetContext finds an active context.
-    if (document.activeElement !== el) {
+    if (el && el.offsetParent != null && document.activeElement !== el) {
+      el.blur()
       el.focus()
     }
-    syncIMEPosition()
   }
   window.addEventListener('focus', onWindowFocus)
 
@@ -1685,7 +1656,7 @@ onActivated(() => {
   // Delayed focus: during activation, calling focus() immediately can race
   // with native dialogs (OpenDirectoryDialog etc.) and crash WebView2.
   // A delayed focus() after the resize retries gives native dialogs time to
-  // close. After focus, sync the IME candidate position via Win32 API.
+  // close. After focus, WebView2 automatically recalculates the IME position.
   setTimeout(() => {
     if (!isActive.value || !terminal) return
     // Only focus if the terminal is actually visible — don't steal focus
@@ -1693,7 +1664,6 @@ onActivated(() => {
     const el = terminal.textarea
     if (el && el.offsetParent != null && document.activeElement !== el) {
       focus()
-      syncIMEPosition()
     }
   }, 700)
 })
