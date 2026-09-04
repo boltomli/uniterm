@@ -152,6 +152,11 @@ func (a *App) findMainWindow() uintptr {
 		return 1 // continue
 	})
 	procEnumWindows.Call(cb, 0)
+	if best == 0 {
+		log.Writef("[IME] findMainWindow: no visible window found for pid=%v", pid)
+	} else {
+		log.Writef("[IME] findMainWindow: hwnd=%v area=%v", best, bestArea)
+	}
 	return best
 }
 
