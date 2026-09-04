@@ -6,7 +6,9 @@
         class="object-search"
         :placeholder="t('db.searchTables')"
       />
-      <button class="btn btn-primary" @click="openNewTable">{{ t('db.newTable') }}</button>
+      <button class="btn btn-default btn-sm" @click="openNewTable">
+        <Plus :size="14" /> {{ t('db.newTable') }}
+      </button>
     </div>
     <el-table
       :data="filtered"
@@ -90,7 +92,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Table2, Eye, Eraser, Trash2 } from '@lucide/vue'
+import { Table2, Eye, Eraser, Trash2, Plus } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { GetTables, CreateTable, DropTable, DropView, TruncateTable } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
@@ -268,6 +270,7 @@ async function onCreateTable() {
   flex: 1;
   min-height: 0;
 }
+.object-toolbar .btn:last-child { margin-left: auto; }
 .object-name {
   display: inline-flex;
   align-items: center;

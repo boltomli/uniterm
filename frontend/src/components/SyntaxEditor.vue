@@ -212,7 +212,7 @@ function buildExtensions(path: string) {
         width: '100%',
         minWidth: '0',
       },
-      '.cm-content': { minHeight: '100%', width: '100%', boxSizing: 'border-box' },
+      '.cm-content': { minHeight: '100%', minWidth: 0, boxSizing: 'border-box' },
       '.cm-gutters': { backgroundColor: 'transparent', border: 'none' },
       // Strong selection highlight — oneDark default is too subtle, and has-bg
       // mode can further wash it out via global transparent rules.

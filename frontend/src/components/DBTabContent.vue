@@ -22,7 +22,7 @@
         </div>
         <template v-else>
           <div class="doc-tabs">
-            <div class="doc-tabs-scroll">
+            <div ref="docTabsScrollRef" class="doc-tabs-scroll" @wheel="onTabsWheel">
               <template v-for="(doc, index) in docs" :key="doc.id">
                 <div
                   v-if="dragOverIndex === index && dragInsertAfter"
@@ -31,6 +31,7 @@
                 <button
                   class="doc-tab"
                   :class="{ active: doc.id === activeDocId }"
+                  :data-doc-id="doc.id"
                   draggable="true"
                   @click="activateDoc(doc.id)"
                   @auxclick.middle.prevent="closeDoc(doc.id)"
@@ -40,12 +41,32 @@
                   @dragend="clearDragState"
                   @drop.prevent="onDocDrop($event, index)"
                 >
+                  <Table2 v-if="doc.kind === 'table' && !doc.isView" :size="12" class="doc-tab-icon" />
+                  <Eye v-else-if="doc.kind === 'table'" :size="12" class="doc-tab-icon" />
+                  <Database v-else-if="doc.kind === 'db-objects'" :size="12" class="doc-tab-icon" />
+                  <Code2 v-else :size="12" class="doc-tab-icon" />
                   <span class="doc-tab-title" :title="docTitle(doc)">{{ docTitle(doc) }}</span>
                   <span class="doc-tab-close" @click.stop="closeDoc(doc.id)">×</span>
                 </button>
               </template>
               <div v-if="dragOverIndex === docs.length - 1 && dragInsertAfter" class="doc-tab-indicator" />
             </div>
+            <button
+              v-if="docTabsShowMore"
+              class="doc-tab-more"
+              :title="t('tab.more')"
+              @click.stop="docMoreMenuRef?.toggle($event.currentTarget)"
+            >
+              <MoreHorizontal :size="14" />
+            </button>
+            <Menu ref="docMoreMenuRef" v-model:visible="docMoreMenuVisible" align="end">
+              <MenuItem
+                v-for="d in docs"
+                :key="d.id"
+                :class="{ active: d.id === activeDocId }"
+                @click="onDocMoreSelect(d.id)"
+              >{{ docTitle(d) }}</MenuItem>
+            </Menu>
             <button class="doc-tab-new" :title="t('db.newQuery')" @click="onNewQuery()">+</button>
           </div>
 
@@ -166,7 +187,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { Table2, Eye, Code2, Database, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -336,10 +358,11 @@ function onDocDragOver(e: DragEvent, index: number) {
 
 function onDocDrop(_e: DragEvent, index: number) {
   const from = docs.value.findIndex(d => d.id === dragId.value)
+  const insertAfter = dragInsertAfter.value
   clearDragState()
   if (from < 0) return
   // Drop on the left half of a tab means "insert before it", i.e. target index.
-  let to = dragInsertAfter.value ? index + 1 : index
+  let to = insertAfter ? index + 1 : index
   // Moving right compacts the source slot out of the range first.
   if (from < to) to -= 1
   if (to === from) return
@@ -351,6 +374,51 @@ function clearDragState() {
   dragId.value = ''
   dragOverIndex.value = -1
   dragInsertAfter.value = false
+}
+
+// ── Tab bar overflow: wheel scroll + "more" dropdown ──
+
+const docTabsScrollRef = ref<HTMLElement | null>(null)
+const docTabsShowMore = ref(false)
+const docMoreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const docMoreMenuVisible = ref(false)
+
+function updateDocTabsOverflow() {
+  const el = docTabsScrollRef.value
+  if (!el) return
+  docTabsShowMore.value = el.scrollWidth > el.clientWidth + 1
+}
+
+watch(() => docs.value.length, () => nextTick(updateDocTabsOverflow))
+watch(activeDocId, () => nextTick(updateDocTabsOverflow))
+
+let docTabsResize: ResizeObserver | null = null
+
+onMounted(() => {
+  docTabsResize = new ResizeObserver(updateDocTabsOverflow)
+  if (docTabsScrollRef.value) docTabsResize.observe(docTabsScrollRef.value)
+  nextTick(updateDocTabsOverflow)
+})
+
+onBeforeUnmount(() => {
+  docTabsResize?.disconnect()
+  docTabsResize = null
+})
+
+function onTabsWheel(e: WheelEvent) {
+  if (docTabsScrollRef.value) docTabsScrollRef.value.scrollLeft += e.deltaY
+}
+
+function onDocMoreSelect(id: string) {
+  docMoreMenuVisible.value = false
+  activateDoc(id)
+  scrollToDoc(id)
+}
+
+function scrollToDoc(id: string) {
+  if (!docTabsScrollRef.value) return
+  const el = docTabsScrollRef.value.querySelector(`[data-doc-id="${id}"]`) as HTMLElement | null
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
 }
 
 function findTableDoc(dbName: string, tableName: string) {
@@ -581,6 +649,10 @@ function onResizeEnd() {
   color: var(--text-primary);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+.doc-tab-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
 .doc-tab-title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -608,6 +680,22 @@ function onResizeEnd() {
   margin: 4px 0;
   border-radius: 1px;
   flex-shrink: 0;
+}
+.doc-tab-more {
+  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.doc-tab-more:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .doc-tab-new {
   width: 32px;
