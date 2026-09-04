@@ -467,6 +467,60 @@ export const useAIStore = defineStore('ai', () => {
     }
   }
 
+  // Issue #756: drop one message (and its tool-result pairs) from the current
+  // session. messages[] and the owning session share the same reactive objects,
+  // so splicing the view array also splices the session; doSave persists it.
+  function deleteMessage(messageId: string) {
+    const idx = messages.value.findIndex(m => m.id === messageId)
+    if (idx === -1) return
+    const m = messages.value[idx]
+    // Remove matching tool messages so the API never sees an orphaned
+    // tool_result (conversation() filters dangling ones, but the UI should
+    // not keep dead rows either).
+    let end = idx + 1
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      const ids = new Set(m.tool_calls.map(tc => tc.id))
+      while (end < messages.value.length) {
+        const n = messages.value[end]
+        if (n.role === 'tool' && n.tool_call_id && ids.has(n.tool_call_id)) end++
+        else break
+      }
+    }
+    messages.value.splice(idx, end - idx)
+    doSave()
+  }
+
+  // Issue #756: drop the message AND everything after it (context rollback,
+  // Trae-style partial deletion). Same shared-array semantics as deleteMessage.
+  function truncateFrom(messageId: string) {
+    const idx = messages.value.findIndex(m => m.id === messageId)
+    if (idx === -1) return
+    messages.value.splice(idx)
+    doSave()
+  }
+
+  // Issue #756: serialize the current session to markdown for export.
+  function exportSessionMarkdown(sessionId: string): string {
+    const s = sessions.value.find(x => x.id === sessionId)
+    if (!s) return ''
+    const lines: string[] = [
+      `# ${s.name}`,
+      '',
+      `> ${new Date(s.createdAt).toLocaleString()} · uniTerm AI Assistant`,
+    ]
+    for (const m of s.messages) {
+      if (m.role === 'tool') continue
+      const who = m.role === 'user' ? '🧑 User' : '🤖 Assistant'
+      lines.push('', `## ${who}`, '', m.content || '')
+      if (m.role === 'assistant' && m.tool_calls?.length) {
+        for (const tc of m.tool_calls) {
+          lines.push('', `**Tool call: \`${tc.function.name}\`**`, '', '```', tc.function.arguments, '```')
+        }
+      }
+    }
+    return lines.join('\n') + '\n'
+  }
+
   function renameSession(sessionId: string, name: string) {
     const s = sessions.value.find(s => s.id === sessionId)
     if (s) {
@@ -694,6 +748,9 @@ export const useAIStore = defineStore('ai', () => {
     createSession,
     switchSession,
     deleteSession,
+    deleteMessage,
+    truncateFrom,
+    exportSessionMarkdown,
     renameSession,
     lastDebugInfo,
     setDebugInfo,

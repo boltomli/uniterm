@@ -16,6 +16,7 @@
             :key="s.id"
             :class="{ active: s.id === aiStore.currentSessionId }"
             @click="onSessionSelect(s.id)"
+            @contextmenu.prevent.stop="onSessionContextMenu($event, s.id)"
           >
             <span class="session-item-name">{{ s.name }}</span>
             <span class="session-time">{{ formatRelativeTime(s.updatedAt) }}</span>
@@ -60,17 +61,21 @@
     </div>
 
     <div ref="messagesRef" class="ai-messages" @contextmenu="onAIContextMenu">
-      <AIMessage
+      <div
         v-for="msg in visibleMessages"
         :key="msg.id"
-        :message="msg"
-        :search-text="searchText"
-        @approve="onApprove"
-        @reject="onReject"
-        @continue="onContinue"
-        @answer="onAnswer"
-        @dismiss="onDismiss"
-      />
+        @contextmenu.stop="onMessageContextMenu($event, msg.id)"
+      >
+        <AIMessage
+          :message="msg"
+          :search-text="searchText"
+          @approve="onApprove"
+          @reject="onReject"
+          @continue="onContinue"
+          @answer="onAnswer"
+          @dismiss="onDismiss"
+        />
+      </div>
       <div v-if="aiStore.isRunning || aiStore.pendingCommand || aiStore.pendingQuestion" class="ai-thinking">
         <div class="thinking-text">{{ statusText }}</div>
       </div>
@@ -80,6 +85,26 @@
     <Menu ref="aiMenuRef" v-model:visible="aiMenuVisible">
       <MenuItem @click="aiCopySelection">{{ t('terminal.copy') }}</MenuItem>
       <MenuItem @click="aiAskSelection">{{ t('terminal.askAI') }}</MenuItem>
+    </Menu>
+
+    <!-- Message context menu (issue #756): right-click a message bubble to
+         delete it or roll the conversation back to this point. -->
+    <Menu ref="msgCtxMenuRef" v-model:visible="msgCtxMenuVisible">
+      <template v-if="msgCtxId">
+        <MenuItem @click="onMsgCtxDelete(msgCtxId)">{{ t('ai.deleteMessage') }}</MenuItem>
+        <MenuItem @click="onMsgCtxTruncate(msgCtxId)">{{ t('ai.truncateFrom') }}</MenuItem>
+      </template>
+    </Menu>
+
+    <!-- Session context menu (issue #756): right-click a history entry. -->
+    <Menu ref="sessionCtxMenuRef" v-model:visible="sessionCtxMenuVisible">
+      <template v-if="sessionCtxId">
+        <MenuItem @click="onSessionSelect(sessionCtxId)">{{ t('ai.switchSession') }}</MenuItem>
+        <MenuItem @click="onSessionCtxRename(sessionCtxId)">{{ t('ai.renameSession') }}</MenuItem>
+        <MenuItem @click="onSessionCtxExport(sessionCtxId)">{{ t('ai.exportMd') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem class="danger" @click="onSessionCtxDelete(sessionCtxId)">{{ t('ai.deleteSession') }}</MenuItem>
+      </template>
     </Menu>
 
     <div class="ai-input">
@@ -239,8 +264,8 @@
 
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal } from '@lucide/vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAIStore } from '../stores/aiStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSkillStore } from '../stores/skillStore'
@@ -249,7 +274,7 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { runAgent, approveTool, rejectTool, continueAgent, answerQuestion, dismissQuestion } from '../services/agent'
-import { CancelChatStream } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CancelChatStream, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { ExecutionMode } from '../types/ai'
 import AIMessage from './AIMessage.vue'
 import Menu from './Menu.vue'
@@ -519,6 +544,77 @@ function onSessionSelect(id: string) { closeMenus(); onSessionCommand(id) }
 function onAddPanelTagSelect(id: string) { closeMenus(); onAddPanelTag(id) }
 function onModelSelect(id: string) { closeMenus(); onModelChange(id) }
 function onModeSelect(mode: string) { closeMenus(); onModeChange(mode) }
+
+// ── Session context menu (issue #756): right-click a session row for
+//    switch / rename / export md / delete. ──
+const sessionCtxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const sessionCtxMenuVisible = ref(false)
+const sessionCtxId = ref('')
+
+function onSessionContextMenu(e: MouseEvent, id: string) {
+  e.preventDefault(); e.stopPropagation()
+  sessionCtxId.value = id
+  sessionCtxMenuRef.value?.openAt(e.clientX, e.clientY, id)
+}
+
+async function onSessionCtxRename(id: string) {
+  sessionCtxMenuVisible.value = false
+  const s = aiStore.sessions.find(x => x.id === id)
+  if (!s) return
+  try {
+    const name = await ElMessageBox.prompt(t('ai.renamePrompt'), t('ai.renameSession'), {
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel'),
+      inputValue: s.name,
+    })
+    const v = (name.value || '').trim()
+    if (v) aiStore.renameSession(id, v)
+  } catch { /* cancelled */ }
+}
+
+async function onSessionCtxExport(id: string) {
+  sessionCtxMenuVisible.value = false
+  const s = aiStore.sessions.find(x => x.id === id)
+  if (!s) return
+  try {
+    const md = aiStore.exportSessionMarkdown(id)
+    const safe = s.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+    const path = await SaveFileDialogFiltered(t('ai.exportMd'), `${safe}.md`, 'Markdown File', '*.md')
+    if (!path) return
+    const bytes = new TextEncoder().encode(md)
+    let bin = ''
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+    await WriteFileBase64(path, btoa(bin))
+    ElMessage.success(t('ai.exportDone', { name: s.name }))
+  } catch (e: any) {
+    ElMessage.error(e?.message || String(e))
+  }
+}
+
+function onSessionCtxDelete(id: string) {
+  sessionCtxMenuVisible.value = false
+  aiStore.deleteSession(id)
+}
+
+// ── Message context menu (issue #756) ──
+const msgCtxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const msgCtxMenuVisible = ref(false)
+const msgCtxId = ref('')
+
+function onMessageContextMenu(e: MouseEvent, id: string) {
+  msgCtxId.value = id
+  msgCtxMenuRef.value?.openAt(e.clientX, e.clientY, id)
+}
+
+function onMsgCtxDelete(id: string) {
+  msgCtxMenuVisible.value = false
+  aiStore.deleteMessage(id)
+}
+
+function onMsgCtxTruncate(id: string) {
+  msgCtxMenuVisible.value = false
+  aiStore.truncateFrom(id)
+}
 const isAtBottom = ref(true)
 let editableObserver: MutationObserver | null = null
 let messagesObserver: MutationObserver | null = null
@@ -1100,6 +1196,8 @@ function autoScrollToBottom() {
 function closeMenus() {
   aiMenuVisible.value = false
   sessionMenuVisible.value = false
+  sessionCtxMenuVisible.value = false
+  msgCtxMenuVisible.value = false
   addTagMenuVisible.value = false
   modelMenuVisible.value = false
   modeMenuVisible.value = false
