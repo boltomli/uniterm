@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,35 +123,36 @@ const (
 
 func (a *App) findMainWindow() uintptr {
 	pid := windows.GetCurrentProcessId()
-	var result uintptr
+	var best uintptr
+	var bestArea int64
 
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procEnumWindows := user32.NewProc("EnumWindows")
 	procGetWindowThreadProcessId := user32.NewProc("GetWindowThreadProcessId")
-	procGetWindowTextW := user32.NewProc("GetWindowTextW")
+	procIsWindowVisible := user32.NewProc("IsWindowVisible")
+	procGetClientRect := user32.NewProc("GetClientRect")
 
-	var ourWindows []string
-	cb := windows.NewCallback(func(hwnd windows.HWND, lParam uintptr) uintptr {
+	cb := windows.NewCallback(func(hwnd windows.HWND, _ uintptr) uintptr {
 		var wndPid uint32
 		procGetWindowThreadProcessId.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&wndPid)))
 		if wndPid != pid {
 			return 1 // continue
 		}
-		buf := make([]uint16, 256)
-		procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), 255)
-		title := windows.UTF16ToString(buf)
-		ourWindows = append(ourWindows, fmt.Sprintf("hwnd=%v title=%q", hwnd, title))
-		if title == "uniTerm" {
-			result = uintptr(hwnd)
-			return 0 // stop
+		visible, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
+		if visible == 0 {
+			return 1 // skip invisible windows
+		}
+		var rect [4]int32 // left, top, right, bottom
+		procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rect[0])))
+		area := int64(rect[2]-rect[0]) * int64(rect[3]-rect[1])
+		if area > bestArea {
+			bestArea = area
+			best = uintptr(hwnd)
 		}
 		return 1 // continue
 	})
 	procEnumWindows.Call(cb, 0)
-	if result == 0 {
-		log.Writef("[IME] findMainWindow: no match. our windows: %v", ourWindows)
-	}
-	return result
+	return best
 }
 
 // bringMainWindowToFront raises the main window to the foreground once. After a
