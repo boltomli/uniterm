@@ -233,17 +233,27 @@ func (a *App) unsubclassMainWindow() {
 	a.originalWndProc = 0
 }
 
-// CANDIDATEFORM and IME constants for ImmSetCandidateWindow.
+// IME constants and structs for ImmSetCompositionWindow / ImmSetCandidateWindow.
 const (
-	cfsCandidatePos = 0x0008
+	cfsDefault        = 0x0000 // CFS_DEFAULT
+	cfsRect           = 0x0001 // CFS_RECT
+	cfsPoint          = 0x0002 // CFS_POINT — show window at ptCurrentPos
+	cfsForcePosition  = 0x0020 // CFS_FORCE_POSITION — force position
 )
 
-// point and candidateForm mirror the Win32 POINT and CANDIDATEFORM structs
-// for passing to ImmSetCandidateWindow via unsafe.Pointer.
+// point mirrors Win32 POINT.
 type point struct {
 	x, y int32
 }
 
+// compositionForm mirrors Win32 COMPOSITIONFORM (used by ImmSetCompositionWindow).
+type compositionForm struct {
+	dwStyle      uint32
+	ptCurrentPos point
+	rcArea       [4]int32
+}
+
+// candidateForm mirrors Win32 CANDIDATEFORM (used by ImmSetCandidateWindow).
 type candidateForm struct {
 	dwIndex       uint32
 	dwStyle       uint32
@@ -261,17 +271,20 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 	procGetClassNameW := user32.NewProc("GetClassNameW")
 
 	var result uintptr
+	allChildren := make([]string, 0)
 	cb := windows.NewCallback(func(child windows.HWND, _ uintptr) uintptr {
 		buf := make([]uint16, 256)
 		procGetClassNameW.Call(uintptr(child), uintptr(unsafe.Pointer(&buf[0])), 255)
 		name := windows.UTF16ToString(buf)
-		if strings.Contains(name, "WebView") {
+		allChildren = append(allChildren, name)
+		if strings.HasPrefix(name, "Chrome_WidgetWin") {
 			result = uintptr(child)
 			return 0 // stop
 		}
 		return 1 // continue
 	})
 	procEnumChildWindows.Call(a.mainHwnd, cb, 0)
+	log.Writef("[IME] findWebView2HWND result=%v mainHwnd=%v children=%v", result, a.mainHwnd, allChildren)
 	return result
 }
 
@@ -280,17 +293,33 @@ func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
 // only moments where the textarea moves but the IME doesn't follow.
 //
 // The frontend supplies the textarea's screen-space bounding rect; this method
-// uses ImmSetCandidateWindow(CFS_CANDIDATEPOS) to tell the IME where the text
-// insertion point is, preventing the candidate window from drifting to the
-// screen origin (0,0) or going off-screen.
+// uses ImmSetCompositionWindow + ImmSetCandidateWindow to tell the IME where
+// both the composition (in-progress pinyin) and candidate windows should sit,
+// preventing them from drifting off-screen.
+//
+// CFS_POINT puts the window at ptCurrentPos; CFS_FORCE_POSITION additionally
+// forces third-party IMEs to honour it. Both are applied for maximal coverage.
 //
 // No-op when imm32.dll is unavailable (non-Windows builds via cross-compile).
 func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
+	log.Writef("[IME] called x=%.0f y=%.0f w=%.0f h=%.0f", x, y, width, height)
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	imm32 := windows.NewLazySystemDLL("imm32.dll")
 	procImmGetContext := imm32.NewProc("ImmGetContext")
 	procImmSetCandidateWindow := imm32.NewProc("ImmSetCandidateWindow")
+	procImmSetCompositionWindow := imm32.NewProc("ImmSetCompositionWindow")
 	procImmReleaseContext := imm32.NewProc("ImmReleaseContext")
+
+	// Lazy-load mainHwnd: findMainWindow() at startup could run before the
+	// main window was created, leaving mainHwnd=0. Retry here — the user is
+	// typing/dragging, so the window definitely exists by now.
+	if a.mainHwnd == 0 {
+		a.mainHwnd = a.findMainWindow()
+	}
+	if a.mainHwnd == 0 {
+		log.Writef("[IME] mainHwnd still 0 — cannot locate IME")
+		return nil
+	}
 
 	// Find the WebView2 child HWND. ImmGetContext needs the actual control
 	// HWND — HWND=0 and the main window HWND don't work with WebView2.
@@ -305,26 +334,40 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 
 	himc, _, _ := procImmGetContext.Call(hwnd)
 	if himc == 0 {
+		log.Writef("[IME] ImmGetContext returned 0 for hwnd=%v", hwnd)
 		return nil
 	}
 	defer procImmReleaseContext.Call(hwnd, himc)
 
-	// Position candidate window at the caret location (left edge + a pixel
-	// for the cursor, top of the textarea). Width/height are unused for
-	// CFS_CANDIDATEPOS but the struct must be properly sized.
-	cf := candidateForm{
+	// Position both the composition window (in-progress pinyin) and the
+	// candidate window at the caret location (left edge + a pixel for the
+	// cursor, top of the textarea). CFS_POINT places the window at
+	// ptCurrentPos; CFS_FORCE_POSITION forces third-party IMEs to honour it
+	// instead of treating the point as an advisory hint.
+	pos := point{
+		x: int32(x + 1), // +1 avoids degenerate zero-width caret edge
+		y: int32(y),
+	}
+
+	compForm := compositionForm{
+		dwStyle:      cfsPoint | cfsForcePosition,
+		ptCurrentPos: pos,
+	}
+	procImmSetCompositionWindow.Call(
+		himc,
+		uintptr(unsafe.Pointer(&compForm)),
+	)
+
+	candForm := candidateForm{
 		dwIndex: 0,
-		dwStyle: cfsCandidatePos,
-		ptCurrentPos: point{
-			x: int32(x + 1), // +1 avoids degenerate zero-width caret edge
-			y: int32(y),
-		},
+		dwStyle: cfsPoint | cfsForcePosition,
+		ptCurrentPos: pos,
 	}
 	procImmSetCandidateWindow.Call(
 		himc,
-		uintptr(unsafe.Pointer(&cf)),
+		uintptr(unsafe.Pointer(&candForm)),
 	)
-	log.Writef("[IME] set pos=(%d,%d) hwnd=%v", cf.ptCurrentPos.x, cf.ptCurrentPos.y, hwnd)
+	log.Writef("[IME] set pos=(%d,%d) hwnd=%v style=%d", pos.x, pos.y, hwnd, cfsPoint|cfsForcePosition)
 	return nil
 }
 
