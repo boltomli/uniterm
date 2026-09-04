@@ -58,6 +58,11 @@ type ConnectionConfig struct {
 	RdpFixedHeight int  `json:"rdpFixedHeight,omitempty"`
 	RdpSmartSizing bool `json:"rdpSmartSizing"`
 	RdpEnableNLA   bool `json:"rdpEnableNLA"`
+	// RdpDomain is the Windows domain (or computer name for local accounts)
+	// sent to the RDP ActiveX control's Domain property. When empty, a
+	// "DOMAIN\user" prefix in User is used as a fallback, mirroring the
+	// username syntax mstsc accepts.
+	RdpDomain string `json:"rdpDomain,omitempty"`
 	// RdpAdminSession connects to the remote console (admin) session, the
 	// equivalent of "mstsc /admin". Mapped to the ActiveX
 	// IMsRdpClientAdvancedSettings8::ConnectToAdministerServer property.
