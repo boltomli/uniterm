@@ -245,6 +245,30 @@ type candidateForm struct {
 	rcArea        [4]int32 // left, top, right, bottom — unused for CFS_CANDIDATEPOS
 }
 
+// findWebView2HWND walks the child windows of mainHwnd to find the WebView2
+// renderer control. Returns 0 if not found.
+func (a *App) findWebView2HWND(user32 *windows.LazyDLL) uintptr {
+	if a.mainHwnd == 0 {
+		return 0
+	}
+	procEnumChildWindows := user32.NewProc("EnumChildWindows")
+	procGetClassNameW := user32.NewProc("GetClassNameW")
+
+	var result uintptr
+	cb := windows.NewCallback(func(child windows.HWND, _ uintptr) uintptr {
+		buf := make([]uint16, 256)
+		procGetClassNameW.Call(uintptr(child), uintptr(unsafe.Pointer(&buf[0])), 255)
+		name := windows.UTF16ToString(buf)
+		if strings.Contains(name, "WebView") {
+			result = uintptr(child)
+			return 0 // stop
+		}
+		return 1 // continue
+	})
+	procEnumChildWindows.Call(a.mainHwnd, cb, 0)
+	return result
+}
+
 // SetIMECandidatePosition repositions the IME candidate window to follow the
 // textarea. Called from the frontend after resize, focus, and activation — the
 // only moments where the textarea moves but the IME doesn't follow.
@@ -258,25 +282,27 @@ type candidateForm struct {
 func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	imm32 := windows.NewLazySystemDLL("imm32.dll")
-	procGetFocus := user32.NewProc("GetFocus")
 	procImmGetContext := imm32.NewProc("ImmGetContext")
 	procImmSetCandidateWindow := imm32.NewProc("ImmSetCandidateWindow")
 	procImmReleaseContext := imm32.NewProc("ImmReleaseContext")
 
-	// Get the HWND that currently has keyboard focus on this thread.
-	// HWND=0 does NOT work with WebView2 — the IME context lives on the
-	// child WebView2 control window, not the main Wails window.
-	focusedHWND, _, _ := procGetFocus.Call()
-	if focusedHWND == 0 {
-		log.Writef("[IME] GetFocus returned 0 — no focused HWND (x=%.0f y=%.0f)", x, y)
+	// Find the WebView2 child HWND. ImmGetContext needs the actual control
+	// HWND — HWND=0 and the main window HWND don't work with WebView2.
+	// GetFocus() is thread-local and doesn't work from a Go goroutine.
+	hwnd := a.findWebView2HWND(user32)
+	if hwnd == 0 {
+		hwnd = a.mainHwnd // fallback: try main window
+	}
+	if hwnd == 0 {
 		return nil
 	}
-	himc, _, _ := procImmGetContext.Call(focusedHWND)
+
+	himc, _, _ := procImmGetContext.Call(hwnd)
 	if himc == 0 {
-		log.Writef("[IME] ImmGetContext returned 0 for hwnd=%v (x=%.0f y=%.0f)", focusedHWND, x, y)
+		log.Writef("[IME] ImmGetContext returned 0 for hwnd=%v (x=%.0f y=%.0f)", hwnd, x, y)
 		return nil
 	}
-	defer procImmReleaseContext.Call(focusedHWND, himc)
+	defer procImmReleaseContext.Call(hwnd, himc)
 
 	// Position candidate window at the caret location (left edge + a pixel
 	// for the cursor, top of the textarea). Width/height are unused for
