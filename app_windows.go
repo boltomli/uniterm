@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,22 +131,27 @@ func (a *App) findMainWindow() uintptr {
 	procGetWindowThreadProcessId := user32.NewProc("GetWindowThreadProcessId")
 	procGetWindowTextW := user32.NewProc("GetWindowTextW")
 
+	var ourWindows []string
 	cb := windows.NewCallback(func(hwnd windows.HWND, lParam uintptr) uintptr {
 		var wndPid uint32
 		procGetWindowThreadProcessId.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&wndPid)))
 		if wndPid != pid {
 			return 1 // continue
 		}
-		// Verify it has our window title so we don't pick up invisible helper windows.
 		buf := make([]uint16, 256)
 		procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), 255)
-		if windows.UTF16ToString(buf) == "uniTerm" {
+		title := windows.UTF16ToString(buf)
+		ourWindows = append(ourWindows, fmt.Sprintf("hwnd=%v title=%q", hwnd, title))
+		if title == "uniTerm" {
 			result = uintptr(hwnd)
 			return 0 // stop
 		}
 		return 1 // continue
 	})
 	procEnumWindows.Call(cb, 0)
+	if result == 0 {
+		log.Writef("[IME] findMainWindow: no match. our windows: %v", ourWindows)
+	}
 	return result
 }
 
