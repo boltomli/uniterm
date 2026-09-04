@@ -11,6 +11,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/ys-ll/uniterm/backend/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -323,6 +324,7 @@ func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
 		himc,
 		uintptr(unsafe.Pointer(&cf)),
 	)
+	log.Writef("[IME] set pos=(%d,%d) hwnd=%v", cf.ptCurrentPos.x, cf.ptCurrentPos.y, hwnd)
 	return nil
 }
 
