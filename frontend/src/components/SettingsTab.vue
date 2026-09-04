@@ -985,6 +985,23 @@
         <el-form-item :label="t('settings.modelApiKey')">
           <el-input v-model="modelForm.apiKey" type="password" show-password />
         </el-form-item>
+        <el-form-item :label="t('conn.proxy')">
+          <div class="inline-add-row">
+            <el-select v-model="modelForm.proxyId" clearable filterable style="flex: 1; min-width: 0" :placeholder="t('settings.modelProxyPlaceholder')">
+              <el-option :label="t('conn.proxySystemOption')" value="system" />
+              <el-option
+                v-for="p in proxyStore.proxies"
+                :key="p.id"
+                :label="`${p.name} (${p.kind} ${p.host}:${p.port})`"
+                :value="p.id"
+                :disabled="p.enabled === false"
+              />
+            </el-select>
+            <el-button class="inline-add-btn" :title="t('conn.newProxy')" @click="modelProxyDialogVisible = true">
+              <Plus :size="14" />
+            </el-button>
+          </div>
+        </el-form-item>
         <el-form-item :label="t('settings.modelModel')">
           <div class="model-fetch-row">
             <el-select
@@ -1023,6 +1040,10 @@
         <el-button type="primary" @click="saveModel">{{ t('settings.save') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- Quick-create proxy from the model form's "+" button; must live outside
+         the per-category v-if sections so it renders on the AI tab too. -->
+    <ProxyEditDialog v-model:visible="modelProxyDialogVisible" :proxy="null" @saved="onModelProxySaved" />
 
     <!-- Sync dialogs -->
     <AddRepoDialog />
@@ -1553,6 +1574,13 @@ async function removeProxy(row: Proxy) {
   await proxyStore.remove(row.id)
 }
 
+// Quick-create proxy from the AI model form's "+" button (mirrors the
+// connection form): after saving, select the new proxy immediately.
+const modelProxyDialogVisible = ref(false)
+function onModelProxySaved(p: Proxy) {
+  modelForm.proxyId = p.id
+}
+
 // Enable toggle (issue #749): a disabled proxy is skipped on connect and the
 // referencing connection dials directly.
 async function toggleProxy(row: Proxy, v: boolean) {
@@ -1635,6 +1663,7 @@ const modelForm = reactive({
   apiKey: '',
   protocol: 'anthropic' as 'anthropic' | 'openai' | 'responses',
   userAgent: 'uniTerm' as string,
+  proxyId: '' as string,
 })
 
 function openNewModelForm() {
@@ -1677,7 +1706,8 @@ function saveModel() {
       model: modelForm.model,
       apiKey: modelForm.apiKey,
       protocol: modelForm.protocol,
-      userAgent: modelForm.userAgent || undefined
+      userAgent: modelForm.userAgent || undefined,
+      proxyId: modelForm.proxyId || undefined
     })
   }
   showModelForm.value = false
@@ -1693,6 +1723,7 @@ function resetModelForm() {
   modelForm.apiKey = ''
   modelForm.protocol = 'anthropic'
   modelForm.userAgent = 'uniTerm'
+  modelForm.proxyId = ''
   modelSuggestions.value = []
 }
 
@@ -1704,7 +1735,7 @@ async function fetchModelList() {
   modelFetching.value = true
   modelSuggestions.value = []
   try {
-    const models = await FetchModels(modelForm.apiKey, modelForm.baseURL, modelForm.protocol)
+    const models = await FetchModels(modelForm.apiKey, modelForm.baseURL, modelForm.protocol, modelForm.proxyId || '')
     modelSuggestions.value = (models || []).map(m => ({
       value: m.display_name || m.id
     }))
@@ -1737,7 +1768,8 @@ async function testConnection() {
       modelForm.model,
       testMsg,
       modelForm.protocol,
-      modelForm.userAgent || ''
+      modelForm.userAgent || '',
+      modelForm.proxyId || ''
     )
     testResult.value = true
     msg.success(t('settings.testSuccess'))
@@ -2247,6 +2279,20 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 .model-autocomplete {
   flex: 1;
+}
+
+/* ── Inline select + "+" rows (proxy quick-create, mirrors ConnectionForm) ── */
+.inline-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.inline-add-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
 }
 
 .about-update-actions {

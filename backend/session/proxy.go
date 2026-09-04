@@ -27,3 +27,10 @@ type ProxyStoreData struct {
 // ProxyResolver resolves a Proxy ID into the runtime SocksProxy dial struct
 // (Kind/Host/Port/User/Pass), consumed directly by dialFirstHop.
 type ProxyResolver func(id string) (SocksProxy, bool)
+
+// ProxyIDSystem is the sentinel proxy reference selecting the OS system proxy
+// (registry/system config, PAC scripts, HTTP(S)_PROXY env fallback), resolved
+// at connect/request time against the actual target and never persisted as a
+// concrete proxy. Saved proxy IDs are generated as "px-..." so it never
+// collides. An empty reference stays "dial direct".
+const ProxyIDSystem = "system"

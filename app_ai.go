@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	stdsync "sync"
 	"time"
 
 	"github.com/mattn/go-ieproxy"
+	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
 
@@ -42,6 +45,29 @@ func llmProxy(req *http.Request) (*url.URL, error) {
 		llmProxyRefresh = time.Now()
 	}
 	return llmProxyFn(req)
+}
+
+// llmDirectClient returns the package-level client for the "direct" proxy
+// selection. Proxy is deliberately nil: direct means bypassing the system
+// proxy AND the HTTP(S)_PROXY env vars. Separate from the system-proxy pool
+// so both connection caches stay warm independently.
+var (
+	llmDirectOnce   stdsync.Once
+	llmDirectShared *http.Client
+)
+
+func llmDirectClient() *http.Client {
+	llmDirectOnce.Do(func() {
+		llmDirectShared = &http.Client{Transport: &http.Transport{
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   8,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 2 * time.Second,
+		}}
+	})
+	return llmDirectShared
 }
 
 // llmHTTPClient returns the App-wide *http.Client used by every
@@ -89,7 +115,7 @@ func injectCacheControl(reqBody map[string]interface{}) {
 // ChatCompletion streams the Anthropic API response via SSE, emitting Wails
 // events for each token while collecting the full message. It returns the
 // complete message JSON when the stream ends (backward-compatible).
-func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string) (string, error) {
+func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string) (string, error) {
 	// Parse the incoming request body (always Anthropic format from frontend)
 	var reqBody map[string]interface{}
 	if err := json.Unmarshal([]byte(requestJSON), &reqBody); err != nil {
@@ -100,17 +126,71 @@ func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, 
 		userAgent = "uniTerm"
 	}
 
+	client, err := a.llmClientFor(proxyID)
+	if err != nil {
+		return "", err
+	}
+
 	switch protocol {
 	case "openai":
-		return a.chatCompletionOpenAI(apiKey, baseURL, model, reqBody, userAgent)
+		return a.chatCompletionOpenAI(apiKey, baseURL, model, reqBody, userAgent, client)
 	case "responses":
-		return a.chatCompletionResponses(apiKey, baseURL, model, reqBody, userAgent)
+		return a.chatCompletionResponses(apiKey, baseURL, model, reqBody, userAgent, client)
 	}
-	return a.chatCompletionAnthropic(apiKey, baseURL, model, reqBody, userAgent)
+	return a.chatCompletionAnthropic(apiKey, baseURL, model, reqBody, userAgent, client)
+}
+
+// llmClientFor returns the HTTP client for the model's proxy selection:
+// an empty reference dials direct, session.ProxyIDSystem uses the shared
+// system-proxy client (see llmProxy), and a saved proxy ID builds a client
+// routed through that proxy (F-208 connection reuse applies per client).
+func (a *App) llmClientFor(proxyID string) (*http.Client, error) {
+	switch proxyID {
+	case "":
+		return llmDirectClient(), nil
+	case session.ProxyIDSystem:
+		return a.llmHTTPClient(), nil
+	}
+	resolve, err := a.proxyResolver()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := resolve(proxyID)
+	if !ok {
+		return nil, fmt.Errorf("referenced proxy not found or disabled: %s", proxyID)
+	}
+	return llmHTTPClientFor(&p), nil
+}
+
+// llmHTTPClientFor returns an *http.Client whose transport routes through the
+// given upstream proxy (HTTP CONNECT for https URLs, SOCKS5 natively).
+func llmHTTPClientFor(proxy *session.SocksProxy) *http.Client {
+	tr := &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return proxyTransportURL(proxy)
+		},
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+	}
+	return &http.Client{Transport: tr}
+}
+
+// proxyTransportURL renders a saved SOCKS5/HTTP proxy as a proxy URL for
+// http.Transport. http.Transport natively speaks SOCKS5 via the socks5 scheme.
+func proxyTransportURL(p *session.SocksProxy) (*url.URL, error) {
+	u := &url.URL{Scheme: p.Kind, Host: net.JoinHostPort(p.Host, strconv.Itoa(p.Port))}
+	if p.User != "" {
+		u.User = url.UserPassword(p.User, p.Pass)
+	}
+	return u, nil
 }
 
 // chatCompletionAnthropic handles the native Anthropic Messages API with SSE streaming.
-func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string) (string, error) {
+func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
 	reqBody["stream"] = true
 
 	modifiedJSON, err := json.Marshal(reqBody)
@@ -151,7 +231,7 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 
 	// Use the shared client so this path honors the same system/env proxy
 	// resolution and connection pool as the OpenAI/Responses paths.
-	res, err := a.llmHTTPClient().Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("AI_REQUEST_TIMEOUT")
@@ -421,7 +501,7 @@ func toString(v interface{}) string {
 // chatCompletionOpenAI converts the Anthropic-format request to OpenAI,
 // calls the OpenAI Chat Completions API with SSE streaming, and converts
 // the response back to Anthropic format so the frontend sees no difference.
-func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string) (string, error) {
+func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 
 	// --- Build OpenAI-format request body ---
@@ -491,7 +571,6 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("User-Agent", userAgent)
 
-	client := a.llmHTTPClient()
 	res, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -854,7 +933,7 @@ func convertAnthropicMessageToResponses(msg map[string]interface{}) []map[string
 // Responses API, calls /responses with SSE streaming, and converts the response
 // events back to Anthropic-format events so the frontend sees no difference.
 // Stateless: full history is sent as `input` each turn; reasoning items are ignored.
-func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string) (string, error) {
+func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
 	url := strings.TrimRight(baseURL, "/") + "/responses"
 
 	// --- Build Responses-format request body ---
@@ -920,7 +999,6 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("User-Agent", userAgent)
 
-	client := a.llmHTTPClient()
 	res, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -1156,7 +1234,7 @@ type ModelInfo struct {
 // OpenAI-compatible /models endpoint with a Bearer token; anthropic hits
 // /v1/models with the x-api-key + anthropic-version headers, mirroring
 // chatCompletionAnthropic's URL and auth handling.
-func (a *App) FetchModels(apiKey, baseURL, protocol string) ([]ModelInfo, error) {
+func (a *App) FetchModels(apiKey, baseURL, protocol string, proxyID string) ([]ModelInfo, error) {
 	base := strings.TrimRight(baseURL, "/")
 
 	var url string
@@ -1190,7 +1268,11 @@ func (a *App) FetchModels(apiKey, baseURL, protocol string) ([]ModelInfo, error)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
-	res, err := a.llmHTTPClient().Do(req)
+	client, err := a.llmClientFor(proxyID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

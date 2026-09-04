@@ -554,6 +554,7 @@
             <el-form-item v-if="showProxy" :label="t('conn.proxy')">
               <div class="inline-add-row">
                 <el-select v-model="form.proxyId" :placeholder="t('conn.proxyPlaceholder')" clearable filterable style="flex: 1; min-width: 0">
+                  <el-option :label="t('conn.proxySystemOption')" value="system" />
                   <el-option
                     v-for="p in proxyStore.proxies"
                     :key="p.id"

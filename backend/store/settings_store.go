@@ -122,6 +122,9 @@ type AIModelConfig struct {
 	// UserAgent overrides the HTTP User-Agent for this model's API calls.
 	// Empty means the frontend/protocol default.
 	UserAgent string `json:"userAgent,omitempty"`
+	// ProxyId references a saved outbound proxy (proxies.json) used for all
+	// HTTP traffic to this model's BaseURL. Empty = direct connection.
+	ProxyID string `json:"proxyId,omitempty"`
 }
 
 type AISettings struct {

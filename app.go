@@ -9,7 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -828,11 +831,54 @@ func (a *App) proxyResolver() (session.ProxyResolver, error) {
 	}, nil
 }
 
+// systemProxyFor resolves the OS system proxy for reaching host:port: the
+// registry/system config, PAC scripts, and the HTTP(S)_PROXY env fallback,
+// via the shared cached resolver (llmProxy). direct=true means the system
+// resolved this target to a direct connection (no proxy or PAC says DIRECT).
+func systemProxyFor(host string, port int) (*session.SocksProxy, bool, error) {
+	req := &http.Request{URL: &url.URL{Scheme: "https", Host: net.JoinHostPort(host, strconv.Itoa(port))}}
+	u, err := llmProxy(req)
+	if err != nil {
+		return nil, false, err
+	}
+	if u == nil || u.Host == "" {
+		return nil, true, nil
+	}
+	switch u.Scheme {
+	case "socks", "socks5":
+		return &session.SocksProxy{Kind: "socks5", Host: u.Hostname(), Port: proxyPort(u, 1080)}, false, nil
+	default: // "http", "https"
+		return &session.SocksProxy{Kind: "http", Host: u.Hostname(), Port: proxyPort(u, 80)}, false, nil
+	}
+}
+
+// proxyPort extracts the port from a resolved proxy URL, falling back to the
+// scheme's conventional default when the system config omitted it.
+func proxyPort(u *url.URL, fallback int) int {
+	if n, err := strconv.Atoi(u.Port()); err == nil && n > 0 {
+		return n
+	}
+	return fallback
+}
+
 // materializeProxy resolves config.ProxyId into config.Proxy. No-op when no
-// proxy is set. Mirrors materializeIdentity. A proxy disabled via its enable
-// toggle (issue #749) is skipped silently: the connection dials directly.
+// proxy is set. Mirrors materializeIdentity. The "system" sentinel resolves
+// the OS system proxy against the connection target (see systemProxyFor). A
+// proxy disabled via its enable toggle (issue #749) is skipped silently: the
+// connection dials directly.
 func (a *App) materializeProxy(config session.ConnectionConfig) (session.ConnectionConfig, error) {
 	if config.ProxyId == "" {
+		return config, nil
+	}
+	if config.ProxyId == session.ProxyIDSystem {
+		p, direct, err := systemProxyFor(config.Host, config.Port)
+		if err != nil {
+			return config, fmt.Errorf("resolve system proxy: %w", err)
+		}
+		if direct {
+			return config, nil
+		}
+		config.Proxy = p
 		return config, nil
 	}
 	resolve, err := a.proxyResolver()
