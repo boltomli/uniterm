@@ -287,7 +287,6 @@ let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
 let onVisibilityChange: (() => void) | null = null
-let onWindowFocus: (() => void) | null = null
 
 // Reset xterm's internal IME composition state. Two variants:
 // - resetIMEState:        only clears internal flags (safe during active typing)
@@ -728,23 +727,6 @@ function onNativeResizeEnd() {
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
   resizeTimer = setTimeout(() => resize(), 100)
-  // IME anchor: Go cycles native focus back into the WebView2 on
-  // WM_EXITSIZEMOVE (app_windows.go), which re-attaches the IME context and
-  // re-anchors the candidate window to the caret. A DOM-level blur+focus
-  // cannot do that (native focus is what carries the IME context) and, worse,
-  // the old unconditional +200 ms version killed any composition the user had
-  // already started after dropping the window — duplicated/out-of-order text.
-  // Keep only a fallback for the case where the native restore did not reach
-  // the page: without page focus the textarea cannot be mid-composition, so a
-  // DOM re-focus is safe there.
-  setTimeout(() => {
-    if (!isActive.value || !terminal) return
-    const el = terminal.textarea
-    if (el && el.offsetParent != null && !document.hasFocus()) {
-      el.blur()
-      el.focus()
-    }
-  }, 200)
 }
 
 function onSplitResizeStart() {
@@ -764,16 +746,6 @@ function onSplitResizeEnd() {
       resize()
     }, 0)
   })
-  // Same as onNativeResizeEnd: split pane resize moves the textarea but the
-  // IME candidate window stays at the old position → reset after resize settles.
-  setTimeout(() => {
-    if (!isActive.value || !terminal) return
-    const el = terminal.textarea
-    if (el && el.offsetParent != null) {
-      el.blur()
-      el.focus()
-    }
-  }, 300)
 }
 
 // Strip OSC sequences that xterm.js generates internally (color queries etc.)
@@ -1479,8 +1451,6 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
-  // Native window move/resize START (WM_ENTERSIZEMOVE). No IME action needed
-  // here — onNativeResizeEnd handles the post-drag blur+focus reset.
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1543,20 +1513,6 @@ onMounted(() => {
     }
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
-
-  // When the app window regains focus, reset IME position. WebView2 handles
-  // this correctly for normal window-switch scenarios. Only intervene when
-  // the textarea lost focus (e.g. during a title-bar drag) — blur+focus
-  // forces WebView2 to recalculate the IME candidate window position.
-  onWindowFocus = () => {
-    if (!isActive.value || !terminal) return
-    const el = terminal.textarea
-    if (el && el.offsetParent != null && document.activeElement !== el) {
-      el.blur()
-      el.focus()
-    }
-  }
-  window.addEventListener('focus', onWindowFocus)
 
   resizeObserver = new ResizeObserver(() => {
     // A size change landing inside a resize gate must not be dropped: if it
@@ -1654,22 +1610,13 @@ onActivated(() => {
   }, d))
   // Re-initialize zmodem service only if it was disposed in onDeactivated.
   // If a transfer was active, the service is still running — skip recreate.
+  // safe: no focus() call here, avoids WebView2 crash race with native dialogs.
   if (props.sessionId && props.mode === 'ssh' && !zmodemService) {
     initZmodemService(props.sessionId)
   }
-  // Delayed focus: during activation, calling focus() immediately can race
-  // with native dialogs (OpenDirectoryDialog etc.) and crash WebView2.
-  // A delayed focus() after the resize retries gives native dialogs time to
-  // close. After focus, WebView2 automatically recalculates the IME position.
-  setTimeout(() => {
-    if (!isActive.value || !terminal) return
-    // Only focus if the terminal is actually visible — don't steal focus
-    // from a dialog or input the user is currently interacting with.
-    const el = terminal.textarea
-    if (el && el.offsetParent != null && document.activeElement !== el) {
-      focus()
-    }
-  }, 700)
+  // Note: focus() is intentionally skipped here. Calling focus() during
+  // activation can race with native dialogs (OpenDirectoryDialog etc.)
+  // and trigger a WebView2 crash (edge.Chromium.Focus parameter error).
 })
 
 onDeactivated(() => {
@@ -1916,8 +1863,6 @@ onUnmounted(() => {
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
   if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange)
   onVisibilityChange = null
-  if (onWindowFocus) window.removeEventListener('focus', onWindowFocus)
-  onWindowFocus = null
   suggestions.close()
   if (!zmodemStore.getActiveTransfer(props.sessionId || '')) {
     disposeZmodemService(props.sessionId || '')

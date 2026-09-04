@@ -122,36 +122,30 @@ const (
 
 func (a *App) findMainWindow() uintptr {
 	pid := windows.GetCurrentProcessId()
-	var best uintptr
-	var bestArea int64
+	var result uintptr
 
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procEnumWindows := user32.NewProc("EnumWindows")
 	procGetWindowThreadProcessId := user32.NewProc("GetWindowThreadProcessId")
-	procIsWindowVisible := user32.NewProc("IsWindowVisible")
-	procGetClientRect := user32.NewProc("GetClientRect")
+	procGetWindowTextW := user32.NewProc("GetWindowTextW")
 
-	cb := windows.NewCallback(func(hwnd windows.HWND, _ uintptr) uintptr {
+	cb := windows.NewCallback(func(hwnd windows.HWND, lParam uintptr) uintptr {
 		var wndPid uint32
 		procGetWindowThreadProcessId.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&wndPid)))
 		if wndPid != pid {
 			return 1 // continue
 		}
-		visible, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
-		if visible == 0 {
-			return 1 // skip invisible windows
-		}
-		var rect [4]int32 // left, top, right, bottom
-		procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rect[0])))
-		area := int64(rect[2]-rect[0]) * int64(rect[3]-rect[1])
-		if area > bestArea {
-			bestArea = area
-			best = uintptr(hwnd)
+		// Verify it has our window title so we don't pick up invisible helper windows.
+		buf := make([]uint16, 256)
+		procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), 255)
+		if windows.UTF16ToString(buf) == "uniTerm" {
+			result = uintptr(hwnd)
+			return 0 // stop
 		}
 		return 1 // continue
 	})
 	procEnumWindows.Call(cb, 0)
-	return best
+	return result
 }
 
 // bringMainWindowToFront raises the main window to the foreground once. After a
@@ -194,7 +188,6 @@ func (a *App) subclassMainWindow() {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW := user32.NewProc("CallWindowProcW")
-	procSetFocus := user32.NewProc("SetFocus")
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
@@ -203,20 +196,6 @@ func (a *App) subclassMainWindow() {
 			a.emitMoveResize("rdp:move-resize-start")
 		case WM_EXITSIZEMOVE:
 			a.inSizeMove = false
-			// Wails calls SetFocus(mainHwnd) on WM_ENTERSIZEMOVE (to close
-			// webview dropdowns) and nothing hands focus back to the WebView2
-			// when the modal loop ends. With native focus gone the IME context
-			// stays detached: after a window drag the IME candidate window
-			// renders off-screen and text can be duplicated or arrive out of
-			// order (MicrosoftEdge/WebView2Feedback#5675). Cycle focus
-			// NULL → this window: Wails' WM_SETFOCUS handler then moves focus
-			// back into the WebView2 via controller.MoveFocus, which
-			// re-attaches the IME context and re-anchors the composition
-			// window to the caret — the same reset as switching away and back,
-			// which the frontend cannot do because DOM-level blur+focus never
-			// touches native focus.
-			procSetFocus.Call(0)
-			procSetFocus.Call(uintptr(hwnd))
 			a.emitMoveResize("rdp:move-resize-end")
 		case WM_SYSCOMMAND:
 			switch wparam {
