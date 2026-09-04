@@ -745,6 +745,15 @@
           <el-table-column :label="t('settings.proxyHost')">
             <template #default="{ row }">{{ row.host }}:{{ row.port }}</template>
           </el-table-column>
+          <el-table-column :label="t('settings.enabled')" width="80">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="row.enabled !== false"
+                size="small"
+                @change="(v: boolean) => toggleProxy(row, v)"
+              />
+            </template>
+          </el-table-column>
           <el-table-column :label="t('common.actions')" width="160">
             <template #default="{ row }">
               <el-button size="small" @click="openProxyDialog(row)">{{ t('common.edit') }}</el-button>
@@ -1541,6 +1550,12 @@ function openProxyDialog(p?: Proxy) {
 }
 async function removeProxy(row: Proxy) {
   await proxyStore.remove(row.id)
+}
+
+// Enable toggle (issue #749): a disabled proxy is skipped on connect and the
+// referencing connection dials directly.
+async function toggleProxy(row: Proxy, v: boolean) {
+  await proxyStore.update({ ...row, enabled: v })
 }
 
 // ── Tunnels (隧道) ──

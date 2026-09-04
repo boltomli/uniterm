@@ -873,7 +873,7 @@ func (a *App) proxyResolver() (session.ProxyResolver, error) {
 	}
 	return func(id string) (session.SocksProxy, bool) {
 		p, ok := index[id]
-		if !ok {
+		if !ok || !p.IsActive() {
 			return session.SocksProxy{}, false
 		}
 		return session.SocksProxy{Kind: p.Kind, Host: p.Host, Port: p.Port, User: p.User, Pass: p.Pass}, true
@@ -881,7 +881,8 @@ func (a *App) proxyResolver() (session.ProxyResolver, error) {
 }
 
 // materializeProxy resolves config.ProxyId into config.Proxy. No-op when no
-// proxy is set. Mirrors materializeIdentity.
+// proxy is set. Mirrors materializeIdentity. A proxy disabled via its enable
+// toggle (issue #749) is skipped silently: the connection dials directly.
 func (a *App) materializeProxy(config session.ConnectionConfig) (session.ConnectionConfig, error) {
 	if config.ProxyId == "" {
 		return config, nil
@@ -892,10 +893,32 @@ func (a *App) materializeProxy(config session.ConnectionConfig) (session.Connect
 	}
 	p, ok := resolve(config.ProxyId)
 	if !ok {
+		if name, disabled := a.proxyDisabledName(config.ProxyId); disabled {
+			log.Writef("[materializeProxy] proxy %q disabled, connecting direct", name)
+			return config, nil
+		}
 		return config, fmt.Errorf("referenced proxy not found: %s", config.ProxyId)
 	}
 	config.Proxy = &p
 	return config, nil
+}
+
+// proxyDisabledName reports whether the referenced proxy exists but is toggled
+// off, returning its name for logging.
+func (a *App) proxyDisabledName(id string) (string, bool) {
+	if a.proxyStore == nil {
+		return "", false
+	}
+	data, err := a.proxyStore.Load()
+	if err != nil {
+		return "", false
+	}
+	for _, p := range data.Proxies {
+		if p.ID == id {
+			return p.Name, !p.IsActive()
+		}
+	}
+	return "", false
 }
 
 // StartTunnel brings the tunnel with the given ID up and returns its state.
