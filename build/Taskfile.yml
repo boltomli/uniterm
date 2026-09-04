@@ -27,7 +27,9 @@ tasks:
       - sh: npm version
         msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
     cmds:
-      - npm install
+      # --no-audit/--prefer-offline: npm's audit request takes 40+s on some
+      # machines, starving the dev-mode vite server past the app's 5s wait.
+      - npm install --no-audit --prefer-offline
 
   install:frontend:deps:bun:
     dir: frontend
