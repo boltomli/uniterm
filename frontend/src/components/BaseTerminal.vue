@@ -757,8 +757,17 @@ function onNativeResizeEnd() {
   resizeTimer = setTimeout(() => resize(), 100)
   // After a native window drag/resize, the textarea position changed but the
   // IME candidate window may not have followed (Windows modal loop blocks
-  // position updates). Sync the candidate position via Win32 API.
-  setTimeout(() => syncIMEPosition(), 200)
+  // position updates). Re-focus textarea if it lost focus during the drag
+  // (title bar click steals focus), then sync the candidate position.
+  setTimeout(() => {
+    if (terminal) {
+      const el = terminal.textarea
+      if (el && el.offsetParent != null && document.activeElement !== el) {
+        el.focus()
+      }
+    }
+    syncIMEPosition()
+  }, 200)
 }
 
 function onSplitResizeStart() {
@@ -1552,22 +1561,25 @@ onMounted(() => {
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
 
-  // When the app window regains focus, sync the IME candidate window position.
-  // On Windows, the IME window can drift to the screen origin when the
-  // textarea moved while the app was unfocused. ImmSetCandidateWindow fixes
-  // the orphaned position without blur/focus flicker.
+  // When the app window regains focus, restore textarea focus and sync the
+  // IME candidate window position.
   //
-  // Do NOT require document.activeElement === el: when the user drags the
-  // window without clicking into the terminal first, the textarea is not
-  // focused but the IME may still be tracking a stale position. Sync anyway
-  // so the candidate window is correct when the user later focuses the
-  // terminal and starts composing.
+  // Critical: when the user drags the window by the title bar, the textarea
+  // loses focus. On window-focus, we must re-focus the textarea BEFORE
+  // calling ImmSetCandidateWindow — otherwise ImmGetContext(0) returns 0
+  // (no active IME context) and the position sync is silently skipped,
+  // leaving the candidate window orphaned at its old off-screen location.
   onWindowFocus = () => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
-    if (el && el.offsetParent != null) {
-      syncIMEPosition()
+    if (!el || el.offsetParent == null) return
+    // Re-focus the textarea if it lost focus during the drag (title bar
+    // click steals focus from the webview's textarea). Must happen before
+    // syncIMEPosition so ImmGetContext finds an active context.
+    if (document.activeElement !== el) {
+      el.focus()
     }
+    syncIMEPosition()
   }
   window.addEventListener('focus', onWindowFocus)
 
