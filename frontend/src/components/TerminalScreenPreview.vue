@@ -101,7 +101,9 @@ const popupStyle = computed(() => ({
   // Mix the terminal background toward a light blue so the popup reads as a
   // distinct overlay instead of blending with the terminal; rendered
   // translucent + CSS backdrop blur (see .terminal-screen-preview) for a
-  // frosted-glass look.
+  // frosted-glass look. tintBlue() falls back to opaque black for
+  // non-hex backgrounds (transparent in background-image mode), so the
+  // popup is never invisible.
   background: withAlpha(tintBlue(bgColor.value, 0.3), 0.85),
   color: fgColor.value,
   fontSize: fontCss.value.fontSize,
@@ -163,8 +165,11 @@ function withAlpha(color: string, alpha: number): string {
  */
 function tintBlue(color: string, ratio: number): string {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
-  if (!m) return color
-  let hex = m[1]
+  // Non-hex input used to pass through unchanged. In background-image mode
+  // the terminal's theme background is 'transparent', which rendered the
+  // popup fully invisible; treat it as opaque black instead — it tints to
+  // the same dark blue as a black-background terminal.
+  let hex = m ? m[1] : '000000'
   if (hex.length === 3) {
     hex = hex.split('').map((ch) => ch + ch).join('')
   }
@@ -528,9 +533,12 @@ onBeforeUnmount(unbind)
   padding: 2px 4px;
   box-sizing: content-box;
   /* Frosted glass: translucent background (inline, theme-tinted) + backdrop
-     blur so the content beneath the popup shows through, blurred. */
+     blur so the content beneath the popup shows through, blurred. Keep this
+     the ONLY backdrop-filter declaration in the rule: pairing it with the
+     -webkit- alias makes the CSS minifier merge the two into the prefixed
+     form, which WebView2 (Chromium) does not honor — that silently removed
+     the blur in production builds. */
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   /* Display-only: never intercepts the mouse, so hovering/clicking near it
      keeps working and the preview keeps refreshing underneath. */
   pointer-events: none;
