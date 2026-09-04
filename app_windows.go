@@ -256,18 +256,27 @@ type candidateForm struct {
 //
 // No-op when imm32.dll is unavailable (non-Windows builds via cross-compile).
 func (a *App) SetIMECandidatePosition(x, y, width, height float64) error {
+	user32 := windows.NewLazySystemDLL("user32.dll")
 	imm32 := windows.NewLazySystemDLL("imm32.dll")
+	procGetFocus := user32.NewProc("GetFocus")
 	procImmGetContext := imm32.NewProc("ImmGetContext")
 	procImmSetCandidateWindow := imm32.NewProc("ImmSetCandidateWindow")
 	procImmReleaseContext := imm32.NewProc("ImmReleaseContext")
 
-	// Get the IME context from the focused window (0 = thread's focused control).
-	himc, _, _ := procImmGetContext.Call(0)
-	if himc == 0 {
-		log.Writef("[IME] ImmGetContext returned 0 — no active IME context (x=%.0f y=%.0f)", x, y)
+	// Get the HWND that currently has keyboard focus on this thread.
+	// HWND=0 does NOT work with WebView2 — the IME context lives on the
+	// child WebView2 control window, not the main Wails window.
+	focusedHWND, _, _ := procGetFocus.Call()
+	if focusedHWND == 0 {
+		log.Writef("[IME] GetFocus returned 0 — no focused HWND (x=%.0f y=%.0f)", x, y)
 		return nil
 	}
-	defer procImmReleaseContext.Call(0, himc)
+	himc, _, _ := procImmGetContext.Call(focusedHWND)
+	if himc == 0 {
+		log.Writef("[IME] ImmGetContext returned 0 for hwnd=%v (x=%.0f y=%.0f)", focusedHWND, x, y)
+		return nil
+	}
+	defer procImmReleaseContext.Call(focusedHWND, himc)
 
 	// Position candidate window at the caret location (left edge + a pixel
 	// for the cursor, top of the textarea). Width/height are unused for
