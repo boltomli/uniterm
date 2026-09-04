@@ -728,15 +728,19 @@ function onNativeResizeEnd() {
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
   resizeTimer = setTimeout(() => resize(), 100)
-  // After a native window drag/resize, the textarea position changed but the
-  // IME candidate window may not have followed (Windows modal loop blocks
-  // position updates). Blur+focus forces WebView2 to recalculate the IME
-  // position from the textarea's current location. Safe here: no composition
-  // is active during a window drag.
+  // IME anchor: Go cycles native focus back into the WebView2 on
+  // WM_EXITSIZEMOVE (app_windows.go), which re-attaches the IME context and
+  // re-anchors the candidate window to the caret. A DOM-level blur+focus
+  // cannot do that (native focus is what carries the IME context) and, worse,
+  // the old unconditional +200 ms version killed any composition the user had
+  // already started after dropping the window — duplicated/out-of-order text.
+  // Keep only a fallback for the case where the native restore did not reach
+  // the page: without page focus the textarea cannot be mid-composition, so a
+  // DOM re-focus is safe there.
   setTimeout(() => {
     if (!isActive.value || !terminal) return
     const el = terminal.textarea
-    if (el && el.offsetParent != null) {
+    if (el && el.offsetParent != null && !document.hasFocus()) {
       el.blur()
       el.focus()
     }

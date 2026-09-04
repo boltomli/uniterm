@@ -194,6 +194,7 @@ func (a *App) subclassMainWindow() {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW := user32.NewProc("CallWindowProcW")
+	procSetFocus := user32.NewProc("SetFocus")
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
@@ -202,6 +203,20 @@ func (a *App) subclassMainWindow() {
 			a.emitMoveResize("rdp:move-resize-start")
 		case WM_EXITSIZEMOVE:
 			a.inSizeMove = false
+			// Wails calls SetFocus(mainHwnd) on WM_ENTERSIZEMOVE (to close
+			// webview dropdowns) and nothing hands focus back to the WebView2
+			// when the modal loop ends. With native focus gone the IME context
+			// stays detached: after a window drag the IME candidate window
+			// renders off-screen and text can be duplicated or arrive out of
+			// order (MicrosoftEdge/WebView2Feedback#5675). Cycle focus
+			// NULL → this window: Wails' WM_SETFOCUS handler then moves focus
+			// back into the WebView2 via controller.MoveFocus, which
+			// re-attaches the IME context and re-anchors the composition
+			// window to the caret — the same reset as switching away and back,
+			// which the frontend cannot do because DOM-level blur+focus never
+			// touches native focus.
+			procSetFocus.Call(0)
+			procSetFocus.Call(uintptr(hwnd))
 			a.emitMoveResize("rdp:move-resize-end")
 		case WM_SYSCOMMAND:
 			switch wparam {
