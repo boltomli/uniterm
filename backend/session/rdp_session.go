@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/png"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -366,8 +367,18 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 	s.configureNonScriptable(config.Password)
 
 	dispatch.PutProperty("Server", config.Host)
-	dispatch.PutProperty("UserName", config.User)
-	dispatch.PutProperty("Domain", "")
+	// The explicit RdpDomain field wins. As a fallback, the username may
+	// carry a Windows login name of the form "DOMAIN\user" (or
+	// "MACHINE\user" for a local account) — the same syntax mstsc accepts in
+	// its username box — in which case the part before the backslash reaches
+	// the ActiveX control's Domain property; a plain name or a UPN
+	// ("user@domain") is passed through untouched.
+	domain, user := config.RdpDomain, config.User
+	if domain == "" {
+		domain, user = splitDomainUser(config.User)
+	}
+	dispatch.PutProperty("UserName", user)
+	dispatch.PutProperty("Domain", domain)
 	dispatch.PutProperty("DesktopWidth", width)
 	dispatch.PutProperty("DesktopHeight", height)
 	dispatch.PutProperty("FullScreen", false)
@@ -810,6 +821,24 @@ func (s *RDPSession) configureNonScriptable(password string) {
 }
 
 type point struct{ X, Y int32 }
+
+// splitDomainUser splits a Windows login name of the form "DOMAIN\user"
+// (or "MACHINE\user" for a local account) into its domain and user parts.
+// The backslash form is what mstsc accepts in its username box, so the same
+// syntax is honored here. A name without a backslash — including a UPN such
+// as "user@domain" — is returned unchanged with an empty domain.
+// Windows limits the domain/computer part to 15 chars, but the split is
+// kept lenient: the whole string is treated as the user when no backslash
+// is present, and the last backslash wins when several appear (defensive).
+func splitDomainUser(user string) (domain, name string) {
+	if user == "" {
+		return "", ""
+	}
+	if i := strings.LastIndex(user, `\`); i >= 0 {
+		return user[:i], user[i+1:]
+	}
+	return "", user
+}
 
 // positionFromMainWindow calculates the RDP window position and initializes tracking.
 func (s *RDPSession) positionFromMainWindow(width, height int) {

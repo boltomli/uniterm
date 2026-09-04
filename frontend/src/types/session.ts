@@ -33,6 +33,10 @@ export interface ConnectionConfig {
   rdpFixedHeight?: number
   rdpSmartSizing?: boolean
   rdpEnableNLA?: boolean
+  // Windows domain (or computer name for local accounts). When empty, a
+  // "DOMAIN\user" prefix in user is used as a fallback.
+  rdpDomain?: string
+  rdpAdminSession?: boolean
   // Local terminal shell path
   shellPath?: string
   // Working directory for local terminal (defaults to user home)
