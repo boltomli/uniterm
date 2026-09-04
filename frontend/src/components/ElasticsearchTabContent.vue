@@ -1,49 +1,52 @@
 <template>
   <div class="es-tab-content">
-    <!-- Cluster status bar -->
-    <div class="es-cluster-bar">
-      <span class="health-dot" :class="healthStatus" />
-      <span class="cluster-name">{{ clusterInfo?.clusterName || clusterHealth?.clusterName || '—' }}</span>
-      <span class="cluster-meta" v-if="clusterInfo?.version">v{{ clusterInfo.version }}</span>
-      <span class="cluster-meta" v-if="clusterHealth">
-        {{ clusterHealth.status }} · {{ clusterHealth.numberOfNodes }} {{ t('es.nodes') }} · {{ clusterHealth.activeShards }} {{ t('es.shards') }}
-      </span>
-      <button class="btn btn-ghost btn-icon btn-sm" style="margin-left:auto" :title="t('es.refresh')" @click="refreshAll">
-        <RefreshCw :size="14" />
-      </button>
-    </div>
-
     <div class="es-main">
       <!-- Left: index tree -->
       <div class="es-left" :style="{ width: leftWidth + 'px' }">
         <div class="search-wrap">
           <input v-model="treeSearchQuery" class="search-input" :placeholder="t('es.searchIndices')" />
-        </div>
-        <div class="tree-toolbar">
-          <label class="hide-system">
-            <input type="checkbox" v-model="hideSystemIndices" />
-            {{ t('es.hideSystem') }}
-          </label>
-          <button class="btn btn-ghost btn-sm" @click="openCreateIndex">
-            <Plus :size="14" /> {{ t('es.newIndex') }}
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('es.refresh')" @click="loadIndices">
+            <RefreshCw :size="14" />
           </button>
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
+            <MoreHorizontal :size="14" />
+          </button>
+          <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
+            <MenuItem @click="onMoreToggleSystem">{{ (hideSystemIndices ? '✓ ' : '') + t('es.hideSystem') }}</MenuItem>
+            <MenuDivider />
+            <MenuItem @click="onMoreNewIndex">{{ t('es.newIndex') }}</MenuItem>
+          </Menu>
         </div>
-        <div class="tree-content" @contextmenu.prevent>
+        <div class="tree-content" @contextmenu.prevent="onTreeBlankContextMenu">
           <div v-if="treeLoading" class="tree-loading">{{ t('db.loading') }}</div>
           <template v-else>
+            <!-- Cluster root node -->
             <div
-              v-for="idx in filteredIndices"
-              :key="idx.name"
-              class="index-item"
-              :class="{ selected: activeIndex === idx.name }"
-              @click="selectIndex(idx.name)"
-              @contextmenu.prevent="onIndexContextMenu($event, idx)"
+              class="cluster-root"
+              :class="{ selected: activeTab?.kind === 'cluster' }"
+              @click="openClusterTab"
+              @contextmenu.prevent="onClusterContextMenu"
             >
-              <span class="health-dot" :class="idx.health || 'unknown'" />
-              <span class="index-name" :title="idx.name">{{ idx.name }}</span>
-              <span class="index-meta">{{ formatDocs(idx.docsCount) }} · {{ idx.storeSize || '—' }}</span>
+              <span class="db-arrow" @click.stop="clusterExpanded = !clusterExpanded">
+                <component :is="clusterExpanded ? ChevronDown : ChevronRight" :size="12" />
+              </span>
+              <span class="health-dot" :class="healthStatus" />
+              <span class="cluster-root-name" :title="clusterTooltip">{{ clusterName }}</span>
             </div>
-            <div v-if="filteredIndices.length === 0" class="empty-hint">{{ t('es.noIndices') }}</div>
+            <div v-if="clusterExpanded" class="child-list">
+              <div
+                v-for="idx in filteredIndices"
+                :key="idx.name"
+                class="index-item"
+                :class="{ selected: activeIndexName === idx.name }"
+                @click="openIndexTab(idx.name)"
+                @contextmenu.prevent="onIndexContextMenu($event, idx)"
+              >
+                <span class="health-dot" :class="idx.health || 'unknown'" />
+                <span class="index-name" :title="idx.name">{{ idx.name }}</span>
+              </div>
+              <div v-if="filteredIndices.length === 0" class="empty-hint">{{ t('es.noIndices') }}</div>
+            </div>
           </template>
         </div>
       </div>
@@ -52,199 +55,227 @@
 
       <!-- Right content -->
       <div class="es-right">
-        <div class="es-breadcrumb" v-if="activeIndex">
-          <span class="crumb current">{{ activeIndex }}</span>
-          <span class="crumb-meta" v-if="activeIndexInfo">
-            {{ activeIndexInfo.status }} · {{ formatDocs(activeIndexInfo.docsCount) }} docs · {{ activeIndexInfo.storeSize || '—' }}
-          </span>
-        </div>
-
-        <div class="es-tabs">
-          <button class="es-tab" :class="{ active: activeSubTab === 'docs' }" @click="activeSubTab = 'docs'" :disabled="!activeIndex">
-            {{ t('es.docsTab') }}
-          </button>
-          <button class="es-tab" :class="{ active: activeSubTab === 'mapping' }" @click="switchToMapping" :disabled="!activeIndex">
-            {{ t('es.mappingTab') }}
-          </button>
-          <button class="es-tab" :class="{ active: activeSubTab === 'settings' }" @click="switchToSettings" :disabled="!activeIndex">
-            {{ t('es.settingsTab') }}
-          </button>
-          <button class="es-tab" :class="{ active: activeSubTab === 'rest' }" @click="activeSubTab = 'rest'">
-            {{ t('es.restTab') }}
-          </button>
-        </div>
-
-        <!-- Documents -->
-        <div v-if="activeSubTab === 'docs' && activeIndex" class="docs-section">
-          <div class="editor-top" :style="{ height: topHeight + 'px' }">
-            <div class="query-mode-row">
-              <el-radio-group v-model="queryMode" size="small">
-                <el-radio-button label="simple">{{ t('es.querySimple') }}</el-radio-button>
-                <el-radio-button label="dsl">{{ t('es.queryDsl') }}</el-radio-button>
-              </el-radio-group>
-            </div>
-            <div v-if="queryMode === 'simple'" class="simple-query">
-              <input
-                v-model="simpleQuery"
-                class="search-input"
-                :placeholder="t('es.simpleQueryPlaceholder')"
-                @keydown.enter="runSearch"
+        <div class="es-tab-bar">
+          <div ref="tabScrollRef" class="es-tab-scroll" @wheel="onTabsWheel">
+            <template v-for="(tab, index) in tabs" :key="tab.id">
+              <div
+                v-if="tabDragOverIndex === index && tabDragInsertAfter"
+                class="es-tab-indicator"
               />
-            </div>
-            <div v-else class="query-editor-wrap">
-              <SyntaxEditor
-                v-model="dslBody"
-                lang="json"
-                compact
-                @execute="runSearch"
-              />
-            </div>
-            <div class="docs-actions">
-              <button class="btn btn-primary btn-sm" @click="runSearch">{{ t('es.search') }}</button>
-              <button class="btn btn-default btn-sm" @click="openNewDocument">
-                <Plus :size="14" /> {{ t('es.newDocument') }}
-              </button>
-              <span class="took-hint" v-if="searchResult">{{ searchResult.took }}ms · {{ searchResult.total }} hits</span>
-            </div>
+              <div
+                class="es-tab-item"
+                :class="{ active: tab.id === activeTabId }"
+                :data-tab-id="tab.id"
+                draggable="true"
+                @click="activateTab(tab.id)"
+                @middleclick.prevent="closeTab(tab.id)"
+                @contextmenu.prevent="onTabContextMenu($event, tab.id)"
+                @dragstart="onTabDragStart($event, tab.id)"
+                @dragover.prevent="onTabDragOver($event, index)"
+                @dragend="clearTabDragState"
+                @drop.prevent="onTabDrop($event, index)"
+              >
+                <component :is="tab.kind === 'cluster' ? Database : Layers" :size="12" class="tab-icon" />
+                <span class="tab-title">{{ tabTitle(tab) }}</span>
+                <button class="tab-close" :title="t('tab.close')" @click.stop="closeTab(tab.id)">×</button>
+              </div>
+            </template>
+            <div v-if="tabDragOverIndex === tabs.length - 1 && tabDragInsertAfter" class="es-tab-indicator" />
           </div>
-
-          <div class="editor-resizer" @mousedown="onTopResizeStart" />
-
-          <div class="editor-bottom">
-            <div v-if="queryError" class="error-msg">{{ queryError }}</div>
-            <div v-if="queryLoading" class="loading-overlay">
-              <div class="loading-box">
-                <div class="spinner" />
-                <span class="loading-text">{{ t('db.loading') }}</span>
-              </div>
-            </div>
-            <div v-if="columns.length > 0" class="result-grid">
-              <div class="result-table-wrap">
-                <el-table
-                  :data="tableData"
-                  border
-                  size="small"
-                  style="width:100%"
-                  class="db-result-table"
-                  :empty-text="t('db.noData')"
-                  @row-click="onRowClick"
-                  @row-dblclick="onRowDblClick"
-                >
-                  <el-table-column
-                    v-for="col in columns"
-                    :key="col"
-                    :prop="col"
-                    :label="col"
-                    min-width="120"
-                    show-overflow-tooltip
-                  >
-                    <template #default="{ row }">
-                      <span
-                        class="cell-value"
-                        :class="{ 'cell-null': row[col] === null || row[col] === undefined }"
-                      >{{ formatCellValue(row[col]) }}</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column width="80" fixed="right">
-                    <template #default="{ row }">
-                      <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--text-secondary)" @click.stop="onRowDblClick(row)">
-                        <Pencil :size="14" />
-                      </button>
-                      <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--error)" @click.stop="deleteDocument(row)">
-                        <Trash2 :size="14" />
-                      </button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-              <div class="pagination">
-                <el-pagination
-                  background
-                  layout="sizes, prev, pager, next, total"
-                  :page-sizes="[10, 20, 50, 100]"
-                  :page-size="pageSize"
-                  :total="searchResult?.total || 0"
-                  :current-page="currentPage"
-                  :pager-count="5"
-                  small
-                  @size-change="onPageSizeChange"
-                  @current-change="onPageChange"
-                />
-              </div>
-            </div>
-            <div v-else-if="!queryLoading && !queryError" class="select-hint">{{ t('es.selectHint') }}</div>
-          </div>
+          <button
+            v-if="tabShowMore"
+            class="es-tab-more"
+            :title="t('tab.more')"
+            @click.stop="moreTabsMenuRef?.toggle($event.currentTarget)"
+          >
+            <MoreHorizontal :size="14" />
+          </button>
+          <Menu ref="moreTabsMenuRef" v-model:visible="moreTabsMenuVisible" align="end">
+            <MenuItem
+              v-for="tb in tabs"
+              :key="tb.id"
+              :class="{ active: tb.id === activeTabId }"
+              @click="onTabMoreSelect(tb.id)"
+            >{{ tabTitle(tb) }}</MenuItem>
+          </Menu>
         </div>
 
-        <!-- Mapping -->
-        <div v-else-if="activeSubTab === 'mapping' && activeIndex" class="json-pane">
-          <div v-if="mappingLoading" class="tree-loading">{{ t('db.loading') }}</div>
-          <pre v-else class="json-pre">{{ mappingText || t('es.noData') }}</pre>
-        </div>
-
-        <!-- Settings -->
-        <div v-else-if="activeSubTab === 'settings' && activeIndex" class="json-pane">
-          <div v-if="settingsLoading" class="tree-loading">{{ t('db.loading') }}</div>
-          <pre v-else class="json-pre">{{ settingsText || t('es.noData') }}</pre>
-        </div>
-
-        <!-- REST console -->
-        <div v-else-if="activeSubTab === 'rest'" class="rest-section">
-          <div class="rest-toolbar">
-            <el-select v-model="restMethod" style="width:110px" size="small">
-              <el-option v-for="m in restMethods" :key="m" :label="m" :value="m" />
-            </el-select>
-            <input v-model="restPath" class="rest-path" placeholder="/_cluster/health" @keydown.enter="runRest" />
-            <button class="btn btn-primary btn-sm" @click="runRest" :disabled="restLoading">{{ t('es.send') }}</button>
-          </div>
-          <SyntaxEditor
-            v-model="restBody"
-            lang="json"
-            class="rest-body"
-            :readonly="restMethod === 'GET' || restMethod === 'DELETE'"
+        <!-- Panels (keep-alive via v-show) -->
+        <div
+          v-for="tab in tabs"
+          v-show="tab.id === activeTabId"
+          :key="'panel-' + tab.id"
+          class="es-panel"
+        >
+          <ElasticsearchIndexView
+            v-if="tab.kind === 'index'"
+            :session-id="sessionId"
+            :index-name="tab.indexName"
           />
-          <div class="rest-result">
-            <div class="rest-status" v-if="restResult">HTTP {{ restResult.status }}</div>
-            <div v-if="restError" class="error-msg">{{ restError }}</div>
-            <pre class="json-pre">{{ restResult?.body || '' }}</pre>
+
+          <!-- Cluster info tab -->
+          <div v-else class="cluster-panel">
+            <div class="cluster-subtabs">
+              <button class="cluster-subtab" :class="{ active: clusterSubTab === 'indices' }" @click="clusterSubTab = 'indices'">
+                {{ t('es.indexList') }}
+              </button>
+              <button class="cluster-subtab" :class="{ active: clusterSubTab === 'rest' }" @click="clusterSubTab = 'rest'">
+                {{ t('es.restTab') }}
+              </button>
+            </div>
+
+            <div v-if="clusterSubTab === 'indices'" class="cluster-panel-body">
+            <div class="cluster-section">
+              <div class="cluster-section-title">
+                <span class="health-dot" :class="healthStatus" />
+                {{ t('es.clusterInfo') }} · {{ clusterName }}
+              </div>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.version') }}</span>
+                  <span class="info-value">{{ clusterInfo?.version || '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.health') }}</span>
+                  <span class="info-value">{{ clusterHealth?.status || '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.nodes') }}</span>
+                  <span class="info-value">{{ clusterHealth?.numberOfNodes ?? '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.dataNodes') }}</span>
+                  <span class="info-value">{{ clusterHealth?.numberOfDataNodes ?? '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.activeShards') }}</span>
+                  <span class="info-value">{{ clusterHealth?.activeShards ?? '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.primaryShards') }}</span>
+                  <span class="info-value">{{ clusterHealth?.activePrimaryShards ?? '—' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">{{ t('es.unassignedShards') }}</span>
+                  <span class="info-value">{{ clusterHealth?.unassignedShards ?? '—' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="cluster-section">
+              <div class="cluster-section-title">{{ t('es.indexList') }}</div>
+              <div class="object-toolbar">
+                <input
+                  v-model="indexSearch"
+                  class="object-search"
+                  :placeholder="t('es.searchIndices')"
+                />
+                <button
+                  class="btn btn-ghost btn-sm"
+                  :class="{ active: hideSystemIndices }"
+                  :title="t('es.hideSystem')"
+                  @click="hideSystemIndices = !hideSystemIndices"
+                >{{ (hideSystemIndices ? '✓ ' : '') + t('es.hideSystem') }}</button>
+                <button class="btn btn-default btn-sm" @click="onClusterNewIndex">
+                  <Plus :size="14" /> {{ t('es.newIndex') }}
+                </button>
+              </div>
+              <el-table
+                :data="filteredTableIndices"
+                border
+                size="small"
+                style="width:100%"
+                class="db-result-table"
+                :empty-text="t('db.noData')"
+              >
+                <el-table-column prop="name" :label="t('es.indexName')" min-width="180" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="object-name" @click="openIndexTab(row.name)">
+                      <Layers :size="14" class="object-icon" />
+                      {{ row.name }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="health" :label="t('es.health')" width="90" />
+                <el-table-column prop="status" :label="t('es.status')" width="90" />
+                <el-table-column :label="t('es.docsCount')" width="100">
+                  <template #default="{ row }">{{ formatDocs(row.docsCount) }}</template>
+                </el-table-column>
+                <el-table-column prop="storeSize" :label="t('es.storeSize')" width="110" />
+                <el-table-column :label="t('es.shards')" width="90">
+                  <template #default="{ row }">{{ row.pri }} / {{ row.rep }}</template>
+                </el-table-column>
+                <el-table-column :label="t('common.actions')" width="80" align="right">
+                  <template #default="{ row }">
+                    <button
+                      class="btn btn-ghost btn-icon btn-sm danger"
+                      :title="t('es.deleteIndex')"
+                      @click.stop="ctxDeleteIndex(row)"
+                    >
+                      <Trash2 :size="14" />
+                    </button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            </div>
+
+            <!-- REST sub-tab -->
+            <div v-else class="rest-section">
+              <div class="rest-toolbar">
+                <el-select v-model="restMethod" style="width:110px" size="small">
+                  <el-option v-for="m in restMethods" :key="m" :label="m" :value="m" />
+                </el-select>
+                <input v-model="restPath" class="rest-path" placeholder="/_cluster/health" @keydown.enter="runRest" />
+                <button class="btn btn-primary btn-sm" @click="runRest" :disabled="restLoading">{{ t('es.send') }}</button>
+              </div>
+              <SyntaxEditor
+                v-model="restBody"
+                lang="json"
+                class="rest-body"
+                :readonly="restMethod === 'GET' || restMethod === 'DELETE'"
+              />
+              <div class="rest-result">
+                <div class="rest-status" v-if="restResult">HTTP {{ restResult.status }}</div>
+                <div v-if="restError" class="error-msg">{{ restError }}</div>
+                <pre class="json-pre">{{ restResult?.body || '' }}</pre>
+              </div>
+            </div>
           </div>
         </div>
-
-        <div v-else class="select-hint">{{ t('es.selectHint') }}</div>
       </div>
     </div>
+
+    <!-- Cluster root / tree blank context menu -->
+    <Menu ref="clusterMenuRef" v-model:visible="clusterMenuVisible">
+      <MenuItem @click="onClusterNewIndex">{{ t('es.newIndex') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem @click="onClusterRefresh">{{ t('es.refresh') }}</MenuItem>
+    </Menu>
 
     <!-- Index context menu -->
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible" v-slot="{ current }">
       <MenuItem @click="ctxRefresh(current)">{{ t('es.refresh') }}</MenuItem>
-      <MenuItem @click="ctxOpenIndex(current)">{{ t('es.openIndex') }}</MenuItem>
-      <MenuItem @click="ctxCloseIndex(current)">{{ t('es.closeIndex') }}</MenuItem>
+      <MenuItem @click="ctxToggleIndex(current)">{{ toggleIndexAction(current) }}</MenuItem>
       <MenuDivider />
       <MenuItem class="danger" @click="ctxDeleteIndex(current)">{{ t('es.deleteIndex') }}</MenuItem>
     </Menu>
 
-    <!-- Document editor dialog -->
-    <el-dialog
-      v-model="docDialogVisible"
-      :title="docDialogMode === 'create' ? t('es.newDocument') : t('es.editDocument')"
-      width="640px"
-      destroy-on-close
-    >
-      <el-form v-if="docDialogMode === 'create'" label-position="top">
-        <el-form-item :label="t('es.documentId')">
-          <el-input v-model="docEditId" :placeholder="t('es.documentIdAuto')" />
-        </el-form-item>
-      </el-form>
-      <SyntaxEditor v-model="docEditText" lang="json" class="doc-editor" />
-      <template #footer>
-        <button class="btn btn-default" @click="docDialogVisible = false">{{ t('settings.cancel') }}</button>
-        <button class="btn btn-primary" @click="saveDocument" :disabled="docSaving">{{ t('redis.save') }}</button>
+    <!-- Tab context menu -->
+    <Menu ref="tabMenuRef" v-model:visible="tabMenuVisible" v-slot="{ current }">
+      <template v-if="current">
+        <MenuItem @click="onTabClose(current as number)">{{ t('tab.close') }}</MenuItem>
+        <MenuItem :class="{ disabled: indexTabCount <= 1 }" @click="onTabCloseOthers(current as number)">{{ t('tab.closeOther') }}</MenuItem>
+        <MenuItem :class="{ disabled: tabIndexFor(current as number) <= 0 }" @click="onTabCloseLeft(current as number)">{{ t('tab.closeLeft') }}</MenuItem>
+        <MenuItem :class="{ disabled: tabIndexFor(current as number) >= tabs.length - 1 }" @click="onTabCloseRight(current as number)">{{ t('tab.closeRight') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem @click="onTabCloseAll">{{ t('tab.closeAll') }}</MenuItem>
       </template>
-    </el-dialog>
+    </Menu>
 
     <!-- Create index dialog -->
     <el-dialog v-model="createIndexVisible" :title="t('es.newIndex')" width="520px" destroy-on-close>
-      <el-form label-position="top">
+      <el-form label-width="80px">
         <el-form-item :label="t('es.indexName')" required>
           <el-input v-model="newIndexName" />
         </el-form-item>
@@ -253,15 +284,16 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <button class="btn btn-default" @click="createIndexVisible = false">{{ t('settings.cancel') }}</button>
-        <button class="btn btn-primary" @click="createIndex" :disabled="!newIndexName.trim()">{{ t('redis.save') }}</button>
+        <el-button @click="createIndexVisible = false">{{ t('settings.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!newIndexName.trim()" @click="createIndex">{{ t('redis.save') }}</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { RefreshCw, Layers, Code2, MoreHorizontal, ChevronRight, ChevronDown, Database, Plus, Trash2 } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
@@ -269,55 +301,31 @@ import Menu from './Menu.vue'
 import SyntaxEditor from './SyntaxEditor.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
+import ElasticsearchIndexView from './ElasticsearchIndexView.vue'
 import {
   EsClusterInfo,
   EsClusterHealth,
   EsListIndices,
-  EsSearch,
-  EsGetMapping,
-  EsGetSettings,
-  EsIndexDoc,
-  EsUpdateDoc,
-  EsDeleteDoc,
   EsCreateIndex,
   EsDeleteIndex,
   EsOpenIndex,
   EsCloseIndex,
   EsRest,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
-import type { EsIndexInfo, EsClusterHealth as EsHealth, EsClusterInfo as EsInfo, EsSearchResult, EsRestResult } from '../types/elasticsearch'
-import { Plus, Pencil, Trash2, RefreshCw } from '@lucide/vue'
+import type { EsIndexInfo, EsClusterHealth as EsHealth, EsClusterInfo as EsInfo, EsRestResult } from '../types/elasticsearch'
 
 const props = defineProps<{ sessionId: string }>()
 const { t } = useI18n()
 
-const leftWidth = ref(280)
-const topHeight = ref(160)
+const leftWidth = ref(220)
 const treeLoading = ref(false)
 const treeSearchQuery = ref('')
 const hideSystemIndices = ref(true)
 const indices = ref<EsIndexInfo[]>([])
-const activeIndex = ref('')
-const activeSubTab = ref<'docs' | 'mapping' | 'settings' | 'rest'>('docs')
 
 const clusterInfo = ref<EsInfo | null>(null)
 const clusterHealth = ref<EsHealth | null>(null)
 const healthStatus = computed(() => (clusterHealth.value?.status || 'unknown').toLowerCase())
-
-const queryMode = ref<'simple' | 'dsl'>('simple')
-const simpleQuery = ref('')
-const dslBody = ref('{\n  "query": { "match_all": {} }\n}')
-const queryLoading = ref(false)
-const queryError = ref('')
-const searchResult = ref<EsSearchResult | null>(null)
-const pageFrom = ref(0)
-const pageSize = ref(50)
-const selectedRowId = ref('')
-
-const mappingText = ref('')
-const mappingLoading = ref(false)
-const settingsText = ref('')
-const settingsLoading = ref(false)
 
 const restMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD']
 const restMethod = ref('GET')
@@ -330,15 +338,249 @@ const restResult = ref<EsRestResult | null>(null)
 const ctxMenuVisible = ref(false)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 
-const docDialogVisible = ref(false)
-const docDialogMode = ref<'create' | 'edit'>('create')
-const docEditId = ref('')
-const docEditText = ref('{\n  \n}')
-const docSaving = ref(false)
+// ── Toolbar (search box) refresh + more menu ──
+const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreMenuVisible = ref(false)
+
+function onMoreToggleSystem() {
+  hideSystemIndices.value = !hideSystemIndices.value
+  moreMenuVisible.value = false
+}
+
+function onMoreNewIndex() {
+  moreMenuVisible.value = false
+  openCreateIndex()
+}
+
+// ── Cluster root node ──
+const clusterExpanded = ref(true)
+const clusterSubTab = ref<'indices' | 'rest'>('indices')
+const clusterName = computed(() => clusterInfo.value?.clusterName || clusterHealth.value?.clusterName || '—')
+const clusterTooltip = computed(() => {
+  const parts: string[] = []
+  if (clusterInfo.value?.version) parts.push('v' + clusterInfo.value.version)
+  if (clusterHealth.value) {
+    parts.push(clusterHealth.value.status)
+    parts.push(`${clusterHealth.value.numberOfNodes} ${t('es.nodes')}`)
+    parts.push(`${clusterHealth.value.activeShards} ${t('es.shards')}`)
+  }
+  return parts.join(' · ')
+})
+
+const clusterMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const clusterMenuVisible = ref(false)
+
+function onClusterContextMenu(e: MouseEvent) {
+  clusterMenuRef.value?.openAt(e.clientX, e.clientY, null)
+}
+
+function onTreeBlankContextMenu(e: MouseEvent) {
+  clusterMenuRef.value?.openAt(e.clientX, e.clientY, null)
+}
+
+function onClusterNewIndex() {
+  clusterMenuVisible.value = false
+  openCreateIndex()
+}
+
+function onClusterRefresh() {
+  clusterMenuVisible.value = false
+  loadIndices()
+}
 
 const createIndexVisible = ref(false)
 const newIndexName = ref('')
 const newIndexBody = ref('')
+
+// ── Tabs ──
+interface EsTab {
+  id: number
+  kind: 'index' | 'cluster'
+  indexName: string
+}
+
+const tabs = ref<EsTab[]>([])
+const activeTabId = ref<number | null>(null)
+let nextTabId = 1
+
+const activeTab = computed(() => tabs.value.find(x => x.id === activeTabId.value) || null)
+
+const activeIndexName = computed(() => activeTab.value?.kind === 'index' ? activeTab.value.indexName : '')
+
+function activateTab(id: number) {
+  activeTabId.value = id
+}
+
+function tabTitle(tab: EsTab): string {
+  return tab.kind === 'cluster' ? `${clusterName.value} · ${t('es.indexList')}` : tab.indexName
+}
+
+function openIndexTab(name: string) {
+  const existing = tabs.value.find(x => x.kind === 'index' && x.indexName === name)
+  if (existing) {
+    activeTabId.value = existing.id
+    return
+  }
+  const tab: EsTab = { id: nextTabId++, kind: 'index', indexName: name }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+}
+
+function openClusterTab() {
+  const existing = tabs.value.find(x => x.kind === 'cluster')
+  if (existing) {
+    activeTabId.value = existing.id
+    return
+  }
+  const tab: EsTab = { id: nextTabId++, kind: 'cluster', indexName: '' }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+}
+
+function closeTab(id: number) {
+  const idx = tabs.value.findIndex(x => x.id === id)
+  if (idx < 0) return
+  tabs.value.splice(idx, 1)
+  if (activeTabId.value === id) {
+    const next = tabs.value[Math.min(idx, tabs.value.length - 1)]
+    activeTabId.value = next?.id ?? null
+  }
+}
+
+// ── Tab context menu (mirrors DBTabContent) ──
+const tabMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const tabMenuVisible = ref(false)
+
+function tabIndexFor(id: number) {
+  return tabs.value.findIndex(x => x.id === id)
+}
+const indexTabCount = computed(() => tabs.value.length)
+
+function onTabContextMenu(e: MouseEvent, id: number) {
+  e.stopPropagation()
+  activateTab(id)
+  tabMenuRef.value?.openAt(e.clientX, e.clientY, id)
+}
+
+function onTabClose(id: number) {
+  closeTab(id)
+  tabMenuVisible.value = false
+}
+
+function onTabCloseOthers(id: number) {
+  if (tabs.value.length > 1) {
+    tabs.value = tabs.value.filter(x => x.id === id)
+    activeTabId.value = id
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseLeft(id: number) {
+  const idx = tabIndexFor(id)
+  if (idx > 0) {
+    tabs.value = tabs.value.filter((_, i) => i >= idx)
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseRight(id: number) {
+  const idx = tabIndexFor(id)
+  if (idx >= 0 && idx < tabs.value.length - 1) {
+    tabs.value = tabs.value.filter((_, i) => i <= idx)
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseAll() {
+  tabs.value = []
+  activeTabId.value = null
+  tabMenuVisible.value = false
+}
+
+// ── Tab bar overflow: wheel scroll + "more" dropdown ──
+
+const tabScrollRef = ref<HTMLElement | null>(null)
+const tabShowMore = ref(false)
+const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreTabsMenuVisible = ref(false)
+
+function updateTabOverflow() {
+  const el = tabScrollRef.value
+  if (!el) return
+  tabShowMore.value = el.scrollWidth > el.clientWidth + 1
+}
+
+watch(() => tabs.value.length, () => nextTick(updateTabOverflow))
+watch(activeTabId, () => nextTick(updateTabOverflow))
+
+let tabBarResize: ResizeObserver | null = null
+
+onMounted(() => {
+  tabBarResize = new ResizeObserver(updateTabOverflow)
+  if (tabScrollRef.value) tabBarResize.observe(tabScrollRef.value)
+  nextTick(updateTabOverflow)
+})
+
+onBeforeUnmount(() => {
+  tabBarResize?.disconnect()
+  tabBarResize = null
+})
+
+function onTabsWheel(e: WheelEvent) {
+  if (tabScrollRef.value) tabScrollRef.value.scrollLeft += e.deltaY
+}
+
+function onTabMoreSelect(id: number) {
+  moreTabsMenuVisible.value = false
+  activateTab(id)
+  scrollToTab(id)
+}
+
+function scrollToTab(id: number) {
+  if (!tabScrollRef.value) return
+  const el = tabScrollRef.value.querySelector(`[data-tab-id="${id}"]`) as HTMLElement | null
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
+// ── Tab drag reorder (insert-indicator pattern, mirrors DBTabContent) ──
+
+const tabDragId = ref(0)
+const tabDragOverIndex = ref(-1)
+const tabDragInsertAfter = ref(false)
+
+function onTabDragStart(e: DragEvent, id: number) {
+  tabDragId.value = id
+  e.dataTransfer?.setData('application/es-tab-id', String(id))
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+
+function onTabDragOver(e: DragEvent, index: number) {
+  if (!e.dataTransfer?.types.includes('application/es-tab-id')) return
+  const el = e.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  tabDragOverIndex.value = index
+  tabDragInsertAfter.value = e.clientX >= rect.left + rect.width / 2
+  e.dataTransfer.dropEffect = 'move'
+}
+
+function onTabDrop(_e: DragEvent, index: number) {
+  const from = tabIndexFor(tabDragId.value)
+  const insertAfter = tabDragInsertAfter.value
+  clearTabDragState()
+  if (from < 0) return
+  let to = insertAfter ? index + 1 : index
+  // Moving right compacts the source slot out of the range first.
+  if (from < to) to -= 1
+  if (to === from) return
+  const [moved] = tabs.value.splice(from, 1)
+  tabs.value.splice(to, 0, moved)
+}
+
+function clearTabDragState() {
+  tabDragId.value = 0
+  tabDragOverIndex.value = -1
+  tabDragInsertAfter.value = false
+}
 
 const filteredIndices = computed(() => {
   const q = treeSearchQuery.value.trim().toLowerCase()
@@ -349,29 +591,17 @@ const filteredIndices = computed(() => {
   })
 })
 
-const activeIndexInfo = computed(() => indices.value.find(i => i.name === activeIndex.value) || null)
-
-const tableData = computed(() => {
-  if (!searchResult.value) return []
-  return searchResult.value.hits.map(h => {
-    try { return JSON.parse(h) } catch { return { _raw: h } }
-  })
+const tableIndices = computed(() => {
+  return hideSystemIndices.value ? indices.value.filter(idx => !idx.name.startsWith('.')) : indices.value
 })
 
-const columns = computed(() => {
-  const cols = new Set<string>()
-  cols.add('_id')
-  for (const row of tableData.value) {
-    for (const k of Object.keys(row)) {
-      if (k !== '_index' && k !== '_score') cols.add(k)
-    }
-  }
-  // Prefer _id first, then sorted field names (cap columns)
-  const rest = [...cols].filter(c => c !== '_id').sort()
-  return ['_id', ...rest].slice(0, 40)
-})
+const indexSearch = ref('')
 
-const currentPage = computed(() => Math.floor(pageFrom.value / pageSize.value) + 1)
+const filteredTableIndices = computed(() => {
+  const q = indexSearch.value.trim().toLowerCase()
+  if (!q) return tableIndices.value
+  return tableIndices.value.filter(idx => idx.name.toLowerCase().includes(q))
+})
 
 watch(() => props.sessionId, () => {
   if (props.sessionId) refreshAll()
@@ -379,6 +609,7 @@ watch(() => props.sessionId, () => {
 
 onMounted(() => {
   if (props.sessionId) refreshAll()
+  openClusterTab()
 })
 
 async function refreshAll() {
@@ -410,178 +641,10 @@ async function loadIndices() {
   treeLoading.value = false
 }
 
-function selectIndex(name: string) {
-  activeIndex.value = name
-  if (activeSubTab.value === 'rest') {
-    // keep rest
-  } else {
-    activeSubTab.value = 'docs'
-  }
-  pageFrom.value = 0
-  runSearch()
-}
-
-function buildSearchBody(): string {
-  if (queryMode.value === 'dsl') {
-    return dslBody.value.trim() || '{}'
-  }
-  const q = simpleQuery.value.trim()
-  if (!q) return '{"query":{"match_all":{}}}'
-  return JSON.stringify({
-    query: {
-      query_string: { query: q, default_field: '*' },
-    },
-  })
-}
-
-async function runSearch() {
-  if (!props.sessionId || !activeIndex.value) return
-  queryLoading.value = true
-  queryError.value = ''
-  try {
-    searchResult.value = await EsSearch(
-      props.sessionId,
-      activeIndex.value,
-      buildSearchBody(),
-      pageFrom.value,
-      pageSize.value,
-    ) as EsSearchResult
-  } catch (e: any) {
-    queryError.value = e?.message || String(e)
-    searchResult.value = null
-  }
-  queryLoading.value = false
-}
-
-function onPageChange(page: number) {
-  pageFrom.value = (page - 1) * pageSize.value
-  runSearch()
-}
-
-function onPageSizeChange(size: number) {
-  pageSize.value = size
-  pageFrom.value = 0
-  runSearch()
-}
-
-function formatCellValue(v: unknown): string {
-  if (v === null || v === undefined) return 'null'
-  if (typeof v === 'object') {
-    const s = JSON.stringify(v)
-    return s.length > 120 ? s.slice(0, 117) + '…' : s
-  }
-  const s = String(v)
-  return s.length > 120 ? s.slice(0, 117) + '…' : s
-}
-
 function formatDocs(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K'
   return String(n ?? 0)
-}
-
-function onRowClick(row: any) {
-  selectedRowId.value = row?._id || ''
-}
-
-function onRowDblClick(row: any) {
-  docDialogMode.value = 'edit'
-  docEditId.value = row?._id || ''
-  const copy = { ...row }
-  delete copy._score
-  delete copy._index
-  docEditText.value = JSON.stringify(copy, null, 2)
-  docDialogVisible.value = true
-}
-
-function openNewDocument() {
-  docDialogMode.value = 'create'
-  docEditId.value = ''
-  docEditText.value = '{\n  \n}'
-  docDialogVisible.value = true
-}
-
-async function saveDocument() {
-  if (!props.sessionId || !activeIndex.value) return
-  let parsed: any
-  try {
-    parsed = JSON.parse(docEditText.value)
-  } catch {
-    msg.error(t('es.invalidJSON'))
-    return
-  }
-  const id = docDialogMode.value === 'edit' ? docEditId.value : (docEditId.value || parsed._id || '')
-  const body = { ...parsed }
-  delete body._id
-  delete body._index
-  delete body._score
-  docSaving.value = true
-  try {
-    if (docDialogMode.value === 'edit') {
-      if (!id) throw new Error('document _id required')
-      await EsUpdateDoc(props.sessionId, activeIndex.value, id, JSON.stringify(body))
-      msg.success(t('es.updateSuccess'))
-    } else {
-      await EsIndexDoc(props.sessionId, activeIndex.value, id, JSON.stringify(body))
-      msg.success(t('es.insertSuccess'))
-    }
-    docDialogVisible.value = false
-    await runSearch()
-    await loadIndices()
-  } catch (e: any) {
-    msg.error(e?.message || String(e))
-  }
-  docSaving.value = false
-}
-
-async function deleteDocument(row: any) {
-  const id = row?._id
-  if (!id || !props.sessionId || !activeIndex.value) return
-  try {
-    await ElMessageBox.confirm(t('es.deleteConfirm'))
-  } catch {
-    return
-  }
-  try {
-    await EsDeleteDoc(props.sessionId, activeIndex.value, id)
-    msg.success(t('es.deleteSuccess'))
-    await runSearch()
-    await loadIndices()
-  } catch (e: any) {
-    msg.error(e?.message || String(e))
-  }
-}
-
-async function switchToMapping() {
-  activeSubTab.value = 'mapping'
-  await loadMapping()
-}
-
-async function switchToSettings() {
-  activeSubTab.value = 'settings'
-  await loadSettings()
-}
-
-async function loadMapping() {
-  if (!props.sessionId || !activeIndex.value) return
-  mappingLoading.value = true
-  try {
-    mappingText.value = await EsGetMapping(props.sessionId, activeIndex.value)
-  } catch (e: any) {
-    mappingText.value = e?.message || String(e)
-  }
-  mappingLoading.value = false
-}
-
-async function loadSettings() {
-  if (!props.sessionId || !activeIndex.value) return
-  settingsLoading.value = true
-  try {
-    settingsText.value = await EsGetSettings(props.sessionId, activeIndex.value)
-  } catch (e: any) {
-    settingsText.value = e?.message || String(e)
-  }
-  settingsLoading.value = false
 }
 
 async function runRest() {
@@ -629,26 +692,32 @@ async function ctxRefresh(_current: unknown) {
   await loadIndices()
 }
 
-async function ctxOpenIndex(current: unknown) {
-  const name = (current as EsIndexInfo | null)?.name
-  ctxMenuVisible.value = false
-  if (!name || !props.sessionId) return
-  try {
-    await EsOpenIndex(props.sessionId, name)
-    msg.success(t('es.indexOpened'))
-    await loadIndices()
-  } catch (e: any) {
-    msg.error(e?.message || String(e))
-  }
+// Toggle item: a closed index offers "open", an open one offers "close".
+function toggleIndexAction(current: unknown): string {
+  const status = (current as EsIndexInfo | null)?.status
+  return status === 'close' ? t('es.openIndex') : t('es.closeIndex')
 }
 
-async function ctxCloseIndex(current: unknown) {
-  const name = (current as EsIndexInfo | null)?.name
+async function ctxToggleIndex(current: unknown) {
+  const info = current as EsIndexInfo | null
   ctxMenuVisible.value = false
+  const name = info?.name
   if (!name || !props.sessionId) return
+  const closing = info?.status !== 'close'
+  const action = closing ? t('es.closeIndex') : t('es.openIndex')
   try {
-    await EsCloseIndex(props.sessionId, name)
-    msg.success(t('es.indexClosed'))
+    await ElMessageBox.confirm(t('es.toggleIndexConfirm', { action, name }), { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    if (closing) {
+      await EsCloseIndex(props.sessionId, name)
+      msg.success(t('es.indexClosed'))
+    } else {
+      await EsOpenIndex(props.sessionId, name)
+      msg.success(t('es.indexOpened'))
+    }
     await loadIndices()
   } catch (e: any) {
     msg.error(e?.message || String(e))
@@ -667,10 +736,8 @@ async function ctxDeleteIndex(current: unknown) {
   try {
     await EsDeleteIndex(props.sessionId, name)
     msg.success(t('es.indexDeleted'))
-    if (activeIndex.value === name) {
-      activeIndex.value = ''
-      searchResult.value = null
-    }
+    const tab = tabs.value.find(x => x.indexName === name)
+    if (tab) closeTab(tab.id)
     await loadIndices()
   } catch (e: any) {
     msg.error(e?.message || String(e))
@@ -691,21 +758,6 @@ function onResizeStart(e: MouseEvent) {
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
 }
-
-function onTopResizeStart(e: MouseEvent) {
-  e.preventDefault()
-  const startY = e.clientY
-  const startH = topHeight.value
-  const onMove = (ev: MouseEvent) => {
-    topHeight.value = Math.max(100, Math.min(400, startH + ev.clientY - startY))
-  }
-  const onUp = () => {
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-  }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
-}
 </script>
 
 <style scoped>
@@ -717,25 +769,8 @@ function onTopResizeStart(e: MouseEvent) {
   color: var(--text-primary);
   overflow: hidden;
 }
-.es-cluster-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
-  flex-shrink: 0;
-  font-family: var(--font-ui);
-  font-size: 12px;
-}
-.cluster-name {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.cluster-meta {
-  color: var(--text-muted);
-}
 .health-dot {
+  display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -757,16 +792,18 @@ function onTopResizeStart(e: MouseEvent) {
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
   flex-shrink: 0;
   min-width: 0;
 }
 .search-wrap {
-  padding: 8px;
-  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
 }
 .search-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-ui);
   font-size: 12px;
   padding: 6px 8px;
@@ -777,26 +814,48 @@ function onTopResizeStart(e: MouseEvent) {
   outline: none;
 }
 .search-input:focus { border-color: var(--accent); }
-.tree-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  gap: 8px;
-}
-.hide-system {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--text-muted);
-  cursor: pointer;
-}
 .tree-content {
   flex: 1;
   overflow: auto;
+}
+.cluster-root {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease;
+}
+.cluster-root:hover { background: var(--bg-hover); }
+.cluster-root.selected { background: var(--bg-hover); }
+.db-arrow {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.db-arrow:hover {
+  color: var(--text-primary);
+}
+.cluster-root-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.child-list {
+  padding-bottom: 4px;
+}
+.child-list .index-item {
+  padding-left: 44px;
 }
 .tree-loading {
   padding: 12px;
@@ -807,10 +866,11 @@ function onTopResizeStart(e: MouseEvent) {
 .index-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 4px;
+  padding: 6px 8px;
   cursor: pointer;
   user-select: none;
+  transition: background 0.12s ease;
 }
 .index-item:hover { background: var(--bg-hover); }
 .index-item.selected { background: var(--bg-hover); }
@@ -849,99 +909,130 @@ function onTopResizeStart(e: MouseEvent) {
   min-width: 0;
   min-height: 0;
 }
-.es-breadcrumb {
+.es-tab-bar {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 12px;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  align-items: stretch;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   flex-shrink: 0;
+  min-height: 32px;
 }
-.crumb.current { font-weight: 600; color: var(--text-primary); }
-.crumb-meta { color: var(--text-muted); font-family: var(--font-ui); }
-
-.es-tabs {
+.es-tab-scroll {
   display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: 1;
+  min-width: 0;
 }
-.es-tab {
+.es-tab-scroll::-webkit-scrollbar { height: 4px; }
+.es-tab-indicator {
+  width: 2px;
+  min-width: 2px;
+  align-self: stretch;
+  background: var(--accent);
+  opacity: 0.8;
+  margin: 4px 0;
+}
+.es-tab-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 6px 8px 6px 12px;
+  border-right: 1px solid var(--border-subtle);
+  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 12px;
-  padding: 8px 12px;
-  background: transparent;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.12s ease;
+}
+.es-tab-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.es-tab-item.active {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.tab-icon { flex-shrink: 0; opacity: 0.8; }
+.tab-title { overflow: hidden; text-overflow: ellipsis; }
+.tab-close {
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
   border: none;
-  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.tab-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.es-tab-more {
+  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
+  flex-shrink: 0;
 }
-.es-tab:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.es-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+.es-tab-more:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.docs-section {
+.es-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-.editor-top {
-  padding: 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   overflow: hidden;
 }
-.query-mode-row { display: flex; }
-.simple-query { flex: 1; }
-.query-editor-wrap { flex: 1; min-height: 0; display: flex; }
-.docs-actions {
+.cluster-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.cluster-subtabs {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.took-hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.editor-resizer {
-  height: 4px;
-  cursor: row-resize;
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  padding: 0 12px;
+  min-height: 32px;
+  margin: -12px -12px 0;
 }
-.editor-resizer:hover { background: var(--border-subtle); }
-.editor-bottom {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 8px;
-  position: relative;
-  overflow: hidden;
+.cluster-subtab {
+  padding: 6px 16px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s ease;
 }
-.result-grid {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+.cluster-subtab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
-.result-table-wrap {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
+.cluster-subtab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
 }
 /* 结果表格主题变量与 DBResultGrid 保持一致 */
 .db-result-table {
@@ -954,68 +1045,77 @@ function onTopResizeStart(e: MouseEvent) {
   --el-table-bg-color: var(--bg-surface);
   font-size: 12px;
 }
-.cell-value {
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-.cell-null {
-  color: var(--text-muted);
-  font-style: italic;
-}
-.pagination {
-  padding-top: 8px;
-  display: flex;
-  justify-content: flex-end;
-  flex-shrink: 0;
-}
-.error-msg {
-  color: var(--error);
-  padding: 8px;
-  background: var(--error-subtle);
-  border-radius: var(--radius-sm);
-  margin-bottom: 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-}
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--scrim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-}
-.loading-box {
+.cluster-panel-body {
   display: flex;
   flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+}
+.cluster-section-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.cluster-section-title .section-action { margin-left: auto; }
+.object-toolbar {
+  display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 8px;
 }
-.spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--border-subtle);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-.loading-text { font-size: 12px; color: var(--text-secondary); }
-
-.json-pane {
-  flex: 1;
-  overflow: auto;
-  padding: 12px;
-}
-.json-pre {
-  margin: 0;
-  font-family: var(--font-mono);
+.object-toolbar .btn:last-child { margin-left: auto; }
+.object-search {
+  width: 240px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
   font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
+  outline: none;
+}
+.object-search:focus { border-color: var(--accent); }
+.object-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.object-name:hover { color: var(--accent); }
+.object-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.info-label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.info-value {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-primary);
 }
 
 .rest-section {

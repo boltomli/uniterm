@@ -96,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Pencil, Trash2 } from '@lucide/vue'
 import type { QueryResultColumn, ColumnInfo } from '../types/database'
 import { useI18n } from '../i18n'
@@ -191,10 +191,27 @@ function startEdit(row: Record<string, any>, field: string) {
   draftIsNull.value = row[field] === null
   draftValue.value = row[field] === null || row[field] === undefined ? '' : String(row[field])
   snapOldValue = row[field]
+  document.addEventListener('mousedown', onEditOutsideMousedown)
+  document.addEventListener('keydown', onEditKeydown)
   nextTick(() => {
     cellInputEl.value?.focus()
     cellInputEl.value?.select()
   })
+}
+
+// Dismissal must not depend on the input's focus/blur: focus via the el-table
+// slot ref is fragile, so listen globally while editing instead.
+function onEditOutsideMousedown(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  if (target?.closest('.cell-edit-wrap')) return
+  onCellEditConfirm()
+}
+function onEditKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') onCellEditCancel()
+}
+function onEditDismissCleanup() {
+  document.removeEventListener('mousedown', onEditOutsideMousedown)
+  document.removeEventListener('keydown', onEditKeydown)
 }
 
 // el-table's @cell-dblclick passes positional args (row, column, cell, event)
@@ -220,6 +237,7 @@ function onCellEditConfirm() {
   if (!row || !field) return
   editingRow.value = null
   editingField.value = null
+  onEditDismissCleanup()
   const newVal: any = draftIsNull.value ? null : draftValue.value
   const oldVal = snapOldValue
   snapOldValue = undefined
@@ -236,7 +254,15 @@ function onCellEditConfirm() {
     pending.set(row, rec)
   }
   const existing = rec.fields.get(field)
-  rec.fields.set(field, { old: existing ? existing.old : oldVal, newVal })
+  const original = existing ? existing.old : oldVal
+  if (valuesEqual(original, newVal)) {
+    // Edited back to the committed value — drop the staged edit for this field.
+    rec.fields.delete(field)
+    if (rec.fields.size === 0) pending.delete(row)
+    bumpPending()
+    return
+  }
+  rec.fields.set(field, { old: original, newVal })
   bumpPending()
 }
 
@@ -250,6 +276,7 @@ function onCellEditCancel() {
   }
   editingRow.value = null
   editingField.value = null
+  onEditDismissCleanup()
   snapOldValue = undefined
   draftIsNull.value = false
 }
@@ -308,6 +335,8 @@ function getPendingEdits(): Array<{
 function clearEdit() {
   onCellEditConfirm()
 }
+
+onBeforeUnmount(onEditDismissCleanup)
 
 watch(() => props.rows, () => {
   if (pending.size) {

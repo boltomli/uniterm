@@ -12,7 +12,9 @@
       <div class="section">
         <div class="section-header">
           <div class="section-title">{{ t('db.columns') }}</div>
-          <button class="btn btn-primary" @click="startAddColumn">{{ t('db.addColumn') }}</button>
+          <button class="btn btn-default btn-sm" @click="startAddColumn">
+            <Plus :size="14" /> {{ t('db.addColumn') }}
+          </button>
         </div>
         <el-table :data="schema?.columns || []" border size="small" style="width:100%">
           <el-table-column prop="name" :label="t('db.colName')" />
@@ -52,7 +54,9 @@
       <div class="section">
         <div class="section-header">
           <div class="section-title">{{ t('db.indexes') }}</div>
-          <button class="btn btn-primary" @click="startAddIndex">{{ t('db.addIndex') }}</button>
+          <button class="btn btn-default btn-sm" @click="startAddIndex">
+            <Plus :size="14" /> {{ t('db.addIndex') }}
+          </button>
         </div>
         <el-table :data="schema?.indexes || []" border size="small" style="width:100%">
           <el-table-column prop="name" :label="t('db.idxName')" />
@@ -210,7 +214,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { Pencil, Trash2 } from '@lucide/vue'
+import { Pencil, Trash2, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { msg } from '../services/message'
 import { useI18n } from '../i18n'
@@ -577,6 +581,7 @@ async function onAddIndex() {
   gap: 12px;
   margin-bottom: 8px;
 }
+.section-header .btn { margin-left: auto; }
 .section-title {
   font-family: var(--font-ui);
   font-size: 15px;

@@ -9,6 +9,18 @@
             class="search-input"
             :placeholder="t('db.searchTables')"
           />
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('mongodb.refresh')" @click="refreshDatabases">
+            <RefreshCw :size="14" />
+          </button>
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
+            <MoreHorizontal :size="14" />
+          </button>
+          <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
+            <MenuItem @click="onMoreNewCollection">{{ t('mongodb.newCollection') }}</MenuItem>
+            <MenuItem @click="onMoreNewDatabase">{{ t('db.newDatabase') }}</MenuItem>
+            <MenuDivider />
+            <MenuItem @click="onMoreRefresh">{{ t('mongodb.refresh') }}</MenuItem>
+          </Menu>
         </div>
         <div class="tree-content" @contextmenu.prevent="onTreeContextMenu">
           <div v-if="treeLoading" class="tree-loading">{{ t('db.loading') }}</div>
@@ -16,8 +28,8 @@
             <div v-for="db in filteredDatabases" :key="db">
               <div
                 class="db-header"
-                :class="{ selected: activeTab?.kind === 'query' && activeTab?.dbName === db }"
-                @click="toggleDb(db)"
+                :class="{ selected: activeTab?.kind === 'objects' && activeTab?.dbName === db }"
+                @click="openObjectsTab(db)"
                 @contextmenu.prevent="onDbContextMenu($event, db)"
               >
                 <span class="db-arrow" @click.stop="toggleDb(db)">
@@ -32,8 +44,7 @@
                   :key="col"
                   class="table-item"
                   :class="{ selected: activeTab?.kind === 'collection' && activeTab?.dbName === db && activeTab?.collectionName === col }"
-                  @dblclick="openCollectionTab(db, col)"
-                  @click="highlightedDb = db; highlightedCol = col"
+                  @click="openCollectionTab(db, col)"
                   @contextmenu.prevent="onColContextMenu($event, db, col)"
                 >
                   <span class="table-icon-spacer" />
@@ -60,20 +71,48 @@
         <template v-if="tabs.length">
           <!-- Tab bar -->
           <div class="mongo-tab-bar">
-            <div class="mongo-tab-scroll">
-              <div
-                v-for="tab in tabs"
-                :key="tab.id"
-                class="mongo-tab-item"
-                :class="{ active: tab.id === activeTabId }"
-                @click="activateTab(tab.id)"
-                @middleclick.prevent="closeTab(tab.id)"
-              >
-                <component :is="tab.kind === 'collection' ? Layers : Database" :size="12" class="tab-icon" />
-                <span class="tab-title">{{ tabTitle(tab) }}</span>
-                <button class="tab-close" :title="t('db.tabClose')" @click.stop="closeTab(tab.id)">×</button>
-              </div>
+            <div ref="tabScrollRef" class="mongo-tab-scroll" @wheel="onTabsWheel">
+              <template v-for="(tab, index) in tabs" :key="tab.id">
+                <div
+                  v-if="tabDragOverIndex === index && tabDragInsertAfter"
+                  class="mongo-tab-indicator"
+                />
+                <div
+                  class="mongo-tab-item"
+                  :class="{ active: tab.id === activeTabId }"
+                  :data-tab-id="tab.id"
+                  draggable="true"
+                  @click="activateTab(tab.id)"
+                  @middleclick.prevent="closeTab(tab.id)"
+                  @contextmenu.prevent="onTabContextMenu($event, tab.id)"
+                  @dragstart="onTabDragStart($event, tab.id)"
+                  @dragover.prevent="onTabDragOver($event, index)"
+                  @dragend="clearTabDragState"
+                  @drop.prevent="onTabDrop($event, index)"
+                >
+                  <component :is="tab.kind === 'collection' ? Layers : Database" :size="12" class="tab-icon" />
+                  <span class="tab-title">{{ tabTitle(tab) }}</span>
+                  <button class="tab-close" :title="t('db.tabClose')" @click.stop="closeTab(tab.id)">×</button>
+                </div>
+              </template>
+              <div v-if="tabDragOverIndex === tabs.length - 1 && tabDragInsertAfter" class="mongo-tab-indicator" />
             </div>
+            <button
+              v-if="tabShowMore"
+              class="mongo-tab-more"
+              :title="t('tab.more')"
+              @click.stop="moreTabsMenuRef?.toggle($event.currentTarget)"
+            >
+              <MoreHorizontal :size="14" />
+            </button>
+            <Menu ref="moreTabsMenuRef" v-model:visible="moreTabsMenuVisible" align="end">
+              <MenuItem
+                v-for="tb in tabs"
+                :key="tb.id"
+                :class="{ active: tb.id === activeTabId }"
+                @click="onTabMoreSelect(tb.id)"
+              >{{ tabTitle(tb) }}</MenuItem>
+            </Menu>
           </div>
 
           <!-- Panels (keep-alive via v-show) -->
@@ -83,19 +122,58 @@
             v-show="tab.id === activeTabId"
             class="mongo-panel"
           >
-            <div class="mongo-breadcrumb">
-              <span class="crumb crumb-static">{{ tab.dbName }}</span>
-              <template v-if="tab.collectionName">
-                <span class="crumb-sep">/</span>
-                <span class="crumb current">{{ tab.collectionName }}</span>
-              </template>
-            </div>
             <MongoDBCollectionView
               v-if="tab.kind === 'collection'"
               :session-id="sessionId"
               :db-name="tab.dbName"
               :collection-name="tab.collectionName || ''"
             />
+
+            <!-- Collection list (opened by clicking a database node) -->
+            <div v-else-if="tab.kind === 'objects'" class="mongo-objects">
+              <div class="mongo-objects-header">
+                <span class="mongo-objects-title">{{ tab.dbName }} · {{ t('mongodb.collectionList') }}</span>
+              </div>
+              <div class="object-toolbar">
+                <input
+                  v-model="objectsSearch"
+                  class="object-search"
+                  :placeholder="t('db.searchTables')"
+                />
+                <button class="btn btn-default btn-sm" @click="onObjectsNewCollection(tab.dbName)">
+                  <Plus :size="14" /> {{ t('mongodb.newCollection') }}
+                </button>
+              </div>
+              <el-table
+                :data="filteredObjects(tab.dbName)"
+                border
+                size="small"
+                style="width:100%"
+                class="db-result-table"
+                :empty-text="t('db.noData')"
+              >
+                <el-table-column :label="t('mongodb.collection')" min-width="240" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span class="object-name" @click="openCollectionTab(tab.dbName, row)">
+                      <Layers :size="14" class="object-icon" />
+                      {{ row }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column :label="t('common.actions')" width="80" align="right">
+                  <template #default="{ row }">
+                    <button
+                      class="btn btn-ghost btn-icon btn-sm danger"
+                      :title="t('mongodb.dropCollection')"
+                      @click.stop="onCtxDropCollection({ db: tab.dbName, col: row } as CtxMenuData)"
+                    >
+                      <Trash2 :size="14" />
+                    </button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
             <div v-else class="db-placeholder">
               <span>{{ t('mongodb.selectHint') }}</span>
             </div>
@@ -115,7 +193,6 @@
         <MenuItem @click="onCtxRefresh">{{ t('mongodb.refresh') }}</MenuItem>
       </template>
       <template v-else-if="current?.type === 'db'">
-        <MenuItem @click="onCtxOpenQuery(current as CtxMenuData)">{{ t('mongodb.openQuery') }}</MenuItem>
         <MenuItem @click="onCtxNewCollection(current as CtxMenuData)">{{ t('mongodb.newCollection') }}</MenuItem>
         <MenuDivider />
         <MenuItem @click="onCtxRefresh">{{ t('mongodb.refresh') }}</MenuItem>
@@ -124,12 +201,23 @@
       </template>
       <template v-else-if="current?.type === 'col'">
         <MenuItem @click="onCtxOpenColQuery(current as CtxMenuData)">{{ t('mongodb.openQuery') }}</MenuItem>
-        <MenuItem @click="onCtxNewColDocument(current as CtxMenuData)">{{ t('mongodb.newDocument') }}</MenuItem>
         <MenuItem @click="onCtxViewIndexes(current as CtxMenuData)">{{ t('mongodb.indexesTab') }}</MenuItem>
         <MenuDivider />
         <MenuItem @click="onCtxCopyName(current as CtxMenuData)">{{ t('mongodb.copyName') }}</MenuItem>
         <MenuDivider />
         <MenuItem class="danger" @click="onCtxDropCollection(current as CtxMenuData)">{{ t('mongodb.dropCollection') }}</MenuItem>
+      </template>
+    </Menu>
+
+    <!-- Tab context menu -->
+    <Menu ref="tabMenuRef" v-model:visible="tabMenuVisible" v-slot="{ current }">
+      <template v-if="current">
+        <MenuItem @click="onTabClose(current as number)">{{ t('tab.close') }}</MenuItem>
+        <MenuItem :class="{ disabled: tabs.length <= 1 }" @click="onTabCloseOthers(current as number)">{{ t('tab.closeOther') }}</MenuItem>
+        <MenuItem :class="{ disabled: tabIndexFor(current as number) <= 0 }" @click="onTabCloseLeft(current as number)">{{ t('tab.closeLeft') }}</MenuItem>
+        <MenuItem :class="{ disabled: tabIndexFor(current as number) >= tabs.length - 1 }" @click="onTabCloseRight(current as number)">{{ t('tab.closeRight') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem @click="onTabCloseAll">{{ t('tab.closeAll') }}</MenuItem>
       </template>
     </Menu>
 
@@ -143,12 +231,17 @@
         <el-form-item :label="t('mongodb.collection')">
           <el-input v-model="newColName" :placeholder="t('mongodb.collection')" />
         </el-form-item>
+        <el-form-item :label="t('db.databases')">
+          <el-select v-model="ctxNewColDb" style="width:100%">
+            <el-option v-for="db in databases" :key="db" :label="db" :value="db" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
-        <button class="btn btn-default" @click="newColDialogVisible = false">{{ t('common.cancel') }}</button>
-        <button class="btn btn-primary" :disabled="!newColName.trim()" @click="createCollection">
+        <el-button @click="newColDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!newColName.trim() || !ctxNewColDb" @click="createCollection">
           {{ t('common.confirm') }}
-        </button>
+        </el-button>
       </template>
     </el-dialog>
 
@@ -163,18 +256,18 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <button class="btn btn-default" @click="newDbDialogVisible = false">{{ t('common.cancel') }}</button>
-        <button class="btn btn-primary" :disabled="!newDbName.trim()" @click="createDatabase">
+        <el-button @click="newDbDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!newDbName.trim()" @click="createDatabase">
           {{ t('common.confirm') }}
-        </button>
+        </el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue'
-import { Database, Layers, ChevronRight, ChevronDown } from '@lucide/vue'
+import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { Database, Layers, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal, Plus, Trash2 } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -227,8 +320,6 @@ const collections = ref<Record<string, string[]>>({})
 const expandedDbs = reactive(new Set<string>())
 const treeLoading = ref(false)
 const treeSearchQuery = ref('')
-const highlightedDb = ref('')
-const highlightedCol = ref('')
 
 const filteredDatabases = computed(() => {
   const q = treeSearchQuery.value.trim().toLowerCase()
@@ -239,7 +330,7 @@ const filteredDatabases = computed(() => {
 // ── Tabs state ──
 interface MongoTab {
   id: number
-  kind: 'collection' | 'query'
+  kind: 'collection' | 'query' | 'objects'
   dbName: string
   collectionName?: string
 }
@@ -251,11 +342,29 @@ let nextTabId = 1
 const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
 
 function tabTitle(tab: MongoTab): string {
-  return tab.kind === 'collection' ? (tab.collectionName || '') : tab.dbName
+  if (tab.kind === 'collection') return tab.collectionName || ''
+  if (tab.kind === 'objects') return `${tab.dbName} · ${t('mongodb.collectionList')}`
+  return tab.dbName
 }
 
 function activateTab(id: number) {
   activeTabId.value = id
+}
+
+function openObjectsTab(dbName: string) {
+  const existing = tabs.value.find(x => x.kind === 'objects' && x.dbName === dbName)
+  if (existing) {
+    activeTabId.value = existing.id
+    return
+  }
+  const tab: MongoTab = { id: nextTabId++, kind: 'objects', dbName }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+  loadCollectionsFor(dbName)
+}
+
+function onObjectsNewCollection(dbName: string) {
+  onCtxNewCollection({ db: dbName } as CtxMenuData)
 }
 
 function openCollectionTab(dbName: string, collectionName: string) {
@@ -265,17 +374,6 @@ function openCollectionTab(dbName: string, collectionName: string) {
     return
   }
   const tab: MongoTab = { id: nextTabId++, kind: 'collection', dbName, collectionName }
-  tabs.value.push(tab)
-  activeTabId.value = tab.id
-}
-
-function openQueryTab(dbName: string) {
-  const existing = tabs.value.find(t => t.kind === 'query' && t.dbName === dbName)
-  if (existing) {
-    activeTabId.value = existing.id
-    return
-  }
-  const tab: MongoTab = { id: nextTabId++, kind: 'query', dbName }
   tabs.value.push(tab)
   activeTabId.value = tab.id
 }
@@ -298,6 +396,159 @@ function closeTab(tabId: number) {
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const ctxMenuVisible = ref(false)
 
+// ── Toolbar (search box) refresh + more menu ──
+const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreMenuVisible = ref(false)
+
+function onMoreNewDatabase() {
+  moreMenuVisible.value = false
+  onCtxNewDatabase()
+}
+
+function onMoreNewCollection() {
+  moreMenuVisible.value = false
+  onCtxNewCollection({ db: activeTab.value?.dbName || databases.value[0] || '' } as CtxMenuData)
+}
+
+function onMoreRefresh() {
+  moreMenuVisible.value = false
+  refreshDatabases()
+}
+
+// ── Tab context menu (mirrors DBTabContent) ──
+const tabMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const tabMenuVisible = ref(false)
+
+function tabIndexFor(id: number) {
+  return tabs.value.findIndex(t => t.id === id)
+}
+
+function onTabContextMenu(e: MouseEvent, id: number) {
+  e.stopPropagation()
+  activateTab(id)
+  tabMenuRef.value?.openAt(e.clientX, e.clientY, id)
+}
+
+function onTabClose(id: number) {
+  closeTab(id)
+  tabMenuVisible.value = false
+}
+
+function onTabCloseOthers(id: number) {
+  if (tabs.value.length > 1) {
+    tabs.value = tabs.value.filter(t => t.id === id)
+    activeTabId.value = id
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseLeft(id: number) {
+  const idx = tabIndexFor(id)
+  if (idx > 0) {
+    tabs.value = tabs.value.filter((_, i) => i >= idx)
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseRight(id: number) {
+  const idx = tabIndexFor(id)
+  if (idx >= 0 && idx < tabs.value.length - 1) {
+    tabs.value = tabs.value.filter((_, i) => i <= idx)
+  }
+  tabMenuVisible.value = false
+}
+
+function onTabCloseAll() {
+  tabs.value = []
+  activeTabId.value = null
+  tabMenuVisible.value = false
+}
+
+// ── Tab drag reorder (insert-indicator pattern, mirrors DBTabContent) ──
+
+const tabDragId = ref(0)
+const tabDragOverIndex = ref(-1)
+const tabDragInsertAfter = ref(false)
+
+function onTabDragStart(e: DragEvent, id: number) {
+  tabDragId.value = id
+  e.dataTransfer?.setData('application/mongo-tab-id', String(id))
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+
+function onTabDragOver(e: DragEvent, index: number) {
+  if (!e.dataTransfer?.types.includes('application/mongo-tab-id')) return
+  const el = e.currentTarget as HTMLElement
+  const rect = el.getBoundingClientRect()
+  tabDragOverIndex.value = index
+  tabDragInsertAfter.value = e.clientX >= rect.left + rect.width / 2
+  e.dataTransfer.dropEffect = 'move'
+}
+
+function onTabDrop(_e: DragEvent, index: number) {
+  const from = tabIndexFor(tabDragId.value)
+  const insertAfter = tabDragInsertAfter.value
+  clearTabDragState()
+  if (from < 0) return
+  let to = insertAfter ? index + 1 : index
+  // Moving right compacts the source slot out of the range first.
+  if (from < to) to -= 1
+  if (to === from) return
+  const [moved] = tabs.value.splice(from, 1)
+  tabs.value.splice(to, 0, moved)
+}
+
+function clearTabDragState() {
+  tabDragId.value = 0
+  tabDragOverIndex.value = -1
+  tabDragInsertAfter.value = false
+}
+
+// ── Tab bar overflow: wheel scroll + "more" dropdown ──
+
+const tabScrollRef = ref<HTMLElement | null>(null)
+const tabShowMore = ref(false)
+const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreTabsMenuVisible = ref(false)
+
+function updateTabOverflow() {
+  const el = tabScrollRef.value
+  if (!el) return
+  tabShowMore.value = el.scrollWidth > el.clientWidth + 1
+}
+
+watch(() => tabs.value.length, () => nextTick(updateTabOverflow))
+watch(activeTabId, () => nextTick(updateTabOverflow))
+
+let tabBarResize: ResizeObserver | null = null
+
+onMounted(() => {
+  tabBarResize = new ResizeObserver(updateTabOverflow)
+  if (tabScrollRef.value) tabBarResize.observe(tabScrollRef.value)
+  nextTick(updateTabOverflow)
+})
+
+onUnmounted(() => {
+  tabBarResize?.disconnect()
+  tabBarResize = null
+})
+
+function onTabsWheel(e: WheelEvent) {
+  if (tabScrollRef.value) tabScrollRef.value.scrollLeft += e.deltaY
+}
+
+function onTabMoreSelect(id: number) {
+  moreTabsMenuVisible.value = false
+  activateTab(id)
+  scrollToTab(id)
+}
+
+function scrollToTab(id: number) {
+  if (!tabScrollRef.value) return
+  const el = tabScrollRef.value.querySelector(`[data-tab-id="${id}"]`) as HTMLElement | null
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
 interface CtxMenuData {
   type: 'db' | 'col' | 'blank'
   db: string
@@ -314,12 +565,39 @@ const newDbName = ref('')
 const newDbFirstCol = ref('')
 
 // ── Tree methods ──
+async function loadCollectionsFor(db: string) {
+  if (collections.value[db]) return
+  try {
+    const cols = await MongoListCollections(props.sessionId, db)
+    collections.value[db] = cols.filter(c => !c.startsWith('system.'))
+    collections.value = { ...collections.value }
+  } catch (e: any) {
+    msg.error(e?.message || String(e))
+  }
+}
+
+// Expand every database by default (and lazily load its collections).
+async function expandDefaultDbs(dbs: string[]) {
+  for (const db of dbs) expandedDbs.add(db)
+  await Promise.all(dbs.map(db => loadCollectionsFor(db)))
+}
+
+const objectsSearch = ref('')
+
+function filteredObjects(dbName: string): string[] {
+  const all = collections.value[dbName] || []
+  const q = objectsSearch.value.trim().toLowerCase()
+  if (!q) return all
+  return all.filter(c => c.toLowerCase().includes(q))
+}
+
 async function refreshDatabases() {
   if (!props.sessionId) return
   treeLoading.value = true
   try {
     const allDbs = await MongoListDatabases(props.sessionId)
     databases.value = allDbs.filter(d => d !== 'config' && d !== 'local')
+    await expandDefaultDbs(databases.value)
   } catch (e: any) {
     const err = e?.message || String(e)
     if (err.includes('not connected') || err.includes('session not found')) {
@@ -327,6 +605,7 @@ async function refreshDatabases() {
       try {
         const allDbs = await MongoListDatabases(props.sessionId)
         databases.value = allDbs.filter(d => d !== 'config' && d !== 'local')
+        await expandDefaultDbs(databases.value)
         treeLoading.value = false
         return
       } catch (_e2: any) {
@@ -344,15 +623,7 @@ async function toggleDb(db: string) {
     expandedDbs.delete(db)
   } else {
     expandedDbs.add(db)
-    if (!collections.value[db]) {
-      try {
-        const cols = await MongoListCollections(props.sessionId, db)
-        collections.value[db] = cols.filter(c => !c.startsWith('system.'))
-        collections.value = { ...collections.value }
-      } catch (e: any) {
-        msg.error(e?.message || String(e))
-      }
-    }
+    await loadCollectionsFor(db)
   }
 }
 
@@ -371,18 +642,7 @@ function onColContextMenu(e: MouseEvent, db: string, col: string) {
   ctxMenuRef.value?.openAt(e.clientX, e.clientY, { type: 'col', db, col } as CtxMenuData)
 }
 
-function onCtxOpenQuery(current: CtxMenuData) {
-  openQueryTab(current.db)
-  ctxMenuVisible.value = false
-}
-
 function onCtxOpenColQuery(current: CtxMenuData) {
-  openCollectionTab(current.db, current.col)
-  ctxMenuVisible.value = false
-}
-
-function onCtxNewColDocument(current: CtxMenuData) {
-  // Open the collection tab; the "New Document" action lives inside it.
   openCollectionTab(current.db, current.col)
   ctxMenuVisible.value = false
 }
@@ -568,7 +828,8 @@ watch(() => props.sessionId, () => {
   flex-shrink: 0;
 }
 .search-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -677,23 +938,34 @@ watch(() => props.sessionId, () => {
 /* ── Tab bar ── */
 .mongo-tab-bar {
   display: flex;
+  align-items: stretch;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   flex-shrink: 0;
-  min-height: 30px;
+  min-height: 32px;
 }
 .mongo-tab-scroll {
   display: flex;
   overflow-x: auto;
   overflow-y: hidden;
   flex: 1;
+  min-width: 0;
 }
 .mongo-tab-scroll::-webkit-scrollbar { height: 4px; }
+.mongo-tab-indicator {
+  width: 2px;
+  min-width: 2px;
+  align-self: stretch;
+  background: var(--accent);
+  opacity: 0.8;
+  margin: 4px 0;
+}
 .mongo-tab-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 8px 5px 10px;
+  gap: 6px;
+  max-width: 180px;
+  padding: 6px 8px 6px 12px;
   border-right: 1px solid var(--border-subtle);
   cursor: pointer;
   font-family: var(--font-ui);
@@ -701,33 +973,50 @@ watch(() => props.sessionId, () => {
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background 0.1s ease;
+  transition: background 0.12s ease;
 }
 .mongo-tab-item:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 .mongo-tab-item.active {
-  color: var(--text-primary);
   background: var(--bg-base);
-  border-bottom: 2px solid var(--accent);
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
-.tab-icon { flex-shrink: 0; color: var(--text-muted); }
-.tab-title { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.tab-icon { flex-shrink: 0; opacity: 0.8; }
+.tab-title { overflow: hidden; text-overflow: ellipsis; }
 .tab-close {
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
   border: none;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  padding: 0 2px;
-  border-radius: var(--radius-sm);
+  font-size: 14px;
+  border-radius: 3px;
   flex-shrink: 0;
 }
 .tab-close:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+.mongo-tab-more {
+  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mongo-tab-more:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .mongo-panel {
@@ -738,33 +1027,64 @@ watch(() => props.sessionId, () => {
   min-height: 0;
 }
 
-/* ── Breadcrumb ── */
-.mongo-breadcrumb {
+/* ── Collection list panel ── */
+.mongo-objects {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.mongo-objects-header {
+  margin-bottom: 8px;
+}
+.mongo-objects-title {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.object-toolbar {
   display: flex;
   align-items: center;
-  padding: 4px 12px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-  white-space: nowrap;
-  overflow: hidden;
+  gap: 8px;
+  margin-bottom: 8px;
 }
-.crumb {
-  padding: 2px 6px;
+.object-search {
+  width: 240px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-.crumb.current {
+  background: var(--bg-base);
   color: var(--text-primary);
-  font-weight: 600;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  outline: none;
 }
-.crumb-sep {
-  color: var(--text-disabled);
-  margin: 0 2px;
+.object-search:focus { border-color: var(--accent); }
+.object-toolbar .btn:last-child { margin-left: auto; }
+.object-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.object-name:hover { color: var(--accent); }
+.object-icon {
+  color: var(--text-muted);
   flex-shrink: 0;
+}
+/* 结果表格主题变量与 DBResultGrid 保持一致 */
+.db-result-table {
+  --el-table-header-bg-color: var(--bg-elevated, var(--bg-surface));
+  --el-table-tr-bg-color: var(--bg-surface);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-bg-color: var(--bg-surface);
+  font-size: 12px;
 }
 
 /* ── Placeholder ── */

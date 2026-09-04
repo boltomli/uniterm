@@ -7,6 +7,18 @@
         class="search-input"
         :placeholder="t('db.searchTables')"
       />
+      <button class="btn btn-ghost btn-icon btn-sm" :title="t('db.refreshDatabases')" @click="refreshAll">
+        <RefreshCw :size="14" />
+      </button>
+      <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
+        <MoreHorizontal :size="14" />
+      </button>
+      <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
+        <MenuItem :class="{ disabled: !canCreateDatabase }" @click="onMoreNewDatabase">{{ t('db.newDatabase') }}</MenuItem>
+        <MenuItem @click="onMoreNewTable">{{ t('db.newTable') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem @click="onMoreRefresh">{{ t('db.refreshDatabases') }}</MenuItem>
+      </Menu>
     </div>
     <div ref="treeContentRef" class="tree-content" @contextmenu.prevent="onTreeContextMenu">
       <div v-if="loading" class="tree-loading">{{ t('db.loading') }}</div>
@@ -53,7 +65,6 @@
       v-slot="{ current }"
     >
       <template v-if="current && current.type === 'db'">
-        <MenuItem @click="onCtxQueryDatabase">{{ t('db.openData') }}</MenuItem>
         <MenuItem @click="onCtxListDatabase">{{ t('db.tableList') }}</MenuItem>
         <MenuItem @click="onCtxNewQuery">{{ t('db.newQuery') }}</MenuItem>
         <MenuDivider />
@@ -128,10 +139,15 @@
         <el-form-item :label="t('db.tableName')">
           <el-input v-model="newTableName" />
         </el-form-item>
+        <el-form-item :label="t('db.databases')">
+          <el-select v-model="newTableDb" style="width:100%">
+            <el-option v-for="d in databases" :key="d.name" :label="d.name" :value="d.name" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="newTableVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :disabled="!newTableName.trim()" @click="onCreateTable">
+        <el-button type="primary" :disabled="!newTableName.trim() || !newTableDb" @click="onCreateTable">
           {{ t('common.save') }}
         </el-button>
       </template>
@@ -141,7 +157,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue'
-import { Database, Table2, Eye, ChevronRight, ChevronDown } from '@lucide/vue'
+import { Database, Table2, Eye, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { GetDatabases, GetTables, CreateDatabase, DropDatabase, CreateTable, DropTable, DropView, TruncateTable, GetDBCapabilities, DumpTable, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
@@ -385,11 +401,6 @@ function onTreeContextMenu(e: MouseEvent) {
   openDbMenu(e, { type: 'blank', dbName: '', tableName: '', tableType: '' })
 }
 
-function onCtxQueryDatabase() {
-  emit('openDatabase', ctxDbName.value, 'objects')
-  ctxMenuVisible.value = false
-}
-
 function onCtxListDatabase() {
   emit('openDatabase', ctxDbName.value, 'objects')
   ctxMenuVisible.value = false
@@ -571,6 +582,33 @@ async function refreshDb(dbName: string) {
 
 defineExpose({ refreshDb })
 
+// ── Toolbar (search box) refresh + more menu ──
+
+const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const moreMenuVisible = ref(false)
+
+function refreshAll() {
+  loadTree()
+}
+
+function onMoreNewDatabase() {
+  moreMenuVisible.value = false
+  newDbName.value = ''
+  newDbVisible.value = true
+}
+
+function onMoreNewTable() {
+  moreMenuVisible.value = false
+  newTableDb.value = selectedDb.value || databases.value[0]?.name || ''
+  newTableName.value = ''
+  newTableVisible.value = true
+}
+
+function onMoreRefresh() {
+  moreMenuVisible.value = false
+  loadTree()
+}
+
 // ── New Database / Table dialogs ──
 
 const newDbVisible = ref(false)
@@ -596,23 +634,25 @@ async function onCreateDatabase() {
 
 const newTableVisible = ref(false)
 const newTableName = ref('')
+const newTableDb = ref('')
 
 function onCtxNewTable() {
   ctxMenuVisible.value = false
+  newTableDb.value = ctxDbName.value
   newTableName.value = ''
   newTableVisible.value = true
 }
 
 async function onCreateTable() {
-  if (!newTableName.value.trim()) return
+  if (!newTableName.value.trim() || !newTableDb.value) return
   try {
-    await CreateTable(props.sessionId, ctxDbName.value, newTableName.value.trim())
+    await CreateTable(props.sessionId, newTableDb.value, newTableName.value.trim())
     newTableVisible.value = false
-    const db = databases.value.find(d => d.name === ctxDbName.value)
+    const db = databases.value.find(d => d.name === newTableDb.value)
     if (db) {
-      db.tables = await GetTables(props.sessionId, ctxDbName.value)
+      db.tables = await GetTables(props.sessionId, newTableDb.value)
       db.loaded = true
-      expandedDbs.value = new Set([...expandedDbs.value, ctxDbName.value])
+      expandedDbs.value = new Set([...expandedDbs.value, newTableDb.value])
     }
   } catch (e: any) {
     console.error('Failed to create table:', e)
@@ -639,11 +679,15 @@ async function onCreateTable() {
   flex-shrink: 0;
 }
 .search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   padding: 4px 8px;
   flex-shrink: 0;
 }
 .search-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 4px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);

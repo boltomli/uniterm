@@ -1,5 +1,5 @@
 <template>
-  <div class="db-query-editor">
+  <div ref="rootRef" class="db-query-editor">
     <div v-if="loading" class="loading-overlay">
       <div class="loading-box">
         <div class="spinner" />
@@ -26,8 +26,7 @@
         <button class="btn btn-ghost btn-icon btn-sm" :title="t('db.runSqlFile')" @click="onOpenScriptFile">
           <FolderOpen :size="14" />
         </button>
-        <button class="btn btn-primary btn-sm" @click="onExecute">{{ t('db.execute') }}</button>
-        <span class="shortcut-hint">Ctrl/?+Enter</span>
+        <button class="btn btn-primary btn-sm" title="Ctrl+Enter" @click="onExecute">{{ t('db.execute') }}</button>
       </div>
       <div v-if="historyOpen" class="history-panel">
         <div v-if="history.length === 0" class="history-empty">{{ t('db.noHistory') }}</div>
@@ -71,7 +70,7 @@
       </div>
       <div v-if="execResult" class="result-info">
         {{ t('db.affectedRows') }}: {{ execResult.affected }}
-        <span v-if="lastDurationMs != null" class="result-duration"> ? {{ lastDurationMs }}ms</span>
+        <span v-if="lastDurationMs != null" class="result-duration"> · {{ lastDurationMs }}ms</span>
       </div>
 
       <div v-if="queryResult" class="result-toolbar">
@@ -81,6 +80,11 @@
           :placeholder="t('db.filterResults')"
         />
         <div class="result-toolbar-right">
+          <button
+            v-if="tableName && !isView"
+            class="btn btn-default btn-sm"
+            @click="startInsertRow"
+          ><Plus :size="14" /> {{ t('db.insertRow') }}</button>
           <button
             ref="exportBtnRef"
             class="btn btn-ghost btn-icon btn-sm"
@@ -98,22 +102,6 @@
             <MenuItem @click="onExportResults('txt')">TXT</MenuItem>
             <MenuItem @click="onExportResults('json')">JSON</MenuItem>
           </Menu>
-          <span class="result-count">
-            {{ displayRows.length }}{{ resultFilter ? ` / ${queryResult.rows.length}` : '' }} {{ t('db.rows') }}
-            <span v-if="lastDurationMs != null"> ? {{ lastDurationMs }}ms</span>
-          </span>
-          <el-pagination
-            v-if="browseMode"
-            small
-            background
-            layout="sizes, prev, pager, next"
-            :total="browsePageTotal"
-            :page-size="pageSize"
-            :current-page="page + 1"
-            :page-sizes="[100, 200, 500]"
-            @current-change="onPageChange"
-            @size-change="onPageSizeChange"
-          />
         </div>
       </div>
 
@@ -143,8 +131,23 @@
         <button class="btn btn-primary btn-sm" :disabled="savingRows" @click="onSaveEdits">{{ t('common.save') }}</button>
       </div>
 
-      <div v-if="queryResult && tableName && !isView" class="insert-row-bar">
-        <button class="btn btn-primary" @click="startInsertRow">{{ t('db.insertRow') }}</button>
+      <div v-if="queryResult" class="result-footer">
+        <span class="result-count">
+          {{ displayRows.length }}{{ resultFilter ? ` / ${queryResult.rows.length}` : '' }} {{ t('db.rows') }}
+          <span v-if="lastDurationMs != null"> · {{ lastDurationMs }}ms</span>
+        </span>
+        <el-pagination
+          v-if="browseMode"
+          small
+          background
+          layout="sizes, prev, pager, next"
+          :total="browsePageTotal"
+          :page-size="pageSize"
+          :current-page="page + 1"
+          :page-sizes="[100, 200, 500]"
+          @current-change="onPageChange"
+          @size-change="onPageSizeChange"
+        />
       </div>
 
       <el-dialog
@@ -154,19 +157,19 @@
         append-to-body
         destroy-on-close
       >
-        <div class="insert-row-fields">
-          <div v-for="col in insertColumns" :key="col" class="insert-field">
-            <div class="field-label-row">
-              <label>{{ col }} <span class="col-type-hint">{{ getColumnType(col) }}</span></label>
-              <label v-if="isColumnAuto(col)" class="null-toggle"><input type="checkbox" v-model="insertAutoIncrement[col]" /> {{ t('db.autoIncrement') }}</label>
-              <label v-else-if="!isColumnPrimary(col) && getColumnNullable(col)" class="null-toggle"><input type="checkbox" v-model="insertNulls[col]" /> NULL</label>
-            </div>
-            <input v-model="insertValues[col]" class="insert-input" :disabled="insertNulls[col] || insertAutoIncrement[col]" :placeholder="getColumnPlaceholder(col)" />
+        <div class="row-form">
+          <div v-for="col in insertColumns" :key="col" class="row-form-row">
+            <span class="field-name" :title="col">{{ col }}</span>
+            <span class="field-type" :title="getColumnType(col)">{{ getColumnType(col) }}</span>
+            <input v-model="insertValues[col]" class="field-input" :disabled="insertNulls[col] || insertAutoIncrement[col]" :placeholder="getColumnPlaceholder(col)" />
+            <label v-if="isColumnAuto(col)" class="field-toggle"><input type="checkbox" v-model="insertAutoIncrement[col]" /> {{ t('db.autoIncrement') }}</label>
+            <label v-else-if="!isColumnPrimary(col) && getColumnNullable(col)" class="field-toggle"><input type="checkbox" v-model="insertNulls[col]" /> NULL</label>
+            <span v-else class="field-toggle"></span>
           </div>
         </div>
         <template #footer>
-          <button class="btn btn-default" @click="onInsertCancel">{{ t('common.cancel') }}</button>
-          <button class="btn btn-primary" @click="onInsertConfirm">{{ t('common.confirm') }}</button>
+          <el-button @click="onInsertCancel">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" @click="onInsertConfirm">{{ t('common.confirm') }}</el-button>
         </template>
       </el-dialog>
 
@@ -177,18 +180,18 @@
         append-to-body
         destroy-on-close
       >
-        <div class="insert-row-fields">
-          <div v-for="col in editRowColumns" :key="col" class="insert-field">
-            <div class="field-label-row">
-              <label>{{ col }} <span class="col-type-hint">{{ getColumnType(col) }}</span></label>
-              <label v-if="!isColumnPrimary(col) && getColumnNullable(col)" class="null-toggle"><input type="checkbox" v-model="editNulls[col]" /> NULL</label>
-            </div>
-            <input v-model="editRowValues[col]" class="insert-input" :disabled="editNulls[col]" />
+        <div class="row-form">
+          <div v-for="col in editRowColumns" :key="col" class="row-form-row">
+            <span class="field-name" :title="col">{{ col }}</span>
+            <span class="field-type" :title="getColumnType(col)">{{ getColumnType(col) }}</span>
+            <input v-model="editRowValues[col]" class="field-input" :disabled="editNulls[col]" />
+            <label v-if="!isColumnPrimary(col) && getColumnNullable(col)" class="field-toggle"><input type="checkbox" v-model="editNulls[col]" /> NULL</label>
+            <span v-else class="field-toggle"></span>
           </div>
         </div>
         <template #footer>
-          <button class="btn btn-default" @click="onEditRowCancel">{{ t('common.cancel') }}</button>
-          <button class="btn btn-primary" @click="onEditRowConfirm">{{ t('common.save') }}</button>
+          <el-button @click="onEditRowCancel">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" @click="onEditRowConfirm">{{ t('common.save') }}</el-button>
         </template>
       </el-dialog>
     </div>
@@ -197,7 +200,7 @@
 
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
-import { Sparkles, History, FolderOpen, Download } from '@lucide/vue'
+import { Sparkles, History, FolderOpen, Download, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import SyntaxEditor from './SyntaxEditor.vue'
@@ -713,6 +716,7 @@ async function onDeleteRowByRow(row: Record<string, any>) {
 
 // ?? Resize splitter ??
 
+const rootRef = ref<HTMLElement | null>(null)
 const topHeight = ref(200)
 let resizeStartY = 0
 let resizeStartHeight = 0
@@ -726,7 +730,7 @@ function onResizeStart(e: MouseEvent) {
 
 function onResizeMove(e: MouseEvent) {
   const dy = e.clientY - resizeStartY
-  const el = document.querySelector('.db-query-editor') as HTMLElement
+  const el = rootRef.value
   const maxTop = el ? el.clientHeight - 100 : 600
   topHeight.value = Math.max(100, Math.min(maxTop, resizeStartHeight + dy))
 }
@@ -1000,12 +1004,6 @@ function onEditRowCancel() {
   align-self: stretch;
   overflow: hidden;
 }
-.shortcut-hint {
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
 .nl-input {
   flex: 1;
   min-width: 0;
@@ -1134,7 +1132,6 @@ function onEditRowCancel() {
 .result-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   padding: 4px 0;
   flex-shrink: 0;
@@ -1154,16 +1151,24 @@ function onEditRowCancel() {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-left: auto;
   min-width: 0;
 }
 .result-grid { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.result-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
 .result-count {
   font-family: var(--font-ui);
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
 }
-.insert-row-bar { padding: 4px 0; flex-shrink: 0; }
 .save-bar {
   display: flex;
   align-items: center;
@@ -1185,45 +1190,63 @@ function onEditRowCancel() {
   overflow: auto;
   max-height: 40%;
 }
-.insert-row-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.insert-field { display: flex; flex-direction: column; gap: 2px; }
-.field-label-row {
+.row-form {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  max-height: 60vh;
+  overflow-y: auto;
 }
-.field-label-row label {
+.row-form-row {
+  display: grid;
+  grid-template-columns: 160px 90px minmax(0, 1fr) 108px;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.row-form-row:last-child { border-bottom: none; }
+.field-name {
   font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.null-toggle {
+.field-type {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.field-toggle {
   display: flex;
   align-items: center;
-  gap: 3px;
+  justify-content: flex-end;
+  gap: 4px;
   font-size: 10px;
   cursor: pointer;
   color: var(--text-muted);
+  white-space: nowrap;
 }
-.null-toggle input { cursor: pointer; margin: 0; }
-.insert-input {
+.field-toggle input { cursor: pointer; margin: 0; }
+.field-input {
+  width: 100%;
+  box-sizing: border-box;
   padding: 4px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   font-family: var(--font-ui);
   font-size: 13px;
-  width: 140px;
   background: var(--bg-base);
   color: var(--text-primary);
 }
-.insert-input:disabled {
+.field-input:disabled {
   background: var(--bg-elevated);
   color: var(--text-muted);
   cursor: not-allowed;
 }
-.col-type-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.insert-actions { display: flex; gap: 8px; }
 </style>

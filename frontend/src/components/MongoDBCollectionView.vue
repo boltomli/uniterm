@@ -13,42 +13,26 @@
     <!-- Query sub-tab -->
     <div v-if="activeSubTab === 'query'" class="query-section">
       <div class="editor-top" :style="{ height: topHeight + 'px' }">
-        <div class="editor-row">
-          <div class="nl-panel">
-            <textarea
-              v-model="nlInput"
-              class="nl-textarea"
-              :placeholder="t('mongodb.aiPlaceholder')"
-              @keydown="onNLKeydown"
-            />
-            <div class="nl-btn-wrapper">
-              <button class="btn btn-primary nl-generate-btn" @click="generateFilter" :disabled="aiGenerating || !nlInput.trim()">
-                <Sparkles :size="14" :class="{ 'ai-pulse': aiGenerating }" />
-                {{ aiGenerating ? '...' : t('mongodb.generateQuery') }}
-              </button>
-            </div>
-          </div>
-          <div class="query-panel">
-            <div class="query-editor-wrap">
-              <SyntaxEditor
-                v-model="filterText"
-                lang="json"
-                compact
-                @execute="executeQuery"
-              />
-              <div class="exec-btn-wrapper">
-                <button class="btn btn-primary exec-btn-overlay" @click="executeQuery">
-                  {{ t('mongodb.executeQuery') }}
-                </button>
-                <span class="shortcut-hint">Ctrl+Enter</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
-          <button class="btn btn-default btn-sm" @click="openNewDocument">
-            <Plus :size="14" /> {{ t('mongodb.newDocument') }}
+        <div class="editor-toolbar">
+          <input
+            v-model="nlInput"
+            class="nl-input"
+            :placeholder="t('mongodb.aiPlaceholder')"
+            @keydown.enter="generateFilter"
+          />
+          <button class="btn btn-default btn-sm" @click="generateFilter" :disabled="aiGenerating || !nlInput.trim()">
+            <Sparkles :size="14" :class="{ 'ai-pulse': aiGenerating }" />
+            {{ aiGenerating ? '...' : 'AI' }}
           </button>
+          <button class="btn btn-primary btn-sm" title="Ctrl+Enter" @click="onExecute">{{ t('mongodb.executeQuery') }}</button>
+        </div>
+        <div class="filter-editor-wrap">
+          <SyntaxEditor
+            v-model="filterText"
+            lang="json"
+            compact
+            @execute="onExecute"
+          />
         </div>
       </div>
 
@@ -65,16 +49,27 @@
           </div>
         </div>
 
-        <div v-if="columns.length > 0" class="result-grid">
+        <div v-if="columns.length > 0" class="result-toolbar">
+          <input
+            v-model="resultFilter"
+            class="result-filter"
+            :placeholder="t('db.filterResults')"
+          />
+          <button class="btn btn-default btn-sm result-toolbar-add" @click="openNewDocument">
+            <Plus :size="14" /> {{ t('mongodb.newDocument') }}
+          </button>
+        </div>
+
+        <div v-if="filteredTableData.length > 0" class="result-grid">
           <div class="result-table-wrap">
             <el-table
-              :data="tableData"
+              :data="filteredTableData"
               border
               size="small"
               style="width:100%"
               class="db-result-table"
               :empty-text="t('db.noData')"
-              @row-click="onRowClick"
+              @row-dblclick="onRowDblClick"
             >
               <el-table-column
                 v-for="col in columns"
@@ -93,20 +88,23 @@
               </el-table-column>
               <el-table-column width="80" fixed="right">
                 <template #default="{ row }">
-                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--text-secondary)" @click.stop="onRowClick(row)">
+                  <button class="btn btn-ghost btn-icon btn-sm" @click.stop="onRowDblClick(row)">
                     <Pencil :size="14" />
                   </button>
-                  <button class="btn btn-ghost btn-icon btn-sm" style="color:var(--error)" @click.stop="deleteDocument(row)">
+                  <button class="btn btn-ghost btn-icon btn-sm danger" @click.stop="deleteDocument(row)">
                     <Trash2 :size="14" />
                   </button>
                 </template>
               </el-table-column>
             </el-table>
           </div>
-          <div class="pagination">
+          <div class="result-footer">
+            <span class="result-count">
+              {{ filteredTableData.length }}{{ resultFilter ? ` / ${tableData.length}` : '' }} {{ t('db.rows') }}
+            </span>
             <el-pagination
               background
-              layout="sizes, prev, pager, next, total"
+              layout="sizes, prev, pager, next"
               :page-sizes="[10, 20, 50, 100]"
               :page-size="queryLimit"
               :total="totalDocs"
@@ -132,7 +130,7 @@
           <span class="loading-text">{{ t('db.loading') }}</span>
         </div>
       </div>
-      <div style="margin-bottom:8px">
+      <div style="margin-bottom:8px;display:flex;justify-content:flex-end">
         <button class="btn btn-default btn-sm" @click="openNewIndexDialog">
           <Plus :size="14" /> {{ t('db.addIndex') }}
         </button>
@@ -174,10 +172,10 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <button class="btn btn-default" @click="newIndexDialogVisible = false">{{ t('common.cancel') }}</button>
-        <button class="btn btn-primary" :disabled="!newIndexName.trim() || !newIndexFields.trim()" @click="createIndex">
+        <el-button @click="newIndexDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :disabled="!newIndexName.trim() || !newIndexFields.trim()" @click="createIndex">
           {{ t('common.confirm') }}
-        </button>
+        </el-button>
       </template>
     </el-dialog>
 
@@ -194,10 +192,8 @@
       />
       <div v-if="docEditorError" class="error-msg" style="margin-top:8px">{{ docEditorError }}</div>
       <template #footer>
-        <button class="btn btn-default" @click="docDialogVisible = false">{{ t('settings.cancel') }}</button>
-        <button class="btn btn-primary" @click="saveDocument" :disabled="docSaving">
-          {{ t('redis.save') }}
-        </button>
+        <el-button @click="docDialogVisible = false">{{ t('settings.cancel') }}</el-button>
+        <el-button type="primary" :loading="docSaving" @click="saveDocument">{{ t('redis.save') }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -205,7 +201,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { Plus, Pencil, Trash2, Sparkles } from '@lucide/vue'
+import { Pencil, Trash2, Sparkles, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -233,7 +229,7 @@ const props = defineProps<{
 }>()
 
 // ── Editor resize state ──
-const topHeight = ref(220)
+const topHeight = ref(200)
 let topResizeStartY = 0
 let topResizeStartHeight = 0
 let topResizing = false
@@ -277,6 +273,14 @@ const tableData = computed(() => {
   })
 })
 
+const resultFilter = ref('')
+
+const filteredTableData = computed(() => {
+  const q = resultFilter.value.trim().toLowerCase()
+  if (!q) return tableData.value
+  return tableData.value.filter(row => JSON.stringify(row).toLowerCase().includes(q))
+})
+
 const columns = computed(() => {
   const keySet = new Set<string>()
   for (const row of tableData.value) {
@@ -311,11 +315,10 @@ const docSaving = ref(false)
 const editingRow = ref<any>(null)
 
 // ── Query methods ──
-function onNLKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.key === 'Enter') {
-    e.preventDefault()
-    generateFilter()
-  }
+// User-initiated execution (toolbar button / Ctrl+Enter in editor) restarts from page 1.
+function onExecute() {
+  currentSkip.value = 0
+  executeQuery()
 }
 
 async function generateFilter() {
@@ -400,7 +403,8 @@ function openNewDocument() {
   docDialogVisible.value = true
 }
 
-function onRowClick(row: any) {
+// Double-click a row (or the action pencil) to open the document editor.
+function onRowDblClick(row: any) {
   docDialogMode.value = 'edit'
   docEditorText.value = JSON.stringify(row, null, 2)
   docEditorError.value = ''
@@ -521,6 +525,7 @@ onUnmounted(() => {
 watch(() => [props.dbName, props.collectionName], () => {
   filterText.value = '{}'
   nlInput.value = ''
+  resultFilter.value = ''
   currentSkip.value = 0
   queryResult.value = null
   queryError.value = ''
@@ -584,85 +589,51 @@ watch(() => [props.dbName, props.collectionName], () => {
   flex-direction: column;
   padding: 8px 8px 0;
 }
-.editor-row {
-  flex: 1;
+.editor-toolbar {
   display: flex;
+  align-items: center;
   gap: 8px;
-  min-height: 0;
+  padding-bottom: 8px;
+  flex-shrink: 0;
 }
-.nl-panel {
-  position: relative;
-  flex: 0 0 30%;
-  display: flex;
+.nl-input {
+  flex: 1;
   min-width: 0;
-}
-.nl-textarea {
-  width: 100%;
-  height: 100%;
-  font-family: var(--font-ui);
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--bg-base);
-  color: var(--text-primary);
+  padding: 4px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 8px 8px 38px 8px;
-  resize: none;
-  transition: border-color 0.15s ease;
-}
-.nl-textarea:focus {
-  border-color: var(--accent);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
   outline: none;
 }
-.nl-textarea::placeholder {
-  color: var(--text-muted);
+.nl-input:focus { border-color: var(--accent); }
+.filter-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
 }
-.nl-btn-wrapper {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
+.result-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  z-index: 1;
+  gap: 8px;
+  padding: 4px 0;
+  flex-shrink: 0;
 }
-.nl-generate-btn {
-  padding: 4px 10px;
+.result-toolbar-add { margin-left: auto; }
+.result-filter {
+  width: 200px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
   font-size: 12px;
+  outline: none;
 }
-.query-panel {
-  flex: 1;
-  display: flex;
-  min-width: 0;
-}
-.query-editor-wrap {
-  position: relative;
-  flex: 1;
-  display: flex;
-}
-/* Keep query text clear of the overlaying execute button */
-.query-editor-wrap :deep(.cm-content) {
-  padding-bottom: 44px;
-}
-.exec-btn-wrapper {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  z-index: 1;
-}
-.exec-btn-overlay {
-  padding: 4px 14px;
-  font-size: 12px;
-}
-.shortcut-hint {
-  font-family: var(--font-ui);
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
+.result-filter:focus { border-color: var(--accent); }
 
 .editor-resizer {
   height: 4px;
@@ -763,24 +734,31 @@ watch(() => [props.dbName, props.collectionName], () => {
   color: var(--text-muted);
   font-style: italic;
 }
-.pagination {
+.result-footer {
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-top: 8px;
+  padding-top: 8px;
   flex-shrink: 0;
 }
-.pagination :deep(.el-pager li.is-active) {
+.result-count {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.result-footer :deep(.el-pager li.is-active) {
   background-color: var(--accent);
   color: var(--on-accent);
 }
-.pagination :deep(.el-pager li:hover) {
+.result-footer :deep(.el-pager li:hover) {
   color: var(--accent);
 }
-.pagination :deep(.el-pagination .el-select .el-input.is-focus .el-input__wrapper) {
+.result-footer :deep(.el-pagination .el-select .el-input.is-focus .el-input__wrapper) {
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
-.pagination :deep(.el-select__input) {
+.result-footer :deep(.el-select__input) {
   color: var(--text-primary);
 }
 
