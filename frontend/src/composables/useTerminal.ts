@@ -5,7 +5,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { SessionWrite, SessionResize } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionResize } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -639,7 +640,7 @@ export function useTerminal(
       }
       const sid = getSessionId()
       if (sid) {
-        SessionWrite(sid, data)
+        queuedSessionWrite(sid, data)
       }
     })
 

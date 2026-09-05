@@ -2,7 +2,6 @@ import Zmodem from 'zmodem.js/src/zmodem_browser'
 import {
   SessionEndZmodem,
   SessionWriteBinary,
-  SessionWrite,
   AppendFileBase64,
   FileSize,
   ReadFileChunkBase64,
@@ -11,6 +10,7 @@ import {
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import { useZmodemStore } from '../stores/zmodemStore'
+import { queuedSessionWrite } from './sessionWriter'
 
 // Global dialog lock: prevents multiple BaseTerminal instances (e.g. from
 // KeepAlive-cached hidden tabs) from opening overlapping native dialogs for
@@ -137,7 +137,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
       await SessionWriteBinary(sessionId, arrayBufferToBase64(new Uint8Array(ABORT)))
 
       // 3. 发送 Ctrl+C 强制终止远程前台 sz 进程
-      await SessionWrite(sessionId, '\x03').catch(() => {})
+      queuedSessionWrite(sessionId, '\x03')
 
       // 4. 触发 handleReceive 中的 race / donePromise 强制退出
       // 不立即 SessionEndZmodem，等 handleReceive 自然退出后再清理

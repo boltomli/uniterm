@@ -233,7 +233,7 @@ import {
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
-import { SessionWrite } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { focusActivePanelTerminal } from '../composables/useFocusTerminal'
@@ -406,13 +406,13 @@ async function sendCommand(cmd: QuickCommand, mode: 'run' | 'paste') {
 
   for (const sid of sids) {
     if (mode === 'paste') {
-      SessionWrite(sid, cmd.command)
+      queuedSessionWrite(sid, cmd.command)
       continue
     }
     const text = cmd.command.replace(/\r\n?/g, '\n')
     const lines = text.split('\n').filter(l => l.length > 0)
     for (let i = 0; i < lines.length; i++) {
-      SessionWrite(sid, lines[i] + '\r')
+      queuedSessionWrite(sid, lines[i] + '\r')
       if (i < lines.length - 1) await new Promise(r => setTimeout(r, 100))
     }
   }

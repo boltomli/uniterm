@@ -123,7 +123,8 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, on
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { SessionWrite, SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { msg } from '../services/message'
@@ -286,6 +287,38 @@ let onExport: ((e: Event) => void) | null = null
 let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
+let onVisibilityChange: (() => void) | null = null
+
+// Reset xterm's internal IME composition state. Two variants:
+// - resetIMEState:        only clears internal flags (safe during active typing)
+// - resetIMEComposition:  also blurs textarea to end OS-level composition (for
+//                         deactivation / visibility change when terminal is hidden)
+//
+// Accessing _core._compositionHelper is fragile but necessary — xterm exposes
+// no public API for this. The guard ensures we only act when composition is
+// actually active.
+function resetIMEState(): boolean {
+  if (!terminal) return false
+  const core = (terminal as any)._core
+  const ch = core?._compositionHelper
+  if (!ch) return false
+  if (!ch._isComposing && !ch._isSendingComposition) return false
+  ch._isSendingComposition = false
+  ch._isComposing = false
+  ch._dataAlreadySent = ''
+  const cv = core?._helperContainer?.querySelector?.('.composition-view')
+  if (cv) cv.classList.remove('active')
+  return true
+}
+
+function resetIMEComposition() {
+  if (!resetIMEState()) return
+  // Clear the textarea and end the OS-level composition via blur.
+  if (terminal.textarea) {
+    terminal.textarea.value = ''
+    terminal.textarea.blur()
+  }
+}
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // Trailing resize for size changes observed while a resize gate (window
@@ -329,7 +362,7 @@ function initZmodemService(sessionId: string) {
         const cancelUntil = Math.max(zmodemCancellingUntil, zmodemStore.getCancelUntil(sessionId))
         const remaining = Math.max(0, cancelUntil - Date.now())
         setTimeout(() => {
-          SessionWrite(sessionId, '\n').catch(() => {})
+          queuedqueuedSessionWrite(sessionId, '\n')
         }, remaining + 100)
       }
       zmodemStore.clearTransfers(sessionId)
@@ -441,13 +474,13 @@ function onNativePathsDropped(paths: string[]) {
     const panel = panelStore.getPanel(props.panelId || '')
     const shellPath = panel?.config?.shellPath
     const text = paths.map(p => toShellPath(p, shellPath)).join(' ')
-    SessionWrite(props.sessionId, text)
+    queuedSessionWrite(props.sessionId, text)
     return
   }
 
   // Remote terminal: trigger zmodem upload
   zmodemStore.setPendingUploadFiles(props.sessionId, paths)
-  SessionWrite(props.sessionId, 'rz -be\n')
+  queuedSessionWrite(props.sessionId, 'rz -be\n')
 }
 
 function onZmodemCancel() {
@@ -521,13 +554,13 @@ async function applySuggestion(item: ReturnType<typeof suggestions.getSelectedIt
       for (const pid of targets) {
         const p = panelStore.getPanel(pid)
         if (p?.sessionId && (p.type === 'ssh' || p.type === 'local')) {
-          SessionWrite(p.sessionId, '\x15')
-          SessionWrite(p.sessionId, item.value)
+          queuedSessionWrite(p.sessionId, '\x15')
+          queuedSessionWrite(p.sessionId, item.value)
         }
       }
     } else if (sid) {
-      SessionWrite(sid, '\x15')
-      SessionWrite(sid, item.value)
+      queuedSessionWrite(sid, '\x15')
+      queuedSessionWrite(sid, item.value)
     }
     terminalInput.lineBuffer.value = item.value
     terminalInput.cursorIndex.value = item.value.length
@@ -756,7 +789,7 @@ function writeTerminalInput(data: string, inAlternateScreen: boolean) {
             p.config?.backspaceKey,
             p.config?.type,
           )
-          SessionWrite(p.sessionId, translated)
+          queuedSessionWrite(p.sessionId, translated)
         }
       }
       return
@@ -769,7 +802,7 @@ function writeTerminalInput(data: string, inAlternateScreen: boolean) {
     panel?.config?.backspaceKey,
     panel?.config?.type,
   )
-  SessionWrite(sid, translated)
+  queuedSessionWrite(sid, translated)
 }
 
 function handleTerminalKey(e: KeyboardEvent): boolean {
@@ -794,6 +827,12 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
     (props.mode === 'ssh' || props.mode === 'local')
   ) {
     e.preventDefault()
+    // terminal.input() sends the character via triggerDataEvent. Tell
+    // xterm's internal _keyDownHandled flag that this key was already
+    // processed so _keyPress won't fire a second triggerDataEvent.
+    // Without this, _keyPress fires because _keyDownHandled is never set
+    // in the workaround path → same character sent twice.
+    ;(terminal as any)._keyDownHandled = true
     terminal?.input(e.key)
     return false
   }
@@ -852,10 +891,10 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
       e.preventDefault()
       if (e.metaKey) {
         // Cmd+Left → beginning of line
-        SessionWrite(props.sessionId || '', '\x1b[H')
+        queuedSessionWrite(props.sessionId || '', '\x1b[H')
       } else if (e.altKey) {
         // Option+Left → backward word
-        SessionWrite(props.sessionId || '', '\x1bb')
+        queuedSessionWrite(props.sessionId || '', '\x1bb')
       }
       return false
     }
@@ -863,10 +902,10 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
       e.preventDefault()
       if (e.metaKey) {
         // Cmd+Right → end of line
-        SessionWrite(props.sessionId || '', '\x1b[F')
+        queuedSessionWrite(props.sessionId || '', '\x1b[F')
       } else if (e.altKey) {
         // Option+Right → forward word
-        SessionWrite(props.sessionId || '', '\x1bf')
+        queuedSessionWrite(props.sessionId || '', '\x1bf')
       }
       return false
     }
@@ -1159,7 +1198,7 @@ onMounted(() => {
               for (let j = 0; j < inputBuffer.length; j++) {
                 terminal!.write('\b \b')
               }
-              SessionWrite(sid, inputBuffer)
+              queuedSessionWrite(sid, inputBuffer)
             }
             inputBuffer = ''
           }
@@ -1433,7 +1472,7 @@ onMounted(() => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
     if (props.sessionId) {
-      SessionWrite(props.sessionId, 'rz -be\n')
+      queuedSessionWrite(props.sessionId, 'rz -be\n')
     }
   }
   window.addEventListener('terminal:send-rz', onSendRz)
@@ -1464,6 +1503,17 @@ onMounted(() => {
   window.addEventListener('terminal:paste', onTerminalPaste)
 
   bindListeners()
+
+  // When the browser tab/page becomes hidden (user switches to another app
+  // or another browser tab), reset IME composition state. This prevents the
+  // OS IME from continuing to feed characters into the hidden textarea,
+  // which causes input duplication when the user returns.
+  onVisibilityChange = () => {
+    if (document.hidden && isActive.value) {
+      resetIMEComposition()
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
 
   resizeObserver = new ResizeObserver(() => {
     // A size change landing inside a resize gate must not be dropped: if it
@@ -1575,6 +1625,11 @@ onDeactivated(() => {
   // Mark inactive so session event handlers become no-ops.
   nativeDrop.unbind()
   isActive.value = false
+  // Reset IME composition state so the OS IME doesn't continue feeding
+  // characters into the textarea while the terminal is hidden. Without
+  // this, the stale composition state causes input duplication when the
+  // user switches back (issue: IME offscreen duplicate input).
+  resetIMEComposition()
   // Capture viewport position before listeners are torn down so reactivation
   // can restore the user's scroll position. Reading from the public IBuffer
   // API avoids depending on internal _core field shape.
@@ -1807,6 +1862,8 @@ onUnmounted(() => {
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
   if (onTerminalCopy) window.removeEventListener('terminal:copy', onTerminalCopy)
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
+  if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange)
+  onVisibilityChange = null
   suggestions.close()
   if (!zmodemStore.getActiveTransfer(props.sessionId || '')) {
     disposeZmodemService(props.sessionId || '')
@@ -1847,7 +1904,7 @@ async function pasteToSession(text: string) {
             pasteWithScroll(
               {
                 bracketedPasteMode: managed.terminal.modes.bracketedPasteMode,
-                write: (payload) => SessionWrite(p.sessionId, payload),
+                write: (payload) => queuedSessionWrite(p.sessionId, payload),
                 scrollToBottom: () => managed.terminal.scrollToBottom(),
               },
               normalized,
@@ -1864,7 +1921,7 @@ async function pasteToSession(text: string) {
       pasteWithScroll(
         {
           bracketedPasteMode: managed?.terminal.modes.bracketedPasteMode ?? false,
-          write: (payload) => SessionWrite(sid, payload),
+          write: (payload) => queuedSessionWrite(sid, payload),
           scrollToBottom: () => terminal?.scrollToBottom(),
         },
         normalized,
