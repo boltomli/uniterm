@@ -123,7 +123,8 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, on
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { SessionWrite, SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { msg } from '../services/message'
@@ -361,7 +362,7 @@ function initZmodemService(sessionId: string) {
         const cancelUntil = Math.max(zmodemCancellingUntil, zmodemStore.getCancelUntil(sessionId))
         const remaining = Math.max(0, cancelUntil - Date.now())
         setTimeout(() => {
-          SessionWrite(sessionId, '\n').catch(() => {})
+          queuedqueuedSessionWrite(sessionId, '\n')
         }, remaining + 100)
       }
       zmodemStore.clearTransfers(sessionId)
@@ -473,13 +474,13 @@ function onNativePathsDropped(paths: string[]) {
     const panel = panelStore.getPanel(props.panelId || '')
     const shellPath = panel?.config?.shellPath
     const text = paths.map(p => toShellPath(p, shellPath)).join(' ')
-    SessionWrite(props.sessionId, text)
+    queuedSessionWrite(props.sessionId, text)
     return
   }
 
   // Remote terminal: trigger zmodem upload
   zmodemStore.setPendingUploadFiles(props.sessionId, paths)
-  SessionWrite(props.sessionId, 'rz -be\n')
+  queuedSessionWrite(props.sessionId, 'rz -be\n')
 }
 
 function onZmodemCancel() {
@@ -553,13 +554,13 @@ async function applySuggestion(item: ReturnType<typeof suggestions.getSelectedIt
       for (const pid of targets) {
         const p = panelStore.getPanel(pid)
         if (p?.sessionId && (p.type === 'ssh' || p.type === 'local')) {
-          SessionWrite(p.sessionId, '\x15')
-          SessionWrite(p.sessionId, item.value)
+          queuedSessionWrite(p.sessionId, '\x15')
+          queuedSessionWrite(p.sessionId, item.value)
         }
       }
     } else if (sid) {
-      SessionWrite(sid, '\x15')
-      SessionWrite(sid, item.value)
+      queuedSessionWrite(sid, '\x15')
+      queuedSessionWrite(sid, item.value)
     }
     terminalInput.lineBuffer.value = item.value
     terminalInput.cursorIndex.value = item.value.length
@@ -788,7 +789,7 @@ function writeTerminalInput(data: string, inAlternateScreen: boolean) {
             p.config?.backspaceKey,
             p.config?.type,
           )
-          SessionWrite(p.sessionId, translated)
+          queuedSessionWrite(p.sessionId, translated)
         }
       }
       return
@@ -801,7 +802,7 @@ function writeTerminalInput(data: string, inAlternateScreen: boolean) {
     panel?.config?.backspaceKey,
     panel?.config?.type,
   )
-  SessionWrite(sid, translated)
+  queuedSessionWrite(sid, translated)
 }
 
 function handleTerminalKey(e: KeyboardEvent): boolean {
@@ -890,10 +891,10 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
       e.preventDefault()
       if (e.metaKey) {
         // Cmd+Left → beginning of line
-        SessionWrite(props.sessionId || '', '\x1b[H')
+        queuedSessionWrite(props.sessionId || '', '\x1b[H')
       } else if (e.altKey) {
         // Option+Left → backward word
-        SessionWrite(props.sessionId || '', '\x1bb')
+        queuedSessionWrite(props.sessionId || '', '\x1bb')
       }
       return false
     }
@@ -901,10 +902,10 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
       e.preventDefault()
       if (e.metaKey) {
         // Cmd+Right → end of line
-        SessionWrite(props.sessionId || '', '\x1b[F')
+        queuedSessionWrite(props.sessionId || '', '\x1b[F')
       } else if (e.altKey) {
         // Option+Right → forward word
-        SessionWrite(props.sessionId || '', '\x1bf')
+        queuedSessionWrite(props.sessionId || '', '\x1bf')
       }
       return false
     }
@@ -1197,7 +1198,7 @@ onMounted(() => {
               for (let j = 0; j < inputBuffer.length; j++) {
                 terminal!.write('\b \b')
               }
-              SessionWrite(sid, inputBuffer)
+              queuedSessionWrite(sid, inputBuffer)
             }
             inputBuffer = ''
           }
@@ -1471,7 +1472,7 @@ onMounted(() => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
     if (props.sessionId) {
-      SessionWrite(props.sessionId, 'rz -be\n')
+      queuedSessionWrite(props.sessionId, 'rz -be\n')
     }
   }
   window.addEventListener('terminal:send-rz', onSendRz)
@@ -1903,7 +1904,7 @@ async function pasteToSession(text: string) {
             pasteWithScroll(
               {
                 bracketedPasteMode: managed.terminal.modes.bracketedPasteMode,
-                write: (payload) => SessionWrite(p.sessionId, payload),
+                write: (payload) => queuedSessionWrite(p.sessionId, payload),
                 scrollToBottom: () => managed.terminal.scrollToBottom(),
               },
               normalized,
@@ -1920,7 +1921,7 @@ async function pasteToSession(text: string) {
       pasteWithScroll(
         {
           bracketedPasteMode: managed?.terminal.modes.bracketedPasteMode ?? false,
-          write: (payload) => SessionWrite(sid, payload),
+          write: (payload) => queuedSessionWrite(sid, payload),
           scrollToBottom: () => terminal?.scrollToBottom(),
         },
         normalized,

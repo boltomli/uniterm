@@ -70,7 +70,7 @@ import { useSuggestions, type HistoryEntry } from '../composables/useSuggestions
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useQuickCommandStore } from '../stores/quickCommandStore'
-import { SessionWrite } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { focusActivePanelTerminal } from '../composables/useFocusTerminal'
@@ -207,7 +207,7 @@ function runCommand(entry: HistoryEntry) {
   if (sids.length === 0) return
   const text = entry.command.endsWith('\n') ? entry.command : entry.command + '\n'
   for (const sid of sids) {
-    SessionWrite(sid, text)
+    queuedSessionWrite(sid, text)
   }
   // Return focus to the terminal (issue #285).
   focusActivePanelTerminal()
@@ -217,7 +217,7 @@ function pasteCommand(entry: HistoryEntry) {
   const sids = getTargetSessionIds()
   if (sids.length === 0) return
   for (const sid of sids) {
-    SessionWrite(sid, entry.command)
+    queuedSessionWrite(sid, entry.command)
   }
   // Return focus to the terminal (issue #285).
   focusActivePanelTerminal()

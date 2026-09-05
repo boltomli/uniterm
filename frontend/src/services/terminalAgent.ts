@@ -1,4 +1,4 @@
-import { SessionWrite } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { queuedSessionWrite } from '../services/sessionWriter'
 import { getManagedTerminal } from '../services/terminalManager'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
@@ -438,7 +438,7 @@ export async function executeCommand(
   const fullCommand = buildCommand(command, shellPath, remoteOS)
   const newline = getShellNewline(shellPath, remoteOS)
 
-  await SessionWrite(sessionId, fullCommand + newline)
+  await queuedSessionWrite(sessionId, fullCommand + newline)
 
   const { promise } = watchOutput(sessionId, promptLine, timeoutMs, shouldCancel, startRow)
   const result = await promise
@@ -479,7 +479,7 @@ export async function startCommand(command: string, panelTitle?: string): Promis
   const { startRow } = capturePromptSnapshot(sessionId)
   const newline = getShellNewline(shellPath, remoteOS)
 
-  await SessionWrite(sessionId, command + newline)
+  await queuedSessionWrite(sessionId, command + newline)
 
   // Collect output for 3 seconds, then return
   return new Promise((resolve) => {
@@ -618,7 +618,7 @@ export async function sendTerminalKey(
     data += getShellNewline(shellPath, remoteOS)
   }
 
-  await SessionWrite(sessionId, data)
+  await queuedSessionWrite(sessionId, data)
 
   // For ctrl_c / ctrl_d: passively capture shell response for a short time.
   // No marker injection — avoids corrupting interactive program input.

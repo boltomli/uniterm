@@ -16,6 +16,10 @@ vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   SessionWrite: mockSessionWrite,
 }))
 
+vi.mock('../services/sessionWriter', () => ({
+  queuedSessionWrite: (...args: any[]) => mockSessionWrite(...args),
+}))
+
 // ---- mock terminal manager (prompt-line capture + screen-buffer reads) ----
 // The fake terminal exposes a scripted screen buffer: `fakeScreen` models the
 // buffer rows xterm.js would hold after parsing the PTY stream. Tests set it
