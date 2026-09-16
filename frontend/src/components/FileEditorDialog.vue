@@ -78,12 +78,33 @@
           <el-select v-model="syntaxLang" style="width: 6.875rem" filterable>
             <el-option v-for="l in LANG_OPTIONS" :key="l.value" :label="l.label" :value="l.value" />
           </el-select>
-          <el-select v-model="editorEncoding" style="width: 6.25rem">
-            <el-option label="UTF-8" value="utf-8" />
-            <el-option label="UTF-16 LE" value="utf-16le" />
-            <el-option label="UTF-16 BE" value="utf-16be" />
-            <el-option label="GBK" value="gbk" />
-          </el-select>
+          <button
+            ref="encodingBtn"
+            class="editor-encoding-btn"
+            @click.stop="encodingMenu?.toggle(encodingBtn as HTMLElement)"
+          >
+            {{ encodingLabel(editorEncoding) }}
+            <ChevronDown :size="'0.875rem'" />
+          </button>
+          <Menu ref="encodingMenu" v-model:visible="encodingMenuVisible">
+            <MenuSubmenu :label="t('sftp.edit.reopenWith')">
+              <MenuItem
+                v-for="e in ENCODINGS"
+                :key="e.value"
+                :class="{ active: e.value === editorEncoding }"
+                @click="onReopenWith(e.value)"
+              >{{ e.label }}</MenuItem>
+            </MenuSubmenu>
+            <MenuDivider />
+            <MenuSubmenu :label="t('sftp.edit.saveWith')">
+              <MenuItem
+                v-for="e in ENCODINGS"
+                :key="e.value"
+                :class="{ active: e.value === editorEncoding }"
+                @click="onSaveWith(e.value)"
+              >{{ e.label }}</MenuItem>
+            </MenuSubmenu>
+          </Menu>
           <el-select v-model="editorLineEnding" style="width: 8.75rem">
             <el-option label="LF (Linux/macOS)" value="lf" />
             <el-option label="CRLF (Windows)" value="crlf" />
@@ -103,15 +124,21 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { useLocalStateStore } from '../stores/localStateStore'
+import { utf8ToBase64 } from '../utils/base64'
 import {
   SftpGetContent, SftpLocalGetContent, SftpPutContent, SftpLocalPutContent,
   SftpOpenExternalEditor, OpenExternalEditorLocal,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import SyntaxEditor from './SyntaxEditor.vue'
-import { Undo2, Redo2, ZoomOut, ZoomIn, WrapText, Search, Scissors, Copy, ClipboardPaste } from '@lucide/vue'
+import Menu from './Menu.vue'
+import MenuItem from './MenuItem.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
+import MenuDivider from './MenuDivider.vue'
+import { Undo2, Redo2, ZoomOut, ZoomIn, WrapText, Search, Scissors, Copy, ClipboardPaste, ChevronDown } from '@lucide/vue'
 
 const { t } = useI18n()
 const localStateStore = useLocalStateStore()
@@ -137,6 +164,10 @@ const editorContent = ref('')
 const editorRawBytes = ref<Uint8Array | null>(null)
 const editorEncoding = ref<Encoding>('utf-8')
 const editorLineEnding = ref<LineEnding>('lf')
+// Encoding menu (button trigger in the footer + two-level action menu).
+const encodingMenu = ref<InstanceType<typeof Menu> | null>(null)
+const encodingBtn = ref<HTMLElement | null>(null)
+const encodingMenuVisible = ref(false)
 const editorWrapEnabled = ref(true)
 const saving = ref(false)
 
@@ -211,15 +242,21 @@ const LANG_OPTIONS = [
 type Encoding = 'utf-8' | 'utf-16le' | 'utf-16be' | 'gbk'
 type LineEnding = 'lf' | 'crlf' | 'cr'
 
+const ENCODINGS: { value: Encoding, label: string }[] = [
+  { value: 'utf-8', label: 'UTF-8' },
+  { value: 'utf-16le', label: 'UTF-16 LE' },
+  { value: 'utf-16be', label: 'UTF-16 BE' },
+  { value: 'gbk', label: 'GBK' },
+]
+function encodingLabel(enc: Encoding): string {
+  return ENCODINGS.find(e => e.value === enc)?.label || enc
+}
+
 function fromBase64(b64: string): Uint8Array {
   const binary = atob(b64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   return bytes
-}
-
-function toBase64(str: string): string {
-  return btoa(str)
 }
 
 function detectEncoding(bytes: Uint8Array): { encoding: Encoding, hasBom: boolean } {
@@ -270,7 +307,7 @@ function encodeContent(text: string, enc: Encoding, lineEnding: LineEnding): str
 
   if (enc === 'utf-8' || enc === 'gbk') {
     // Always encode as UTF-8; the backend re-encodes to GBK when needed.
-    return toBase64(normalized)
+    return utf8ToBase64(normalized)
   }
   const buf = new Uint8Array(normalized.length * 2 + 2)
   let pos = 0
@@ -310,6 +347,7 @@ async function open(path: string, title: string, mode?: 'remote' | 'local') {
   editorTitle.value = title
   editorContent.value = ''
   editorRawBytes.value = null
+  lastDecoded.value = ''
   syntaxLang.value = langFromPath(path)
   editorVisibleInternal = true
   emit('update:visible', true)
@@ -331,6 +369,7 @@ async function open(path: string, title: string, mode?: 'remote' | 'local') {
     const text = decodeContent(bytes, detected.encoding)
     editorLineEnding.value = detectLineEnding(text)
     editorContent.value = text
+    lastDecoded.value = text
     await nextTick()
     editorRef.value?.focus()
   } catch (e: any) {
@@ -343,11 +382,36 @@ let editorVisibleInternal = false
 
 watch(() => props.visible, (v) => { editorVisibleInternal = v })
 
-watch(editorEncoding, (newEnc) => {
-  if (editorVisibleInternal && editorRawBytes.value) {
-    editorContent.value = decodeContent(editorRawBytes.value, newEnc)
+// Text the buffer currently mirrors (set on open and on reopen). Content
+// differing from it means unsaved user edits; the encoding menu's reopen path
+// discards them (with confirmation), the save-with path never touches content.
+const lastDecoded = ref('')
+
+// Re-decode the on-disk bytes with the chosen encoding (fix wrong detection /
+// mojibake). Discards unsaved edits, so confirm first when the buffer is dirty.
+async function onReopenWith(enc: Encoding) {
+  encodingMenuVisible.value = false
+  const bytes = editorRawBytes.value
+  if (!bytes) return
+  if (editorContent.value !== lastDecoded.value) {
+    try {
+      await ElMessageBox.confirm(t('sftp.edit.reopenConfirm'), t('sftp.edit.reopenWith'))
+    } catch {
+      return // cancelled
+    }
   }
-})
+  const text = decodeContent(bytes, enc)
+  editorEncoding.value = enc
+  editorLineEnding.value = detectLineEnding(text)
+  editorContent.value = text
+  lastDecoded.value = text
+}
+
+// Change only the encoding the file will be saved with; the buffer stays as-is.
+function onSaveWith(enc: Encoding) {
+  encodingMenuVisible.value = false
+  editorEncoding.value = enc
+}
 
 // Switch to the configured external editor: close this dialog and open the same
 // file there (remote → download/auto-upload flow, local → open in place).
@@ -402,6 +466,7 @@ function onClosed() {
   editorPath.value = ''
   editorContent.value = ''
   editorRawBytes.value = null
+  lastDecoded.value = ''
   editorVisibleInternal = false
 }
 
@@ -489,5 +554,24 @@ defineExpose({ open })
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+/* Encoding menu trigger, styled to sit next to the el-selects like a select. */
+.editor-encoding-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.editor-encoding-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 </style>
