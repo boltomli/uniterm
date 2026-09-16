@@ -1551,8 +1551,77 @@ func (a *App) SaveCommand(name, description, argumentHint, body string) error {
 	return a.commandsStore.SaveCommand(name, description, argumentHint, body)
 }
 
-func (a *App) OpenFileDialog() (string, error) {
-	return a.app.Dialog.OpenFile().SetTitle("Select File").PromptForSingleSelection()
+// expandDialogDir expands a leading "~" and returns dir only if it is an
+// existing absolute directory; otherwise it returns "".
+func expandDialogDir(dir string) string {
+	if dir == "~" || strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		dir = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(dir, "~"), "/"))
+	}
+	if dir == "" || !filepath.IsAbs(dir) {
+		return ""
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return dir
+}
+
+// resolveDialogDir picks the first candidate that is an existing directory,
+// falling back to the home directory. The platform pickers silently ignore a
+// non-existent directory URL and reopen at the OS-remembered "last location",
+// which on macOS is frequently somewhere with no visible route to ~/... (#947),
+// so the fallback has to be resolved here rather than left to the panel.
+func resolveDialogDir(candidates ...string) string {
+	for _, c := range candidates {
+		if dir := expandDialogDir(c); dir != "" {
+			return dir
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// openFileDialog builds an open-file picker that starts in a known-good
+// directory. Hidden files are revealed whenever the start directory is itself
+// inside a dot directory (~/.ssh, ~/.kube): the platform panels hide those
+// entries by default, so navigating up to home and back would otherwise leave
+// the target unreachable rather than merely hard to find.
+func (a *App) openFileDialog(title, startDir string) *application.OpenFileDialogStruct {
+	dir := resolveDialogDir(startDir)
+	return a.app.Dialog.OpenFile().
+		SetTitle(title).
+		SetDirectory(dir).
+		ShowHiddenFiles(hasHiddenSegment(dir))
+}
+
+// hasHiddenSegment reports whether any path segment starts with a dot, i.e.
+// whether reaching dir again by hand requires hidden files to be visible.
+func hasHiddenSegment(dir string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
+		if len(seg) > 1 && seg[0] == '.' {
+			return true
+		}
+	}
+	return false
+}
+
+// OpenFileDialog opens a single-file picker. startDir is optional and accepts
+// "~"-prefixed paths; it defaults to the home directory.
+func (a *App) OpenFileDialog(startDir ...string) (string, error) {
+	return a.openFileDialog("Select File", firstArg(startDir)).PromptForSingleSelection()
+}
+
+// firstArg unwraps the optional trailing argument the dialog bindings take, so
+// existing zero-argument callers keep working.
+func firstArg(args []string) string {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return ""
 }
 
 // OpenPrivateKeyFile opens the private-key picker, reads the selected file's
@@ -1560,8 +1629,12 @@ func (a *App) OpenFileDialog() (string, error) {
 // content is validated before returning; a passphrase-protected key is accepted
 // (the user supplies its passphrase separately) but content that doesn't look
 // like a PEM private key is rejected with an immediate error.
+//
+// The picker starts in ~/.ssh with hidden files shown, since that is where keys
+// live and a dot directory is otherwise unreachable in the panel.
 func (a *App) OpenPrivateKeyFile() (string, error) {
-	path, err := a.app.Dialog.OpenFile().SetTitle("Select Private Key").PromptForSingleSelection()
+	path, err := a.openFileDialog("Select Private Key", "~/.ssh").
+		PromptForSingleSelection()
 	if err != nil {
 		return "", err
 	}
@@ -1615,8 +1688,11 @@ func looksLikePrivateKeyPEM(data []byte) bool {
 // returns its text for pasting into the inline kubeconfig field. The content is
 // parsed as a kubeconfig before returning so obviously wrong files are rejected
 // up front; full connection validity is still checked when a context is loaded.
+// Starts in ~/.kube with hidden files shown, for the same reason as the key
+// picker.
 func (a *App) OpenKubeconfigFile() (string, error) {
-	path, err := a.app.Dialog.OpenFile().SetTitle("Select Kubeconfig").PromptForSingleSelection()
+	path, err := a.openFileDialog("Select Kubeconfig", "~/.kube").
+		PromptForSingleSelection()
 	if err != nil {
 		return "", err
 	}
@@ -1636,40 +1712,43 @@ func (a *App) OpenKubeconfigFile() (string, error) {
 
 // OpenFileDialogFiltered is like OpenFileDialog but restricts the picker to
 // a single extension filter (e.g. for importing a specific file format).
-func (a *App) OpenFileDialogFiltered(title, filterDisplayName, filterPattern string) (string, error) {
+func (a *App) OpenFileDialogFiltered(title, filterDisplayName, filterPattern string, startDir ...string) (string, error) {
 	return a.app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
-		Title: title,
+		Title:     title,
+		Directory: resolveDialogDir(firstArg(startDir)),
 		Filters: []application.FileFilter{
 			{DisplayName: filterDisplayName, Pattern: filterPattern},
 		},
 	}).PromptForSingleSelection()
 }
 
-func (a *App) OpenMultipleFilesDialog() ([]string, error) {
-	return a.app.Dialog.OpenFile().SetTitle("Select Files").PromptForMultipleSelection()
+func (a *App) OpenMultipleFilesDialog(startDir ...string) ([]string, error) {
+	return a.openFileDialog("Select Files", firstArg(startDir)).
+		PromptForMultipleSelection()
 }
 
-func (a *App) OpenDirectoryDialog() (string, error) {
-	return a.app.Dialog.OpenFile().
-		SetTitle("Select Directory").
+func (a *App) OpenDirectoryDialog(startDir ...string) (string, error) {
+	return a.openFileDialog("Select Directory", firstArg(startDir)).
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
 		PromptForSingleSelection()
 }
 
-func (a *App) SaveFileDialog(defaultName string) (string, error) {
+func (a *App) SaveFileDialog(defaultName string, startDir ...string) (string, error) {
 	return a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
-		Title:    "Save File",
-		Filename: defaultName,
+		Title:     "Save File",
+		Filename:  defaultName,
+		Directory: resolveDialogDir(firstArg(startDir)),
 	}).PromptForSingleSelection()
 }
 
 // SaveFileDialogFiltered is like SaveFileDialog but restricts the picker to
 // a single extension filter (e.g. for exporting a specific file format).
-func (a *App) SaveFileDialogFiltered(title, defaultName, filterDisplayName, filterPattern string) (string, error) {
+func (a *App) SaveFileDialogFiltered(title, defaultName, filterDisplayName, filterPattern string, startDir ...string) (string, error) {
 	return a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
-		Title:    title,
-		Filename: defaultName,
+		Title:     title,
+		Filename:  defaultName,
+		Directory: resolveDialogDir(firstArg(startDir)),
 		Filters: []application.FileFilter{
 			{DisplayName: filterDisplayName, Pattern: filterPattern},
 		},
