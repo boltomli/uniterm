@@ -27,6 +27,7 @@
 
 **Improvements**
 - Connection form: RDP smart sizing defaults to off, the shell resets when switching local/WSL, credentials clear when switching auth type, identity auth is listed first, and validation errors surface instead of being swallowed.
+- Connection form (SSH): a one-click "use default key" action for the key-path field — fills the first standard OpenSSH key that actually exists (`id_ed25519`/`id_rsa`/`id_ecdsa`/`id_dsa`), and repeated clicks cycle through the ones present. (@Sunshow)
 - Terminal: the search bar follows the app theme colors.
 - Terminal: input broadcast now works across all tabs and workspaces, not just within one workspace — right-click a terminal or workspace tab to add it as a broadcast target.
 - Local shells (Windows): auto-detection of Cygwin, MSYS2 and Nushell.
@@ -93,6 +94,7 @@ Thanks to @windtear, @kxn, @surenwuyuwuqiu, @boltomli, @Sunshow, and @feuvan for
 
 **改进**
 - 连接表单：RDP 智能缩放默认关闭；切换 本地/WSL 时重置 Shell；切换认证方式时清除凭据；身份认证排到认证方式首位；表单校验错误如实提示不再吞掉。
+- 连接表单（SSH）：密钥路径新增一键「使用默认密钥」——自动填入本机实际存在的标准 OpenSSH 密钥（`id_ed25519`/`id_rsa`/`id_ecdsa`/`id_dsa`），再次点击在存在的密钥间轮换。（@Sunshow）
 - 终端：搜索栏颜色跟随应用主题。
 - 终端：输入广播不再局限于单个工作区——右键任意终端或工作区标签即可加入广播目标，全应用内广播。
 - 本地终端（Windows）：自动检测 Cygwin、MSYS2、Nushell。
