@@ -14,7 +14,7 @@ When submitting an issue, please include as much as possible:
 
 ## Contributing
 
-Pull Requests are welcome.
+Pull Requests are welcome. Please read the [contributing guide](https://github.com/ys-ll/uniterm/blob/main/CONTRIBUTING.md) before submitting.
 
 - [GitHub Repository](https://github.com/ys-ll/uniterm)
 

@@ -14,7 +14,7 @@
 
 ## 参与贡献
 
-欢迎提交 Pull Request 参与开发。
+欢迎提交 Pull Request 参与开发，提交前请阅读[贡献指南](https://github.com/ys-ll/uniterm/blob/main/CONTRIBUTING.md)。
 
 - [GitHub 仓库](https://github.com/ys-ll/uniterm)
 

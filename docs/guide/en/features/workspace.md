@@ -9,7 +9,9 @@ uniTerm manages multiple connections through tabs and displays multiple terminal
 ### Tab Operations
 
 - **New Tab** — Double-click a connection in the left connection list, or right-click a connection and select a connection method
-- **Switch Tabs** — Click the tabs at the top to switch
+- **Switch Tabs** — Click the tabs at the top to switch; press `Ctrl+1–9` to switch tabs by number (`⌘+1–9` on macOS), viewable in Settings → Shortcuts
+- **Duplicate Session** — Press `Ctrl+Shift+D` to duplicate the current session within the current workspace
+- **Connect to Workspace** — Right-click an SSH connection in the sidebar and choose "Connect to Workspace" to open the new session directly into an existing workspace
 - **Close Tab** — Click the × button on the right side of a tab, or right-click to close
 
 ### Tab Dragging
@@ -22,19 +24,25 @@ uniTerm manages multiple connections through tabs and displays multiple terminal
 
 Right-click a tab to open a context menu. Different tab types show different items:
 
-**Common Menu (all tabs):**
+**Common menu (all tabs):**
 - Rename — Change the tab display name
-- Close — Close the tab
+- Locate connection — Locate the current connection in the sidebar connection list
+- Lock Tab — Lock the AI's operations on this terminal
+- Close / Close Other Tabs / Close Tabs to the Right / Close Tabs to the Left
 
-**Terminal Menu (SSH / Local):**
-- Duplicate Session — Copy the current connection and open a new tab
+**Terminal menu (SSH / Local):**
+- Duplicate Session — Duplicate the current session within the current workspace
+- Reconnect — Reconnect the current session after a disconnect
+- Copy Host Address — Copy the target host address
+- Broadcast to this tab — Add the current tab to the input broadcast targets
 - Text Search — Search for keywords in terminal output
 - Export Text — Export terminal output as a text file
+- Start / Stop Logging — Start or stop session logging at any time
 
-**SSH-Specific Menu:**
-- Open SFTP — Open the SFTP file browser on the current connection
-- Upload File — Send the `rz -be` command to the terminal
-- Open Server Monitor — Open the monitoring panel on the current connection
+**SSH-specific menu:**
+- Open SFTP / Open SCP — Open the file panel on the current connection
+- Upload File (rz -be) — Send the `rz -be` command to the terminal
+- Server Monitor — Open the monitoring panel on the current connection
 
 ## Workspace
 
@@ -46,28 +54,20 @@ Right-click a tab to open a context menu. Different tab types show different ite
 
 ### Panel Menu
 
-Each terminal panel provides action buttons on the right side of the title bar:
+Each terminal panel provides action buttons on its title bar; right-clicking the title bar also opens the same menu as the tab:
 
-- **Broadcast** — When enabled, input in the current panel is synchronized to all terminals in the workspace
-- **AI Lock** — Pin the AI Assistant to this panel. When locked, the panel title bar is highlighted
-- **More** — Dropdown menu (similar to the tab right-click menu):
-
-  Terminal menu:
-  - Duplicate Session
-  - Text Search
-  - Export Text
-
-  SSH-specific menu:
-  - Open SFTP
-  - Upload File
-  - Open Server Monitor
+- **Duplicate Session** — Duplicate the current session as a new panel in the workspace
+- **Maximize panel** — Maximize the panel to fill the workspace; click again to restore. Default shortcut is `Ctrl+Shift+Enter`, rebindable in Settings → Shortcuts
+- **Broadcast** — When enabled, the current panel joins the input broadcast targets
+- **AI Lock** — Pin the AI Assistant to this panel. When locked, the whole tab and the panel title bar show a warning-colored background
+- **More** — Dropdown menu (similar to the tab right-click menu): Duplicate Session, Reconnect, Text Search, Export Text, Open SFTP / SCP, Upload File, Server Monitor, and more
 - **Close** — Close the current panel
 
 ### Broadcast Input
 
-When broadcast input is enabled, content typed in any terminal in the current workspace is simultaneously sent to all terminals in that workspace. This is useful for executing the same command on multiple servers at once.
+When broadcast input is enabled, content typed in any broadcast target terminal is sent simultaneously to all broadcast targets. Targets are not limited to the current workspace — right-click any terminal tab or workspace panel to join or leave the broadcast, freely combining tabs across tabs and workspaces. This is useful for executing the same command on multiple servers at once.
 
 ::: tip Related
 - [Remote Terminal](/en/connections/remote-terminal) — SSH tab right-click menu
-- [Personalization](/en/features/personalization) — Adjust interface themes
+- [Personalization](/en/features/personalization) — Adjust the interface theme
 :::

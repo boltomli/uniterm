@@ -30,23 +30,29 @@ Supports Anthropic and OpenAI-compatible APIs. You can add multiple models and s
 | Base URL | API endpoint address. OpenAI defaults to `https://api.openai.com/v1`, Anthropic defaults to `https://api.anthropic.com` |
 | User-Agent | Optional. Custom User-Agent header identifier. Presets include uniTerm, Claude Code, Cursor, and manual input is also supported |
 | API Key | API authentication key, stored as a password |
-| Model | Model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`). Use the "Fetch Model List" button to pull available models from the API |
+| Model | Model name (e.g. `gpt-4o`, `claude-sonnet-4-20250514`). Use the "Fetch Models" button to pull available models from the API; the dropdown shows display names while the real model ID is saved |
 | Test Connection | After filling in the API Key and model, click "Test Connection" to verify the configuration |
+| Proxy | Optional. Route model requests through a specific or system proxy — see [Proxy](/en/features/proxy) |
 
 **Multi-Model Management:**
 
 - Supports adding multiple model configurations, each with independent protocol, address, and key settings
 - Switch the active model from the dropdown menu at the top of the AI sidebar
 - Edit or delete existing model configurations in Settings
+- The model catalog and the AI autonomous round limit sync across devices via cloud sync
 
 ### Execution Mode
 
 | Mode | Description |
 |------|------|
-| Skip | All commands execute directly without confirmation |
-| Dangerous Only | Potentially dangerous commands (rm, sudo, etc.) require confirmation |
-| Dangerous + Write | Dangerous commands and file write operations require confirmation |
 | Confirm All | Every command requires manual confirmation |
+| Confirm Write | Dangerous commands and file write operations require confirmation |
+| Confirm Dangerous | Only high-risk commands such as rm and sudo require confirmation (default) |
+| Bypass All | All commands execute directly without confirmation |
+
+### Max Autonomous Rounds
+
+In Settings you can configure "Max Autonomous Rounds", which limits the maximum number of dialogue rounds in which the AI autonomously executes commands and responds. Set it to 0 for unlimited; the default is 20.
 
 ### Terminal Integration
 
@@ -63,11 +69,21 @@ The AI Assistant is deeply integrated with the terminal — commands run directl
 **Selecting the Target Terminal:**
 
 - **Follow Active Tab** (default) — AI commands execute in the currently active terminal tab. When you switch tabs, subsequent commands automatically switch to the new tab
-- **Pin to a Specific Tab** — Click the pin button at the top of the AI panel and select an open terminal tab. All subsequent AI commands will execute in that tab regardless of tab switching
+- **Associated Terminals** — Click `[+]` at the top of the AI panel to add one or more associated terminals. All AI commands then execute in the associated terminals, unaffected by tab switching
+
+**AI Lock:**
+
+After locking the AI to a panel, that tab and the panel title bar show a warning-colored background. AI commands only execute in that panel, so the target is clear at a glance.
 
 **Split-Screen Collaboration:**
 
 Drag the AI conversation panel to the right area to form a left-right split with the terminal. View the AI's analysis and plan on one side while observing execution results in the terminal on the other — neither side obstructs the other.
+
+## Session Management
+
+- **Rename a session** — Sessions in the "Recent Sessions" dropdown can be renamed
+- **Export as Markdown** — Right-click a message bubble to export the entire conversation as a Markdown file
+- **Delete messages** — Right-click a message bubble to delete just that message, or to delete it and everything after it (context rollback)
 
 ## Skills and Commands
 
@@ -105,5 +121,5 @@ A command is a reusable prompt template with argument placeholders, invoked quic
 - **Management** — Same as skills: create, edit, delete, enable, and lock
 
 ::: tip Related
-- [Smart Suggestions](/en/features/smart-suggest) — AI-driven command completion
+- [Remote Terminal](/en/connections/remote-terminal) — Intelligent completion for terminal input
 :::

@@ -60,25 +60,30 @@ Click the "Sync Now" button, and uniTerm will automatically compare local and re
 
 When auto-sync is enabled:
 - Sync automatically once at **startup**
-- Upload automatically after **each modification** to connections, settings, or quick commands
+- Upload automatically after **each modification** to connections, favorites, quick commands, tunnels, identities, or proxies
 
 ## Sync Contents
 
-The following data is synchronized (encrypted before storage):
+The following data is synchronized (stored encrypted):
 
 - Connection list and groups
-- Application settings (including AI model configuration)
+- Connection favorites
+- AI configuration (model catalog and autonomous turn limit)
 - Quick commands
+- SSH tunnels
+- Keystore identities
+- Proxies
 
 Data that is NOT synchronized:
 
+- Application personalization settings (theme, paths, shell, shortcuts, interface layout, etc. — effective only on the local machine)
+- AI sessions and skills (local only)
 - Cloud sync configuration itself (configured independently per device)
-- Interface layout state
 - Terminal history
 
 ## Conflict Handling
 
-When multiple devices modify data simultaneously and the latest version is not pulled before pushing, conflicts may occur. uniTerm will show a conflict resolution dialog with two options:
+Synchronization pulls from the remote before pushing, so conflicts generally do not occur when two machines are used alternately. When multiple devices modify the same data at the same time without pulling the latest version before pushing, uniTerm shows a conflict resolution dialog with two options:
 
 - **Use Local Data** — Use the current device's data as authoritative, overwriting the remote repository
 - **Use Remote Data** — Use the remote repository's data as authoritative, overwriting the current device

@@ -1,32 +1,35 @@
 # Personalization
 
-uniTerm provides a wealth of personalization options to make the terminal fit your workflow and aesthetic preferences.
+uniTerm provides rich personalization options to make the terminal fit your workflow and aesthetic preferences.
 
 ## Application Settings
 
 ### Interface Theme
-
-3 UI themes:
 
 | Theme | Description |
 |------|------|
 | Dark | Classic dark theme, easy on the eyes |
 | Deep Blue | Deep blue tech feel |
 | Light | Bright and refreshing |
+| System | Automatically follows the operating system's light/dark mode |
+
+### Interface Font Size
+
+The entire interface scales from a unified base size. "Interface Font Size" in the settings adjusts the base text size of the application interface. Changes **take effect immediately** — no restart needed. The default value depends on the platform: the base is 14px on macOS and 12px on other platforms.
 
 ### Language
 
 Supports 9 interface languages. Changes take effect immediately without restart:
 
-- 简体中文 (Simplified Chinese)
-- 繁體中文 (Traditional Chinese)
+- 简体中文
+- 繁體中文
 - English
-- 日本語 (Japanese)
-- 한국어 (Korean)
-- Deutsch (German)
-- Español (Spanish)
-- Français (French)
-- Русский (Russian)
+- 日本語
+- 한국어
+- Deutsch
+- Español
+- Français
+- Русский
 
 ## Terminal Settings
 
@@ -36,12 +39,19 @@ Adjust the terminal's appearance and behavior in the "Terminal" settings tab.
 
 ### Color Schemes
 
-**27** built-in terminal color schemes, covering popular themes such as Solarized, Dracula, Monokai, Nord, Gruvbox, Catppuccin, and Tokyo Night. Also supports **custom color schemes** — individually adjust foreground color, background color, and 16 ANSI colors to create your own unique color scheme. Supports importing/exporting `.itermcolors` format color scheme files.
+Multiple popular built-in color schemes, grouped by dark / light. You can also **create custom color schemes**, and import / export color scheme files in `.itermcolors` format.
 
 ### Font
 
-- **Font Family** — The dropdown automatically fetches installed system fonts with real-time preview on selection
+- **Font Family** — The dropdown automatically fetches installed system fonts (check "Monospace only" to filter), with a real-time preview on selection
+- **Fallback Font** — Used when the primary font is missing characters (such as Chinese)
+- **Font Weight** — Regular / Medium / SemiBold / Bold
 - **Font Size** — Range 8–32, default 14
+
+### Cursor Style
+
+- **Cursor Style** — Block / Underline / Bar
+- **Cursor Blink** — Toggle
 
 ### Scrollback Lines
 
@@ -76,4 +86,4 @@ uniTerm supports customizable keyboard shortcuts.
 
 ![Shortcuts Settings](/imgs/shortcuts_light.webp)
 
-In Settings → Shortcuts, search or browse all bindable actions. Click an action and then press the desired key combination to complete the binding. Supports single keys and key combinations (including `Ctrl` / `Alt` / `Shift` / `Meta`).
+In Settings → Shortcuts, all bindable actions are shown in sections and can be searched or browsed. Click an action and then press the desired key combination to complete the binding. Supports single keys and key combinations (including `Ctrl` / `Alt` / `Shift` / `Meta`).

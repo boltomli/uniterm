@@ -18,9 +18,11 @@ RDP (Remote Desktop Protocol) is the built-in remote desktop protocol of Windows
 | Port | Default 3389 |
 | Username | Windows login username |
 | Password | Windows login password |
-| Resolution | Optional fixed resolution (800x600 to 2560x1440), default 1280x720 |
-| Smart Scaling | When enabled, the remote desktop automatically scales to fit the window size |
-| Network Level Authentication | Enable NLA (compatible with all Windows versions, enter password in credential dialog); disable NLA to save password, but only compatible with Windows 7 / Server 2008 and servers with NLA turned off |
+| Domain | Optional, the Windows domain name (e.g. `WORKGROUP`) |
+| Session Mode | Normal session / Admin session (attach to the console session, like `mstsc /admin`) |
+| Resolution | Full screen by default; alternatively choose a preset fixed resolution or a custom resolution |
+| Smart Sizing | When enabled, the remote desktop automatically scales to fit the window size; off by default |
+| Network Level Authentication | Enabled (compatible with all Windows versions, enter password in credential dialog) / Disabled (only for Windows 7 / Server 2008 and servers with NLA turned off) |
 | SSH Tunnel | Select an existing SSH connection as a jump host |
 
 ## VNC
@@ -47,7 +49,7 @@ SPICE (Simple Protocol for Independent Computing Environments) is optimized for 
 | Parameter | Description |
 |------|------|
 | Host | SPICE server IP or domain name |
-| Port | Default 5900. Values less than 100 are treated as libvirt display numbers (5900 is automatically added) |
+| Port | Default 5900 |
 | Password | SPICE authentication password |
 
 > SPICE does not support SSH tunnels.
@@ -67,7 +69,7 @@ X11 Desktop launches a complete Linux desktop environment (GNOME, KDE, XFCE, MAT
 | Host | SSH server IP or domain name |
 | Port | Default 22 |
 | Username | SSH login username |
-| Auth Method | Password or key |
+| Auth Type | Identity / Password / Key Path / Key Text / Kerberos / SSH Agent |
 | Desktop Environment | Select GNOME, KDE, XFCE, MATE, Cinnamon, Openbox, or a custom command |
 
 ::: tip Related

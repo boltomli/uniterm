@@ -23,7 +23,7 @@
 - Monitor: new Services, Hardware Devices and IPMI tabs; the system info tab gains a clock section showing host clock skew.
 - Auto-update: in-app updates with GitHub/Gitee dual-source failover, streaming download progress, SHA256 verification and one-click install; the update source is selectable in Settings → About; release notes render as localized markdown. (@Sunshow)
 - UI: a major display overhaul, especially on macOS — the entire interface now scales on a rem baseline, with a new "UI font size" setting that takes effect immediately (platform-aware defaults; the macOS baseline is raised to 14px), and the forced grayscale font smoothing is removed. This fixes text rendering too small and looking blurry on macOS.
-- Zmodem: a default download directory setting, so received files land there without asking each time.
+- Zmodem: a default download directory setting, so received files land there without asking each time. (@windtear)
 
 **Improvements**
 - Connection form: RDP smart sizing defaults to off, the shell resets when switching local/WSL, credentials clear when switching auth type, identity auth is listed first, and validation errors surface instead of being swallowed.
@@ -90,7 +90,7 @@ Thanks to @windtear, @kxn, @surenwuyuwuqiu, @boltomli, @Sunshow, and @feuvan for
 - 监控：新增 服务、硬件设备、IPMI 三个标签页；系统信息新增时钟区，展示主机时钟与本机偏差。
 - 自动更新：应用内更新，GitHub/Gitee 双源自动切换，流式下载进度、SHA256 校验与一键安装；设置 → 关于中可选择更新源；更新说明按语言渲染为 Markdown。（@Sunshow）
 - 界面：界面显示整体优化（重点针对 macOS）——整个界面改为基于 rem 基准缩放，新增「界面字号」设置（即时生效，默认值随平台；macOS 默认基准字号提升为 14px），并移除强制灰度字体平滑，解决 macOS 下文本偏小、字体发虚的问题。
-- Zmodem：新增默认下载目录设置，接收的文件直接保存到该目录，不再每次询问。
+- Zmodem：新增默认下载目录设置，接收的文件直接保存到该目录，不再每次询问。（@windtear）
 
 **改进**
 - 连接表单：RDP 智能缩放默认关闭；切换 本地/WSL 时重置 Shell；切换认证方式时清除凭据；身份认证排到认证方式首位；表单校验错误如实提示不再吞掉。

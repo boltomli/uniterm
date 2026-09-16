@@ -15,7 +15,7 @@ uniTerm 支持 30+ 种连接协议，覆盖远程终端、远程桌面、文件�
 
 | 类型 | 说明 |
 |------|------|
-| Local Shell | PowerShell、CMD、Git Bash、bash、zsh 等 |
+| Local Shell | PowerShell、CMD、Clink、Cygwin、MSYS2、Nushell、管理员终端（Windows）、bash、zsh 等 |
 | WSL | Windows Subsystem for Linux，打开已安装的 Linux 发行版 |
 | Serial | 串口连接，可配置波特率、数据位、停止位、校验位 |
 
@@ -33,11 +33,19 @@ uniTerm 支持 30+ 种连接协议，覆盖远程终端、远程桌面、文件�
 | 协议 | 默认端口 | 说明 |
 |------|----------|------|
 | SFTP | 22 (SSH) | 基于 SSH 的安全文件传输 |
-| SCP | 22 (SSH) | 基于 SSH 的文件传输，兼容无 SFTP 子系统的服务器 |
+| SCP | 22 (SSH) | 基于 SSH 的文件传输，兼容无 SFTP 子系统的服务器（SSH 连接可在 SFTP / SCP 间选择） |
 | FTP / FTPS | 21 | 传统文件传输及加密版本 |
 | SMB | 445 | Windows 文件共享 |
 | WebDAV | 80 / 443 | 基于 HTTP 的文件管理 |
 | S3 | 自定义 | 兼容 S3 API 的对象存储 |
+| Zmodem | -（SSH 终端内） | SSH 终端内 `rz`/`sz` 传输，支持默认下载目录 |
+| WSL 文件 | //wsl.localhost | 浏览与管理 Windows WSL 发行版文件 |
+
+## 服务器监控
+
+| 类型 | 连接方式 | 说明 |
+|------|----------|------|
+| Monitor | SSH | CPU / 内存 / 网络 / 磁盘 / 进程监控，端口与硬件明细；服务管理、硬件设备、IPMI 标签页 |
 
 ## 数据库
 

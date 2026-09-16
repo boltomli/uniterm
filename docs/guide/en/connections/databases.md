@@ -1,12 +1,14 @@
 # Databases
 
-uniTerm has a built-in database client that supports mainstream relational databases, Redis, and MongoDB.
+uniTerm has a built-in database client that supports mainstream relational databases, Redis, MongoDB, and Elasticsearch.
 
 ## Relational Databases
 
 ![Database](/imgs/database_light.webp)
 
 ### Supported Databases
+
+**SQL databases:**
 
 | Database | Default Port |
 |--------|----------|
@@ -16,11 +18,19 @@ uniTerm has a built-in database client that supports mainstream relational datab
 | SQL Server | 1433 |
 | rqlite | 4001 |
 
+**NoSQL databases:**
+
+| Database | Default Port |
+|--------|----------|
+| Redis | 6379 |
+| MongoDB | 27017 |
+| Elasticsearch | 9200 |
+
 ### Connection Parameters
 
 | Parameter | Description |
 |------|------|
-| Host | Database server address |
+| Host | Database server address. SQL Server supports the `server\instance` named-instance syntax; when no port is given, the instance port is resolved automatically via SQL Browser |
 | Port | Default port auto-filled for each database type |
 | Username | Database login user |
 | Password | Database login password |
@@ -35,24 +45,30 @@ The left-side tree panel displays the database hierarchy. After connecting, you 
 - **Search** -- Type keywords in the top search box to filter table and view names in real time. All databases are automatically expanded during search
 - **Double-click to Open** -- Double-click a database name to enter its query page. Double-click a table or view name to enter the data browsing page
 
-The context menu provides the following operations:
+The context menu offers actions per node type:
 
-- **New** -- Create a new database or new table
-- **Query** -- Open SQL query or data browsing
-- **Manage** -- View table structure, truncate table, delete table/view/database
-- **Refresh** -- Reload the table list
+- **Database node** -- Table and view list, New Query, Run SQL File, New Database, New Table, Drop Database, Refresh
+- **Table node** -- Open Data, Table Structure, Copy Name, Copy Table, Export (structure only / data only / structure + data), Truncate Table, Drop Table
+- **View node** -- Open Data, Copy Name, Export, Drop View
+- **Blank area** -- New Query, New Database, Refresh
 
 ### Data Query
 
 - **AI Natural Language** -- Describe the query in plain language in the AI input box at the top, and AI fetches table schemas to generate the SQL statement
-- **SQL Query** -- Enter SQL and click Execute or press `Ctrl+Enter` to run. Results are displayed in a table; NULL values are shown in italics. Double-clicking a table name runs a default query for the first 100 rows
-- **Insert Row** -- Automatically detects column types, default values, and auto-increment columns to generate a blank insert form
-- **Edit Row** -- Click the pencil icon to open the edit form. Supports modifying all columns and toggling NULL (requires the query result to include the primary key column)
-- **Delete Row** -- Click the delete icon and confirm to delete (requires the query result to include the primary key column)
+- **SQL Query** -- Enter SQL and click Execute or press `Ctrl+Enter` to run. Results are displayed in a table, NULL values are shown in italics, and affected row count and elapsed time are displayed. Double-clicking a table name runs a default query for the first 100 rows
+- **Inline Editing** -- Double-click a cell to edit it directly (nullable columns can be set to NULL in one click). Changes are staged first, and the save bar at the bottom saves or reverts them in batch (requires the query result to include the primary key column)
+- **Edit Row / Add Row / Delete Row** -- Form-based operations with automatic detection of column types, default values, and auto-increment columns
+- **Query History** -- The "Query History" panel in the toolbar records executed SQL, row counts, and elapsed time. Click an entry to fill it back in and re-run
+- **Export Results** -- Query results can be exported as CSV / TXT / JSON
+- **Filter & Pagination** -- The result toolbar filters in real time; data browsing mode supports pagination (100 / 200 / 500 rows per page)
+
+### Run SQL File
+
+Right-click a database name and choose "Run SQL File" to execute `.sql` scripts in batch: on success, a prompt shows the number of statements executed and the cumulative affected rows; on failure, it reports the failing line number, error details, and the failed statement.
 
 ### Table and View List
 
-Double-click a database name to enter. Displays all tables and views in that database in table format, with support for search and sorting. Each row supports truncate table, delete table/view. Dangerous operations require entering the name for confirmation.
+Double-click a database name to enter. Displays all tables and views in that database in table format, with support for search and sorting. Each row supports truncate table and drop table/view. Dangerous operations require entering the name for confirmation.
 
 ### Table Structure Browser
 
@@ -77,11 +93,13 @@ Redis provides key-value data browsing and management.
 | Port | Default 6379 |
 | Username | Redis ACL username (optional, Redis 6+) |
 | Password | Redis authentication password (optional) |
+| Mode | Standalone / Sentinel. Sentinel mode requires the sentinel node addresses and the master name, with optional sentinel username / password |
+| Key Separator | The delimiter used to organize key names into a folder tree, default `:` |
 | SSH Tunnel | When enabled, encrypts the connection to intranet Redis via an SSH jump host |
 
 ### Key Browsing
 
-The left panel shows a list of all keys, displaying key names and data types, with support for searching and filtering by name. Selecting a key displays its value content in the right panel, with different types rendered in their corresponding formats.
+The left panel shows all keys, with a toggle between **tree view / flat view**: in tree mode, key names are split into folder levels by the "Key Separator"; flat mode is a traditional list. Keys can be filtered by name search. After selecting a key, its value content is shown on the right, with different types rendered in their corresponding formats.
 
 The context menu provides the following operations:
 
@@ -142,6 +160,23 @@ The left-side tree panel displays the MongoDB hierarchy: databases, collections,
 ### Index Management
 
 View existing indexes, create new indexes with custom keys and options.
+
+
+## Elasticsearch
+
+Elasticsearch provides browsing and management of clusters, indexes, and documents.
+
+### Cluster Browsing
+
+- **Cluster Tab** -- View cluster info, node list, data nodes, shard distribution, and health status
+- **Index List** -- Search indexes, hide system indexes, create a new index; open / close / delete indexes
+
+### Document Management
+
+- **Multi-tab View** -- Each index can be opened in its own document tab
+- **Document CRUD** -- Create (leave the ID empty to auto-generate), edit, and delete documents
+- **Query** -- Three ways to query: simple queries (e.g. `status:active`), DSL queries, and REST requests
+- **Mapping / Settings** -- View the index structure and configuration
 
 ::: tip Related
 - [Remote Terminal](/en/connections/remote-terminal) -- SSH tunnel configuration
