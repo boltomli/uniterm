@@ -264,7 +264,9 @@ const localListing = useFileListing({
   list: SftpListLocal,
   changeDir: SftpChangeLocalDir,
   resolveTarget: resolveLocalTarget,
-  initialDir: '/',
+  // No initialDir: an empty dir lets the backend answer with its own localCwd,
+  // which starts at the home directory. Passing '/' here used to override that
+  // and open the pane at the filesystem root, several clicks from ~ (#947).
   afterList: async (dir) => {
     const sid = panel.value?.sessionId
     if (!sid || !/^[A-Za-z]:\\$/.test(dir)) return
@@ -329,6 +331,9 @@ const remotePanel = useFilePanel({
   openExternal: (sid, path, cmd) => SftpOpenExternalEditor(sid, path, cmd),
   openWithSystem: (sid, path) => SftpOpenWithSystem(sid, path),
   bookmarkMode: 'remote',
+  // Upload/download pickers open at the local pane's directory, so the two
+  // halves of the tab stay in step.
+  localCwd: () => localListing.cwd.value,
 })
 const localPanel = useFilePanel({
   sid: () => panel.value?.sessionId,

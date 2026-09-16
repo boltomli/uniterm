@@ -130,7 +130,7 @@ watch(() => props.visible, (v) => {
 
 async function selectKeyFile() {
   try {
-    const p = await OpenFileDialog()
+    const p = await OpenFileDialog('~/.ssh')
     if (p) form.keyPath = p
   } catch (e) { console.error('select key file:', e) }
 }

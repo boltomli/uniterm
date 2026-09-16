@@ -1465,7 +1465,7 @@ async function reloadK8sContexts() {
 
 async function selectKeyFile() {
   try {
-    const selected = await OpenFileDialog()
+    const selected = await OpenFileDialog('~/.ssh')
     if (selected) form.keyPath = selected
   } catch (e) {
     console.error('select key file:', e)
@@ -1515,7 +1515,7 @@ async function importKubeconfigText() {
 
 async function pickKubeconfigFile() {
   try {
-    const selected = await OpenFileDialog()
+    const selected = await OpenFileDialog('~/.kube')
     if (selected) form.k8sConfigPath = selected
   } catch (e) {
     console.error('pick kubeconfig:', e)

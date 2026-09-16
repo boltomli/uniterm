@@ -299,6 +299,9 @@ export interface FilePanelOptions {
   openWithSystem?: (sid: string, path: string) => Promise<unknown>
   /** Which bookmark list this panel's paths belong to. */
   bookmarkMode: 'local' | 'remote'
+  /** Local directory the upload/download pickers should open at. Defaults to
+   *  the home directory when omitted or when the path no longer exists. */
+  localCwd?: () => string | undefined
 }
 
 export function useFilePanel(opts: FilePanelOptions) {
@@ -544,7 +547,7 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
-      const localPaths = await OpenMultipleFilesDialog()
+      const localPaths = await OpenMultipleFilesDialog(opts.localCwd?.() || '')
       if (!localPaths?.length) return
       const names = localPaths.map(fp => fp.replace(/\\/g, '/').split('/').pop() || 'upload')
       const action = await conflicts.resolveConflicts(names, files.value.map(f => f.name))
@@ -568,7 +571,7 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
-      const dir = await OpenDirectoryDialog()
+      const dir = await OpenDirectoryDialog(opts.localCwd?.() || '')
       if (!dir) return
 
       const fileNames = items.filter(i => i.name !== '..').map(i => i.name)
