@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.9.3
+## v1.9.4
 
 ### What's Changed
 
@@ -61,6 +61,7 @@
 - macOS IME: fixed uppercase letters being dropped when the IME swallows the keypress (e.g. Doubao in English mode). (@surenwuyuwuqiu)
 - AI: the model dropdown populated by "Fetch Models" now shows each model's display name but stores the actual model ID — previously the display name itself was saved as the model, so requests used the wrong model name. (@feuvan)
 - UI: the "download to" overwrite/rename conflict prompt works again, and the AI sidebar search highlight no longer throws on every keystroke.
+- Internal editor: saving files containing Chinese or other non-Latin1 characters no longer fails with a base64 encoding error; switching the encoding no longer discards unsaved edits — the encoding selector is now a two-level menu that separates "reopen with encoding" (re-decode from disk, with a confirmation when unsaved edits exist) from "save with encoding" (affects saving only).
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
@@ -124,6 +125,7 @@ Thanks to @windtear, @kxn, @surenwuyuwuqiu, @boltomli, @Sunshow, and @feuvan for
 - macOS 输入法：修复输入法吞掉按键时大写字母丢失的问题（如豆包英文模式）。（@surenwuyuwuqiu）
 - AI：「拉取模型列表」后的模型下拉框改为显示模型展示名、保存真实模型 ID——此前会把展示名当作模型值保存，导致请求时模型名不正确。（@feuvan）
 - 界面：恢复「下载到」覆盖/重命名冲突提示；修复 AI 边栏搜索高亮每次按键报错的问题。
+- 内置编辑器：修复保存含中文等非 Latin1 字符的文件时报 base64 编码错误的问题；切换编码不再丢失未保存的修改——编码选择改为两级菜单，拆分「以此编码重新打开」（重读磁盘文件，有未保存修改时先确认）与「以此编码保存」（仅影响保存编码）。
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
