@@ -912,6 +912,9 @@ onMounted(async () => {
   window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined) }
   }) as EventListener)
+  window.addEventListener('app:connect-terminal', ((e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d; if (c) onConnect(c)
+  }) as EventListener)
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
   }) as EventListener)

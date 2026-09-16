@@ -137,6 +137,7 @@
   "window.maximize": "Развернуть",
   "window.close": "Закрыть",
   "tab.duplicate": "Дублировать",
+  "tab.openTerminal": "Подключиться по SSH",
   "tab.reconnect": "Переподключиться",
   "tab.reconnectFailed": "Не удалось переподключиться: {error}",
   "tab.copyHostAddress": "Скопировать адрес хоста",
