@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "Key passphrase",
   "conn.keyPassphrasePlaceholder": "Leave empty if the key is not encrypted",
   "conn.selectKeyFile": "Select key file",
+  "conn.useDefaultKey": "Use default key (click again to switch)",
   "conn.keyText": "Key Text",
   "conn.keyContent": "Private Key",
   "conn.keyContentPlaceholder": "Paste the PEM private key text",

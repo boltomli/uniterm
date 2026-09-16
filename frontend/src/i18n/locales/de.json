@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "Schlüsselpasswort",
   "conn.keyPassphrasePlaceholder": "Leer lassen, wenn der Schlüssel nicht verschlüsselt ist",
   "conn.selectKeyFile": "Schlüsseldatei auswählen",
+  "conn.useDefaultKey": "Standard-Schlüssel verwenden (erneut klicken zum Wechseln)",
   "conn.keyText": "Schlüsseltext",
   "conn.keyContent": "Privater Schlüssel",
   "conn.keyContentPlaceholder": "PEM-Text des privaten Schlüssels einfügen",

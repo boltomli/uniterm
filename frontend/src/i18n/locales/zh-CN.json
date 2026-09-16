@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "密钥密码",
   "conn.keyPassphrasePlaceholder": "私钥无密码可留空",
   "conn.selectKeyFile": "选择密钥文件",
+  "conn.useDefaultKey": "使用默认密钥（再次点击切换）",
   "conn.keyText": "密钥文本",
   "conn.keyContent": "密钥内容",
   "conn.keyContentPlaceholder": "粘贴 PEM 私钥文本",

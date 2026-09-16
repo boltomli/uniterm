@@ -1684,6 +1684,33 @@ func (a *App) GetDesktopPath() (string, error) {
 	return filepath.Join(homeDir, "Desktop"), nil
 }
 
+// GetDefaultSSHKeyPaths returns the local default SSH private-key paths for
+// the connection form's "use default" button. The standard OpenSSH names under
+// ~/.ssh are listed in preference order (id_ed25519, id_rsa, id_ecdsa,
+// id_dsa), and only the ones that exist are returned — the frontend cycles
+// through them on repeated clicks. When none exist it returns the
+// conventional ~/.ssh/id_rsa so the field still gets filled. Paths are always
+// absolute — "~" is never expanded at connect time, so a bare "~/.ssh/id_rsa"
+// would fail to read.
+func (a *App) GetDefaultSSHKeyPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	var paths []string
+	for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"} {
+		p := filepath.Join(sshDir, name)
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		paths = append(paths, filepath.Join(sshDir, "id_rsa"))
+	}
+	return paths
+}
+
 func (a *App) GetPlatform() string {
 	return goruntime.GOOS
 }

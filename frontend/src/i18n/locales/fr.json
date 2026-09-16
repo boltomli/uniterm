@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "Phrase secrète de la clé",
   "conn.keyPassphrasePlaceholder": "Laisser vide si la clé n'est pas chiffrée",
   "conn.selectKeyFile": "Sélectionner le fichier de clé",
+  "conn.useDefaultKey": "Utiliser la clé par défaut (cliquer à nouveau pour changer)",
   "conn.keyText": "Texte de clé",
   "conn.keyContent": "Clé privée",
   "conn.keyContentPlaceholder": "Collez le texte de la clé privée PEM",

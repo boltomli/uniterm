@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "Пароль ключа",
   "conn.keyPassphrasePlaceholder": "Оставьте пустым, если ключ не зашифрован",
   "conn.selectKeyFile": "Выбрать файл ключа",
+  "conn.useDefaultKey": "Использовать ключ по умолчанию (повторный клик — переключить)",
   "conn.keyText": "Текст ключа",
   "conn.keyContent": "Приватный ключ",
   "conn.keyContentPlaceholder": "Вставьте текст приватного ключа PEM",

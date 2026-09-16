@@ -73,6 +73,7 @@
   "conn.keyPassphrase": "鍵のパスフレーズ",
   "conn.keyPassphrasePlaceholder": "秘密鍵にパスワードがない場合は空欄",
   "conn.selectKeyFile": "鍵ファイルを選択",
+  "conn.useDefaultKey": "デフォルトの鍵を使用（再クリックで切替）",
   "conn.keyText": "鍵テキスト",
   "conn.keyContent": "秘密鍵",
   "conn.keyContentPlaceholder": "PEM 秘密鍵テキストを貼り付け",
