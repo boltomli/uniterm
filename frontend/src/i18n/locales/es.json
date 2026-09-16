@@ -137,6 +137,7 @@
   "window.maximize": "Maximizar",
   "window.close": "Cerrar",
   "tab.duplicate": "Duplicar",
+  "tab.openTerminal": "Conectar SSH",
   "tab.reconnect": "Reconectar",
   "tab.reconnectFailed": "Error al reconectar: {error}",
   "tab.copyHostAddress": "Copiar dirección del host",

@@ -95,6 +95,7 @@
       <MenuItem v-if="isSsh" @click="openSftp">{{ t(fileMenuKey) }}</MenuItem>
       <MenuItem v-if="isSsh" @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
       <MenuItem v-if="isSsh" @click="openMonitor">{{ t('sidebar.connectMonitor') }}</MenuItem>
+      <MenuItem v-if="isSftpOverSsh" @click="openTerminal">{{ t('tab.openTerminal') }}</MenuItem>
 
       <!-- ④ 关闭标签操作 -->
       <MenuDivider />
@@ -334,6 +335,15 @@ const isSsh = computed(() => {
   return p?.type === 'ssh'
 })
 
+// SSH-derived file tabs (SFTP/SCP from an SSH connection) — used to show the
+// reverse action: open a terminal for the same host.
+const isSftpOverSsh = computed(() => {
+  if (props.tab.type !== 'sftp') return false
+  const p = panelStore.getPanel((props.tab as SFTPTab).panelId)
+  // SCP panels also have config.type === 'ssh'; include them as well.
+  return p?.config?.type === 'ssh'
+})
+
 // Menu label for the file-transfer action follows the connection's protocol
 // preference (Connect SFTP / Connect SCP).
 const fileMenuKey = computed(() => {
@@ -527,6 +537,14 @@ function openMonitor() {
   const panel = panelStore.getPanel((props.tab as TerminalTab).panelId)
   if (panel) {
     window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: panel }))
+  }
+  closeContextMenu()
+}
+
+function openTerminal() {
+  const panel = panelStore.getPanel((props.tab as SFTPTab).panelId)
+  if (panel) {
+    window.dispatchEvent(new CustomEvent('app:connect-terminal', { detail: panel }))
   }
   closeContextMenu()
 }
