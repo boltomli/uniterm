@@ -32,6 +32,9 @@ jobs:
           # overlay:gen / generate bindings calls inside the task) live there.
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
+      - name: Android compile check (no SDK needed)
+        run: wails3 task android:compile:check
+
       - name: Build release APK (debug-signed)
         run: wails3 task android:package
 
@@ -39,3 +42,4 @@ jobs:
         with:
           name: uniterm-android
           path: bin/uniTerm.apk
+          if-no-files-found: error
