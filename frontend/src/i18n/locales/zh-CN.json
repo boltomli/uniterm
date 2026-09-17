@@ -1444,6 +1444,7 @@
   "config.verifyCurrentHint": "输入当前主密码以解除主密码加密",
   "config.masterPassword": "主密码",
   "settings.storageSecurity": "存储与安全",
+  "settings.toggleSidebar": "折叠侧边栏",
   "settings.appearance": "外观",
   "settings.interaction": "交互",
   "settings.session": "会话",

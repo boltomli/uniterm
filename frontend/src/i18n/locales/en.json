@@ -1444,6 +1444,7 @@
   "config.verifyCurrentHint": "Enter current master password to disable master-password encryption",
   "config.masterPassword": "Master password",
   "settings.storageSecurity": "Storage & Security",
+  "settings.toggleSidebar": "Collapse sidebar",
   "settings.appearance": "Appearance",
   "settings.interaction": "Interaction",
   "settings.session": "Session",

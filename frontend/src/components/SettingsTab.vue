@@ -1,6 +1,13 @@
 <template>
-  <div class="settings-tab">
-    <div class="settings-sidebar">
+  <div class="settings-tab" ref="settingsTabRef" :class="{ narrow: isNarrow }">
+    <div class="settings-sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <button
+        class="sidebar-collapse-btn"
+        :title="t('settings.toggleSidebar')"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <el-icon><component :is="sidebarCollapsed ? ChevronRight : ChevronLeft" /></el-icon>
+      </button>
       <div
         v-for="cat in categories"
         :key="cat.key"
@@ -9,7 +16,7 @@
         @click="settingsStore.activeCategory = cat.key"
       >
         <el-icon class="category-icon"><component :is="cat.icon" /></el-icon>
-        <span class="category-label">{{ cat.label }}</span>
+        <span v-if="!sidebarCollapsed" class="category-label">{{ cat.label }}</span>
       </div>
     </div>
 
@@ -1252,8 +1259,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed, onMounted } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft } from '@lucide/vue'
+import { ref, reactive, watch, computed, onMounted, onUnmounted } from 'vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1484,6 +1491,41 @@ function openThemeEditor(sourceThemeId?: string) {
   themeEditorSourceId.value = sourceThemeId
   themeEditorVisible.value = true
 }
+
+// ── Sidebar collapse ──
+// The category sidebar (11.25rem) pushes the settings panel off-screen on
+// narrow windows (phone portrait). Collapse to icons-only below the width
+// where the expanded layout stops fitting; the button toggles it manually
+// and the auto rule re-applies whenever the window crosses the threshold.
+const settingsTabRef = ref<HTMLElement | null>(null)
+const sidebarCollapsed = ref(false)
+// Below the same threshold the side-by-side setting cards (info + fixed-width
+// control) cannot fit either, so the panel stacks them vertically.
+const isNarrow = ref(false)
+
+function updateSidebarCollapse() {
+  const el = settingsTabRef.value
+  if (!el) return
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  // Expanded layout needs ~13.1rem sidebar + ~29rem panel => 42rem minimum.
+  isNarrow.value = el.clientWidth < 42 * rem
+  sidebarCollapsed.value = isNarrow.value
+}
+
+let sidebarResizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  updateSidebarCollapse()
+  if (settingsTabRef.value) {
+    sidebarResizeObserver = new ResizeObserver(updateSidebarCollapse)
+    sidebarResizeObserver.observe(settingsTabRef.value)
+  }
+})
+
+onUnmounted(() => {
+  sidebarResizeObserver?.disconnect()
+  sidebarResizeObserver = null
+})
 
 onMounted(async () => {
   try {
@@ -2206,6 +2248,47 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin-right: 0.625rem;
   padding: 1rem 0;
   border-right: 1px solid var(--border-hover);
+  transition: width 0.15s ease;
+}
+
+.sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0 0.5rem 0.5rem;
+  margin-left: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Collapsed: icons only, centered */
+.settings-sidebar.collapsed {
+  width: 3.5rem;
+  margin-left: 0.625rem;
+  margin-right: 0.375rem;
+}
+
+.settings-sidebar.collapsed .sidebar-collapse-btn {
+  margin-left: auto;
+}
+
+.settings-sidebar.collapsed .settings-category {
+  justify-content: center;
+  padding: 0.625rem 0.5rem;
+  margin: 0 0.375rem;
+  gap: 0;
 }
 
 .settings-category {
@@ -2251,9 +2334,27 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 
 .settings-section {
-  min-width: 25rem;
+  min-width: min(25rem, 100%);
   max-width: 1000px;
   margin: 0 auto;
+}
+
+/* Narrow windows (phone portrait): stack each setting card vertically so the
+   control gets the full row instead of squeezing the title into one char
+   per line. */
+.settings-tab.narrow .setting-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.625rem;
+}
+
+.settings-tab.narrow .setting-control {
+  min-width: 0;
+}
+
+.settings-tab.narrow .setting-control .el-select,
+.settings-tab.narrow .setting-control .editor-select.el-select {
+  width: 100%;
 }
 
 .section-title {
