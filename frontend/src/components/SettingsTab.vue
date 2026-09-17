@@ -2249,9 +2249,15 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 1rem 0;
   border-right: 1px solid var(--border-hover);
   transition: width 0.15s ease;
+  /* Scroll independently when the window is too short for every category */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .sidebar-collapse-btn {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2260,7 +2266,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin: 0 0.5rem 0.5rem;
   margin-left: auto;
   padding: 0;
-  background: transparent;
+  background: var(--bg-base);
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
