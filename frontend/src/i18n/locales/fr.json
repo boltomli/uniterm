@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "Détails",
   "monitor.service.logs": "Journaux",
   "monitor.service.autoScroll": "Défilement auto",
-  "monitor.service.noLogs": "Impossible de lire les journaux"
+  "monitor.service.noLogs": "Impossible de lire les journaux",
+  "app.backgroundKeepAlive": "Connexions maintenues en arrière-plan"
 }

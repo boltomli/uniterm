@@ -1624,5 +1624,6 @@
   "monitor.service.detail": "Detail",
   "monitor.service.logs": "Logs",
   "monitor.service.autoScroll": "Auto-scroll",
-  "monitor.service.noLogs": "Unable to read logs"
+  "monitor.service.noLogs": "Unable to read logs",
+  "app.backgroundKeepAlive": "Keeping connections alive in background"
 }

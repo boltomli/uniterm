@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "상세",
   "monitor.service.logs": "로그",
   "monitor.service.autoScroll": "자동 스크롤",
-  "monitor.service.noLogs": "로그를 읽을 수 없습니다"
+  "monitor.service.noLogs": "로그를 읽을 수 없습니다",
+  "app.backgroundKeepAlive": "백그라운드에서 연결 유지 중"
 }

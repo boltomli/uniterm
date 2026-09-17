@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "Details",
   "monitor.service.logs": "Protokoll",
   "monitor.service.autoScroll": "Autom. Bildlauf",
-  "monitor.service.noLogs": "Protokoll konnte nicht gelesen werden"
+  "monitor.service.noLogs": "Protokoll konnte nicht gelesen werden",
+  "app.backgroundKeepAlive": "Verbindungen werden im Hintergrund gehalten"
 }

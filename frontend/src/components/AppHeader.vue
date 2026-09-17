@@ -86,7 +86,8 @@
         <!-- 设置 / 关于 / 检查更新 -->
         <MenuItem :shortcut="menuShortcut('openSettings')" @click="openCategory('basic')">{{ t('settings.title') }}</MenuItem>
         <MenuItem @click="openCategory('about')">{{ t('settings.about') }}</MenuItem>
-        <MenuItem @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
+        <!-- In-app update download is desktop-only -->
+        <MenuItem v-if="!isMobilePlatform(platform.value)" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
       </Menu>
 
       <ImportDialog v-model:visible="showImportDialog" />
@@ -118,6 +119,7 @@ import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { LANGUAGE_OPTIONS } from '../types/settings'
 import type { AppSettings, ShortcutAction } from '../types/settings'
+import { detectPlatformSync, isMobilePlatform } from '../utils/platform'
 import WindowControls from './WindowControls.vue'
 import TabsList from './TabsList.vue'
 import ImportDialog from './ImportDialog.vue'
@@ -232,27 +234,16 @@ const emit = defineEmits<{
   'tab-dragstart': [e: DragEvent, tabId: string]
 }>()
 
-// Detect synchronously so the layout is correct on first render,
-// even if the Wails System.Environment() call is slow or fails.
-function detectPlatformSync(): 'windows' | 'darwin' | 'linux' | 'android' | 'ios' {
-  const ua = navigator.userAgent
-  if (/Android/.test(ua)) return 'android'
-  if (/iPhone|iPad/.test(ua)) return 'ios'
-  if (/Mac/.test(ua)) return 'darwin'
-  if (/Linux/.test(ua)) return 'linux'
-  return 'windows'
-}
-const platform = ref<'windows' | 'darwin' | 'linux' | 'android' | 'ios'>(detectPlatformSync())
+const platform = ref(detectPlatformSync())
 const isMaximised = ref(false)
 
-// Mobile platforms have no OS window to minimise/maximise/close, so the
-// custom window controls are never shown there.
-const isMobile = computed(() => platform.value === 'android' || platform.value === 'ios')
-
 // The app draws its own window controls on every platform — but not when the
-// user opted into the OS native title bar, which already provides them. On
-// macOS they render as traffic lights on the left (see template).
-const showWindowControls = computed(() => !localStateStore.state.systemTitleBar && !isMobile.value)
+// user opted into the OS native title bar, which already provides them, and
+// never on mobile (no OS window to minimise/maximise/close). On macOS they
+// render as traffic lights on the left (see template).
+const showWindowControls = computed(
+  () => !localStateStore.state.systemTitleBar && !isMobilePlatform(platform.value)
+)
 
 async function updateMaximisedState() {
   try {

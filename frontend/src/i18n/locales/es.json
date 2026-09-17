@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "Detalles",
   "monitor.service.logs": "Registros",
   "monitor.service.autoScroll": "Autodesplazamiento",
-  "monitor.service.noLogs": "No se pueden leer los registros"
+  "monitor.service.noLogs": "No se pueden leer los registros",
+  "app.backgroundKeepAlive": "Manteniendo conexiones en segundo plano"
 }

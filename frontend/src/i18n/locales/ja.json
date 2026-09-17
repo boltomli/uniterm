@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "詳細",
   "monitor.service.logs": "ログ",
   "monitor.service.autoScroll": "自動スクロール",
-  "monitor.service.noLogs": "ログを読み取れません"
+  "monitor.service.noLogs": "ログを読み取れません",
+  "app.backgroundKeepAlive": "バックグラウンドで接続を維持中"
 }

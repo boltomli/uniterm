@@ -105,6 +105,23 @@ public class WailsJSBridge {
     }
 
     /**
+     * Start the keep-alive foreground service. Called from JavaScript when the
+     * app is backgrounded with active sessions, so Android doesn't freeze the
+     * process and drop live connections. json: {"title","text"}.
+     * Called from JavaScript: wails.startForegroundService(json)
+     */
+    @JavascriptInterface
+    public void startForegroundService(final String json) {
+        bridge.startForegroundService(json);
+    }
+
+    /** Stop the keep-alive foreground service. Called from JavaScript: wails.stopForegroundService() */
+    @JavascriptInterface
+    public void stopForegroundService() {
+        bridge.stopForegroundService();
+    }
+
+    /**
      * Check if we're running in debug mode
      * Called from JavaScript: wails.isDebug()
      *

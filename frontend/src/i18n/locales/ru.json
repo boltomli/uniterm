@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "Подробности",
   "monitor.service.logs": "Журнал",
   "monitor.service.autoScroll": "Автопрокрутка",
-  "monitor.service.noLogs": "Не удалось прочитать журнал"
+  "monitor.service.noLogs": "Не удалось прочитать журнал",
+  "app.backgroundKeepAlive": "Подключения поддерживаются в фоне"
 }

@@ -27,7 +27,7 @@
         <el-icon><Plus :size="'0.875rem'" /></el-icon>
         {{ t('header.newConnection') }}
       </button>
-      <div class="start-action-btn-group">
+      <div v-if="!isMobile" class="start-action-btn-group">
         <button class="start-action-btn" @click="handleDefaultLocalTerminal">
           <el-icon><Laptop :size="'0.875rem'" /></el-icon>
           {{ t('conn.startLocalTerminal') }}
@@ -325,6 +325,7 @@ import { useFavoriteStore } from '../stores/favoriteStore'
 import { useTabStore } from '../stores/tabStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
+import { isMobilePlatform } from '../utils/platform'
 import { GetRecentConnections } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { formatConnSubtitle, formatTypeFilterLabel, matchTypeFilter } from '../utils/quickConnect'
 import { connectionTypeIcon as connTypeIcon, connectionTypeLabel as connTypeLabel } from '../utils/connectionTypes'
@@ -433,6 +434,8 @@ const filterMenuRef = ref<InstanceType<typeof TypeFilterMenu> | null>(null)
 
 const shellMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const shellMenuVisible = ref(false)
+// Local terminals spawn a host shell, which does not exist on android/ios.
+const isMobile = isMobilePlatform()
 
 // ── Shell label helper ──
 function getShellLabel(path: string): string {
