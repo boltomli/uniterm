@@ -234,19 +234,25 @@ const emit = defineEmits<{
 
 // Detect synchronously so the layout is correct on first render,
 // even if the Wails System.Environment() call is slow or fails.
-function detectPlatformSync(): 'windows' | 'darwin' | 'linux' {
+function detectPlatformSync(): 'windows' | 'darwin' | 'linux' | 'android' | 'ios' {
   const ua = navigator.userAgent
-  if (/Mac|iPhone|iPad/.test(ua)) return 'darwin'
+  if (/Android/.test(ua)) return 'android'
+  if (/iPhone|iPad/.test(ua)) return 'ios'
+  if (/Mac/.test(ua)) return 'darwin'
   if (/Linux/.test(ua)) return 'linux'
   return 'windows'
 }
-const platform = ref<'windows' | 'darwin' | 'linux'>(detectPlatformSync())
+const platform = ref<'windows' | 'darwin' | 'linux' | 'android' | 'ios'>(detectPlatformSync())
 const isMaximised = ref(false)
+
+// Mobile platforms have no OS window to minimise/maximise/close, so the
+// custom window controls are never shown there.
+const isMobile = computed(() => platform.value === 'android' || platform.value === 'ios')
 
 // The app draws its own window controls on every platform — but not when the
 // user opted into the OS native title bar, which already provides them. On
 // macOS they render as traffic lights on the left (see template).
-const showWindowControls = computed(() => !localStateStore.state.systemTitleBar)
+const showWindowControls = computed(() => !localStateStore.state.systemTitleBar && !isMobile.value)
 
 async function updateMaximisedState() {
   try {
@@ -364,6 +370,8 @@ onMounted(async () => {
     const p = env.OS.toLowerCase()
     if (p === 'darwin') platform.value = 'darwin'
     else if (p === 'linux') platform.value = 'linux'
+    else if (p === 'android') platform.value = 'android'
+    else if (p === 'ios') platform.value = 'ios'
     else platform.value = 'windows'
   } catch {
     platform.value = 'windows'
