@@ -81,6 +81,7 @@ docker/
 !build/android/
 !build/android/**
 build/android/app/build/
+build/android/build/
 build/android/.gradle/
 build/android/app/src/main/jniLibs/
 build/android/gen/
