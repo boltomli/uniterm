@@ -55,11 +55,3 @@ func Writef(format string, args ...interface{}) {
 		file.Sync()
 	}
 }
-
-func logPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "uniterm.log"
-	}
-	return filepath.Join(home, ".uniterm", "uniterm.log")
-}
