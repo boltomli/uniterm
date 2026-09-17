@@ -1,3 +1,5 @@
+//go:build !android
+
 package store
 
 import (
@@ -13,14 +15,6 @@ const bootstrapFileName = "bootstrap.json"
 type bootstrap struct {
 	Type    string `json:"type"`
 	DataDir string `json:"dataDir,omitempty"`
-}
-
-// DataDir is the result of resolving the config data directory at startup.
-type DataDir struct {
-	Path     string
-	Type     string
-	FirstRun bool
-	Upgrade  bool
 }
 
 // DefaultDataDir returns the OS user-config data dir (<UserConfigDir>/uniTerm).

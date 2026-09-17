@@ -4,6 +4,7 @@ import { msg } from '../services/message'
 import { CheckForUpdate, GetAppInfo, DownloadUpdate, ApplyUpdate } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useI18n, locale } from '../i18n'
 import { useSettingsStore } from '../stores/settingsStore'
+import { isMobilePlatform } from '../utils/platform'
 import { Events } from '@wailsio/runtime'
 import type { UpdateInfo } from '../types/settings'
 
@@ -210,6 +211,9 @@ function initAutoCheck() {
       updateInfo.value = { hasUpdate: false, current: info.version, latest: '', releaseUrl: '', changelog: '', assets: [] }
     }
   }).catch(() => {})
+  // Mobile updates by installing a new APK; the in-app update check would
+  // only fetch desktop assets. Skip auto-check scheduling entirely.
+  if (isMobilePlatform()) return
   // Wait for persisted settings before scheduling network requests. Reading
   // the temporary default here would ignore a stored `false`.
   const settings = useSettingsStore()

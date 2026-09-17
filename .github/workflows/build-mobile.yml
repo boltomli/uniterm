@@ -1,0 +1,64 @@
+name: build-mobile
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  android:
+    name: Android APK (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"
+
+      - name: Install wails3 CLI
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+          # setup-go does not add GOPATH/bin to PATH; wails3 (and the
+          # overlay:gen / generate bindings calls inside the task) live there.
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Set version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "VERSION=dev-${SHORT}" >> $GITHUB_ENV
+
+      - name: Android compile check (no SDK needed)
+        run: wails3 task android:compile:check
+
+      - name: Build release APK (debug-signed)
+        # arm64 covers virtually all real devices; amd64 is only useful for
+        # local emulator builds, so CI always packages arm64.
+        run: wails3 task android:package
+
+      # iOS note: building an .app for real devices needs Apple codesigning
+      # identities/secrets; add a macos-latest job here once signing is set up.
+
+      # Match the desktop convention: uniterm-<os>-<arch>-<version>.apk
+      - name: Rename artifact
+        run: cp bin/uniTerm.apk "bin/uniterm-android-arm64-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniterm-android-arm64
+          path: bin/uniterm-android-*.apk
+          if-no-files-found: error

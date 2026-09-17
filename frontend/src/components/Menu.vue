@@ -4,7 +4,7 @@
       v-show="visible"
       ref="menuEl"
       class="conn-context-menu"
-      :class="[{ 'mirror-left': mirrorLeft }, rootClass]"
+      :class="[{ 'mirror-left': mirrorLeft, overflow: overflow }, rootClass]"
       :style="menuStyle"
       @mouseover="onInnerMouseOver"
       @mouseleave="submenu.active = ''"
@@ -120,6 +120,11 @@ const menuStyle = ref({ top: '-9999px', left: '-9999px' })
 // Submenu fly direction is computed per-position from the window edges (which
 // side has more room), not from the static align. See position().
 const mirrorLeft = ref(false)
+// True when the menu is taller than the viewport: scroll inside the container
+// instead of letting the window clip the bottom. Only set in that state —
+// overflow != visible would clip the absolutely positioned submenu flyouts
+// even when nothing actually overflows, so menus that fit must stay untouched.
+const overflow = ref(false)
 const current = ref<unknown>()
 // Writable submenu state shared with descendant <MenuSubmenu> rows via provide;
 // MenuSubmenu sets `active` on hover and reads it to show/hide its flyout.
@@ -133,6 +138,7 @@ function position(x: number, y: number) {
   const m = menuEl.value
   if (!m) return
   const mr = m.getBoundingClientRect()
+  overflow.value = mr.height > window.innerHeight - 8
   menuStyle.value = {
     left: Math.max(4, Math.min(x, window.innerWidth - mr.width - 4)) + 'px',
     top: Math.max(4, Math.min(y, window.innerHeight - mr.height - 4)) + 'px',
@@ -141,8 +147,10 @@ function position(x: number, y: number) {
   // projected flyout width; refiners the exact fit once a flyout actually opens
   // (see the submenu.active watcher below). The rule: fly RIGHT by default, and
   // only mirror LEFT when the right side cannot fit the flyout but the left can.
+  // In overflow mode always fly LEFT over the parent menu: a rightward flyout
+  // would be clipped by the scroll container's overflow-x.
   const placed = m.getBoundingClientRect()
-  mirrorLeft.value = shouldMirror(placed, placed.width)
+  mirrorLeft.value = overflow.value || shouldMirror(placed, placed.width)
 }
 
 // Decide whether a flyout must open leftward instead of the default rightward:
@@ -220,7 +228,7 @@ watch(() => submenu.active, (key) => {
     const fly = m?.querySelector('.menu-submenu') as HTMLElement | null
     if (!m || !fly) return
     const fw = fly.getBoundingClientRect().width
-    if (fw) mirrorLeft.value = shouldMirror(m.getBoundingClientRect(), fw)
+    if (fw) mirrorLeft.value = overflow.value || shouldMirror(m.getBoundingClientRect(), fw)
   })
 })
 
@@ -297,6 +305,15 @@ watch(() => props.visible, (v) => {
    left/right flips.) */
 .conn-context-menu.mirror-left {
   /* intentionally empty — kept for the descendant selector below */
+}
+/* Too tall for the window: scroll inside the container instead of being cut
+   off by the window edge. Toggled only when the measured height exceeds the
+   viewport (see position()), because overflow != visible would clip the
+   absolutely positioned submenu flyouts even when nothing overflows. */
+.conn-context-menu.overflow {
+  max-height: calc(100vh - 0.5rem);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .conn-context-menu .menu-item {
   padding: 0.4375rem 0.875rem;
@@ -375,6 +392,11 @@ watch(() => props.visible, (v) => {
   /* default: fly right of the parent row */
   left: calc(100% - 0.1875rem);
   top: -0.25rem;
+  /* A long flyout (e.g. the language list) scrolls instead of running past
+     the window bottom. Safe here: flyouts contain plain rows only, no
+     absolutely positioned descendants to clip. */
+  max-height: calc(100vh - 0.5rem);
+  overflow-y: auto;
 }
 /* mirror-left container → submenus fly left */
 .conn-context-menu.mirror-left .menu-submenu {

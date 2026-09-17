@@ -1623,5 +1623,6 @@
   "monitor.service.detail": "詳情",
   "monitor.service.logs": "日誌",
   "monitor.service.autoScroll": "自動捲動",
-  "monitor.service.noLogs": "無法讀取日誌"
+  "monitor.service.noLogs": "無法讀取日誌",
+  "app.backgroundKeepAlive": "背景保持連線中"
 }

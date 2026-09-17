@@ -46,6 +46,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { useCredentialStore } from '../stores/credentialStore'
+import { isMobilePlatform } from '../utils/platform'
 
 const props = defineProps<{ visible: boolean; existingSecrets: number }>()
 const emit = defineEmits<{ (e: 'update:visible', v: boolean): void; (e: 'done'): void }>()
@@ -58,6 +59,25 @@ const pw2 = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
+// Mobile (android/ios) only supports the system keychain — skip the picker and
+// set it up directly. Covers every path that opens this dialog: first run,
+// keychain-lost recovery and manual reset. On failure the dialog stays open
+// showing the error.
+const isMobile = isMobilePlatform()
+
+async function autoKeychainSetup() {
+  submitting.value = true
+  try {
+    await cred.setup('keychain')
+    emit('done')
+    emit('update:visible', false)
+  } catch (e: any) {
+    errorMsg.value = e?.message || String(e)
+  } finally {
+    submitting.value = false
+  }
+}
+
 // Reset on every open so a previously-entered password isn't shown again.
 watch(() => props.visible, (v) => {
   if (v) {
@@ -65,6 +85,7 @@ watch(() => props.visible, (v) => {
     pw.value = ''
     pw2.value = ''
     errorMsg.value = ''
+    if (isMobile) void autoKeychainSetup()
   }
 })
 

@@ -146,6 +146,7 @@
     <EncryptionModeDialog v-model:visible="encryptVisible" :existing-secrets="credStore.status.existingSecrets" @done="onEncryptDone" />
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
     <KeychainLostDialog v-model:visible="keychainLostVisible" @done="onKeychainLostDone" />
+    <MobileKeyBar v-if="keyBarSessionId" :session-id="keyBarSessionId" />
   </div>
   </el-config-provider>
 </template>
@@ -164,6 +165,9 @@ import ru from 'element-plus/es/locale/lang/ru'
 import AppHeader from './components/AppHeader.vue'
 import Sidebar from './components/Sidebar.vue'
 import TerminalTabContent from './components/TerminalTabContent.vue'
+import MobileKeyBar from './components/MobileKeyBar.vue'
+import { isMobilePlatform } from './utils/platform'
+import { startAndroidKeepAlive, stopAndroidKeepAlive } from './utils/androidKeepAlive'
 import { writeClipboard } from './composables/useClipboardWrite'
 import SettingsTabContent from './components/SettingsTabContent.vue'
 import WorkspaceContent from './components/WorkspaceContent.vue'
@@ -270,6 +274,74 @@ const tabStore = useTabStore()
 const activeTab = computed(() => tabStore.activeTab)
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
+
+// ── Mobile key bar (app-level) ──
+// Soft keyboards lack Esc/Tab/arrows/Ctrl combos. The bar floats at the bottom
+// of .app-container — directly above the soft keyboard, because MainActivity
+// pads the app root by the IME inset. It shows only while the keyboard is up
+// from a terminal textarea focus and an SSH-family session is connected.
+const isMobile = isMobilePlatform()
+const terminalFocusActive = ref(false)
+
+function onDocFocusIn(e: FocusEvent) {
+  const el = e.target as HTMLElement | null
+  terminalFocusActive.value = !!el?.classList?.contains('xterm-helper-textarea')
+}
+function onDocFocusOut() {
+  // Focus may move between xterm instances or to nothing; re-check after the
+  // focusin/focusout pair settles.
+  requestAnimationFrame(() => {
+    const el = document.activeElement as HTMLElement | null
+    terminalFocusActive.value = !!el?.classList?.contains('xterm-helper-textarea')
+  })
+}
+if (isMobile) {
+  document.addEventListener('focusin', onDocFocusIn)
+  document.addEventListener('focusout', onDocFocusOut)
+}
+
+// ── Background keep-alive (Android) ──
+// Without a foreground service, Android freezes the cached process shortly
+// after the app is switched away — timers stop and network is suspended,
+// which drops live SSH/SFTP sessions. While the app is hidden with live
+// sessions, run the keep-alive foreground service (notification appears);
+// stop it when the app is visible again.
+function hasLiveSessions(): boolean {
+  for (const s of sessionStore.sessions.values()) {
+    if (s.status === 'connected' || s.status === 'connecting') return true
+  }
+  return false
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    if (hasLiveSessions()) {
+      startAndroidKeepAlive('uniTerm', t('app.backgroundKeepAlive'))
+    }
+  } else {
+    stopAndroidKeepAlive()
+  }
+}
+onUnmounted(() => {
+  if (isMobile) {
+    document.removeEventListener('focusin', onDocFocusIn)
+    document.removeEventListener('focusout', onDocFocusOut)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+  }
+  stopAndroidKeepAlive()
+})
+
+const keyBarSessionId = computed(() => {
+  if (!isMobile || !terminalFocusActive.value) return null
+  const tab = activeTab.value
+  if (!tab || tab.type !== 'terminal') return null
+  const panel = panelStore.getPanel(tab.panelId)
+  if (!panel?.sessionId) return null
+  // local/wsl panels have no need for the escape-sequence bar
+  if (panel.type === 'local' || panel.type === 'wsl') return null
+  if (sessionStore.getStatus(panel.sessionId) !== 'connected') return null
+  return panel.sessionId
+})
 const { duplicateSession } = useDuplicateSession()
 const aiStore = useAIStore()
 const companionStore = useCompanionStore()

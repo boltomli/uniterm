@@ -1,6 +1,13 @@
 <template>
-  <div class="settings-tab">
-    <div class="settings-sidebar">
+  <div class="settings-tab" ref="settingsTabRef" :class="{ narrow: isNarrow }">
+    <div class="settings-sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <button
+        class="sidebar-collapse-btn"
+        :title="t('settings.toggleSidebar')"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      >
+        <el-icon><component :is="sidebarCollapsed ? ChevronRight : ChevronLeft" /></el-icon>
+      </button>
       <div
         v-for="cat in categories"
         :key="cat.key"
@@ -9,7 +16,7 @@
         @click="settingsStore.activeCategory = cat.key"
       >
         <el-icon class="category-icon"><component :is="cat.icon" /></el-icon>
-        <span class="category-label">{{ cat.label }}</span>
+        <span v-if="!sidebarCollapsed" class="category-label">{{ cat.label }}</span>
       </div>
     </div>
 
@@ -67,7 +74,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- No OS window title bar on mobile -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.systemTitleBar') }}</div>
               <div class="setting-desc">{{ t('settings.systemTitleBarDesc') }}</div>
@@ -210,7 +218,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- Mobile apps don't "quit" (back button = background) -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.closeAppPrompt') }}</div>
             </div>
@@ -219,7 +228,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- No local CLI editors on mobile -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.externalEditor') }}</div>
               <div class="setting-desc">{{ t('settings.externalEditorDesc') }}</div>
@@ -246,8 +256,11 @@
           </div>
         </div>
 
-        <h2 class="section-title">{{ t('settings.storageSecurity') }}</h2>
-        <div class="settings-group">
+        <!-- Hidden entirely on mobile: data dir is OS-managed and keychain
+             encryption is the only supported mode, so nothing is configurable -->
+        <template v-if="!isMobile">
+          <h2 class="section-title">{{ t('settings.storageSecurity') }}</h2>
+          <div class="settings-group">
           <div class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('config.dataDir') }}</div>
@@ -292,7 +305,8 @@
               <el-button size="small" @click="openChangePassword">{{ t('config.changePassword') }}</el-button>
             </div>
           </div>
-        </div>
+          </div>
+        </template>
       </div>
 
       <!-- 终端配置 -->
@@ -524,7 +538,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- No mouse buttons on touch screens -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.rightClick') }}</div>
               <div class="setting-desc">{{ t('settings.rightClickDesc') }}</div>
@@ -537,7 +552,7 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.middleClick') }}</div>
               <div class="setting-desc">{{ t('settings.middleClickDesc') }}</div>
@@ -550,7 +565,7 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.ctrlWheelZoom') }}</div>
               <div class="setting-desc">{{ t('settings.ctrlWheelZoomDesc') }}</div>
@@ -583,7 +598,9 @@
 
         <h2 class="section-title">{{ t('settings.session') }}</h2>
         <div class="settings-group">
-          <div class="setting-card">
+          <!-- No user shells exist on mobile (same reason the start page hides
+               the local terminal button) -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.defaultLocalShell') }}</div>
               <div class="setting-desc">{{ t('settings.defaultLocalShellDesc') }}</div>
@@ -616,7 +633,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- Local dirs are not user-selectable under mobile scoped storage -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
               <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
@@ -640,7 +658,7 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.zmodemDownloadDir') }}</div>
               <div class="setting-desc">{{ t('settings.zmodemDownloadDirDesc') }}</div>
@@ -664,7 +682,9 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- Session logs go to the app-private dir on mobile; the filename
+               pattern is not user-serviceable there -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.sessionLogFilename') }}</div>
               <div class="setting-desc">{{ t('settings.sessionLogFilenameDesc') }}</div>
@@ -884,7 +904,8 @@
               Gitee
             </a>
           </div>
-          <div class="about-update-actions">
+          <!-- In-app update download is desktop-only; mobile updates via APK -->
+          <div v-if="!isMobile" class="about-update-actions">
             <el-button
              
               :loading="updateCheck.checking"
@@ -893,14 +914,14 @@
               {{ updateCheck.checking ? t('settings.checking') : t('settings.checkUpdate') }}
             </el-button>
           </div>
-          <div class="about-auto-check">
+          <div v-if="!isMobile" class="about-auto-check">
             <el-checkbox
               v-model="updateCheck.autoCheck"
             >
               {{ t('settings.autoCheckUpdate') }}
             </el-checkbox>
           </div>
-          <div class="about-update-source">
+          <div v-if="!isMobile" class="about-update-source">
             <span class="about-update-source-label">{{ t('settings.updateSource') }}</span>
             <el-select
               v-model="updateCheck.source"
@@ -917,7 +938,7 @@
       </div>
 
       <!-- 快捷键设置 -->
-      <div v-if="settingsStore.activeCategory === 'keyboard'" class="settings-section">
+      <div v-if="settingsStore.activeCategory === 'keyboard' && !isMobile" class="settings-section">
         <p v-if="isMac" class="kb-hint kb-modifier-note">{{ t('shortcut.modifierNote') }}</p>
         <template v-for="cat in shortcutCategories" :key="cat.key">
           <h2 class="section-title">{{ t(cat.label) }}</h2>
@@ -1252,8 +1273,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed, onMounted } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft } from '@lucide/vue'
+import { ref, reactive, watch, computed, onMounted, onUnmounted } from 'vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1288,6 +1309,7 @@ import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import type { Tunnel, TunnelMode } from '../stores/tunnelStore'
 import type { Identity } from '../types/identity'
 import { Browser } from '@wailsio/runtime'
+import { isMobilePlatform } from '../utils/platform'
 import type { Proxy } from '../types/proxy'
 import { uiPx } from '../utils/uiScale'
 
@@ -1297,6 +1319,10 @@ const updateCheck = useUpdateCheck()
 const localStateStore = useLocalStateStore()
 const { t } = useI18n()
 const { resolveTunnelCredentials } = useTunnelCredentials()
+// Mobile (android/ios) has no OS window, no mouse, no local shell and a
+// system-managed data dir — settings that only make sense on the desktop are
+// hidden there via `v-if="!isMobile"` / category filtering below.
+const isMobile = isMobilePlatform()
 const platform = ref('')
 const isMac = computed(() => platform.value === 'darwin')
 
@@ -1485,6 +1511,41 @@ function openThemeEditor(sourceThemeId?: string) {
   themeEditorVisible.value = true
 }
 
+// ── Sidebar collapse ──
+// The category sidebar (11.25rem) pushes the settings panel off-screen on
+// narrow windows (phone portrait). Collapse to icons-only below the width
+// where the expanded layout stops fitting; the button toggles it manually
+// and the auto rule re-applies whenever the window crosses the threshold.
+const settingsTabRef = ref<HTMLElement | null>(null)
+const sidebarCollapsed = ref(false)
+// Below the same threshold the side-by-side setting cards (info + fixed-width
+// control) cannot fit either, so the panel stacks them vertically.
+const isNarrow = ref(false)
+
+function updateSidebarCollapse() {
+  const el = settingsTabRef.value
+  if (!el) return
+  const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+  // Expanded layout needs ~13.1rem sidebar + ~29rem panel => 42rem minimum.
+  isNarrow.value = el.clientWidth < 42 * rem
+  sidebarCollapsed.value = isNarrow.value
+}
+
+let sidebarResizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  updateSidebarCollapse()
+  if (settingsTabRef.value) {
+    sidebarResizeObserver = new ResizeObserver(updateSidebarCollapse)
+    sidebarResizeObserver.observe(settingsTabRef.value)
+  }
+})
+
+onUnmounted(() => {
+  sidebarResizeObserver?.disconnect()
+  sidebarResizeObserver = null
+})
+
 onMounted(async () => {
   try {
     platform.value = await GetPlatform()
@@ -1580,7 +1641,7 @@ async function pickZmodemDownloadDir() {
 }
 
 watch(() => settingsStore.openCategory, (cat) => {
-  if (cat && (cat === 'basic' || cat === 'terminal' || cat === 'ai' || cat === 'sync' || cat === 'about' || cat === 'keyboard' || cat === 'identities' || cat === 'proxies' || cat === 'tunnels')) {
+  if (cat && (cat === 'basic' || cat === 'terminal' || cat === 'ai' || cat === 'sync' || cat === 'about' || (cat === 'keyboard' && !isMobile) || cat === 'identities' || cat === 'proxies' || cat === 'tunnels')) {
     settingsStore.activeCategory = cat
     settingsStore.openCategory = null
   }
@@ -1890,7 +1951,9 @@ const categories = computed(() => {
   const cats = [
     { key: 'basic', label: t('settings.basic'), icon: Settings },
     { key: 'terminal', label: t('settings.terminal'), icon: Monitor },
-    { key: 'keyboard', label: t('shortcut.title'), icon: Keyboard },
+    // Keyboard shortcuts still WORK on mobile (physical keyboards), but the
+    // rebinding UI is desktop-only and hidden from the category list there.
+    ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard }] : []),
     { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore },
     { key: 'skills', label: t('settings.skillsAndCommands'), icon: Wrench },
     { key: 'identities', label: t('settings.identities'), icon: Key },
@@ -1901,6 +1964,14 @@ const categories = computed(() => {
   ]
   return cats
 })
+
+// A persisted 'keyboard' active category would show an empty settings page on
+// mobile — fall back to basic.
+watch(categories, (cats) => {
+  if (isMobile && settingsStore.activeCategory === 'keyboard' && !cats.some(c => c.key === 'keyboard')) {
+    settingsStore.activeCategory = 'basic'
+  }
+}, { immediate: true })
 
 // ── Identities (密钥库) ──
 const identityStore = useIdentityStore()
@@ -2206,6 +2277,53 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin-right: 0.625rem;
   padding: 1rem 0;
   border-right: 1px solid var(--border-hover);
+  transition: width 0.15s ease;
+  /* Scroll independently when the window is too short for every category */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.sidebar-collapse-btn {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0 0.5rem 0.5rem;
+  margin-left: auto;
+  padding: 0;
+  background: var(--bg-base);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Collapsed: icons only, centered */
+.settings-sidebar.collapsed {
+  width: 3.5rem;
+  margin-left: 0.625rem;
+  margin-right: 0.375rem;
+}
+
+.settings-sidebar.collapsed .sidebar-collapse-btn {
+  margin-left: auto;
+}
+
+.settings-sidebar.collapsed .settings-category {
+  justify-content: center;
+  padding: 0.625rem 0.5rem;
+  margin: 0 0.375rem;
+  gap: 0;
 }
 
 .settings-category {
@@ -2251,9 +2369,27 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 
 .settings-section {
-  min-width: 25rem;
+  min-width: min(25rem, 100%);
   max-width: 1000px;
   margin: 0 auto;
+}
+
+/* Narrow windows (phone portrait): stack each setting card vertically so the
+   control gets the full row instead of squeezing the title into one char
+   per line. */
+.settings-tab.narrow .setting-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.625rem;
+}
+
+.settings-tab.narrow .setting-control {
+  min-width: 0;
+}
+
+.settings-tab.narrow .setting-control .el-select,
+.settings-tab.narrow .setting-control .editor-select.el-select {
+  width: 100%;
 }
 
 .section-title {
@@ -2427,6 +2563,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 .about-links {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   margin-top: 0.75rem;
 }

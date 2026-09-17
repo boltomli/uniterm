@@ -2042,6 +2042,9 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
 
 /* ── Personalization panel ── */
 .personalization-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 1rem;
   display: flex;
   flex-direction: column;

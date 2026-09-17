@@ -7,8 +7,6 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/pbkdf2"
-
-	"github.com/zalando/go-keyring"
 )
 
 const keychainService = "uniTerm"
@@ -24,15 +22,15 @@ type Keychain struct{}
 func NewKeychain() *Keychain { return &Keychain{} }
 
 func (k *Keychain) Get(key string) (string, error) {
-	return keyring.Get(keychainService, key)
+	return keychainGet(keychainService, key)
 }
 
 func (k *Keychain) Set(key, value string) error {
-	return keyring.Set(keychainService, key, value)
+	return keychainSet(keychainService, key, value)
 }
 
 func (k *Keychain) Delete(key string) error {
-	return keyring.Delete(keychainService, key)
+	return keychainDelete(keychainService, key)
 }
 
 // GetEncryptionKey retrieves the derived encryption key from OS keychain.
