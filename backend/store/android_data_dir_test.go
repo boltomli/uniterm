@@ -24,14 +24,12 @@ func TestResolveAndroidDataDirCreatesDir(t *testing.T) {
 	}
 }
 
-func TestResolveAndroidDataDirEmptyBaseFallsBackToTemp(t *testing.T) {
+func TestResolveAndroidDataDirEmptyBaseErrors(t *testing.T) {
 	dd, err := resolveAndroidDataDir("")
-	if err != nil {
-		t.Fatalf("resolveAndroidDataDir: %v", err)
+	if err == nil {
+		t.Fatal("resolveAndroidDataDir(\"\") = nil error, want error")
 	}
-	want := filepath.Join(os.TempDir(), "uniTerm")
-	if dd.Path != want {
-		t.Errorf("Path = %q, want %q (TempDir fallback)", dd.Path, want)
+	if dd != (DataDir{}) {
+		t.Errorf("DataDir = %+v, want zero value", dd)
 	}
-	os.RemoveAll(dd.Path) // don't leave stray dirs in the host temp
 }
