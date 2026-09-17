@@ -76,6 +76,7 @@ tasks:
         case "$(uname -s)" in
           Darwin) HOST_TAG="darwin-x86_64" ;;
           Linux)  HOST_TAG="linux-x86_64" ;;
+          MINGW*|MSYS*|CYGWIN*|Windows) HOST_TAG="windows-x86_64" ;;
           *)      echo "Unsupported host OS"; exit 1 ;;
         esac
 
