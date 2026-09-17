@@ -690,7 +690,9 @@ function updateContentWidth() {
   const w = CARD_WIDTH()
   const g = CARD_GAP()
   const available = el.clientWidth - PADDING() * 2
-  const cols = Math.max(2, Math.min(6, Math.floor((available + g) / (w + g))))
+  // Min 1 column: narrow phone screens can't fit two 15rem cards, so allow
+  // a single centered column there (wide desktop windows still get >= 2).
+  const cols = Math.max(1, Math.min(6, Math.floor((available + g) / (w + g))))
   contentCols.value = cols
   contentWidth.value = cols * w + (cols - 1) * g
   el.style.setProperty('--start-cols', String(cols))
