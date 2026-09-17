@@ -2,13 +2,6 @@ name: build-mobile
 
 on:
   workflow_dispatch:
-    inputs:
-      arch:
-        description: 'Target ABI (arm64 for real devices, amd64 for emulator)'
-        required: false
-        default: 'arm64'
-        type: choice
-        options: ['arm64', 'amd64']
   push:
     tags: ['v*']
 
@@ -16,9 +9,6 @@ jobs:
   android:
     name: Android APK (arm64)
     runs-on: ubuntu-latest
-    env:
-      # workflow_dispatch input; tag builds are always arm64 (real devices)
-      TARGET_ARCH: ${{ inputs.arch || 'arm64' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,16 +37,18 @@ jobs:
         run: wails3 task android:compile:check
 
       - name: Build release APK (debug-signed)
-        run: wails3 task android:package ARCH=${TARGET_ARCH}
+        # arm64 covers virtually all real devices; amd64 is only useful for
+        # local emulator builds, so CI always packages arm64.
+        run: wails3 task android:package
 
       # iOS note: building an .app for real devices needs Apple codesigning
       # identities/secrets; add a macos-latest job here once signing is set up.
 
       - name: Rename artifact
-        run: cp bin/uniTerm.apk "bin/uniTerm-${GITHUB_REF_NAME}-android-${TARGET_ARCH}.apk"
+        run: cp bin/uniTerm.apk "bin/uniTerm-${GITHUB_REF_NAME}-android-arm64.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: uniterm-android-${{ env.TARGET_ARCH }}
+          name: uniterm-android-arm64
           path: bin/uniTerm-*-android-*.apk
           if-no-files-found: error
