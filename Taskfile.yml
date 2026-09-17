@@ -53,6 +53,11 @@ tasks:
     cmds:
       - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
 
+  android:compile:check:
+    summary: Cross-compiles all Go packages for android (no SDK needed; CGO off)
+    cmds:
+      - GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build -tags android,debug ./...
+
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)
     cmds:
