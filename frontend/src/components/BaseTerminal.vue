@@ -25,20 +25,30 @@
 
     <!-- Search bar -->
     <div v-show="searchVisible" class="terminal-search-bar">
+      <button class="search-btn" :class="{ active: searchCaseSensitive }" :title="t('terminal.searchMatchCase')" @click="toggleSearchOption('caseSensitive')">
+        <CaseSensitive :size="'0.875rem'" />
+      </button>
+      <button class="search-btn" :class="{ active: searchRegex }" :title="t('terminal.searchRegexp')" @click="toggleSearchOption('regex')">
+        <Regex :size="'0.875rem'" />
+      </button>
+      <button class="search-btn" :class="{ active: searchWholeWord }" :title="t('terminal.searchWholeWord')" @click="toggleSearchOption('wholeWord')">
+        <WholeWord :size="'0.875rem'" />
+      </button>
       <input
         ref="searchInputRef"
         v-model="searchText"
         class="search-input"
         :placeholder="t('terminal.searchPlaceholder')"
         @input="onSearchInput"
-        @keydown.enter.prevent="onSearchNext"
+        @keydown.enter.prevent="onSearchEnter"
         @keydown.escape="closeSearch"
+        @blur="getSearchAddon()?.clearActiveDecoration()"
       />
       <span class="search-count" v-if="searchText">{{ searchResultIndex + 1 }}/{{ searchResultCount || 0 }}</span>
-      <button class="search-btn" @click="onSearchPrev" :title="t('terminal.searchPrev')">
+      <button class="search-btn" @click="onSearchPrev" :title="`${t('terminal.searchPrev')} (Enter)`">
         <ChevronUp :size="'0.875rem'" />
       </button>
-      <button class="search-btn" @click="onSearchNext" :title="t('terminal.searchNext')">
+      <button class="search-btn" @click="onSearchNext" :title="`${t('terminal.searchNext')} (Shift+Enter)`">
         <ChevronDown :size="'0.875rem'" />
       </button>
       <button class="search-btn" @click="closeSearch" :title="t('terminal.searchClose')">
@@ -175,7 +185,8 @@ import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
 import { Browser, Clipboard, Events } from '@wailsio/runtime'
-import { ChevronUp, ChevronDown, X } from '@lucide/vue'
+import type { ISearchOptions } from '@xterm/addon-search'
+import { CaseSensitive, ChevronUp, ChevronDown, Regex, WholeWord, X } from '@lucide/vue'
 
 const props = defineProps<{
   mode: 'ssh' | 'sftp' | 'local'
@@ -555,6 +566,10 @@ function onZmodemCancel() {
 const searchText = ref('')
 const searchResultIndex = ref(0)
 const searchResultCount = ref(0)
+// Toggle states persist across search open/close within the session
+const searchCaseSensitive = ref(false)
+const searchRegex = ref(false)
+const searchWholeWord = ref(false)
 
 function sanitizeTerminalHistory(text: string): string {
   const cleaned = sanitizeTerminalOutput(text)
@@ -1810,7 +1825,7 @@ function openSearch() {
     searchInputRef.value?.focus()
     if (searchText.value) {
       searchInputRef.value?.select()
-      getSearchAddon()?.findNext(searchText.value, { decorations: searchDecoOptions })
+      onSearchInput()
     }
   })
 }
@@ -1818,29 +1833,73 @@ function openSearch() {
 function closeSearch() {
   searchVisible.value = false
   searchText.value = ''
+  // Toggle states (case / regex / whole-word) persist across opens
+  searchResultIndex.value = 0
+  searchResultCount.value = 0
+  getSearchAddon()?.clearDecorations()
+}
+
+function searchOpts(): ISearchOptions {
+  return {
+    caseSensitive: searchCaseSensitive.value,
+    regex: searchRegex.value,
+    wholeWord: searchWholeWord.value,
+    decorations: searchDecoOptions,
+  }
+}
+
+function invalidRegex() {
+  // The addon constructs RegExp directly without try/catch (SearchEngine.ts:289),
+  // so guard here; an invalid pattern must not throw.
+  if (!searchRegex.value) return false
+  try {
+    new RegExp(searchText.value)
+    return false
+  } catch {
+    return true
+  }
+}
+
+function clearSearchMatches() {
   searchResultIndex.value = 0
   searchResultCount.value = 0
   getSearchAddon()?.clearDecorations()
 }
 
 function onSearchInput() {
-  if (!searchText.value) {
-    searchResultIndex.value = 0
-    searchResultCount.value = 0
-    getSearchAddon()?.clearDecorations()
+  if (!searchText.value || invalidRegex()) {
+    clearSearchMatches()
     return
   }
-  getSearchAddon()?.findNext(searchText.value, { incremental: true, decorations: searchDecoOptions })
+  // Anchor the match at the bottom of the buffer (closest to the prompt);
+  // Enter continues upward, Shift+Enter downward.
+  getSearchAddon()?.findPrevious(searchText.value, searchOpts())
+}
+
+function onSearchEnter(e: KeyboardEvent) {
+  if (e.shiftKey) {
+    onSearchNext()
+  } else {
+    onSearchPrev()
+  }
 }
 
 function onSearchNext() {
-  if (!searchText.value) return
-  getSearchAddon()?.findNext(searchText.value, { decorations: searchDecoOptions })
+  if (!searchText.value || invalidRegex()) return
+  getSearchAddon()?.findNext(searchText.value, searchOpts())
 }
 
 function onSearchPrev() {
-  if (!searchText.value) return
-  getSearchAddon()?.findPrevious(searchText.value, { decorations: searchDecoOptions })
+  if (!searchText.value || invalidRegex()) return
+  getSearchAddon()?.findPrevious(searchText.value, searchOpts())
+}
+
+function toggleSearchOption(key: 'caseSensitive' | 'regex' | 'wholeWord') {
+  if (key === 'caseSensitive') searchCaseSensitive.value = !searchCaseSensitive.value
+  else if (key === 'regex') searchRegex.value = !searchRegex.value
+  else searchWholeWord.value = !searchWholeWord.value
+  // Re-anchor at the bottom with the new options
+  onSearchInput()
 }
 
 function applyXtermTheme(themeName: string) {
@@ -2257,6 +2316,10 @@ defineExpose({
 .search-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.search-btn.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
 }
 .terminal-area :deep(.xterm) {
   width: 100%;
