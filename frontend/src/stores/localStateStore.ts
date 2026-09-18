@@ -21,6 +21,9 @@ interface LocalState {
   backgroundFit: string
   systemTitleBar: boolean
   externalEditor: string
+  // SFTP file-list columns the user hid via the header context menu. Columns
+  // absent from the list stay visible.
+  sftpHiddenColumns: string[]
 }
 
 const DEFAULT: LocalState = {
@@ -40,6 +43,7 @@ const DEFAULT: LocalState = {
   backgroundFit: 'cover',
   systemTitleBar: false,
   externalEditor: '',
+  sftpHiddenColumns: [],
 } as LocalState
 
 export const useLocalStateStore = defineStore('localState', () => {

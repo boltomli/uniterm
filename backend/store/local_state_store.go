@@ -32,6 +32,10 @@ type LocalState struct {
 	// ExternalEditor command used to open remote files in an external editor
 	// (SFTP "edit externally"). Local-only preference, never synced.
 	ExternalEditor string `json:"externalEditor"`
+	// SftpHiddenColumns lists SFTP file-list columns hidden via the header
+	// context menu (type/modTime/size/permission/owner/group). Local-only UI
+	// state, never synced; columns absent from the list stay visible.
+	SftpHiddenColumns []string `json:"sftpHiddenColumns,omitempty"`
 }
 
 type LocalStateStore struct {

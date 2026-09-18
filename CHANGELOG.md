@@ -43,6 +43,7 @@
 - SFTP: the footer status bar is always visible (selection stats replace the entry count while a selection exists), select-all (Ctrl/Cmd+A) and Ctrl/Cmd+X/C/V clipboard shortcuts are added, and file-list column widths now follow the designed per-column sizes with single-line headers.
 - Tunnels: starting a tunnel whose exit SSH connection has no saved credentials now prompts for them instead of failing the handshake.
 - K8s: the inline kubeconfig field is now revealed on demand (like the private-key text field), and kubeconfig can be imported from file.
+- SFTP: file entries are told apart at a glance by icon color — folders render as Finder-style light-blue filled glyphs, symlinks violet (name text stays neutral) — and non-name list columns (Type / Modified / Size / Permission / Owner / Group) can be hidden via a header right-click check menu, shared across panels and remembered across restarts. (@surenwuyuwuqiu)
 
 **Bug Fixes**
 - macOS IME: committed keystrokes are delivered directly to the terminal (no more dropped or duplicated characters under fast typing), duplicate input is prevented, and an IME-committed Enter no longer triggers app shortcuts (AI send, search jump, dialog confirm, ~25 handlers). (@surenwuyuwuqiu)

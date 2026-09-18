@@ -42,6 +42,8 @@ When no session is available, "No SSH session available" is shown. The **Open SF
 - **Sorting** — Click column headers such as Name / Modified / Size to sort
 - **Progressive loading** — Large directories are rendered in batches; tens of thousands of entries stay smooth
 - **Type-ahead navigation** — With the list focused, press a letter key to jump to the first match; press the same key repeatedly to cycle through matches
+- **Entry colors** — Folder icons render as Finder-style light-blue filled glyphs and symlinks violet, so kinds are told apart at a glance; name text stays neutral
+- **Column visibility** — Right-click a column header for a check menu that hides Type / Modified / Size / Permission / Owner / Group (Name always stays); shared across panels and remembered across restarts
 - **Show hidden files** — Toggle dot-prefixed hidden files from the toolbar
 - **Refresh and cancel** — Loading a large directory can be cancelled at any time
 
