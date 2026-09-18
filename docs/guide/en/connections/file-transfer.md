@@ -122,6 +122,8 @@ Right-click in the file list to open a context menu with common operations:
 ### File List
 
 - **List View** -- A table with columns such as Name, Type, Modified, Size, Permission, Owner, and Group
+- **Entry Colors** -- Folder icons render as Finder-style light-blue filled glyphs and symlinks violet, so kinds are told apart at a glance; name text stays neutral
+- **Column Visibility** -- Right-click a column header for a check menu that hides Type / Modified / Size / Permission / Owner / Group (Name always stays); shared across both panes and remembered across restarts
 - **Sorting** -- Click column headers to sort by name, size, modification time, etc. in ascending or descending order
 - **Filter by Name** -- Type a keyword to instantly filter the current directory
 - **Type-ahead** -- When the list has focus, pressing a letter key jumps to the first matching item; pressing the same key again cycles among matches

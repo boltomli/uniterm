@@ -93,45 +93,46 @@
         @row-click="onRowClick"
         @row-dblclick="onRowDblClick"
         @row-contextmenu="onRowContextMenu"
+        @header-contextmenu="onHeaderContextMenu"
       >
       <el-table-column prop="name" :label="t('sftp.name')" :min-width="uiPx(220)" sortable="custom" show-overflow-tooltip>
         <template #default="{ row }">
           <div class="name-cell" :draggable="true" @dragstart="onDragStart($event, row)">
-            <el-icon v-if="isSymlink(row)"><Link :size="'0.875rem'" /></el-icon>
-            <el-icon v-else-if="row.isDir"><Folder :size="'0.875rem'" /></el-icon>
-            <el-icon v-else><File :size="'0.875rem'" /></el-icon>
+            <el-icon v-if="isSymlink(row)" class="name-icon link"><Link :size="'0.875rem'" /></el-icon>
+            <el-icon v-else-if="row.isDir" class="name-icon dir"><Folder :size="'0.875rem'" /></el-icon>
+            <el-icon v-else class="name-icon file"><File :size="'0.875rem'" /></el-icon>
             <div class="name-info">
               <span class="file-name" :class="{ selected: isSelected(row) }">{{ row.name }}</span>
             </div>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="type" :label="t('sftp.type')" :width="uiPx(70)" sortable="custom" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('type')" prop="type" :label="t('sftp.type')" :width="uiPx(70)" sortable="custom" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ fileTypeLabel(row) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="modTime" :label="t('sftp.modified')" :width="uiPx(150)" sortable="custom" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('modTime')" prop="modTime" :label="t('sftp.modified')" :width="uiPx(150)" sortable="custom" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ formatDate(row.modTime) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="size" :label="t('sftp.size')" :width="uiPx(70)" align="right" sortable="custom" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('size')" prop="size" :label="t('sftp.size')" :width="uiPx(70)" align="right" sortable="custom" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ row.isDir ? '-' : formatSize(row.size) }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('sftp.permission')" :width="uiPx(95)" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('permission')" :label="t('sftp.permission')" :width="uiPx(95)" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ row.mode || '-' }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('sftp.owner')" :width="uiPx(80)" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('owner')" :label="t('sftp.owner')" :width="uiPx(80)" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ row.owner || '-' }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('sftp.group')" :width="uiPx(80)" show-overflow-tooltip>
+      <el-table-column v-if="columnVisible('group')" :label="t('sftp.group')" :width="uiPx(80)" show-overflow-tooltip>
         <template #default="{ row }">
           <span class="cell-secondary">{{ row.group || '-' }}</span>
         </template>
@@ -239,6 +240,17 @@
         {{ showHidden ? t('sftp.hideHidden') : t('sftp.showHidden') }}
       </MenuItem>
     </Menu>
+
+    <!-- Column visibility menu (header right-click, Explorer-style). The name
+         column is the identity of the list and always shown. -->
+    <Menu ref="columnMenuRef" v-model:visible="columnMenuVisible">
+      <MenuItem
+        v-for="col in optionalColumns"
+        :key="col"
+        :class="{ checkable: true, checked: columnVisible(col) }"
+        @click="toggleColumn(col)"
+      >{{ t(columnLabelKey(col)) }}</MenuItem>
+    </Menu>
   </div>
 </template>
 
@@ -253,6 +265,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import { uiPx } from '../utils/uiScale'
+import { useLocalStateStore } from '../stores/localStateStore'
 
 export interface FileItem {
   name: string
@@ -325,6 +338,7 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale } = useI18n()
+const localStateStore = useLocalStateStore()
 
 const filterText = ref('')
 const showHidden = ref(false)
@@ -369,6 +383,54 @@ const itemCountText = computed(() => {
     ? `${base} | ${t('sftp.selectionStats', { count: selectionStats.value.count })}`
     : base
 })
+
+// --- Column visibility (header right-click) -------------------------------
+// Every non-name column can be hidden via the header's context menu
+// (Explorer-style). The name column is the list's identity and stays. The
+// hidden set lives on the localState store so every FileList instance (both
+// panes of the dual-pane tab, the sidebar) shares one view and updates
+// together.
+type ColumnKey = 'type' | 'modTime' | 'size' | 'permission' | 'owner' | 'group'
+const optionalColumns: ColumnKey[] = ['type', 'modTime', 'size', 'permission', 'owner', 'group']
+const columnLabelKeys: Record<ColumnKey, string> = {
+  type: 'sftp.type',
+  modTime: 'sftp.modified',
+  size: 'sftp.size',
+  permission: 'sftp.permission',
+  owner: 'sftp.owner',
+  group: 'sftp.group',
+}
+const hiddenColumns = computed<Set<ColumnKey>>(() =>
+  new Set((localStateStore.state.sftpHiddenColumns || []) as ColumnKey[]))
+const columnMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const columnMenuVisible = ref(false)
+
+function columnLabelKey(key: ColumnKey): string {
+  return columnLabelKeys[key]
+}
+
+function columnVisible(key: ColumnKey): boolean {
+  return !hiddenColumns.value.has(key)
+}
+
+function toggleColumn(key: ColumnKey) {
+  const next = new Set(hiddenColumns.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+    // A hidden column can't keep driving the sort — clear it so the list
+    // doesn't silently reorder on a column the user can no longer see.
+    if (sortState.value?.prop === key) sortState.value = null
+  }
+  localStateStore.update({ sftpHiddenColumns: [...next] })
+}
+
+function onHeaderContextMenu(_column: any, event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  columnMenuRef.value?.openAt(event.clientX, event.clientY)
+}
 
 // --- Header sorting ---------------------------------------------------------
 // Sorting is applied here rather than through el-table's built-in sort: el-table
@@ -1048,6 +1110,22 @@ function applyBandSelection() {
   display: flex;
   flex-direction: column;
 }
+/* Entry-kind icon coloring (names stay neutral — Finder/Explorer style):
+   the folder icon renders as a filled Finder-like light-blue glyph, symlinks
+   violet, plain files muted. Text keeps --text-primary; only selection tints. */
+.name-icon.dir {
+  color: var(--info);
+}
+.name-icon.dir :deep(svg) {
+  fill: var(--info);
+  fill-opacity: 0.35;
+}
+.name-icon.link {
+  color: var(--chart-4);
+}
+.name-icon.file {
+  color: var(--text-muted);
+}
 .file-name {
   color: var(--text-primary);
 }
@@ -1135,6 +1213,24 @@ function applyBandSelection() {
 }
 .el-table tr.cut-item-row {
   opacity: 0.4;
+}
+
+/* Column-visibility menu rows: a leading check slot shows the current state
+   (icon spans the width so labels stay left-aligned with or without check). */
+.conn-context-menu .menu-item.checkable {
+  display: flex;
+  align-items: center;
+}
+.conn-context-menu .menu-item.checkable::before {
+  content: '';
+  width: 1rem;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.conn-context-menu .menu-item.checkable.checked::before {
+  content: '✓';
+  color: var(--accent);
+  font-weight: 500;
 }
 
 /* Make table fill pane and keep scrollbar at bottom */
