@@ -146,6 +146,21 @@ func main() {
 		// harmless (ignored) on other platforms.
 		Windows: application.WindowsOptions{
 			WebviewUserDataPath: webviewDataPath,
+			// Disable HTTP integrated-auth SSO. When WebView2 hits an
+			// NTLM/Negotiate challenge (most commonly a system proxy
+			// answering 407) it otherwise silently attempts to log on with
+			// the current Windows identity; with stale credentials this
+			// produces repeated 4625 failed-logon events that accumulate
+			// into an account lockout. uniTerm's frontend is served
+			// locally and never needs Windows integrated auth, so switch
+			// the schemes off entirely (plus empty allowlists for WebView2
+			// runtimes that predate --auth-schemes; unknown switches are
+			// ignored harmlessly).
+			AdditionalBrowserArgs: []string{
+				"--auth-schemes=basic,digest",
+				"--auth-server-allowlist=",
+				"--auth-negotiate-delegate-allowlist=",
+			},
 		},
 		// Fixed program name so the window's WM_CLASS stays "uniterm" — the
 		// installed package's .desktop file sets StartupWMClass to the same
