@@ -152,6 +152,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useTerminalMenu } from '../composables/useTerminalMenu'
 import { writeClipboard } from '../composables/useClipboardWrite'
 import { filterTerminalInput } from '../utils/terminalInputFilter'
+import { DcsReassembler } from '../utils/dcsReassembler'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
@@ -355,6 +356,11 @@ let zmodemRestoringOutput = false
 let zmodemCompletionPending = false
 const zmodemDeferredOutput: string[] = []
 let exporting = false
+// Reassembles DCS (sixel image) sequences split across session:data chunks
+// so highlight's per-chunk segmenter never injects SGR codes into an open
+// DCS body. Every chunk this component renders must pass through it exactly
+// once, in order — including the KeepAlive gap replay below.
+const dcsReassembler = new DcsReassembler()
 
 function renderTerminalData(rawData: string, countChunk = true) {
   if (!terminal) return
@@ -369,12 +375,20 @@ function renderTerminalData(rawData: string, countChunk = true) {
     const cleaned = data.replace(/\x1b\]633;S[^\x07]*\x07/g, '')
     if (cleaned) writeStamped(cleaned)
   } else {
-    if (props.mode === 'ssh' && terminalInput) {
-      terminalInput.handleSessionData(data)
-      if (terminalInput.isInAlternateScreen()) suggestions.close()
-    }
     const hlOn = (settingsStore.settings.terminal.highlightEnabled ?? true) && props.mode !== 'local'
-    writeStamped(hlOn ? highlight(data) : data)
+    for (const seg of dcsReassembler.feed(data)) {
+      if (seg.dcs) {
+        // Complete DCS (sixel image, DECRQSS reply, …): write verbatim —
+        // SGR codes injected inside a DCS body would corrupt it.
+        writeStamped(seg.text)
+        continue
+      }
+      if (props.mode === 'ssh' && terminalInput) {
+        terminalInput.handleSessionData(seg.text)
+        if (terminalInput.isInAlternateScreen()) suggestions.close()
+      }
+      writeStamped(hlOn ? highlight(seg.text) : seg.text)
+    }
   }
   if (countChunk) writtenChunks++
 }
@@ -1671,7 +1685,11 @@ onActivated(() => {
     if (total > writtenChunks) {
       const tail = sessionStore.getDataFromChunk(props.sessionId, writtenChunks)
       const hlOn = (settingsStore.settings.terminal.highlightEnabled ?? true) && props.mode !== 'local'
-      writeStamped(hlOn ? highlight(tail) : tail)
+      // Route the gap replay through the DCS reassembler like the live
+      // path — a sixel sequence may span the deactivation boundary.
+      for (const seg of dcsReassembler.feed(tail)) {
+        writeStamped(seg.dcs ? seg.text : (hlOn ? highlight(seg.text) : seg.text))
+      }
       writtenChunks = total
     }
   }

@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon } from '@xterm/addon-search'
+import { ImageAddon } from '@xterm/addon-image'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -155,10 +156,17 @@ export function acquireTerminal(
     const fitAddon = new FitAddon()
     const searchAddon = new SearchAddon()
     const unicodeAddon = new Unicode11Addon()
+    // Terminal image support (sixel + iTerm2 OSC 1337). The addon parses the
+    // sequences itself and draws them on its own canvas layer, so it works
+    // with the default DOM renderer. DCS sixel sequences are reassembled
+    // chunk-wise in BaseTerminal's render path (dcsReassembler) BEFORE they
+    // reach xterm, so the parser only ever sees complete sequences.
+    const imageAddon = new ImageAddon()
 
     terminal.loadAddon(fitAddon)
     terminal.loadAddon(searchAddon)
     terminal.loadAddon(unicodeAddon)
+    terminal.loadAddon(imageAddon)
     // F-035: charSizeCompat / ITheme.codeBlockBackground do not exist in
     // xterm.js v5.5. The Unicode 11 activeVersion below is the available
     // WC-width alignment — the backend PTY uses the same Unicode 11
