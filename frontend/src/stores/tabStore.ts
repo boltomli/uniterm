@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { reactive, computed } from 'vue'
 import type { Tab, TerminalTab, WorkspaceTab, StartTab, PanelLayout, LayoutNode } from '../types/workspace'
+import type { IProgressState } from '@xterm/addon-progress'
 import { usePanelStore } from './panelStore'
 import { t } from '../i18n'
 
@@ -14,13 +15,17 @@ const tabState = reactive<{
   aiLockedPanelIds: Set<string>
   broadcastPanelIds: Set<string>
   tabNotifications: Record<string, boolean>
+  /** OSC 9;4 progress state per tab (null = no active progress). Fed by the
+   * ProgressAddon via terminalManager; rendered as a mini bar in TabItem. */
+  tabProgress: Record<string, IProgressState | null>
 }>({
   tabs: [],
   activeTabId: null,
   draggingTabId: null,
   aiLockedPanelIds: new Set<string>(),
   broadcastPanelIds: new Set<string>(),
-  tabNotifications: {}
+  tabNotifications: {},
+  tabProgress: {}
 })
 
 let idCounter = 0
@@ -287,6 +292,16 @@ export const useTabStore = defineStore('tab', () => {
 
   function hasTabNotification(tabId: string): boolean {
     return !!tabState.tabNotifications[tabId]
+  }
+
+  // ── Progress indicators (OSC 9;4) ──
+
+  function setTabProgress(tabId: string, state: IProgressState | null) {
+    tabState.tabProgress[tabId] = state
+  }
+
+  function getTabProgress(tabId: string): IProgressState | null {
+    return tabState.tabProgress[tabId] ?? null
   }
 
   function nextTab() {
@@ -713,6 +728,8 @@ export const useTabStore = defineStore('tab', () => {
     markTabNotification,
     clearTabNotification,
     hasTabNotification,
+    setTabProgress,
+    getTabProgress,
     // Expose helpers for components
     collectPanelIds,
     insertPanelIntoLayout,

@@ -46,6 +46,15 @@
       @click.stop
     />
     <span v-if="tabShortcut" class="tab-shortcut">{{ tabShortcut }}</span>
+    <!-- OSC 9;4 progress indicator: a 2px bar along the tab's bottom edge.
+         state 1 = normal (accent), 2 = error (red), 3 = indeterminate
+         (animated), 4 = paused/warning (orange). -->
+    <span
+      v-if="activeProgress"
+      class="tab-progress"
+      :class="`tab-progress-${activeProgress.state}`"
+      :style="activeProgress.state === 3 ? undefined : { width: `${Math.max(2, Math.min(100, activeProgress.value))}%` }"
+    />
     <Radio
       v-if="showBroadcastIcon"
       class="tab-broadcast-icon"
@@ -145,6 +154,8 @@ const props = defineProps<{
   isActive: boolean
   hasNotification?: boolean
   showClose?: boolean
+  /** OSC 9;4 progress state (null/absent = no active progress). */
+  progress?: { state: 0 | 1 | 2 | 3 | 4; value: number } | null
 }>()
 
 const emit = defineEmits<{
@@ -158,6 +169,12 @@ const tabStore = useTabStore()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
 const k8sStore = useK8sStore()
+
+// OSC 9;4 progress (state 0 = "no progress", rendered as nothing).
+const activeProgress = computed(() => {
+  const p = props.progress
+  return p && p.state !== 0 ? p : null
+})
 const containerStore = useContainerStore()
 const settingsStore = useSettingsStore()
 const companionStore = useCompanionStore()
@@ -739,6 +756,32 @@ onMounted(async () => {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 1px var(--bg-base);
+}
+/* OSC 9;4 progress bar along the tab's bottom edge (see template). */
+.tab-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+  transition: width 0.2s ease;
+}
+.tab-progress-2 {
+  background: #e5484d;
+}
+.tab-progress-4 {
+  background: var(--warning-tab, #f5a623);
+}
+.tab-progress-3 {
+  width: 40%;
+  animation: tab-progress-indeterminate 1.4s linear infinite;
+}
+@keyframes tab-progress-indeterminate {
+  from { left: -40%; }
+  to { left: 100%; }
 }
 .tab-log-dot {
   position: absolute;
