@@ -3,10 +3,14 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
+import { ClipboardAddon, Base64 } from '@xterm/addon-clipboard'
+import { ProgressAddon, type IProgressState } from '@xterm/addon-progress'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
+import { useTabStore } from '../stores/tabStore'
+import { usePanelStore } from '../stores/panelStore'
 import type { CustomTerminalTheme } from '../types/settings'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { installImeCompatibilityPatch } from '../utils/xtermImeCompatibility'
@@ -33,6 +37,7 @@ export interface ManagedTerminal {
   fitAddon: FitAddon
   searchAddon: SearchAddon
   unicodeAddon: Unicode11Addon
+  progressAddon: ProgressAddon
   container: HTMLElement | null
   refs: Set<string>
   options: TerminalOptions
@@ -59,11 +64,30 @@ export interface ManagedTerminal {
   /** Subscription to terminal.onResize — reflows the buffer, so the registry
    * must be re-keyed to the rows lines now start at. */
   resizeDispose: { dispose(): void } | null
+  /** Subscription to ProgressAddon.onChange — routes OSC 9;4 progress
+   * state into the tab store for the tab-bar indicator. */
+  progressDispose: { dispose(): void } | null
   /** IME compatibility patch installed on this terminal (macOS only). */
   imeDispose: { dispose(): void } | null
 }
 
 const terminals = new Map<string, ManagedTerminal>()
+
+// Route a progress state from a session's terminal to the tab that displays
+// it (session → panel → tab, same resolution the notification dots use).
+function setTabProgressForSession(sessionId: string, state: IProgressState | null): void {
+  const panelStore = usePanelStore()
+  const tabStore = useTabStore()
+  for (const [panelId, panel] of panelStore.panels) {
+    if (panel.sessionId !== sessionId) continue
+    const tab = tabStore.tabs.find(t =>
+      (t.type === 'terminal' && t.panelId === panelId) ||
+      (t.type === 'workspace' && t.panelIds.includes(panelId))
+    )
+    if (tab) tabStore.setTabProgress(tab.id, state)
+    return
+  }
+}
 
 // F-027: scrollback limit applied while the terminal sits in the hidden
 // holding container (between detach and re-attach). Restored on re-attach
@@ -162,11 +186,29 @@ export function acquireTerminal(
     // chunk-wise in BaseTerminal's render path (dcsReassembler) BEFORE they
     // reach xterm, so the parser only ever sees complete sequences.
     const imageAddon = new ImageAddon()
+    // OSC 52 clipboard: remote programs (vim "+ register, tmux, ssh through
+    // chains) can WRITE to the local clipboard. Reads are deliberately
+    // answered with an empty report instead of a rejection — the addon does
+    // not catch provider promise rejections (verified in its source), so a
+    // rejected read would surface as an unhandled rejection, and refusing to
+    // read also keeps remote processes from exfiltrating local clipboard
+    // contents. Writes swallow failures (window unfocused etc.) for the
+    // same unhandled-rejection reason.
+    const clipboardAddon = new ClipboardAddon(new Base64(), {
+      readText: () => '',
+      writeText: (_selection, text) => {
+        navigator.clipboard.writeText(text).catch(() => { /* non-critical */ })
+      },
+    })
+    // ConEmu-style OSC 9;4 progress, surfaced as a tab-bar indicator.
+    const progressAddon = new ProgressAddon()
 
     terminal.loadAddon(fitAddon)
     terminal.loadAddon(searchAddon)
     terminal.loadAddon(unicodeAddon)
     terminal.loadAddon(imageAddon)
+    terminal.loadAddon(clipboardAddon)
+    terminal.loadAddon(progressAddon)
     // F-035: charSizeCompat / ITheme.codeBlockBackground do not exist in
     // xterm.js v5.5. The Unicode 11 activeVersion below is the available
     // WC-width alignment — the backend PTY uses the same Unicode 11
@@ -185,6 +227,7 @@ export function acquireTerminal(
       fitAddon,
       searchAddon,
       unicodeAddon,
+      progressAddon,
       container: null,
       refs: new Set(),
       options,
@@ -195,6 +238,7 @@ export function acquireTerminal(
       lineOffset: 0,
       trimDispose: null,
       resizeDispose: null,
+      progressDispose: null,
       imeDispose: null,
     }
 
@@ -233,6 +277,13 @@ export function acquireTerminal(
       })
     })
 
+    // OSC 9;4 progress → tab-bar indicator. One subscription per terminal
+    // (at creation) so KeepAlive re-mounts never stack listeners; state 0
+    // clears the indicator.
+    m.progressDispose = progressAddon.onChange(state => {
+      setTabProgressForSession(sessionId, state.state === 0 ? null : state)
+    })
+
     terminals.set(sessionId, m)
   }
 
@@ -254,6 +305,9 @@ export function releaseTerminal(sessionId: string, ref: string): void {
       managed.trimDispose = null
       managed.resizeDispose?.dispose()
       managed.resizeDispose = null
+      managed.progressDispose?.dispose()
+      managed.progressDispose = null
+      setTabProgressForSession(sessionId, null)
       managed.imeDispose?.dispose()
       managed.imeDispose = null
       managed.terminal.dispose()
@@ -272,6 +326,9 @@ export function disposeTerminal(sessionId: string): void {
   managed.trimDispose = null
   managed.resizeDispose?.dispose()
   managed.resizeDispose = null
+  managed.progressDispose?.dispose()
+  managed.progressDispose = null
+  setTabProgressForSession(sessionId, null)
   managed.imeDispose?.dispose()
   managed.imeDispose = null
   managed.terminal.dispose()
@@ -285,6 +342,14 @@ export function transferTerminal(oldSessionId: string, newSessionId: string): bo
   if (!managed) return false
   terminals.delete(oldSessionId)
   terminals.set(newSessionId, managed)
+  // Re-target the progress subscription: its closure captured oldSessionId,
+  // and events for the old id would resolve to no panel and strand a stale
+  // indicator on the previous tab.
+  managed.progressDispose?.dispose()
+  managed.progressDispose = managed.progressAddon.onChange(state => {
+    setTabProgressForSession(newSessionId, state.state === 0 ? null : state)
+  })
+  setTabProgressForSession(oldSessionId, null)
   return true
 }
 

@@ -14,6 +14,16 @@ vi.mock('@xterm/addon-unicode11', () => ({
 vi.mock('@xterm/addon-search', () => ({
   SearchAddon: class {},
 }))
+vi.mock('@xterm/addon-clipboard', () => ({
+  ClipboardAddon: class {},
+  Base64: class {},
+}))
+vi.mock('@xterm/addon-progress', () => ({
+  ProgressAddon: class {
+    // IEvent: called as a function, returns a disposable.
+    onChange = () => ({ dispose() {} })
+  },
+}))
 vi.mock('../composables/useTerminal', () => ({
   getXtermTheme: () => ({}),
 }))

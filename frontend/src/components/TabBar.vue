@@ -18,6 +18,7 @@
           :tab="tab"
           :shortcut-index="index + 1"
           :is-active="tab.id === activeTabId"
+          :progress="tabStore.getTabProgress(tab.id)"
           @activate="setActiveTab"
           @close="closeTab"
           @toggle-ai-lock="onToggleAiLock"

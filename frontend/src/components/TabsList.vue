@@ -11,6 +11,7 @@
         :shortcut-index="index + 1"
         :is-active="tab.id === activeTabId"
         :has-notification="tabStore.hasTabNotification(tab.id)"
+        :progress="tabStore.getTabProgress(tab.id)"
         @activate="setActiveTab"
         @close="(id: string) => $emit('close-tab', id)"
         @close-batch="(ids: string[]) => $emit('close-tab-batch', ids)"
