@@ -953,6 +953,17 @@ body.drag-active .zone {
   -webkit-user-select: text;
 }
 
+/* Global guard for any contenteditable host: macOS WebKit inherits
+   -webkit-user-select: none from <body>, which breaks mouse caret placement
+   and editing in contenteditable regions (native inputs/textareas are already
+   exempt via the UA stylesheet). This keeps rich-text inputs (e.g. the AI
+   sidebar composer) clickable/editable without re-enabling selection on
+   non-editable chrome. */
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Copyable message (msg.copyable): opt out of the frameless-window drag region
    so mouse-down selects text instead of dragging the window on macOS. */
 .msg-copyable,

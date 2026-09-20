@@ -1754,6 +1754,14 @@ defineExpose({ focusInput })
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.6;
+  /* WebKit/WKWebView (macOS): body sets -webkit-user-select: none, which makes
+     a contenteditable div impossible to focus/position the caret with the
+     mouse — clicks land but no cursor appears and no typing happens. Native
+     <input>/<textarea> are exempt via the UA stylesheet, but contenteditable
+     is not, so restore text selection explicitly here. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 .ai-editable:empty::before {
   content: attr(data-placeholder);
