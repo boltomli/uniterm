@@ -8,6 +8,7 @@
     @mouseleave="hovered = false"
     draggable="true"
     @dragstart="onDragStart"
+    @dragend="onDragEnd"
     @contextmenu="onContextMenu"
   >
     <button
@@ -379,15 +380,22 @@ function onDragStart(e: DragEvent) {
   }
   e.dataTransfer!.effectAllowed = 'move'
 
-  // If dragging the active terminal tab, switch to adjacent tab first
-  // so the dragged tab becomes "background" and can be merged into it
-  if (props.isActive && props.tab.type === 'terminal') {
-    const tabs = tabStore.tabs
-    const fromIdx = tabs.findIndex(t => t.id === props.tab.id)
-    const adjacentTab = tabs[fromIdx - 1] || tabs[fromIdx + 1]
-    if (adjacentTab) {
-      tabStore.setActiveTab(adjacentTab.id)
-    }
+  // Expose the dragged tab id for dragover handlers (dataTransfer.getData is
+  // only readable during drop). TerminalTabContent uses it to detect the
+  // active tab hovering its own content and only then switches to the
+  // adjacent tab to offer the workspace-merge drop target — so a plain
+  // tab-bar reorder never steals the selection.
+  tabStore.setDraggingTabId(props.tab.id)
+}
+
+function onDragEnd() {
+  tabStore.setDraggingTabId(null)
+  // The drag ended without consuming the tab (tab-bar reorder, cancelled
+  // drag, rejected drop): restore the selection the dragstart-adjacent
+  // switch may have moved. A successful workspace merge removes the tab, so
+  // there is nothing to restore (and this element no longer exists).
+  if (tabStore.activeTabId !== props.tab.id && tabStore.tabs.some(t => t.id === props.tab.id)) {
+    tabStore.setActiveTab(props.tab.id)
   }
 }
 

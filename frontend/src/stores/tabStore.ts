@@ -7,12 +7,17 @@ import { t } from '../i18n'
 const tabState = reactive<{
   tabs: Tab[]
   activeTabId: string | null
+  // Id of the tab currently being dragged (set at dragstart, cleared at
+  // dragend). dataTransfer.getData is unavailable outside the drop event, so
+  // dragover handlers need this to recognize the dragged tab.
+  draggingTabId: string | null
   aiLockedPanelIds: Set<string>
   broadcastPanelIds: Set<string>
   tabNotifications: Record<string, boolean>
 }>({
   tabs: [],
   activeTabId: null,
+  draggingTabId: null,
   aiLockedPanelIds: new Set<string>(),
   broadcastPanelIds: new Set<string>(),
   tabNotifications: {}
@@ -35,6 +40,7 @@ function generateWorkspaceName(existingTabs: Tab[]): string {
 export const useTabStore = defineStore('tab', () => {
   const tabs = computed(() => tabState.tabs)
   const activeTabId = computed(() => tabState.activeTabId)
+  const draggingTabId = computed(() => tabState.draggingTabId)
   const activeTab = computed(() =>
     tabState.tabs.find(t => t.id === tabState.activeTabId) || null
   )
@@ -259,6 +265,10 @@ export const useTabStore = defineStore('tab', () => {
 
   // ── Activate / reorder / rename ──
 
+  function setDraggingTabId(id: string | null) {
+    tabState.draggingTabId = id
+  }
+
   function setActiveTab(id: string) {
     tabState.activeTabId = id
     // Clear notification dot when user switches to this tab
@@ -402,6 +412,10 @@ export const useTabStore = defineStore('tab', () => {
     tabState.tabs.splice(insertIdx, 0, workspaceTab)
     tabState.activeTabId = workspaceTab.id
 
+    // The dragged tab is gone; its source element unmounts before dragend can
+    // fire, so clear the drag tracking here.
+    tabState.draggingTabId = null
+
     return workspaceTab
   }
 
@@ -434,6 +448,10 @@ export const useTabStore = defineStore('tab', () => {
     wsTab.activePanelId = newPanelId
     if (wsTab.maximizedPanelId) wsTab.maximizedPanelId = newPanelId
     tabState.activeTabId = workspaceTabId
+
+    // The dragged tab is gone; its source element unmounts before dragend can
+    // fire, so clear the drag tracking here.
+    tabState.draggingTabId = null
   }
 
   // Add a newly-created panel directly to an existing workspace. Unlike
@@ -647,6 +665,7 @@ export const useTabStore = defineStore('tab', () => {
   return {
     tabs,
     activeTabId,
+    draggingTabId,
     activeTab,
     aiLockedPanelId,
     aiLockedPanelIds,
@@ -659,6 +678,7 @@ export const useTabStore = defineStore('tab', () => {
     createWorkspaceTab,
     closeTab,
     setActiveTab,
+    setDraggingTabId,
     nextTab,
     prevTab,
     getActivePanelId,
