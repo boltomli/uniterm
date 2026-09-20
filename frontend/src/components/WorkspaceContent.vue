@@ -111,7 +111,8 @@ function onPanelDrop(e: DragEvent, targetPanelId: string, targetRect?: DOMRect) 
     const draggedTab = tabStore.tabs.find(t => t.id === draggedTabId)
     if (!draggedTab || draggedTab.type !== 'terminal') return
 
-    // Save the adjacent tab that was activated during dragstart
+    // Save the tab that was active before the drop, so dropping a background
+    // terminal tab into this workspace doesn't steal the user's focus
     const adjacentTabId = tabStore.activeTabId
 
     const rect = targetRect || (e.currentTarget as HTMLElement).getBoundingClientRect()
