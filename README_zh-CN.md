@@ -289,6 +289,7 @@ uniTerm/
 - [@windtear](https://github.com/windtear)
 - [@Sunshow](https://github.com/Sunshow)
 - [@feuvan](https://github.com/feuvan)
+- [@zhangsir1211](https://github.com/zhangsir1211)
 
 ## 开源协议
 
