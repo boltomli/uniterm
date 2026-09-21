@@ -1099,9 +1099,8 @@ onMounted(() => {
   terminal = acquireTerminal(props.sessionId || '', terminalInstanceRef, opts, settingsStore.settings.customTerminalThemes)
   // Keyword highlighting scans the parsed buffer and overlays decorations;
   // the enable switch is re-read on every refresh, so toggling the setting
-  // takes effect live. Exempt matches the old inject path's scope: ssh
-  // sessions only.
-  attachOverlayHighlighter(terminal, { exempt: props.mode !== 'ssh' })
+  // takes effect live. Applies to every terminal type.
+  attachOverlayHighlighter(terminal)
 
   // Load WebLinksAddon per-component (has custom callbacks)
   let hoverEl: HTMLDivElement | null = null
