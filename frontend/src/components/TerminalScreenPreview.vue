@@ -350,7 +350,7 @@ function show(t: Terminal, sbRect: DOMRect) {
 
   const withNumbers = showLineNumbers.value
   const withTimestamps = showTimestamps.value && managed
-  // Mirror the terminal's gating exactly (attached + not exempt + enabled).
+  // Mirror the terminal's gating exactly (attached + enabled).
   const highlightOn = isOverlayHighlightActive(t)
   const tsFormat = settingsStore.settings.terminal.timestampFormat || 'HH:mm:ss'
   const alternate = buf.type === 'alternate'

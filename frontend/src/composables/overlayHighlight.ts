@@ -153,8 +153,6 @@ export class OverlayHighlighter {
   private scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private continuationFrame: number | null = null
   private disposables: IDisposable[] = []
-  /** Terminals that must never be highlighted (local shells, sftp consoles). */
-  private exempt: boolean
   private dead = false
   private lastViewportY = -1
 
@@ -167,9 +165,8 @@ export class OverlayHighlighter {
    * and cached span is stale (full-screen app took over / released). */
   private lastBufferType: string | null = null
 
-  constructor(term: XTerm, opts: { exempt?: boolean } = {}) {
+  constructor(term: XTerm) {
     this.term = term
-    this.exempt = opts.exempt ?? false
 
     this.disposables.push(
       this.term.onWriteParsed(() => this.triggerWriteRefresh()),
@@ -203,7 +200,7 @@ export class OverlayHighlighter {
   }
 
   private isEnabled(): boolean {
-    if (this.exempt || this.dead) return false
+    if (this.dead) return false
     return useSettingsStore().settings.terminal.highlightEnabled ?? true
   }
 
@@ -501,12 +498,10 @@ export class OverlayHighlighter {
 const attached = new WeakMap<XTerm, OverlayHighlighter>()
 
 /** Attach an overlay highlighter to a terminal (idempotent per terminal).
- * `exempt` marks terminals that must never be highlighted regardless of
- * settings — local shells and sftp consoles, matching the legacy inject
- * renderer's `mode !== 'local'` gating. */
-export function attachOverlayHighlighter(term: XTerm, opts: { exempt?: boolean } = {}): void {
+ * Applies to every terminal type; the "文本高亮" setting is the only gate. */
+export function attachOverlayHighlighter(term: XTerm): void {
   if (attached.has(term)) return
-  const highlighter = new OverlayHighlighter(term, opts)
+  const highlighter = new OverlayHighlighter(term)
   attached.set(term, highlighter)
   highlighter.attach()
 }
@@ -518,7 +513,7 @@ export function notifyOverlayHighlightThemeChanged(term: XTerm): void {
 }
 
 /** Whether keyword highlighting is actively applied to this terminal right
- * now (attached, not exempt, enabled in settings). Consumers that mirror the
+ * now (attached and enabled in settings). Consumers that mirror the
  * terminal's rendering — like the scrollbar screen preview — use this to
  * stay in sync. */
 export function isOverlayHighlightActive(term: XTerm): boolean {
