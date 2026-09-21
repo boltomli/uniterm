@@ -210,13 +210,13 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		// Shell integration: probe the distro's shell and inject an OSC-7
 		// cwd hook. Any failure or timeout degrades silently to a plain
 		// `wsl.exe -d <distro>` — integration must never fail the session.
-		if startArgs, ok := wslShellIntegration(distro); ok {
-			commandLine = "wsl.exe -d " + distro + " " + strings.Join(startArgs, " ")
-			cmd = exec.Command("wsl.exe", append([]string{"-d", distro}, startArgs...)...)
-		} else {
-			commandLine = wslCommandLine(distro)
-			cmd = exec.Command("wsl.exe", "-d", distro)
+		var startArgs []string
+		if injected, ok := wslShellIntegration(distro); ok {
+			startArgs = injected
 		}
+		wslArgs := buildWSLStartArgs(distro, config.Cwd, startArgs)
+		commandLine = "wsl.exe " + strings.Join(wslArgs, " ")
+		cmd = exec.Command("wsl.exe", wslArgs...)
 		cmd.Env = os.Environ()
 	} else if clinkExe != "" {
 		// Tabby-style clink injection: cmd.exe /k <clink> inject --profile
@@ -474,13 +474,21 @@ func wslWritePath(distro, path, content string) error {
 	return err
 }
 
-func wslCommandLine(distro string) string {
-	// Note: do not quote the distro name here. In the ConPTY path, quoted
-	// names are interpreted literally by wsl.exe and cause
-	// WSL_E_DISTRO_NOT_FOUND. Distribution names with spaces are uncommon;
-	// if needed, the pipe fallback (exec.Command with separate args) handles
-	// them correctly.
-	return fmt.Sprintf(`wsl.exe -d %s`, distro)
+// buildWSLStartArgs returns the full wsl.exe argument list for launching a
+// distro. Without an explicit cwd, `--cd ~` makes wsl.exe start the shell in
+// the distro user's Linux home; otherwise the shell inherits uniTerm's own
+// working directory, which wsl.exe maps to /mnt/c/Users/<name>.
+//
+// Note: the distro name is not quoted here. In the ConPTY path, quoted names
+// are interpreted literally by wsl.exe and cause WSL_E_DISTRO_NOT_FOUND.
+// Distribution names with spaces are uncommon; if needed, the pipe fallback
+// (exec.Command with separate args) handles them correctly.
+func buildWSLStartArgs(distro string, cwd string, startArgs []string) []string {
+	args := []string{"-d", distro}
+	if cwd == "" {
+		args = append(args, "--cd", "~")
+	}
+	return append(args, startArgs...)
 }
 
 func buildCommandLine(shell string) string {
