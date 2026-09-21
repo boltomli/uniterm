@@ -137,6 +137,7 @@
   "window.maximize": "最大化",
   "window.close": "閉じる",
   "tab.duplicate": "複製",
+  "tab.duplicateChannel": "チャネルを複製",
   "tab.openTerminal": "SSH で接続",
   "tab.reconnect": "再接続",
   "tab.reconnectFailed": "再接続に失敗しました：{error}",

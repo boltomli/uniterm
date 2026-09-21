@@ -86,6 +86,40 @@ type SSHSession struct {
 	// re-send the snippet. Session objects are recreated on reconnect, so the
 	// flag resets naturally and the reconnect re-injection still fires.
 	cwdHookInstalled atomic.Bool
+
+	// clientRef wraps the shared *ssh.Client with reference counting so a
+	// channel clone (issue #983, Xshell-style "duplicate channel") can hold
+	// the authenticated connection open after the source tab closes.
+	clientRef *sshClientRef
+
+	// channelClone marks a session that reuses an existing authenticated
+	// client instead of dialing — Connect skips handshake/auth and only
+	// opens a new session channel.
+	channelClone bool
+}
+
+// sshClientRef owns one authenticated SSH transport. The last release closes
+// the underlying client, so clones keep the connection alive independently.
+type sshClientRef struct {
+	client *ssh.Client
+	refs   atomic.Int32
+}
+
+func (r *sshClientRef) acquire() {
+	r.refs.Add(1)
+}
+
+// release drops one holder and closes the client when none remain.
+func (r *sshClientRef) release() {
+	if r.refs.Add(-1) == 0 {
+		r.client.Close()
+	}
+}
+
+func newSSHClientRef(client *ssh.Client) *sshClientRef {
+	r := &sshClientRef{client: client}
+	r.refs.Store(1)
+	return r
 }
 
 func NewSSHSession(id string) *SSHSession {
@@ -97,6 +131,31 @@ func NewSSHSession(id string) *SSHSession {
 		},
 		quit: make(chan struct{}),
 	}
+}
+
+// NewSSHChannelSession creates a session that opens a fresh channel on the
+// source session's already-authenticated client (no re-auth, no 2FA prompt —
+// issue #983). The clone inherits the detected remoteOS. The source must be
+// connected; the caller validates that.
+func NewSSHChannelSession(id string, source *SSHSession) *SSHSession {
+	source.mu.RLock()
+	ref := source.clientRef
+	remoteOS := source.remoteOS
+	source.mu.RUnlock()
+	clone := NewSSHSession(id)
+	if ref != nil {
+		ref.acquire()
+		clone.clientRef = ref
+	}
+	clone.remoteOS = remoteOS
+	clone.channelClone = true
+	return clone
+}
+
+// IsChannelClone reports whether this session shares an authenticated client
+// with another session instead of owning its own connection.
+func (s *SSHSession) IsChannelClone() bool {
+	return s.channelClone
 }
 
 // RemoteOS returns the detected remote operating system. For Microsoft's
@@ -120,6 +179,20 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 		s.title = config.Name
 	} else {
 		s.title = fmt.Sprintf("%s@%s", config.User, config.Host)
+	}
+
+	// Channel clone (issue #983): reuse the already-authenticated client from
+	// the source session — no dial, no auth, no 2FA prompt. expectOutput is
+	// still initialized so post-login automation replays on the new channel.
+	if s.channelClone {
+		s.mu.Lock()
+		s.expectOutput = newPostLoginOutputBuffer()
+		s.mu.Unlock()
+		if s.clientRef == nil || s.clientRef.client == nil {
+			s.setStatus(StatusError)
+			return fmt.Errorf("source session is not connected")
+		}
+		return s.attach(s.clientRef.client, config)
 	}
 
 	// Set up keyboard-interactive auth input channel.
@@ -263,9 +336,29 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 		s.remoteOS = remoteOSWindowsOpenSSH
 	}
 
+	s.mu.Lock()
+	s.clientRef = newSSHClientRef(client)
+	s.mu.Unlock()
+	if err := s.attach(client, config); err != nil {
+		// The dial path owns the whole client: a failed attach tears it down
+		// too (clones only ever release their ref via Disconnect).
+		s.mu.Lock()
+		s.clientRef = nil
+		s.mu.Unlock()
+		client.Close()
+		return err
+	}
+	return nil
+}
+
+// attach opens a session channel on an authenticated client and wires this
+// SSHSession to it: PTY, pipes, shell start, read loops and post-login
+// automation. Shared by the dial path (own client) and channel clones
+// (issue #983). On failure the channel is closed but the client stays open —
+// the dial path's own error handling closes its client, clones hold a ref.
+func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 	session, err := client.NewSession()
 	if err != nil {
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("new session: %w", err)
 	}
@@ -317,7 +410,6 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 
 	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		session.Close()
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("request pty: %w", err)
 	}
@@ -325,7 +417,6 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
 		session.Close()
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
@@ -333,7 +424,6 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
 		session.Close()
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
@@ -341,7 +431,6 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	stderrPipe, err := session.StderrPipe()
 	if err != nil {
 		session.Close()
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
@@ -358,14 +447,12 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 			log.Writef("ssh: integration start failed, falling back to plain shell: %v", err)
 			if err := session.Shell(); err != nil {
 				session.Close()
-				client.Close()
 				s.setStatus(StatusError)
 				return fmt.Errorf("shell: %w", err)
 			}
 		}
 	} else if err := session.Shell(); err != nil {
 		session.Close()
-		client.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("shell: %w", err)
 	}
@@ -616,7 +703,8 @@ func (s *SSHSession) Write(data []byte) error {
 // Disconnect tears down the SSH session. It uses sync.Once so the entire
 // teardown sequence executes exactly once, regardless of how many goroutines
 // call Disconnect concurrently (session.Wait, readLoop error, keepalive
-// failure, or explicit user close).
+// failure, or explicit user close). The shared client is only closed when
+// this was the last holder (channel clones keep it alive — issue #983).
 func (s *SSHSession) Disconnect() error {
 	s.quitOnce.Do(func() {
 		s.SetZmodemMode(false)
@@ -628,10 +716,17 @@ func (s *SSHSession) Disconnect() error {
 		if s.session != nil {
 			s.session.Close()
 		}
-		if s.client != nil {
-			sshCleanupRemoteTemp(s.client, s.integrationTempPath)
-			s.integrationTempPath = ""
-			s.client.Close()
+		s.mu.RLock()
+		ref := s.clientRef
+		s.mu.RUnlock()
+		if ref != nil {
+			// Remote temp cleanup needs a live connection; run it before the
+			// ref drops (which may close the client).
+			if s.integrationTempPath != "" {
+				sshCleanupRemoteTemp(ref.client, s.integrationTempPath)
+				s.integrationTempPath = ""
+			}
+			ref.release()
 		}
 		s.setStatus(StatusDisconnected)
 	})

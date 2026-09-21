@@ -1,6 +1,7 @@
 import {
   CreateSession,
   CloseSession,
+  DuplicateSSHChannel,
   K8sExecSession,
   ContainerExecSession,
   SessionStart,
@@ -143,5 +144,83 @@ export function useDuplicateSession() {
     }
   }
 
-  return { duplicateSession }
+  /**
+   * Duplicate an SSH terminal tab as a CHANNEL clone (issue #983,
+   * Xshell-style): the new tab opens a fresh session channel on the source
+   * session's already-authenticated SSH client — no re-dial, no re-auth, no
+   * repeated 2FA/verification code on jump hosts. Only available while the
+   * source session is connected; the backend re-validates (race guard).
+   */
+  async function duplicateChannel(
+    tab: any,
+    targetWorkspace?: { workspaceId: string; targetPanelId?: string },
+  ) {
+    if (!tab || !('panelId' in tab)) return
+    const panel = panelStore.getPanel(tab.panelId)
+    if (!panel || panel.type !== 'ssh' || !panel.sessionId) return
+    if (sessionStore.getStatus(panel.sessionId) !== 'connected') return
+
+    let info
+    try {
+      const config = { ...panel.config, initialCols: 0, initialRows: 0 }
+      info = await DuplicateSSHChannel(panel.sessionId, config)
+    } catch (e) {
+      console.error('Failed to duplicate channel:', e)
+      return
+    }
+
+    const newPanel = panelStore.createPanel(panel.config, 'ssh')
+    panelStore.updateTitle(newPanel.id, panel.title)
+    panelStore.bindSession(newPanel.id, info.id)
+    sessionStore.initSession(info.id)
+    sessionStore.updateStatus(info.id, 'connecting')
+
+    // Same mount flow as duplicateSession: standalone tab, or embedded
+    // beside the source panel when a workspace target was given.
+    if (targetWorkspace) {
+      const addedToWorkspace = tabStore.addNewPanelToWorkspace(
+        targetWorkspace.workspaceId,
+        newPanel.id,
+        targetWorkspace.targetPanelId,
+      )
+      if (addedToWorkspace) {
+        panelStore.movePanelToTab(newPanel.id, targetWorkspace.workspaceId)
+        // Channel attach runs after the xterm mounted and measured its size.
+        try {
+          const size = await waitForTerminalSize(info.id)
+          const config = {
+            ...panel.config,
+            initialCols: size.cols > 0 ? size.cols : 0,
+            initialRows: size.rows > 0 ? size.rows : 0,
+          }
+          await SessionStart(info.id, config).catch((e: any) => {
+            console.error('Failed to start channel clone:', e)
+            CloseSession(info.id).catch(() => {})
+          })
+        } catch (e) {
+          console.error('Failed to start channel clone:', e)
+        }
+        return
+      }
+    }
+    const newTab = tabStore.createTerminalTab(newPanel.title, newPanel.id)
+    panelStore.movePanelToTab(newPanel.id, newTab.id)
+
+    try {
+      const size = await waitForTerminalSize(info.id)
+      const config = {
+        ...panel.config,
+        initialCols: size.cols > 0 ? size.cols : 0,
+        initialRows: size.rows > 0 ? size.rows : 0,
+      }
+      await SessionStart(info.id, config).catch((e: any) => {
+        console.error('Failed to start channel clone:', e)
+        CloseSession(info.id).catch(() => {})
+      })
+    } catch (e) {
+      console.error('Failed to start channel clone:', e)
+    }
+  }
+
+  return { duplicateSession, duplicateChannel }
 }
