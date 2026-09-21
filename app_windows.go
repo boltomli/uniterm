@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -593,4 +596,97 @@ func systemPrefersDark() bool {
 		return true
 	}
 	return val == 0
+}
+
+// waitForRelaunchParent and the UNITERM_RELAUNCH_PID handshake were removed:
+// the relaunch is now quit-then-spawn (relaunchPending + spawnSuccessorProcess
+// in main.go), so the successor never sees the lock held.
+
+// spawnSuccessorProcess starts a fresh, detached copy of the current
+// executable. Called from main() AFTER w3app.Run() has returned and the
+// process is about to exit, so the successor starts with the single-instance
+// lock free and the stores quiesced (see RelaunchApp for why spawn happens
+// after quit).
+func spawnSuccessorProcess() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe)
+	cmd.Dir = filepath.Dir(exe)
+	return cmd.Start()
+}
+
+// trayIconPNG returns the tray icon bytes, pre-scaled to the exact OS
+// small-icon size (SM_CXSMICON — 16px at 100% DPI, 20/24px at higher scaling)
+// with a box filter. wails otherwise hands the raw PNG to
+// CreateIconFromResourceEx and GDI's rescale is what made the icon look
+// mushy. Called once during tray setup; per-monitor DPI changes are not
+// re-rendered (rare for a tray icon).
+func trayIconPNG() []byte {
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	const smCxSmIcon = 49
+	size, _, _ := user32.NewProc("GetSystemMetrics").Call(smCxSmIcon)
+	if size == 0 {
+		size = 16
+	}
+	return scalePNG(appIconTrayPNG, int(size), int(size))
+}
+
+// scalePNG decodes a PNG and box-filter downsamples it to w×h, returning the
+// result re-encoded as PNG. On any decode error the input is returned
+// unchanged (wails then falls back to GDI scaling). Box filtering averages
+// each destination pixel over its source rectangle — the right filter for
+// large ratios and cheap enough for a one-shot 64→16px icon.
+func scalePNG(data []byte, w, h int) []byte {
+	src, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data
+	}
+	b := src.Bounds()
+	sw, sh := b.Dx(), b.Dy()
+	if sw == 0 || sh == 0 {
+		return data
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		sy0, sy1 := y*sh/h, (y+1)*sh/h
+		if sy1 <= sy0 {
+			sy1 = sy0 + 1
+		}
+		for x := 0; x < w; x++ {
+			sx0, sx1 := x*sw/w, (x+1)*sw/w
+			if sx1 <= sx0 {
+				sx1 = sx0 + 1
+			}
+			// Average in premultiplied space so transparent edges don't
+			// bleed dark fringes into the glyph.
+			var rs, gs, bs, as float64
+			for sy := sy0; sy < sy1; sy++ {
+				for sx := sx0; sx < sx1; sx++ {
+					r, g, bl, a := src.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
+					rs += float64(r)
+					gs += float64(g)
+					bs += float64(bl)
+					as += float64(a)
+				}
+			}
+			n := float64((sx1 - sx0) * (sy1 - sy0))
+			rs, gs, bs, as = rs/n, gs/n, bs/n, as/n
+			a8 := uint8(as/257 + 0.5)
+			off := (y*w + x) * 4
+			if a8 == 0 {
+				continue // leave transparent
+			}
+			dst.Pix[off+0] = uint8(rs/as*257 + 0.5)
+			dst.Pix[off+1] = uint8(gs/as*257 + 0.5)
+			dst.Pix[off+2] = uint8(bs/as*257 + 0.5)
+			dst.Pix[off+3] = a8
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, dst); err != nil {
+		return data
+	}
+	return buf.Bytes()
 }

@@ -360,6 +360,9 @@ let uninstallFocusRestore: (() => void) | null = null
 let unsubRdpFullscreenExit: (() => void) | null = null
 let unsubRdpMoveResizeStart: (() => void) | null = null
 let unsubRdpMoveResizeEnd: (() => void) | null = null
+// Tray menu → open the settings tab (Go shows the window first).
+let unsubTrayOpenSettings: (() => void) | null = null
+let unsubTrayOpenAbout: (() => void) | null = null
 const { t, locale } = useI18n()
 const EL_LOCALE_MAP: Record<string, typeof enUs> = {
   'zh-CN': zhCn, 'zh-TW': zhTw, en: enUs, ja, ko, de, es, fr, ru,
@@ -960,6 +963,9 @@ onMounted(async () => {
   window.addEventListener('rdp:fullscreen-enter', onRdpFullScreenEnter)
   // Exit is emitted from Go when the user uses the connection bar's restore button.
   unsubRdpFullscreenExit =Events.On('rdp:fullscreen-exit', () => onRdpFullScreenExit())
+  // Tray menu: "Settings" / "About" show the window (Go side) then land here.
+  unsubTrayOpenSettings = Events.On('app:open-settings', () => openSettings())
+  unsubTrayOpenAbout = Events.On('app:open-about', () => openSettings('about'))
   // Go-side WndProc events: window move/resize start/end. The RDP window is a
   // WS_CHILD, so it moves with the main window automatically; only a resize of
   // the .rdp-area (or a re-show after an overlay) needs a position sync.
@@ -1207,6 +1213,8 @@ onUnmounted(() => {
   unsubRdpFullscreenExit?.()
   unsubRdpMoveResizeStart?.()
   unsubRdpMoveResizeEnd?.()
+  unsubTrayOpenSettings?.()
+  unsubTrayOpenAbout?.()
   rdpAreaObserver?.disconnect()
   settingsStore.dispose?.()
   connectionStore.dispose?.()
