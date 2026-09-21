@@ -278,6 +278,13 @@ export interface AppSettings {
   defaultLocalShell: string
   // Which side of the tab the close (X) button sits on.
   tabCloseButton: 'left' | 'right'
+  // Whether the per-tab numeric shortcut hint (e.g. Ctrl+1) is drawn on the
+  // tab itself; the hover tooltips elsewhere are unaffected.
+  showTabShortcutHints: boolean
+  // How the host list opens the connection menu: hover "⋯"/star buttons
+  // ("button") or right-click only, with the hover buttons hidden
+  // ("rightclick"). The right-click menu works in both modes.
+  hostListMenuStyle: 'button' | 'rightclick'
   // Which connection-sidebar tab icons are visible, keyed by view id.
   // Missing keys fall back to SIDEBAR_TAB_DEFAULTS.
   sidebarTabs: Record<string, boolean>
@@ -368,6 +375,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customTerminalThemes: [],
   defaultLocalShell: '',
   tabCloseButton: 'left',
+  showTabShortcutHints: true,
+  hostListMenuStyle: 'button',
   sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS }
 }
 

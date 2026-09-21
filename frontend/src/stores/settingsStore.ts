@@ -370,6 +370,8 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     customTerminalThemes: loaded.customTerminalThemes || [],
     defaultLocalShell: loaded.defaultLocalShell ?? DEFAULT_SETTINGS.defaultLocalShell,
     tabCloseButton: loaded.tabCloseButton || DEFAULT_SETTINGS.tabCloseButton,
+    showTabShortcutHints: loaded.showTabShortcutHints ?? DEFAULT_SETTINGS.showTabShortcutHints,
+    hostListMenuStyle: loaded.hostListMenuStyle || DEFAULT_SETTINGS.hostListMenuStyle,
     // Per-key merge so a settings.json written before a view existed (or
     // with a key dropped) still gets the default for that view.
     sidebarTabs: {

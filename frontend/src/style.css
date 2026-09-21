@@ -349,6 +349,38 @@ body::before {
   background: transparent;
 }
 
+/* Element Plus 的 el-scrollbar（el-table / el-select 下拉等内部都在用）自绘
+   div 滚动条，默认鼠标不在区域内就把滑块淡出——SFTP 文件列表里表现为
+   "得先把鼠标移进窗口才能找到滚动条"。统一成和上面原生滚动条一致的行为：
+   常显、同样 0.5rem 粗细、同样的滑块颜色（issue #925）。
+   隐藏走的是 thumb 上的 v-show（内联 display:none）+ fade 过渡类，所以
+   这里必须 !important 压住 display，opacity 同理要盖过淡出类的 0。 */
+.el-scrollbar__bar {
+  display: block !important;
+  opacity: 1;
+}
+.el-scrollbar__bar.is-vertical {
+  width: 0.5rem;
+}
+.el-scrollbar__bar.is-horizontal {
+  height: 0.5rem;
+}
+.el-scrollbar__thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 0.625rem;
+  /* EP 自带 0.3/0.5 的滑块透明度，会让颜色比原生滚动条淡一截；透明度已
+     含在 --scrollbar-thumb 的 rgba 里，这里强制不透明。 */
+  opacity: 1;
+  /* EP 自带 pointer 光标和 0.3s 的颜色渐变过渡，原生滚动条都是默认光标、
+     悬停即变色，这里一并抹平（issue #925 反馈）。 */
+  cursor: default;
+  transition: none;
+}
+.el-scrollbar__thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+  opacity: 1;
+}
+
 /* xterm.js v6 滚动条：不再是原生滚动条，而是 VS Code 那套自绘 div
    (.xterm-scrollable-element > .scrollbar.vertical > .slider)。所以
    ::-webkit-scrollbar 规则对终端无效，轨道和滑块都要在这里重建。

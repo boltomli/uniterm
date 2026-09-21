@@ -148,9 +148,4 @@ function close(ok: boolean) {
 .chmod-octal-input {
   width: 7.5rem;
 }
-.chmod-octal-input :deep(.el-input__inner) {
-  font-family: var(--font-mono, monospace);
-  font-weight: 700;
-  letter-spacing: 0.125rem;
-}
 </style>
