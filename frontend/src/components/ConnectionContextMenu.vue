@@ -1,27 +1,34 @@
 <template>
   <Menu ref="menuRef" v-model:visible="visible">
-    <!-- Connect: the「连接 X」label resolves from the connectionTypes registry -->
-    <MenuItem v-if="connectMenuLabelKey" @click="onConnectClick($event)">{{ t(connectMenuLabelKey) }}</MenuItem>
-    <MenuSubmenu
-      v-if="config?.type === 'ssh' && workspaceTabs.length"
-      :label="t('sidebar.connectToWorkspace')"
-    >
-      <MenuItem v-for="w in workspaceTabs" :key="w.id" @click="onConnectToWorkspace(w.id)">{{ w.name }}</MenuItem>
-    </MenuSubmenu>
-    <!-- Companion views: session type is not derivable from config.type -->
-    <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'file')">{{ t(connectFileMenuKey(config)) }}</MenuItem>
-    <MenuItem v-if="config?.type === 'wsl'" @click="onConnectClick($event, 'wsl-file')">{{ t('sidebar.connectWslFile') }}</MenuItem>
-    <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'monitor')">{{ t('sidebar.connectMonitor') }}</MenuItem>
-    <MenuItem v-if="config && isConnected" @click="locateSession">{{ t('sidebar.locateSession') }}</MenuItem>
-    <MenuDivider />
-    <MenuItem :class="{ disabled: targets.length > 1 }" @click="targets.length === 1 && emit('edit', targets[0])">{{ t('sidebar.edit') }}</MenuItem>
-    <MenuItem @click="duplicate()">{{ t('sidebar.duplicate') }}</MenuItem>
-    <MenuItem v-if="config" @click="favoriteStore.toggle(config.id)">{{ isFavorite ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites') }}</MenuItem>
-    <MenuDivider />
-    <MenuItem @click="close(); emit('changeGroup', targets)">{{ t('conn.moveTo') }}</MenuItem>
-    <MenuItem @click="close(); emit('newGroup')">{{ t('conn.newGroupTitle') }}</MenuItem>
-    <MenuDivider />
-    <MenuItem class="danger" @click="onDeleteClick">{{ t('sidebar.delete') }}</MenuItem>
+    <!-- Saved workspace record: open / rename / delete only -->
+    <template v-if="config?.type === 'workspace'">
+      <MenuItem @click="onOpenSavedWorkspace">{{ t('workspace.openSaved') }}</MenuItem>
+      <MenuItem @click="onRenameSavedWorkspace">{{ t('workspace.renameSaved') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem class="danger" @click="onDeleteClick">{{ t('sidebar.delete') }}</MenuItem>
+    </template>
+    <template v-else>
+      <!-- Connect: the「连接 X」label resolves from the connectionTypes registry -->
+      <MenuItem v-if="connectMenuLabelKey" @click="onConnectClick($event)">{{ t(connectMenuLabelKey) }}</MenuItem>
+      <MenuSubmenu v-if="isWorkspaceHostType(config?.type)" :label="t('sidebar.connectToWorkspace')">
+        <MenuItem iconic :icon="Plus" @click="onCreateWorkspace">{{ t('workspace.newWorkspace') }}</MenuItem>
+        <MenuItem v-for="w in workspaceTabs" :key="w.id" @click="onConnectToWorkspace(w.id)">{{ w.name }}</MenuItem>
+      </MenuSubmenu>
+      <!-- Companion views: session type is not derivable from config.type -->
+      <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'file')">{{ t(connectFileMenuKey(config)) }}</MenuItem>
+      <MenuItem v-if="config?.type === 'wsl'" @click="onConnectClick($event, 'wsl-file')">{{ t('sidebar.connectWslFile') }}</MenuItem>
+      <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'monitor')">{{ t('sidebar.connectMonitor') }}</MenuItem>
+      <MenuItem v-if="config && isConnected" @click="locateSession">{{ t('sidebar.locateSession') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem :class="{ disabled: targets.length > 1 }" @click="targets.length === 1 && emit('edit', targets[0])">{{ t('sidebar.edit') }}</MenuItem>
+      <MenuItem @click="duplicate()">{{ t('sidebar.duplicate') }}</MenuItem>
+      <MenuItem v-if="config" @click="favoriteStore.toggle(config.id)">{{ isFavorite ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem @click="close(); emit('changeGroup', targets)">{{ t('conn.moveTo') }}</MenuItem>
+      <MenuItem @click="close(); emit('newGroup')">{{ t('conn.newGroupTitle') }}</MenuItem>
+      <MenuDivider />
+      <MenuItem class="danger" @click="onDeleteClick">{{ t('sidebar.delete') }}</MenuItem>
+    </template>
   </Menu>
 </template>
 
@@ -32,6 +39,7 @@
 // connect routing and the edit/group dialogs.
 import { computed, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
+import { Plus } from '@lucide/vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
@@ -44,6 +52,7 @@ import { useFavoriteStore } from '../stores/favoriteStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTabStore } from '../stores/tabStore'
 import { useConnectionStore } from '../stores/connectionStore'
+import { isWorkspaceHostType } from '../composables/createWorkspace'
 
 // kind selects a companion view (file browser / monitor / WSL files) whose
 // session type is not derivable from config.type.
@@ -61,6 +70,7 @@ const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
   (e: 'connect', targets: ConnectionConfig[], kind: ConnectKind | undefined, event?: MouseEvent): void
   (e: 'connectToWorkspace', targets: ConnectionConfig[], workspaceId: string): void
+  (e: 'createWorkspace', targets: ConnectionConfig[]): void
   (e: 'edit', config: ConnectionConfig): void
   (e: 'changeGroup', targets: ConnectionConfig[]): void
   (e: 'newGroup'): void
@@ -112,6 +122,47 @@ function onConnectClick(event: MouseEvent, kind?: ConnectKind) {
 function onConnectToWorkspace(workspaceId: string) {
   close()
   emit('connectToWorkspace', props.targets, workspaceId)
+}
+
+// 新建工作区 from the current targets (multi-selection or right-clicked row).
+function onCreateWorkspace() {
+  close()
+  emit('createWorkspace', props.targets)
+}
+
+// Open a saved workspace record — routed through the parent's connect flow,
+// which branches on type === 'workspace' to openSavedWorkspace.
+function onOpenSavedWorkspace() {
+  close()
+  if (props.config) emit('connect', [props.config], undefined)
+}
+
+// Rename a saved workspace record; keeps any live tab linked to it in sync.
+async function onRenameSavedWorkspace() {
+  close()
+  const c = props.config
+  if (!c) return
+  let name = ''
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('workspace.savePromptTitle'),
+      t('workspace.renameSaved'),
+      {
+        inputValue: c.name,
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel')
+      }
+    )
+    name = value?.trim() || ''
+  } catch {
+    return
+  }
+  if (!name || name === c.name) return
+  await connectionStore.update(c.id, { name })
+  const tabStore = useTabStore()
+  for (const tb of tabStore.tabs) {
+    if (tb.type === 'workspace' && tb.savedWorkspaceId === c.id) tabStore.renameTab(tb.id, name)
+  }
 }
 
 // Switch to the existing tab/session hosting this connection.

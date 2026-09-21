@@ -15,7 +15,7 @@
     >
       <Panel
         :panel="panel"
-        :show-header="isMultiPanel"
+        :show-header="true"
         :is-active="activePanelId === panel.id"
         :workspace-id="tabId"
         :shortcut-index="panelIds.indexOf(panel.id) + 1"
@@ -28,10 +28,15 @@
       />
       <!-- Drop zone overlay -->
       <div v-if="dragOverId === node.panelId" class="drop-zone-overlay">
-        <div class="dz dz-left" :class="{ active: dropPos === 'left' }"></div>
-        <div class="dz dz-right" :class="{ active: dropPos === 'right' }"></div>
-        <div class="dz dz-top" :class="{ active: dropPos === 'top' }"></div>
-        <div class="dz dz-bottom" :class="{ active: dropPos === 'bottom' }"></div>
+        <!-- Dragged onto itself: full-panel cover hinting "stays in place"
+             (a split here would be a no-op). -->
+        <div v-if="dropPos === 'self'" class="dz dz-self"></div>
+        <template v-else>
+          <div class="dz dz-left" :class="{ active: dropPos === 'left' }"></div>
+          <div class="dz dz-right" :class="{ active: dropPos === 'right' }"></div>
+          <div class="dz dz-top" :class="{ active: dropPos === 'top' }"></div>
+          <div class="dz dz-bottom" :class="{ active: dropPos === 'bottom' }"></div>
+        </template>
       </div>
     </div>
   </div>
@@ -48,7 +53,7 @@
         @duplicate="(id) => $emit('duplicate', id)"
         @rename="(id, name) => $emit('rename', id, name)"
         @panel-drag-start="(e, id) => $emit('panelDragStart', e, id)"
-        @panel-drop="(e, id) => $emit('panelDrop', e, id)"
+        @panel-drop="(e, id, rect) => $emit('panelDrop', e, id, rect)"
         @resize="(p) => $emit('resize', p)"
       />
       <PanelSplitter
@@ -100,8 +105,6 @@ const panel = computed(() => {
   return null
 })
 
-const isMultiPanel = computed(() => props.panelIds.length > 1)
-
 const splitStyle = computed(() => {
   if (props.node.type !== 'split') return {}
   if (props.maximizedPanelId) {
@@ -148,6 +151,7 @@ function onPanelDragStart(e: DragEvent, panelId: string) {
 
   e.dataTransfer.setData('application/panel-id', panelId)
   e.dataTransfer.effectAllowed = 'move'
+  tabStore.setDraggingPanelId(panelId)
 
   // Use a lightweight custom drag image to avoid the browser snapshotting
   // the entire panel (which contains an xterm.js canvas and can be slow).
@@ -167,6 +171,7 @@ function onPanelDragStart(e: DragEvent, panelId: string) {
 
   const cleanup = () => {
     img.remove()
+    tabStore.setDraggingPanelId(null)
     window.removeEventListener('dragend', cleanup)
   }
   window.addEventListener('dragend', cleanup)
@@ -179,9 +184,21 @@ function onDragOver(e: DragEvent, panelId: string) {
   const hasPanel = types.includes('application/panel-id')
   const hasWorkspace = types.includes('application/workspace-id')
   const hasTabType = types.includes('application/tab-type')
+  const hasConnId = types.includes('application/conn-id')
   // Reject workspace tabs and settings tabs
   if (hasWorkspace) return
-  if (!hasPanel && !hasTabType) return
+  // conn-id = a sidebar connection dragged in to connect + split here
+  if (!hasPanel && !hasTabType && !hasConnId) return
+
+  dragOverId.value = panelId
+  e.dataTransfer!.dropEffect = 'move'
+
+  // Dragging a panel over itself: no split would happen — show the
+  // full-panel "stays in place" cover instead of the split hints.
+  if (hasPanel && tabStore.draggingPanelId === panelId) {
+    dropPos.value = 'self'
+    return
+  }
 
   dragOverId.value = panelId
   e.dataTransfer!.dropEffect = 'move'
@@ -254,8 +271,17 @@ function onDrop(e: DragEvent, panelId: string) {
   background: var(--accent-subtle);
   transition: background 0.12s;
 }
+/* Full-panel cover: dragged panel hovering over itself — no split, stays put */
+.dz-self {
+  inset: 0;
+  background: var(--accent-subtle);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
 .dz.active {
   background: var(--accent-glow);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
 }
 .dz-left { left: 0; top: 0; width: 50%; height: 100%; }
 .dz-right { right: 0; top: 0; width: 50%; height: 100%; }

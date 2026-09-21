@@ -17,7 +17,7 @@ export interface ConnectionConfig {
   id: string
   name: string
   remark?: string
-  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'local' | 'wsl' | 'wsl-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'x11-desktop'
+  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'local' | 'wsl' | 'wsl-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'x11-desktop' | 'workspace'
   host: string
   port: number
   user: string
@@ -168,6 +168,39 @@ export interface ConnectionConfig {
   // Custom desktop command (only used when desktopType === 'custom').
   // Passed to sshd verbatim, so it goes through /bin/sh -c on the remote.
   x11DesktopCustomCmd?: string
+  // Saved-workspace fields (type === 'workspace'): a named workspace snapshot
+  // living in the connection tree. Members hold only connectionId references —
+  // host credentials re-resolve at connect time, never stored here.
+  workspaceMembers?: SavedWorkspaceMember[]
+  workspaceLayout?: SavedWorkspaceLayoutNode | null
+}
+
+// One terminal slot inside a saved workspace. Layout leaves reference `id`
+// (stable across re-saves of the same live workspace — the panel id is reused).
+export interface SavedWorkspaceMember {
+  id: string
+  connectionId?: string // "" for self-contained members (local/wsl)
+  type: string
+  title: string
+  shellPath?: string
+}
+
+// Mirrors the runtime LayoutNode with leaf panelId replaced by member id.
+export interface SavedWorkspaceLayoutNode {
+  type: 'leaf' | 'split'
+  memberId?: string
+  direction?: 'horizontal' | 'vertical'
+  children?: SavedWorkspaceLayoutNode[]
+  sizes?: number[]
+}
+
+// Result of the generic terminal connect path, consumed by workspace
+// orchestration (create-from-selection / open-saved) to remap layouts and
+// distinguish credential-cancel from connect failure.
+export type MemberConnectStatus = 'ok' | 'cancelled' | 'failed'
+export interface MemberConnectResult {
+  status: MemberConnectStatus
+  panelId?: string
 }
 
 export interface SessionInfo {

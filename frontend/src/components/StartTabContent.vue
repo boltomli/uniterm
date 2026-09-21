@@ -27,6 +27,10 @@
         <el-icon><Plus :size="'0.875rem'" /></el-icon>
         {{ t('header.newConnection') }}
       </button>
+      <button class="start-action-btn" @click="emit('new-workspace')">
+        <el-icon><LayoutDashboard :size="'0.875rem'" /></el-icon>
+        {{ t('workspace.newWorkspace') }}
+      </button>
       <div v-if="!isMobile" class="start-action-btn-group">
         <button class="start-action-btn" @click="handleDefaultLocalTerminal">
           <el-icon><Laptop :size="'0.875rem'" /></el-icon>
@@ -282,6 +286,7 @@
       v-model:visible="contextMenuVisible"
       @connect="onCtxConnect"
       @connect-to-workspace="onCtxConnectToWorkspace"
+      @create-workspace="onCtxCreateWorkspace"
       @edit="doEditConnection"
       @change-group="onCtxChangeGroup"
       @new-group="openNewGroupDialog"
@@ -331,7 +336,7 @@ import { formatConnSubtitle, formatTypeFilterLabel, matchTypeFilter } from '../u
 import { connectionTypeIcon as connTypeIcon, connectionTypeLabel as connTypeLabel } from '../utils/connectionTypes'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import MenuItem from './MenuItem.vue'
-import { Filter, Plus, Laptop, Server, Folder, FolderOpen, Zap, MoreHorizontal, ChevronDown, Star } from '@lucide/vue'
+import { Filter, Plus, Laptop, Server, Folder, FolderOpen, Zap, MoreHorizontal, ChevronDown, Star, LayoutDashboard } from '@lucide/vue'
 
 const props = defineProps<{
   tab: StartTab
@@ -340,6 +345,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   connect: [config: ConnectionConfig, keepOpen?: boolean]
   'connect-to-workspace': [payload: { configs: ConnectionConfig[]; workspaceId: string }]
+  'create-workspace': [configs: ConnectionConfig[]]
+  'new-workspace': []
   'new-connection': [payload?: { host?: string; groupId?: string; type?: string }]
   'local-terminal': [shellPath: string, keepOpen?: boolean]
   'close-self': [tabId: string]
@@ -1040,6 +1047,10 @@ function onCtxConnectToWorkspace(targets: ConnectionConfig[], workspaceId: strin
   emit('connect-to-workspace', { configs: targets, workspaceId })
 }
 
+function onCtxCreateWorkspace(targets: ConnectionConfig[]) {
+  emit('create-workspace', targets)
+}
+
 function onCtxChangeGroup(targets: ConnectionConfig[]) {
   emit('change-group-ids', targets.map(c => c.id))
 }
@@ -1143,12 +1154,15 @@ function doEditConnection(config: ConnectionConfig | null) {
 
 .start-action-btns {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.625rem;
   margin-bottom: 1.75rem;
   align-items: flex-start;
 }
 
 .start-action-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 0.5rem 1.25rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1176,6 +1190,7 @@ function doEditConnection(config: ConnectionConfig | null) {
 .start-action-btn-group {
   display: flex;
   align-items: stretch;
+  flex-shrink: 0;
 }
 
 .start-action-btn-group > .start-action-btn {

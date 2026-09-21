@@ -68,6 +68,15 @@
       @click.stop="$emit('close', tab.id)"
     ><X /></button>
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible">
+      <!-- ⓪ 工作区操作 -->
+      <MenuItem v-if="tab.type === 'workspace'" @click="onSaveWorkspace">
+        {{ t('workspace.save') }}
+      </MenuItem>
+      <MenuItem v-if="tab.type === 'workspace'" :class="{ disabled: tab.locked }" @click="tab.locked ? null : onDissolveWorkspace()">
+        {{ t('workspace.dissolve') }}
+      </MenuItem>
+      <MenuDivider v-if="tab.type === 'workspace'" />
+
       <!-- ① 标签类操作 -->
       <MenuItem v-if="canDuplicate" :shortcut="menuShortcut('duplicateSession')" @click="onDuplicate">
         {{ t('tab.duplicate') }}
@@ -138,6 +147,8 @@ import {
   RDPSetFullScreen,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
+import { ElMessageBox } from 'element-plus'
+import { saveWorkspaceToConnections } from '../composables/savedWorkspace'
 import type { TerminalTab, SettingsTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
 import { connectFileMenuKey, fileTransferProto } from '../utils/fileTransferUtils'
 import { connectionTypeIconOfKind } from '../utils/connectionTypes'
@@ -533,6 +544,32 @@ async function copyHostAddress() {
 function onDuplicate() {
   closeContextMenu()
   duplicateSession(props.tab)
+}
+
+// Dissolve: every member panel returns to the tab bar as a live terminal tab
+// (sessions stay alive, broadcast cleared). NOT routed through closeTab —
+// that would close the sessions.
+async function onDissolveWorkspace() {
+  closeContextMenu()
+  const wsTab = props.tab as WorkspaceTab
+  try {
+    await ElMessageBox.confirm(
+      t('workspace.dissolveConfirm', { name: wsTab.name, count: wsTab.panelIds.length }),
+      t('workspace.dissolve'),
+      { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  const created = tabStore.dissolveWorkspace(wsTab.id)
+  if (created.length > 0) msg.success(t('workspace.dissolvedToast', { count: created.length }))
+}
+
+// Save: create/overwrite the `type: "workspace"` connection record backing
+// this tab (see composables/savedWorkspace.ts for the upsert semantics).
+async function onSaveWorkspace() {
+  closeContextMenu()
+  await saveWorkspaceToConnections(props.tab as WorkspaceTab)
 }
 
 // Dispatch a 'panel:reconnect' event so the owning content (Panel.vue for

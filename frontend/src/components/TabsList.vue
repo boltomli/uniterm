@@ -177,9 +177,26 @@ function scrollToTab(tabId: string) {
 }
 
 function onTabDragOver(e: DragEvent, index: number) {
+  // A terminal-type connection dragged over a workspace tab activates it so
+  // the user can aim at a panel for the connect-and-split drop (drop on the
+  // tab itself opens a new tab at that position instead).
+  if (e.dataTransfer?.types.includes('application/conn-id')) {
+    clearDragState()
+    const tab = tabStore.tabs[index]
+    if (tab.type === 'workspace') tabStore.setActiveTab(tab.id)
+  }
+
   const hasPanel = e.dataTransfer?.types.includes('application/panel-id')
   const hasTab = e.dataTransfer?.types.includes('application/tab-id')
-  if (!hasPanel && !hasTab) return
+  const hasConnOpen = e.dataTransfer?.types.includes('application/conn-open')
+  if (!hasPanel && !hasTab && !hasConnOpen) return
+
+  if (hasConnOpen) {
+    const tab = tabStore.tabs[index]
+    // Keep workspace tabs revealed while aiming at their panels.
+    if (tab.type === 'workspace') tabStore.setActiveTab(tab.id)
+    dragOverContainer.value = false
+  }
 
   dragOverContainer.value = false
   const el = e.currentTarget as HTMLElement
@@ -210,7 +227,8 @@ function clearDragState() {
 function onTabsContainerDragOver(e: DragEvent) {
   const hasPanel = e.dataTransfer?.types.includes('application/panel-id')
   const hasTab = e.dataTransfer?.types.includes('application/tab-id')
-  if (!hasPanel && !hasTab) return
+  const hasConnOpen = e.dataTransfer?.types.includes('application/conn-open')
+  if (!hasPanel && !hasTab && !hasConnOpen) return
 
   // Ignore if hovering over a tab item (handled by onTabDragOver)
   const target = e.target as HTMLElement
@@ -237,8 +255,17 @@ function onTabsContainerDrop(e: DragEvent) {
   const draggedTabId = e.dataTransfer?.getData('application/tab-id')
   const panelId = e.dataTransfer?.getData('application/panel-id')
   const sourceTabId = e.dataTransfer?.getData('application/source-tab-id')
+  const connOpenId = e.dataTransfer?.getData('application/conn-open')
 
   clearDragState()
+
+  // Case 0: Sidebar connection dropped on empty bar area → open at the end
+  if (connOpenId) {
+    window.dispatchEvent(new CustomEvent('app:open-connection-at', {
+      detail: { connId: connOpenId, index: tabs.value.length }
+    }))
+    return
+  }
 
   // Case 1: Tab dragged to empty area → move to end
   if (draggedTabId && !panelId) {
@@ -270,6 +297,15 @@ function onTabDrop(e: DragEvent, targetTabId: string, index: number) {
 
   const insertAfter = dragOverInsertAfter.value
   clearDragState()
+
+  // Sidebar connection dropped between tabs → open a new tab there.
+  const connOpenId = e.dataTransfer?.getData('application/conn-open')
+  if (connOpenId) {
+    window.dispatchEvent(new CustomEvent('app:open-connection-at', {
+      detail: { connId: connOpenId, index: index + (insertAfter ? 1 : 0) }
+    }))
+    return
+  }
 
   const draggedTabId = e.dataTransfer?.getData('application/tab-id')
   const draggedPanelId = e.dataTransfer?.getData('application/panel-id')
