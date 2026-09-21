@@ -58,6 +58,9 @@ export interface WorkspaceTab {
   activePanelId: string | null
   maximizedPanelId?: string | null
   locked?: boolean
+  // Connection id of the saved-workspace record this tab was saved to / opened
+  // from. Set after the first save so the next save updates in place.
+  savedWorkspaceId?: string
 }
 
 export interface SFTPTab {

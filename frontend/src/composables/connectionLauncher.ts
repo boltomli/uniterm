@@ -18,7 +18,7 @@ import { fileTransferProto } from '../utils/fileTransferUtils'
 import { parseWslFromShell } from '../utils/shellLabel'
 import { t } from '../i18n'
 import { msg } from '../services/message'
-import type { ConnectionConfig } from '../types/session'
+import type { ConnectionConfig, MemberConnectResult } from '../types/session'
 
 // App.vue-provided dependencies: the credential dialog and the start-tab
 // repositioning helper both live in App.vue. Wired once via configureLauncher.
@@ -43,7 +43,9 @@ export interface LaunchOptions {
   // Start tab to close and reposition the new tab after.
   prevStart?: any
   // Fallback for types without a spec: the generic terminal path in App.vue.
-  connectTerminal?: (config: ConnectionConfig, persist: boolean) => Promise<void> | void
+  // Returns the created panel id + status when the caller is workspace
+  // orchestration (create-from-selection / open-saved); plain connects ignore it.
+  connectTerminal?: (config: ConnectionConfig, persist: boolean) => Promise<MemberConnectResult | void> | MemberConnectResult | void
 }
 
 // Shared persistence bookkeeping for the save / connect / connect-only entry

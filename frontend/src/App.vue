@@ -12,7 +12,7 @@
       @tab-dragstart="onTabDragStart"
     />
     <div class="main-content">
-      <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @connect-only="onConnectOnly" />
+      <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)" @connect-only="onConnectOnly" />
       <div class="tab-area">
         <template v-if="activeTab">
           <KeepAlive>
@@ -108,6 +108,8 @@
               :tab="activeTab"
               @connect="onConnect"
               @connect-to-workspace="({ configs, workspaceId }: any) => { for (const c of configs) onConnect(c, undefined, undefined, true, workspaceId) }"
+              @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)"
+              @new-workspace="onNewWorkspace"
               @new-connection="onNewConnectionFromStart"
               @local-terminal="createLocalTerminalWithShell"
               @close-self="(tabId: string) => closeTab(tabId)"
@@ -229,6 +231,8 @@ import { parseQuickConnect } from './utils/quickConnect'
 import { getShellLabel as getShellLabelBase, parseWslFromShell } from './utils/shellLabel'
 import { reconnectFileTransferPanel } from './composables/usePanelReconnect'
 import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
+import { openSavedWorkspace } from './composables/savedWorkspace'
+import { createWorkspaceFromSelection } from './composables/createWorkspace'
 
 const bgDataUrl = ref('')
 
@@ -981,6 +985,19 @@ onMounted(async () => {
   watch(() => activeTab.value, () => nextTick(observeRdpArea))
 
   // Panel/Tab/StartTab menu actions
+  // Sidebar connection dropped onto a workspace panel: connect it and split
+  // in at the drop position (see WorkspaceContent.onPanelDrop Case 0).
+  window.addEventListener('app:connect-workspace-panel', ((e: CustomEvent) => {
+    const { config, workspaceTabId, targetPanelId, direction, insertBefore } = e.detail || {}
+    if (config && workspaceTabId) {
+      connectTerminalSession(config, true, undefined, workspaceTabId, { targetPanelId, direction, insertBefore })
+    }
+  }) as EventListener)
+  window.addEventListener('app:open-connection-at', ((e: CustomEvent) => {
+    const { connId, index } = e.detail || {}
+    const c = connId ? connectionStore.connections.find(x => x.id === connId) : undefined
+    if (c) void openConnectionAtIndex(c, typeof index === 'number' ? index : tabStore.tabs.length)
+  }) as EventListener)
   window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined) }
   }) as EventListener)
@@ -1481,6 +1498,12 @@ function closeStartAndReposition(prevTab: any): (newTabId: string) => void {
 configureLauncher({ ensureCredentials, closeStartAndReposition })
 
 async function onConnect(config: ConnectionConfig, keepOpen?: boolean, wasEdit?: boolean, persist = true, targetWorkspaceId?: string) {
+  // Saved workspace connection: open it as a live workspace instead of the
+  // per-type launch flow (no spec exists — and must not exist — for this type).
+  if (config.type === 'workspace') {
+    await openSavedWorkspace(config, { connectMember: workspaceConnectMember })
+    return
+  }
   const prev = tabStore.activeTab
   const prevStart = (prev?.type === 'start' && !keepOpen) ? prev : undefined
   await launchConnection(config, {
@@ -1494,10 +1517,19 @@ async function onConnect(config: ConnectionConfig, keepOpen?: boolean, wasEdit?:
 // Generic terminal connect path (ssh/telnet/mosh/local/wsl/tcp/serial).
 // Persistence bookkeeping happened in launchConnection. The type-specific
 // non-terminal specs live in connectionLauncher.ts.
-async function connectTerminalSession(config: ConnectionConfig, persist: boolean, prev: any, targetWorkspaceId?: string) {
+// Returns the created panel id so workspace orchestration (create/restore)
+// can remap layouts; status distinguishes credential-cancel from failure.
+// placement (workspace targets only): where the new panel splits in relative
+// to targetPanelId — used by the sidebar-connection-onto-workspace-panel drop.
+interface WorkspacePlacement {
+  targetPanelId: string
+  direction: 'horizontal' | 'vertical'
+  insertBefore: boolean
+}
+async function connectTerminalSession(config: ConnectionConfig, persist: boolean, prev: any, targetWorkspaceId?: string, placement?: WorkspacePlacement): Promise<{ status: 'ok' | 'cancelled' | 'failed'; panelId?: string }> {
   // Credential check
   const resolved = await ensureCredentials(config)
-  if (!resolved) return
+  if (!resolved) return { status: 'cancelled' }
   config = resolved
 
   // Create session BEFORE panel so the terminal has a sessionId when it first
@@ -1519,7 +1551,7 @@ async function connectTerminalSession(config: ConnectionConfig, persist: boolean
     sessionId = info.id
   } catch (e) {
     console.error('Failed to create session:', e)
-    return
+    return { status: 'failed' }
   }
 
   const panel = panelStore.createPanel(config, config.type)
@@ -1534,7 +1566,13 @@ async function connectTerminalSession(config: ConnectionConfig, persist: boolean
   panelStore.bindSession(panel.id, sessionId)
   sessionStore.initSession(sessionId)
   const addedToWorkspace = targetWorkspaceId
-    ? tabStore.addNewPanelToWorkspace(targetWorkspaceId, panel.id)
+    ? tabStore.addNewPanelToWorkspace(
+        targetWorkspaceId,
+        panel.id,
+        placement?.targetPanelId,
+        placement?.direction ?? 'horizontal',
+        placement?.insertBefore ?? false
+      )
     : false
   const tab = addedToWorkspace
     ? tabStore.tabs.find(t => t.id === targetWorkspaceId)!
@@ -1562,6 +1600,42 @@ async function connectTerminalSession(config: ConnectionConfig, persist: boolean
     // responsibility (this helper is reused across connect / duplicate).
     CloseSession(sessionId).catch(() => {})
   }
+  return { status: 'ok', panelId: panel.id }
+}
+
+// ── Workspace orchestration ──
+// One connect Member primitive shared by create-from-selection and open-saved;
+// wraps the generic terminal path with workspace targeting.
+
+function workspaceConnectMember(config: ConnectionConfig, workspaceTabId: string, persist: boolean) {
+  return connectTerminalSession(config, persist, undefined, workspaceTabId)
+}
+
+// Sidebar connection dropped onto the tab bar: open it as a new tab at the
+// requested position. Works for every connection type — the connect flow is
+// the same as clicking the connection (workspace type opens as a workspace).
+// The new tab is created wherever the flow puts it, then moved into place.
+async function openConnectionAtIndex(config: ConnectionConfig, index: number) {
+  const before = new Set(tabStore.tabs.map(t => t.id))
+  await onConnect(config)
+  const newTab = tabStore.tabs.find(t => !before.has(t.id))
+  if (!newTab) return // nothing opened (credential cancelled / connect failed)
+  const fromIdx = tabStore.tabs.findIndex(t => t.id === newTab.id)
+  const toIdx = Math.max(0, Math.min(index, tabStore.tabs.length - 1))
+  if (fromIdx !== toIdx) tabStore.moveTab(fromIdx, toIdx)
+}
+
+// Entry: 「在工作区打开 → 新建工作区」 from the sidebar/start-page context
+// menu (targets = the multi-selection or the right-clicked connection).
+async function onCreateWorkspaceFromConfigs(configs: ConnectionConfig[]) {
+  await createWorkspaceFromSelection('', [], configs, { connectMember: workspaceConnectMember })
+}
+
+// Entry: 新建工作区 button (start page) — opens an empty workspace tab the
+// user fills by dragging connections / terminal tabs in. Point-and-click
+// creation from a selection lives in the「在工作区打开」context menu.
+function onNewWorkspace() {
+  tabStore.createWorkspaceTab(tabStore.generateWorkspaceName(tabStore.tabs), [], { root: { type: 'leaf', panelId: '' } })
 }
 
 // Force-reconnect a database-family panel (database/redis/mongodb/

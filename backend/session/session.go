@@ -236,6 +236,40 @@ type ConnectionConfig struct {
 	//                 /bin/sh -c on the remote).
 	X11DesktopDesktopType string `json:"x11DesktopDesktopType,omitempty"`
 	X11DesktopCustomCmd   string `json:"x11DesktopCustomCmd,omitempty"`
+	// Saved-workspace fields. Used when Type == "workspace": the config is a
+	// named, persisted workspace snapshot living in the connection tree.
+	// Members hold only a ConnectionID reference — host credentials re-resolve
+	// through the normal connection decryption path at connect time, so no
+	// secret is ever duplicated here.
+	WorkspaceMembers []SavedWorkspaceMember    `json:"workspaceMembers,omitempty"`
+	WorkspaceLayout  *SavedWorkspaceLayoutNode `json:"workspaceLayout,omitempty"`
+}
+
+// SavedWorkspaceMember is one terminal slot inside a saved workspace.
+type SavedWorkspaceMember struct {
+	// ID is the stable member identity; saved-layout leaves reference it.
+	// The frontend reuses the source panel's id, so a re-save of the same
+	// live workspace keeps ids stable.
+	ID string `json:"id"`
+	// ConnectionID references the saved host the member connects to; empty
+	// for self-contained members (local/wsl terminals).
+	ConnectionID string `json:"connectionId,omitempty"`
+	// Type is the terminal panel kind (ssh/local/wsl/telnet/serial/...).
+	Type string `json:"type"`
+	// Title is the display title saved from the live panel.
+	Title string `json:"title"`
+	// ShellPath recreates local/wsl members (wsl://<distro> carries the distro).
+	ShellPath string `json:"shellPath,omitempty"`
+}
+
+// SavedWorkspaceLayoutNode mirrors the frontend LayoutNode with the leaf
+// panelId replaced by the stable member ID (runtime panel ids are ephemeral).
+type SavedWorkspaceLayoutNode struct {
+	Type      string                     `json:"type"` // "leaf" | "split"
+	MemberID  string                     `json:"memberId,omitempty"`
+	Direction string                     `json:"direction,omitempty"` // "horizontal" | "vertical"
+	Children  []SavedWorkspaceLayoutNode `json:"children,omitempty"`
+	Sizes     []float64                  `json:"sizes,omitempty"`
 }
 
 // ConnectionStoreData is the top-level structure persisted to connections.json.

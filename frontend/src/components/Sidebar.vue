@@ -351,6 +351,7 @@
       v-model:visible="menuVisible"
       @connect="onCtxConnect"
       @connect-to-workspace="onCtxConnectToWorkspace"
+      @create-workspace="onCtxCreateWorkspace"
       @edit="doEdit"
       @change-group="(targets: ConnectionConfig[]) => openChangeGroupFor(targets.map(c => c.id))"
       @new-group="() => doNewGroup(selectedGroupParentId())"
@@ -430,6 +431,7 @@ import type { ConnectionConfig, ConnectionGroup } from '../types/session'
 import { parseQuickConnect, formatConnSubtitle, matchTypeFilter } from '../utils/quickConnect'
 import ConnectionContextMenu from './ConnectionContextMenu.vue'
 import { connectionTypeIcon } from '../utils/connectionTypes'
+import { isWorkspaceHostType } from '../composables/createWorkspace'
 import GroupContextMenu from './GroupContextMenu.vue'
 import TypeFilterMenu from './TypeFilterMenu.vue'
 import RenameGroupDialog from './RenameGroupDialog.vue'
@@ -445,7 +447,7 @@ import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
 defineProps<{
   visible: boolean
 }>()
-const emit = defineEmits(['connect', 'connectToWorkspace', 'connectOnly', 'toggle'])
+const emit = defineEmits(['connect', 'connectToWorkspace', 'createWorkspace', 'connectOnly', 'toggle'])
 const connectionStore = useConnectionStore()
 const favoriteStore = useFavoriteStore()
 const settingsStore = useSettingsStore()
@@ -965,6 +967,14 @@ function onDragStart(e: DragEvent, conn: ConnectionConfig) {
   } else {
     e.dataTransfer!.setData('text/plain', JSON.stringify(ids))
   }
+  // Terminal-type connections can also be dropped onto a workspace panel to
+  // connect + split at the drop position. The row-under-cursor wins over the
+  // selection on purpose — a split drop is a single-connection gesture.
+  if (isWorkspaceHostType(conn.type)) {
+    e.dataTransfer!.setData('application/conn-id', conn.id)
+  }
+  // Any connection can be dropped onto the tab bar to open a tab there.
+  e.dataTransfer!.setData('application/conn-open', conn.id)
   e.dataTransfer!.effectAllowed = 'move'
 }
 
@@ -1268,6 +1278,10 @@ function onCtxConnectToWorkspace(targets: ConnectionConfig[], workspaceId: strin
     if (c.type !== 'ssh') continue
     emit('connectToWorkspace', { config: c, workspaceId })
   }
+}
+
+function onCtxCreateWorkspace(targets: ConnectionConfig[]) {
+  emit('createWorkspace', targets)
 }
 
 function onCtxDelete(targets: ConnectionConfig[]) {
