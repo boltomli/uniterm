@@ -31,7 +31,7 @@
       />
       <span v-else-if="!isActive && hasNotification && !tab.locked" class="tab-notification-dot" />
     </span>
-    <span v-if="!editing" class="tab-name" :class="{ 'tab-disconnected': isDisconnected }" :title="tab.name" @dblclick.stop="startEdit">
+    <span v-if="!editing" class="tab-name" :class="{ 'tab-disconnected': isDisconnected }" :title="tab.name + (tabShortcut ? ` (${tabShortcut})` : '')" @dblclick.stop="startEdit">
       <ArrowDownUp v-if="hasActiveTransfers" class="transfer-indicator" :size="'0.875rem'" title="Transferring..." />
       <span class="tab-name-text">{{ tab.name }}</span>
     </span>
@@ -45,7 +45,7 @@
       @blur="confirmEdit"
       @click.stop
     />
-    <span v-if="tabShortcut" class="tab-shortcut">{{ tabShortcut }}</span>
+    <span v-if="tabShortcut && settingsStore.settings.showTabShortcutHints" class="tab-shortcut">{{ tabShortcut }}</span>
     <!-- OSC 9;4 progress indicator: a 2px bar along the tab's bottom edge.
          state 1 = normal (accent), 2 = error (red), 3 = indeterminate
          (animated), 4 = paused/warning (orange). -->

@@ -182,6 +182,29 @@
 
           <div class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.showTabShortcutHints') }}</div>
+              <div class="setting-desc">{{ t('settings.showTabShortcutHintsDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch v-model="settingsStore.settings.showTabShortcutHints" @change="settingsStore.save()" />
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.hostListMenuStyle') }}</div>
+              <div class="setting-desc">{{ t('settings.hostListMenuStyleDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.hostListMenuStyle" @change="settingsStore.save()">
+                <el-option :label="t('settings.hostListMenuStyleButton')" value="button" />
+                <el-option :label="t('settings.hostListMenuStyleRightClick')" value="rightclick" />
+              </el-select>
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.sidebarTabs') }}</div>
               <div class="setting-desc">{{ t('settings.sidebarTabsDesc') }}</div>
             </div>

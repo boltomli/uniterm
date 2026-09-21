@@ -87,8 +87,8 @@
             </div>
             <!-- Inside the favorites group the star is hover-only (everything
                  here is favorited; a lit star would be redundant noise) -->
-            <button class="conn-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
-            <button class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
           </div>
         </template>
       </template>
@@ -147,8 +147,8 @@
                 <span class="host">{{ getSubtitle(conn) }}</span>
               </span>
             </div>
-            <button class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
-            <button class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
           </div>
         </template>
       </template>
@@ -182,7 +182,7 @@
               <span class="host">{{ getSubtitle(conn) }}</span>
             </span>
           </div>
-          <button class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+          <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
         </div>
       </template>
 
@@ -449,6 +449,9 @@ const emit = defineEmits(['connect', 'connectToWorkspace', 'connectOnly', 'toggl
 const connectionStore = useConnectionStore()
 const favoriteStore = useFavoriteStore()
 const settingsStore = useSettingsStore()
+// "Right-click menu" host-list mode hides the hover star/⋯ buttons entirely —
+// the same connection menu stays reachable via right-click (issue #934).
+const showHostRowButtons = computed(() => settingsStore.settings.hostListMenuStyle !== 'rightclick')
 const panelStore = usePanelStore()
 const companionStore = useCompanionStore()
 const { t } = useI18n()

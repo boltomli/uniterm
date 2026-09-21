@@ -64,6 +64,7 @@
         </span>
       </div>
       <button
+        v-if="showHostRowButtons"
         class="conn-fav-btn"
         :class="{ on: favoriteStore.isFavorite(conn.id) }"
         :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')"
@@ -71,7 +72,7 @@
       >
         <Star :size="'0.75rem'" />
       </button>
-      <button class="conn-more-btn" @click.stop="onMoreClick($event, conn)" :title="t('terminal.more')">
+      <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onMoreClick($event, conn)" :title="t('terminal.more')">
         <MoreHorizontal :size="'0.875rem'" />
       </button>
     </div>
@@ -84,6 +85,7 @@ import { ChevronDown, ChevronRight, MoreHorizontal, Star } from '@lucide/vue'
 import type { ConnectionConfig, ConnectionGroup } from '../types/session'
 import type { GroupTreeNode } from '../stores/connectionStore'
 import { useFavoriteStore } from '../stores/favoriteStore'
+import { useSettingsStore } from '../stores/settingsStore'
 
 const props = defineProps<{
   node: GroupTreeNode
@@ -112,6 +114,10 @@ const utils = inject<any>('utils')!
 const { connIcon, getSubtitle, t } = utils
 
 const favoriteStore = useFavoriteStore()
+const settingsStore = useSettingsStore()
+// Mirrors Sidebar: "right-click menu" host-list mode hides the hover
+// star/⋯ buttons; the menu itself stays reachable via right-click (#934).
+const showHostRowButtons = computed(() => settingsStore.settings.hostListMenuStyle !== 'rightclick')
 
 function onToggle() {
   handlers.onToggleGroup(props.node.group.id)

@@ -26,10 +26,13 @@
       v-if="dragOverTabIndex === tabs.length - 1 && dragOverInsertAfter"
       class="tab-drop-indicator"
     ></div>
-    <!-- Drop indicator at end when dragging over empty tabs area -->
+    <!-- Drop indicator at end when dragging over empty tabs area (renders
+         inline after the last tab, same spot as the per-tab insert-after
+         indicator — no auto margin, which used to fling the + button to the
+         far right edge, #922) -->
     <div
       v-if="dragOverContainer"
-      class="tab-drop-indicator tab-drop-indicator-end"
+      class="tab-drop-indicator"
     ></div>
     <button
       v-if="!showMore"
@@ -356,10 +359,10 @@ function onTabDrop(e: DragEvent, targetTabId: string, index: number) {
   border-radius: 1px;
   flex-shrink: 0;
 }
-.tab-drop-indicator-end {
-  margin-left: auto;
-}
-
+/* 拖到标签条空白处时的"插到末尾"指示条。不带 margin-left:auto——那会把
+   自由空间全吸到自己前面，连着后面的新增 + 按钮一起甩到最右边 (#922)。
+   不加 auto 时它落在最后一个标签之后、+ 按钮之前，与"拖过末尾标签右半"
+   的指示条（onTabDragOver 的 insert-after 分支）位置一致。 */
 .tab-add-btn {
   flex-shrink: 0;
   width: 1.75rem;

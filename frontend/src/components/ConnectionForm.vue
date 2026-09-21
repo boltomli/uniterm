@@ -122,12 +122,6 @@
               <el-input v-model="form.kerberosRealm" :placeholder="t('conn.kerberosRealmPlaceholder')" />
               <div class="field-hint">{{ t('conn.kerberosRealmHint') }}</div>
             </el-form-item>
-            <el-form-item v-if="form.type === 'rdp' && isWindows" :label="t('conn.rdpAdminSession')">
-              <el-select v-model="form.rdpAdminSession" style="width: 100%">
-                <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
-                <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
-              </el-select>
-            </el-form-item>
             <template v-if="isElasticsearch">
               <el-form-item :label="t('conn.esUseSsl')">
                 <el-switch v-model="form.esUseSsl" />
@@ -403,9 +397,6 @@
                   <el-input-number v-model="rdpCustomHeight" :min="240" :max="4320" :step="8" controls-position="right" />
                 </div>
               </el-form-item>
-              <el-form-item :label="t('conn.rdpSmartSizing')">
-                <el-switch v-model="form.rdpSmartSizing" />
-              </el-form-item>
             </template>
             <template v-if="form.type === 'x11-desktop'">
               <el-form-item :label="t('conn.x11DesktopDE')" required>
@@ -597,6 +588,17 @@
               </el-form-item>
               <el-form-item :label="t('conn.vncRepeaterID')">
                 <el-input v-model="form.vncRepeaterID" :placeholder="t('conn.vncRepeaterIDPlaceholder')" />
+              </el-form-item>
+            </template>
+            <template v-if="form.type === 'rdp' && isWindows">
+              <el-form-item :label="t('conn.rdpAdminSession')">
+                <el-select v-model="form.rdpAdminSession" style="width: 100%">
+                  <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
+                  <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('conn.rdpSmartSizing')">
+                <el-switch v-model="form.rdpSmartSizing" />
               </el-form-item>
             </template>
             <el-form-item v-if="showProxy" :label="t('conn.proxy')">

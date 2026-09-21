@@ -137,6 +137,11 @@ const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
 const localStateStore = useLocalStateStore()
+// Window frame is fixed at startup (Wails limitation): the OS title bar only
+// appears after a relaunch. Snapshot the choice now instead of following the
+// live store, so toggling it in settings doesn't strip our own window
+// controls (close/min/max) before the restart takes effect (issue #935).
+const systemTitleBarAtStartup = localStateStore.state.systemTitleBar
 
 // ── Settings dropdown menu ──
 const updateCheck = useUpdateCheck()
@@ -238,11 +243,11 @@ const platform = ref(detectPlatformSync())
 const isMaximised = ref(false)
 
 // The app draws its own window controls on every platform — but not when the
-// user opted into the OS native title bar, which already provides them, and
-// never on mobile (no OS window to minimise/maximise/close). On macOS they
-// render as traffic lights on the left (see template).
+// user opted into the OS native title bar at startup, which already provides
+// them, and never on mobile (no OS window to minimise/maximise/close). On
+// macOS they render as traffic lights on the left (see template).
 const showWindowControls = computed(
-  () => !localStateStore.state.systemTitleBar && !isMobilePlatform(platform.value)
+  () => !systemTitleBarAtStartup && !isMobilePlatform(platform.value)
 )
 
 async function updateMaximisedState() {

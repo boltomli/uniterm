@@ -842,7 +842,86 @@ function onDragStart(event: DragEvent, row: FileItem) {
       mode: props.mode,
       items: dragged.map(i => ({ name: i.name, isDir: i.isDir }))
     }))
+    showDragGhost(event.dataTransfer, dragged.map(i => ({ name: i.name, isDir: i.isDir })))
   }
+}
+
+// --- Multi-file drag ghost (#944) --------------------------------------------
+// The browser's default drag image is a snapshot of the dragged row, so
+// dragging a multi-selection still shows a single file. Build a small custom
+// ghost instead: one icon + name row per dragged file (capped, then a "+N"
+// counter), hung off-screen and handed to setDragImage. Styled inline because
+// the element lives on <body>, outside this component's scoped styles; colors
+// reuse the same CSS vars as the file rows (--info dir / muted file icon).
+const DRAG_GHOST_MAX_ROWS = 3
+let dragGhostEl: HTMLElement | null = null
+
+const DRAG_GHOST_ICONS: Record<'dir' | 'file', string> = {
+  dir: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+  file: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>'
+}
+
+function removeDragGhost() {
+  dragGhostEl?.remove()
+  dragGhostEl = null
+}
+
+function showDragGhost(dataTransfer: DataTransfer, items: { name: string; isDir: boolean }[]) {
+  if (items.length === 0) return
+  removeDragGhost()
+
+  const el = document.createElement('div')
+  el.style.cssText =
+    'position:fixed;top:-2000px;left:0;display:flex;flex-direction:column;gap:2px;' +
+    'padding:0.375rem 0.5rem;background:var(--bg-base);border:1px solid var(--border-subtle);' +
+    'border-radius:0.375rem;box-shadow:0 0.25rem 0.75rem rgba(0,0,0,0.35);'
+
+  const mkRow = (maxWidth: string) => {
+    const row = document.createElement('div')
+    row.style.cssText = `display:flex;align-items:center;gap:0.375rem;max-width:${maxWidth};`
+    return row
+  }
+  const mkIcon = (kind: 'dir' | 'file') => {
+    const icon = document.createElement('span')
+    icon.style.cssText =
+      'flex-shrink:0;display:inline-flex;width:0.875rem;height:0.875rem;' +
+      (kind === 'dir' ? 'color:var(--info);fill:var(--info);fill-opacity:0.35;' : 'color:var(--text-muted);')
+    icon.innerHTML = DRAG_GHOST_ICONS[kind]
+    return icon
+  }
+  const mkName = () => {
+    const name = document.createElement('span')
+    name.style.cssText =
+      'font-size:0.8125rem;line-height:1.25rem;color:var(--text-primary);' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+    return name
+  }
+
+  for (const item of items.slice(0, DRAG_GHOST_MAX_ROWS)) {
+    const row = mkRow('16rem')
+    row.appendChild(mkIcon(item.isDir ? 'dir' : 'file'))
+    const name = mkName()
+    name.textContent = item.name
+    row.appendChild(name)
+    el.appendChild(row)
+  }
+  if (items.length > DRAG_GHOST_MAX_ROWS) {
+    const row = mkRow('16rem')
+    row.style.paddingLeft = '1.25rem'
+    const more = mkName()
+    more.style.cssText += 'font-size:0.75rem;color:var(--text-secondary);'
+    more.textContent = `+${items.length - DRAG_GHOST_MAX_ROWS}`
+    row.appendChild(more)
+    el.appendChild(row)
+  }
+
+  document.body.appendChild(el)
+  dragGhostEl = el
+  // The cursor should sit on the first row, like the default row snapshot.
+  dataTransfer.setDragImage(el, 12, 12)
+  // dragend always fires at the source when the drag ends (drop, cancel or
+  // Escape), so this is the single cleanup point.
+  window.addEventListener('dragend', removeDragGhost, { once: true })
 }
 
 // --- Rubber-band selection (drag to select) ---------------------------------
@@ -871,6 +950,7 @@ onBeforeUnmount(() => {
   // mid-drag (e.g. the host switches tabs while the button is held).
   bandCleanup?.()
   bandCleanup = null
+  removeDragGhost()
 })
 
 function onTableMouseDown(e: MouseEvent) {
