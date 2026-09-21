@@ -182,6 +182,10 @@ export interface KeyBinding {
 export type KeyboardSettings = Partial<Record<ShortcutAction, KeyBinding>> & {
   tabSwitchModifier?: KeyBinding
   panelSwitchModifier?: KeyBinding
+  // Global (system-wide) show/hide hotkey for the tray. Not an in-app action:
+  // it is registered with the OS and fires even without focus. A binding with
+  // an empty key (the "cleared" state) disables it.
+  trayShowHide?: KeyBinding
 }
 
 export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
@@ -230,6 +234,7 @@ export const DEFAULT_KEYBOARD: KeyboardSettings = {
   toggleTimestamps: { ctrl: true, shift: true, alt: false, key: 't' },
   zoomFontIn: { ctrl: true, shift: false, alt: false, key: '=' },
   zoomFontOut: { ctrl: true, shift: false, alt: false, key: '-' },
+  trayShowHide: { ctrl: true, shift: false, alt: false, key: 'm' },
 }
 
 // Older settings.json files may carry a `meta` flag on bindings. Ctrl now

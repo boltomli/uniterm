@@ -1082,6 +1082,52 @@
             </tbody>
           </table>
         </template>
+
+        <!-- 系统全局热键（托盘等，系统级生效） -->
+        <h2 class="section-title">{{ t('shortcut.globalHotkeys') }}</h2>
+        <table class="kb-table">
+          <thead>
+            <tr>
+              <th>{{ t('shortcut.colFunction') }}</th>
+              <th>{{ t('shortcut.colBinding') }}</th>
+              <th style="width:11.875rem;">{{ t('shortcut.colActions') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{{ t('shortcut.trayHotkeyRow') }}</td>
+              <td><kbd class="kb-key">{{ trayHotkeyDisplay() }}</kbd></td>
+              <td class="kb-actions">
+                <el-button
+                  :type="rebindingTrayHotkey ? 'warning' : 'default'"
+                  @click="startRebindTrayHotkey()"
+                >
+                  {{ rebindingTrayHotkey ? t('shortcut.pressKey') : t('shortcut.edit') }}
+                </el-button>
+                <el-button
+                  v-if="rebindingTrayHotkey"
+                  @click="stopRebind()"
+                >
+                  {{ t('shortcut.cancel') }}
+                </el-button>
+                <el-button
+                  v-if="rebindingTrayHotkey"
+                  type="danger"
+                  @click="clearTrayHotkey()"
+                >
+                  {{ t('shortcut.clear') }}
+                </el-button>
+                <el-button
+                  v-if="!isTrayHotkeyDefault() && !rebindingTrayHotkey"
+                  type="danger"
+                  @click="resetTrayHotkey()"
+                >
+                  {{ t('shortcut.reset') }}
+                </el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <!-- AI助理设置 -->
@@ -1306,7 +1352,7 @@ import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { useI18n, locale } from '../i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
+import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, DEFAULT_SETTINGS, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
 import { backendErrorText } from '../utils/backendError'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -1678,6 +1724,7 @@ const rebindingAction = ref<ShortcutAction | null>(null)
 // empty.
 const rebindingTabSwitch = ref(false)
 const rebindingPanelSwitch = ref(false)
+const rebindingTrayHotkey = ref(false)
 
 // Display grouping for the keyboard settings table: related shortcuts share
 // a sub-heading so the long list stays scannable. The two digit-modifier
@@ -1745,6 +1792,7 @@ function stopRebind() {
   rebindingAction.value = null
   rebindingTabSwitch.value = false
   rebindingPanelSwitch.value = false
+  rebindingTrayHotkey.value = false
   setRebinding(false)
   installGlobalListener()
 }
@@ -1759,6 +1807,7 @@ function clearBinding(action: ShortcutAction) {
 }
 
 function onRebindKeydown(e: KeyboardEvent) {
+  if (rebindingTrayHotkey.value) return onRebindTrayHotkeyKeydown(e)
   if (rebindingTabSwitch.value) return onRebindTabSwitchKeydown(e)
   if (rebindingPanelSwitch.value) return onRebindPanelSwitchKeydown(e)
   if (!rebindingAction.value) return stopRebind()
@@ -1767,6 +1816,11 @@ function onRebindKeydown(e: KeyboardEvent) {
   const key = e.key
   if (key === 'Escape') return stopRebind()
   if (key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta') return
+  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+    // Bare keys are never valid bindings — they would break normal typing.
+    msg.warning(t('shortcut.needsModifier'))
+    return
+  }
 
   const binding: KeyBinding = {
     // macOS: Cmd is recorded as ctrl — ctrl combos mirror to Cmd at runtime.
@@ -1950,7 +2004,11 @@ function onRebindModifierKeydown(e: KeyboardEvent, apply: (binding: KeyBinding) 
   e.stopPropagation()
   if (e.key === 'Escape') return stopRebind()
   if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return
-  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) return
+  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+    // Bare keys are never valid bindings — they would break normal typing.
+    msg.warning(t('shortcut.needsModifier'))
+    return
+  }
   // macOS: Cmd is recorded as ctrl — ctrl combos mirror to Cmd at runtime.
   apply({ ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey, alt: e.altKey, key: '' })
   stopRebind()
@@ -1962,6 +2020,78 @@ function onRebindTabSwitchKeydown(e: KeyboardEvent) {
 
 function onRebindPanelSwitchKeydown(e: KeyboardEvent) {
   onRebindModifierKeydown(e, setPanelSwitchModifier)
+}
+
+// ── Global show/hide hotkey (tray, system-wide) ──
+
+function trayHotkeyDisplay(): string {
+  const b = settingsStore.settings.keyboard.trayShowHide
+  return b ? formatKeyBinding(b, isMac.value) : ''
+}
+
+function isTrayHotkeyDefault(): boolean {
+  const b = settingsStore.settings.keyboard.trayShowHide
+  const def = DEFAULT_KEYBOARD.trayShowHide
+  if (!b || !def) return b === def
+  return b.ctrl === def.ctrl && b.shift === def.shift && b.alt === def.alt && b.key === def.key
+}
+
+function startRebindTrayHotkey() {
+  rebindingTrayHotkey.value = true
+  rebindingAction.value = null
+  rebindingTabSwitch.value = false
+  rebindingPanelSwitch.value = false
+  uninstallGlobalListener()
+  setRebinding(true)
+  if (!rebindListenerActive) {
+    rebindListenerActive = true
+    document.addEventListener('keydown', onRebindKeydown, true)
+    window.addEventListener('blur', onRebindBlur)
+  }
+}
+
+function onRebindTrayHotkeyKeydown(e: KeyboardEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.key === 'Escape') return stopRebind()
+  if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return
+  if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+    // Bare keys are never valid bindings — they would break normal typing.
+    msg.warning(t('shortcut.needsModifier'))
+    return
+  }
+  // macOS: Cmd is recorded as ctrl — ctrl combos mirror to Cmd at runtime.
+  settingsStore.settings.keyboard = {
+    ...settingsStore.settings.keyboard,
+    trayShowHide: {
+      ctrl: e.ctrlKey || e.metaKey,
+      shift: e.shiftKey,
+      alt: e.altKey,
+      key: e.key.toLowerCase()
+    }
+  }
+  settingsStore.save()
+  stopRebind()
+}
+
+function clearTrayHotkey() {
+  // All flags off + empty key = binding removed, hotkey unregistered.
+  settingsStore.settings.keyboard = {
+    ...settingsStore.settings.keyboard,
+    trayShowHide: { ctrl: false, shift: false, alt: false, key: '' }
+  }
+  settingsStore.save()
+  stopRebind()
+}
+
+function resetTrayHotkey() {
+  const def = DEFAULT_KEYBOARD.trayShowHide
+  if (!def) return
+  settingsStore.settings.keyboard = {
+    ...settingsStore.settings.keyboard,
+    trayShowHide: { ...def }
+  }
+  settingsStore.save()
 }
 
 function onRebindBlur() {
