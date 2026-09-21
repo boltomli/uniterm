@@ -346,9 +346,9 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	// Shell integration changes normal shell startup, so it is opt-in.
+	// Shell integration changes normal shell startup, so it can be disabled.
 	startCmd, integrationTempPath := "", ""
-	if config.ShellIntegration {
+	if config.shellIntegrationEnabled() {
 		startCmd, integrationTempPath = injectShellIntegration(client)
 	}
 	if startCmd != "" {
@@ -664,6 +664,13 @@ func (s *SSHSession) InjectCwdHook() (bool, error) {
 	}
 	s.cwdHookInstalled.Store(true)
 	return true, nil
+}
+
+// CwdHookInstalled reports whether the runtime OSC-7 cwd hook has already
+// been typed into this session's shell. The frontend checks it before its
+// confirmation dialog: an already-injected session never prompts again.
+func (s *SSHSession) CwdHookInstalled() bool {
+	return s.cwdHookInstalled.Load()
 }
 
 func (s *SSHSession) Resize(cols, rows int) error {
