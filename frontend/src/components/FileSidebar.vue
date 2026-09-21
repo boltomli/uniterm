@@ -157,7 +157,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import {
   SftpListRemote, SftpChangeRemoteDir, SftpOpenExternalEditor, SftpOpenWithSystem, ListSessions,
-  SessionInjectCwdHook,
+  SessionInjectCwdHook, SessionIsCwdHookInstalled,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import {
   useFilePanel, useConflictDialog, useFileDialogs, useFileListing, useChmodDialog,
@@ -311,15 +311,37 @@ async function toggleFollow() {
   const pid = companionStore.activeFilesPanelId
   if (!pid) return
   const wasOn = companionStore.followPathByPanel[pid] === true
-  companionStore.toggleFollowPath(pid)
-  // Enabling follow without startup shell integration: type the OSC-7 hook
-  // into the running shell so cwd reporting starts at the next prompt.
+  // Enabling follow without startup shell integration (the user turned the
+  // connection's「目录跟随启动注入」off): confirm once, then type the OSC-7
+  // hook into the running shell so cwd reporting starts at the next prompt.
   // SSH only: WSL panels already inject the hook unconditionally at startup.
+  if (!wasOn) {
+    const panel = panelStore.getPanel(pid)
+    if (panel?.config?.type === 'ssh' && panel.sessionId && panel.config?.shellIntegration === false) {
+      let installed = false
+      try {
+        installed = await SessionIsCwdHookInstalled(panel.sessionId)
+      } catch {
+        installed = false
+      }
+      if (!installed) {
+        // Already-injected sessions never prompt (checked above); cancelling
+        // leaves follow off.
+        const r = await fileDialogs.openGeneric({
+          type: 'message',
+          title: t('sftp.followInjectTitle'),
+          message: t('sftp.followInjectConfirm'),
+        })
+        if (!r.ok) return
+      }
+    }
+  }
+  companionStore.toggleFollowPath(pid)
   if (wasOn) return
   const panel = panelStore.getPanel(pid)
   if (panel?.config?.type !== 'ssh') return
   if (!panel.sessionId) return
-  if (panel.config?.shellIntegration === true) return // startup injection active
+  if (panel.config?.shellIntegration !== false) return // startup injection active
   try {
     const injected = await SessionInjectCwdHook(panel.sessionId)
     // injected=false means the hook was already installed on this session —
@@ -443,7 +465,7 @@ function bindListeners() {
       if (pid && panel?.sessionId === payload.id &&
           panel.config?.type === 'ssh' &&
           companionStore.followPathByPanel[pid] === true &&
-          panel.config?.shellIntegration !== true &&
+          panel.config?.shellIntegration !== false &&
           !panel.config?.postLoginScript &&
           !(panel.config?.postLoginExpectSteps?.length)) {
         SessionInjectCwdHook(panel.sessionId).catch(() => {})

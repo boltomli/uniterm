@@ -393,6 +393,19 @@ func TestSSHSessionInjectCwdHookFlagShortCircuit(t *testing.T) {
 	}
 }
 
+// CwdHookInstalled exposes the installed flag so the frontend can skip its
+// confirmation dialog when the runtime hook is already present.
+func TestSSHSessionCwdHookInstalledFlag(t *testing.T) {
+	s := NewSSHSession("test-cwd-hook-flag")
+	if s.CwdHookInstalled() {
+		t.Fatal("fresh session must report cwd hook not installed")
+	}
+	s.cwdHookInstalled.Store(true)
+	if !s.CwdHookInstalled() {
+		t.Fatal("flagged session must report cwd hook installed")
+	}
+}
+
 func TestSSHIntegrationTempPathValidation(t *testing.T) {
 	valid := []string{
 		"/tmp/uniterm-Ab12Z9",
