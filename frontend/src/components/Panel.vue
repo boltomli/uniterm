@@ -76,6 +76,9 @@
             <MenuItem :shortcut="menuShortcut('duplicateSession')" @click="emit('duplicate', panel.id); moreMenuVisible = false">
               {{ t('tab.duplicate') }}
             </MenuItem>
+            <MenuItem v-if="canDuplicateChannel" @click="onDuplicateChannel(); moreMenuVisible = false">
+              {{ t('tab.duplicateChannel') }}
+            </MenuItem>
             <MenuItem @click="forceReconnect(); moreMenuVisible = false">{{ t('tab.reconnect') }}</MenuItem>
             <MenuItem v-if="serverHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
             <MenuItem :shortcut="menuShortcut('lockAI')" @click="toggleAiLockFromMenu">
@@ -143,6 +146,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding, panelDigitShortcutsSuppressed, panelDigitShortcutPrefix, formatDigitShortcut } from '../composables/useKeyboardShortcuts'
+import { useDuplicateSession } from '../composables/useDuplicateSession'
 import type { ShortcutAction } from '../types/settings'
 import {
   CreateSession,
@@ -570,6 +574,20 @@ async function forceReconnect() {
   }
   retryAttempt = 0
   await retryConnection()
+}
+
+// Channel clone (issue #983): only meaningful for a connected SSH panel.
+const canDuplicateChannel = computed(() =>
+  props.panel.type === 'ssh' && !!props.panel.sessionId &&
+  sessionStore.getStatus(props.panel.sessionId) === 'connected'
+)
+
+function onDuplicateChannel() {
+  const { duplicateChannel } = useDuplicateSession()
+  duplicateChannel(
+    { type: 'terminal', panelId: props.panel.id, title: props.panel.title },
+    props.workspaceId ? { workspaceId: props.workspaceId, targetPanelId: props.panel.id } : undefined,
+  )
 }
 
 // Reconnect menu in the tab right-click menu dispatches a 'panel:reconnect'

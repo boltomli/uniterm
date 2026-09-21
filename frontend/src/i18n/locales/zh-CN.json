@@ -137,6 +137,7 @@
   "window.maximize": "最大化",
   "window.close": "关闭",
   "tab.duplicate": "复制会话",
+  "tab.duplicateChannel": "复制通道",
   "tab.openTerminal": "连接 SSH",
   "tab.reconnect": "重新连接",
   "tab.reconnectFailed": "重连失败：{error}",

@@ -137,6 +137,7 @@
   "window.maximize": "Maximizar",
   "window.close": "Cerrar",
   "tab.duplicate": "Duplicar",
+  "tab.duplicateChannel": "Duplicar canal",
   "tab.openTerminal": "Conectar SSH",
   "tab.reconnect": "Reconectar",
   "tab.reconnectFailed": "Error al reconectar: {error}",

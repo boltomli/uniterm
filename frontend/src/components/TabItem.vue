@@ -81,6 +81,9 @@
       <MenuItem v-if="canDuplicate" :shortcut="menuShortcut('duplicateSession')" @click="onDuplicate">
         {{ t('tab.duplicate') }}
       </MenuItem>
+      <MenuItem v-if="canDuplicateChannel" @click="onDuplicateChannel">
+        {{ t('tab.duplicateChannel') }}
+      </MenuItem>
       <MenuItem v-if="canReconnect" @click="onReconnect">{{ t('tab.reconnect') }}</MenuItem>
       <MenuItem v-if="hasServerHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
       <MenuItem v-if="tab.type === 'terminal'" :shortcut="menuShortcut('lockAI')" @click="toggleAiLock">
@@ -189,7 +192,7 @@ const activeProgress = computed(() => {
 const containerStore = useContainerStore()
 const settingsStore = useSettingsStore()
 const companionStore = useCompanionStore()
-const { duplicateSession } = useDuplicateSession()
+const { duplicateSession, duplicateChannel } = useDuplicateSession()
 const { t } = useI18n()
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -333,6 +336,14 @@ const supportsOutputLog = computed(() => {
 const canDuplicate = computed(() => {
   const type = props.tab.type
   return type === 'terminal' || type === 'sftp' || type === 'database' || type === 'mongodb' || type === 'redis' || type === 'elasticsearch' || type === 'k8s'
+})
+
+// Channel clone (issue #983): SSH terminal tabs with a live session — the
+// backend re-validates, this gate only hides the menu item early.
+const canDuplicateChannel = computed(() => {
+  if (props.tab.type !== 'terminal') return false
+  const p = panelStore.getPanel((props.tab as TerminalTab).panelId)
+  return !!p && p.type === 'ssh' && !!p.sessionId && sessionStore.getStatus(p.sessionId) === 'connected'
 })
 
 // Reconnectable panels — terminal types that Panel.vue can re-initiate.
@@ -544,6 +555,11 @@ async function copyHostAddress() {
 function onDuplicate() {
   closeContextMenu()
   duplicateSession(props.tab)
+}
+
+function onDuplicateChannel() {
+  closeContextMenu()
+  duplicateChannel(props.tab)
 }
 
 // Dissolve: every member panel returns to the tab bar as a live terminal tab
