@@ -126,6 +126,37 @@ func TestMakeSSHAuthMethodsKeyText(t *testing.T) {
 	}
 }
 
+// TestParsePrivateKeyFileTildePath locks in that a "~"-prefixed key path — the
+// form OpenSSH config import stores for IdentityFile — resolves against the
+// user's home directory at read time, so connections saved before (or without)
+// import-time expansion still find their private key (issue #981).
+func TestParsePrivateKeyFileTildePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home) // windows
+	t.Setenv("HOME", home)        // unix
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	block, err := ssh.MarshalPrivateKey(priv, "uniterm-test")
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+	keyFile := filepath.Join(keyDir, "id_ed25519")
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	if _, ok := parsePrivateKeyFile("~/.ssh/id_ed25519", ""); !ok {
+		t.Fatal("parsePrivateKeyFile(~/.ssh/id_ed25519) failed, want success via home expansion")
+	}
+}
+
 func TestKerberosDoesNotFallBackToKeyboardInteractive(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "missing-krb5.conf")
 	t.Setenv("KRB5_CONFIG", configPath)
