@@ -108,11 +108,15 @@ export function colorToCss(
  * Convert one buffer line into styled text runs (consecutive cells with the
  * same style merged). Zero-width cells (the trailing half of CJK wide chars)
  * are skipped and trailing blanks are trimmed.
+ *
+ * `colorOverride` optionally supplies a highlight color per column (keyword
+ * highlighting); when present it wins over the cell's own foreground.
  */
 export function lineToRuns(
   line: PreviewBufferLine,
   cols: number,
   palette: PreviewPalette,
+  colorOverride?: (col: number) => string | undefined,
 ): PreviewStyleRun[] {
   const runs: PreviewStyleRun[] = []
   for (let x = 0; x < cols; x++) {
@@ -129,8 +133,11 @@ export function lineToRuns(
     const inverse = cell.isInverse()
     const fg = inverse ? (bgRaw ?? palette.defaultBg) : fgRaw
     const bg = inverse ? (fgRaw ?? palette.defaultFg) : bgRaw
+    const override = colorOverride?.(x)
 
     const style: PreviewStyleRun = { text: ch }
+    if (override) style.fg = override
+    else if (fg) style.fg = fg
     if (fg) style.fg = fg
     if (bg) style.bg = bg
     if (cell.isBold()) style.bold = true

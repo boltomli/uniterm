@@ -43,6 +43,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import { getManagedTerminal } from '../services/terminalManager'
+import { getLineHighlightColors, isOverlayHighlightActive } from '../composables/overlayHighlight'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatTimestampMs, resolveRowMeta } from '../utils/terminalGutter'
 import {
@@ -349,6 +350,8 @@ function show(t: Terminal, sbRect: DOMRect) {
 
   const withNumbers = showLineNumbers.value
   const withTimestamps = showTimestamps.value && managed
+  // Mirror the terminal's gating exactly (attached + not exempt + enabled).
+  const highlightOn = isOverlayHighlightActive(t)
   const tsFormat = settingsStore.settings.terminal.timestampFormat || 'HH:mm:ss'
   const alternate = buf.type === 'alternate'
   const registry = managed?.lineRegistry
@@ -360,7 +363,12 @@ function show(t: Terminal, sbRect: DOMRect) {
     const bufferLine = start + i
     const line = buf.getLine(bufferLine)
     const isWrapped = line?.isWrapped ?? false
-    const runs = line ? lineToRuns(line, t.cols, palette) : []
+    // Keyword highlight colors, matching what the terminal itself renders
+    // (same rules + palette source as overlayHighlight).
+    const hlColors = line && highlightOn
+      ? getLineHighlightColors(line, t.cols, t.options.theme)
+      : undefined
+    const runs = line ? lineToRuns(line, t.cols, palette, hlColors ? (col) => hlColors[col] : undefined) : []
     // Mirror the gutter's semantics: numbers/timestamps come from the logical
     // line registry; wrapped continuation rows belong to the line above, so
     // they carry no number/timestamp of their own.
