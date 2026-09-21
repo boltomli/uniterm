@@ -49,6 +49,32 @@ func TestSettingsStore_SaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// Regression: ShowTabShortcutHints / HostListMenuStyle were missing from the
+// AppSettings struct, so the JSON round-trip silently dropped them and the
+// UI toggles reset to defaults on every restart.
+func TestSettingsStore_PreservesTabAppearanceSettings(t *testing.T) {
+	dir := t.TempDir()
+	s := &SettingsStore{configDir: dir}
+
+	settings := defaultSettings()
+	settings.ShowTabShortcutHints = boolPtr(false)
+	settings.HostListMenuStyle = "rightclick"
+	if err := s.Save(settings); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ShowTabShortcutHints == nil || *got.ShowTabShortcutHints {
+		t.Errorf("ShowTabShortcutHints: got %v, want preserved false", got.ShowTabShortcutHints)
+	}
+	if got.HostListMenuStyle != "rightclick" {
+		t.Errorf("HostListMenuStyle: got %q, want %q", got.HostListMenuStyle, "rightclick")
+	}
+}
+
 func TestSettingsStore_LoadMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	s := &SettingsStore{configDir: dir}
