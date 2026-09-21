@@ -7,6 +7,7 @@ import (
 
 	"github.com/kevinburke/ssh_config"
 	"github.com/ys-ll/uniterm/backend/session"
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 // NOTE: corrected against ssh_config v1.2.0's real API — Host.Patterns is a
@@ -42,8 +43,10 @@ func parseOpenSSH(data []byte) (*ImportResult, error) {
 				ID: newConnectionID(), Name: name, Type: "ssh", Host: hostname, Port: port, User: user,
 			}
 			if keyPath != "" {
+				// IdentityFile is commonly written as "~/.ssh/..." — expand it
+				// here so the stored path is usable as-is at connect time.
 				conn.AuthType = "key"
-				conn.KeyPath = keyPath
+				conn.KeyPath = utils.ExpandHomePath(keyPath)
 			} else {
 				conn.AuthType = "password"
 			}

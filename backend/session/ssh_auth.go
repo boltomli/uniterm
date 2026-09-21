@@ -109,9 +109,11 @@ func keySourceLabel(config ConnectionConfig) string {
 }
 
 // parsePrivateKeyFile reads the private key at path and parses it via
-// parsePrivateKey. Returns (nil, false) on any error.
+// parsePrivateKey. A leading "~" in path (as written in OpenSSH config
+// IdentityFile lines) is expanded to the user's home directory first.
+// Returns (nil, false) on any error.
 func parsePrivateKeyFile(path, passphrase string) (ssh.Signer, bool) {
-	key, err := os.ReadFile(path)
+	key, err := os.ReadFile(utils.ExpandHomePath(path))
 	if err != nil {
 		return nil, false
 	}
