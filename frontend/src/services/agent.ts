@@ -354,6 +354,12 @@ function buildDynamicContext(): string {
     idx++
   }
 
+  // Multiple panels are ambiguous — make the model ask instead of guessing
+  // the first locked panel (issue #974).
+  if (panels.length > 1) {
+    parts.push('\nMultiple panels are associated. When the user has NOT specified which panel to run a command in, ask them first (via ask_user) instead of picking one yourself.')
+  }
+
   parts.push('\n' + '='.repeat(40))
 
   // Terminal switch detection
@@ -679,7 +685,11 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           toolName: tu.name,
           command,
           risk,
-          dangerous: risk === 'dangerous'
+          dangerous: risk === 'dangerous',
+          panel: validated.panel,
+          timeout: timeoutMs,
+          headLines,
+          tailLines
         })
         store.status = 'confirming'
         assistantMsg.tool_calls = [{
@@ -741,7 +751,8 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           toolName: tu.name,
           command,
           risk,
-          dangerous: risk === 'dangerous'
+          dangerous: risk === 'dangerous',
+          panel: validated.panel
         })
         store.status = 'confirming'
         assistantMsg.tool_calls = [{
@@ -1051,7 +1062,7 @@ export async function approveTool(_messageId: string) {
 
   try {
     if (cmd.toolName === 'start_command') {
-      const result = await startCommand(cmd.command)
+      const result = await startCommand(cmd.command, cmd.panel)
       store.addMessage({
         id: `msg-${Date.now()}`,
         role: 'tool',
@@ -1059,7 +1070,14 @@ export async function approveTool(_messageId: string) {
         tool_call_id: cmd.toolId
       })
     } else {
-      const result = await executeCommand(cmd.command)
+      const result = await executeCommand(
+        cmd.command,
+        cmd.timeout,
+        cmd.headLines,
+        cmd.tailLines,
+        () => store.stopRequested,
+        cmd.panel
+      )
       store.addMessage({
         id: `msg-${Date.now()}`,
         role: 'tool',
