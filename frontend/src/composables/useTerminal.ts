@@ -10,7 +10,6 @@ import { queuedSessionWrite } from '../services/sessionWriter'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useSessionStore } from '../stores/sessionStore'
-import { highlight } from './useHighlight'
 import { stripCursorBlink } from '../utils/cursor'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from './useTerminalTheme'
@@ -619,10 +618,7 @@ export function useTerminal(
     if (sessionId) {
       const history = sessionStore.getData(sessionId)
       if (history) {
-        // Apply syntax highlighting when restoring history so it matches
-        // newly arriving lines after a tab switch.
-        const hlOn = settingsStore.settings.terminal.highlightEnabled ?? true
-        terminal.write(hlOn ? highlight(stripBlink(history)) : stripBlink(history))
+        terminal.write(stripBlink(history))
       }
     }
 
@@ -686,8 +682,7 @@ export function useTerminal(
           data = data.replace(/\x1b\[H\x1b\[2J/g, scrollClear)
           data = data.replace(/\x1b\[2J/g, scrollClear)
         }
-        const hlOn = settingsStore.settings.terminal.highlightEnabled ?? true
-        terminal.write(hlOn ? highlight(data) : data)
+        terminal.write(data)
         if (options?.onSessionData) {
           options.onSessionData(data)
         }

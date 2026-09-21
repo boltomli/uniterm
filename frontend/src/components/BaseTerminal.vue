@@ -143,7 +143,7 @@ import { applyMobileCtrl } from '../utils/mobileCtrlKey'
 import { msg } from '../services/message'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
-import { highlight } from '../composables/useHighlight'
+import { attachOverlayHighlighter, notifyOverlayHighlightThemeChanged } from '../composables/overlayHighlight'
 import { onTerminalKey, formatKeyBinding } from '../composables/useKeyboardShortcuts'
 import type { ShortcutAction } from '../types/settings'
 import { useSessionStore } from '../stores/sessionStore'
@@ -375,7 +375,9 @@ function renderTerminalData(rawData: string, countChunk = true) {
     const cleaned = data.replace(/\x1b\]633;S[^\x07]*\x07/g, '')
     if (cleaned) writeStamped(cleaned)
   } else {
-    const hlOn = (settingsStore.settings.terminal.highlightEnabled ?? true) && props.mode !== 'local'
+    // Keyword highlighting is applied by the overlay renderer, which scans
+    // the parsed buffer and lays decorations over matches — the data stream
+    // is written verbatim.
     for (const seg of dcsReassembler.feed(data)) {
       if (seg.dcs) {
         // Complete DCS (sixel image, DECRQSS reply, …): write verbatim —
@@ -387,7 +389,7 @@ function renderTerminalData(rawData: string, countChunk = true) {
         terminalInput.handleSessionData(seg.text)
         if (terminalInput.isInAlternateScreen()) suggestions.close()
       }
-      writeStamped(hlOn ? highlight(seg.text) : seg.text)
+      writeStamped(seg.text)
     }
   }
   if (countChunk) writtenChunks++
@@ -1095,6 +1097,11 @@ onMounted(() => {
   // Acquire shared terminal from manager (or create if first mount)
   const opts = getTerminalOptions()
   terminal = acquireTerminal(props.sessionId || '', terminalInstanceRef, opts, settingsStore.settings.customTerminalThemes)
+  // Keyword highlighting scans the parsed buffer and overlays decorations;
+  // the enable switch is re-read on every refresh, so toggling the setting
+  // takes effect live. Exempt matches the old inject path's scope: ssh
+  // sessions only.
+  attachOverlayHighlighter(terminal, { exempt: props.mode !== 'ssh' })
 
   // Load WebLinksAddon per-component (has custom callbacks)
   let hoverEl: HTMLDivElement | null = null
@@ -1178,10 +1185,10 @@ onMounted(() => {
       const raw = sessionStore.getData(sid)
       const history = sanitizeTerminalHistory(raw)
       if (history) {
-        // Apply syntax highlighting when restoring history so it matches
+        // Highlighting is applied by the overlay renderer scanning the
+        // buffer, so restored history is decorated the same way as
         // newly arriving lines after a tab switch.
-        const hlOn = (settingsStore.settings.terminal.highlightEnabled ?? true) && props.mode !== 'local'
-        writeStamped(hlOn ? highlight(history) : history)
+        writeStamped(history)
       }
     }
     // Always sync writtenChunks to prevent onActivated from replaying
@@ -1684,11 +1691,10 @@ onActivated(() => {
     const total = sessionStore.getChunkCount(props.sessionId)
     if (total > writtenChunks) {
       const tail = sessionStore.getDataFromChunk(props.sessionId, writtenChunks)
-      const hlOn = (settingsStore.settings.terminal.highlightEnabled ?? true) && props.mode !== 'local'
       // Route the gap replay through the DCS reassembler like the live
       // path — a sixel sequence may span the deactivation boundary.
       for (const seg of dcsReassembler.feed(tail)) {
-        writeStamped(seg.dcs ? seg.text : (hlOn ? highlight(seg.text) : seg.text))
+        writeStamped(seg.text)
       }
       writtenChunks = total
     }
@@ -1929,6 +1935,9 @@ function applyXtermTheme(themeName: string) {
   )
   terminal.options.theme = theme
   applyTerminalBgVar(terminal, theme)
+  // Highlight colors are resolved from the palette per refresh — force a
+  // pass so recolored text switches to the new theme immediately.
+  notifyOverlayHighlightThemeChanged(terminal)
 }
 
 // Watch terminal settings changes
