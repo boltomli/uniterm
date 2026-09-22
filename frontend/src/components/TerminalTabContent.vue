@@ -213,6 +213,8 @@ function onDrop(e: DragEvent) {
 }
 .dz.active {
   background: var(--accent-glow);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
 }
 .dz-left { left: 0; top: 0; width: 50%; height: 100%; }
 .dz-right { right: 0; top: 0; width: 50%; height: 100%; }
