@@ -416,3 +416,112 @@ func TestValidUnitName(t *testing.T) {
 		}
 	}
 }
+// --- df output parsing ---
+
+func TestParseDfOutputWithTypeColumn(t *testing.T) {
+	out := `Filesystem Type Size Used Avail Use% Mounted on
+overlay overlay 200G 50G 150G 25% /
+tmpfs tmpfs 64M 0 64M 0% /dev/shm
+10.0.0.1:/export/nfs nfs4 1.0T 100G 900G 10% /mnt/nfs
+`
+	got := parseDfOutput(out)
+	want := []dfEntry{
+		{Spec: "overlay", FSType: "overlay", Total: "200G", Used: "50G", Usage: 25, Mount: "/"},
+		{Spec: "tmpfs", FSType: "tmpfs", Total: "64M", Used: "0", Usage: 0, Mount: "/dev/shm"},
+		{Spec: "10.0.0.1:/export/nfs", FSType: "nfs4", Total: "1.0T", Used: "100G", Usage: 10, Mount: "/mnt/nfs"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseDfOutput mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestParseDfOutputWithoutTypeColumn(t *testing.T) {
+	// Busybox/old df without -T falls back to the six-column form.
+	out := `Filesystem Size Used Avail Use% Mounted on
+/dev/sda1 731.0M 93M 601M 13% /boot
+`
+	got := parseDfOutput(out)
+	want := []dfEntry{
+		{Spec: "/dev/sda1", Total: "731.0M", Used: "93M", Usage: 13, Mount: "/boot"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseDfOutput mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestParseDfOutputIgnoresShortLines(t *testing.T) {
+	got := parseDfOutput("Filesystem Type Size\n\ngarbage\n")
+	if len(got) != 0 {
+		t.Errorf("want no rows, got %#v", got)
+	}
+}
+
+// --- merging df-only filesystems into the lsblk list ---
+
+func TestAppendDfOnlyDisks(t *testing.T) {
+	disks := []DiskInfo{
+		{Name: "sda", Type: "disk"},
+		{Name: "  sda1", Type: "part", MountPoint: "/boot", Used: "93M", Total: "731.0M", Usage: 13},
+	}
+	rows := []dfEntry{
+		{Spec: "/dev/sda1", FSType: "ext4", Total: "731.0M", Used: "93M", Usage: 13, Mount: "/boot"},
+		{Spec: "overlay", FSType: "overlay", Total: "200G", Used: "50G", Usage: 25, Mount: "/"},
+		{Spec: "tmpfs", FSType: "tmpfs", Total: "64M", Used: "0", Usage: 0, Mount: "/dev/shm"},
+		{Spec: "tmpfs", FSType: "tmpfs", Total: "64M", Used: "0", Usage: 0, Mount: "/dev/shm"},
+	}
+	got := appendDfOnlyDisks(disks, rows)
+	if len(got) != 4 {
+		t.Fatalf("want 4 disks (2 lsblk + 2 df-only), got %d: %#v", len(got), got)
+	}
+	overlay := got[2]
+	if overlay.Name != "overlay" || overlay.MountPoint != "/" || overlay.FSType != "overlay" || overlay.Usage != 25 {
+		t.Errorf("unexpected overlay row: %#v", overlay)
+	}
+	if got[3].MountPoint != "/dev/shm" {
+		t.Errorf("want deduped tmpfs row, got %#v", got[3])
+	}
+	if got[1].MountPoint != "/boot" || got[1].Used != "93M" {
+		t.Errorf("lsblk row must keep its own usage: %#v", got[1])
+	}
+}
+
+func TestAppendDfOnlyDisksEmptyLsblk(t *testing.T) {
+	// In containers lsblk can come back empty; every df row must survive.
+	rows := []dfEntry{
+		{Spec: "overlay", FSType: "overlay", Total: "200G", Used: "50G", Usage: 25, Mount: "/"},
+	}
+	got := appendDfOnlyDisks(nil, rows)
+	if len(got) != 1 || got[0].MountPoint != "/" {
+		t.Errorf("want overlay row, got %#v", got)
+	}
+}
+
+// --- ps listing parsing ---
+
+func TestParseProcessRows(t *testing.T) {
+	out := `10092     1 111 S 16.5 8.2 [TS_MAIN] /usr/bin/tsmain --config /etc/ts.conf
+  40678   900 root S 13.0 0.6 OCRServer python3 /opt/ocr/server.py
+bad line
+`
+	got := parseProcessRows(out)
+	if len(got) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(got))
+	}
+	first := got[0]
+	if first["pid"] != 10092 || first["ppid"] != 1 {
+		t.Errorf("unexpected pids: %#v", first)
+	}
+	if first["user"] != "111" || first["state"] != "S" {
+		t.Errorf("unexpected user/state: %#v", first)
+	}
+	if first["name"] != "[TS_MAIN]" {
+		t.Errorf("unexpected name: %#v", first)
+	}
+	if first["cmd"] != "/usr/bin/tsmain --config /etc/ts.conf" {
+		t.Errorf("unexpected cmd: %#v", first)
+	}
+	cpu := first["cpu"].(float64)
+	if cpu != 16.5 {
+		t.Errorf("unexpected cpu: %v", cpu)
+	}
+}

@@ -312,18 +312,38 @@ function openFullMonitor() {
   window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: panel }))
 }
 
+let diskRetryTimer: ReturnType<typeof setTimeout> | null = null
+let diskRetries = 0
+
 async function loadDisks() {
   if (disks.value.length > 0) return
   const sid = sessionId.value
   if (!sid) return
   diskLoading.value = true
   try {
-    disks.value = await GetDisks(sid)
+    const res = await GetDisks(sid)
+    if (Array.isArray(res) && res.length > 0) {
+      disks.value = res
+      diskRetries = 0
+    } else {
+      scheduleDiskRetry()
+    }
   } catch {
-    disks.value = []
+    // Likely the monitor session is still connecting; retry a few times so
+    // the disk count shows up without a manual expand.
+    scheduleDiskRetry()
   } finally {
     diskLoading.value = false
   }
+}
+
+function scheduleDiskRetry() {
+  if (diskRetryTimer || disks.value.length > 0 || diskRetries >= 5) return
+  diskRetries++
+  diskRetryTimer = setTimeout(() => {
+    diskRetryTimer = null
+    loadDisks()
+  }, 2000 * diskRetries)
 }
 
 async function toggleDisks() {
@@ -350,6 +370,8 @@ function bindListeners() {
       if (payload.type === 'system') {
         systemInfo.value = payload.system
         hostClockAt.value = Date.now()
+        // First payload proves the session is up — (re)try the disk snapshot.
+        loadDisks()
         return
       }
       if (payload.type === 'performance') {
@@ -504,6 +526,10 @@ onUnmounted(() => {
   unsub?.()
   if (clockTimer) window.clearInterval(clockTimer)
   clockTimer = null
+  if (diskRetryTimer) {
+    clearTimeout(diskRetryTimer)
+    diskRetryTimer = null
+  }
   // The sidebar is hidden — pause the companion monitor session so it stops
   // polling the remote host until it is shown again.
   const sid = sessionId.value
@@ -734,6 +760,22 @@ onUnmounted(() => {
 .detail-row.net .detail-sub {
   width: 4.5rem;
   text-align: right;
+}
+/* Disk rows: fixed name/bar columns so bars and values line up across rows
+   regardless of how long the mount point or the used/total string is. */
+.detail-row.disk .detail-name {
+  flex: 0 0 5rem;
+}
+.detail-row.disk .detail-bar {
+  flex: 0 0 3rem;
+  max-width: 3rem;
+}
+.detail-row.disk .detail-val {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .detail-empty {
   padding: 0.375rem 0;

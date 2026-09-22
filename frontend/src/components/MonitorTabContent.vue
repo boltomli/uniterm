@@ -74,7 +74,7 @@
             </div>
             <div v-if="showDisks" class="perf-sub-list">
               <div v-if="diskLoading" class="perf-sub-empty">{{ t('monitor.loading') }}</div>
-              <div v-for="d in mountedDisks" v-else :key="d.name + d.mountPoint" class="perf-sub-row">
+              <div v-for="d in mountedDisks" v-else :key="d.name + d.mountPoint" class="perf-sub-row disk">
                 <span class="sub-name" :title="d.mountPoint || d.name">{{ d.mountPoint || d.name }}</span>
                 <div class="sub-bar"><div class="sub-fill" :style="{ width: fmtWidth(d.usage) }" /></div>
                 <span class="sub-val">{{ d.used }} / {{ d.total }}</span>
@@ -121,7 +121,7 @@
         </div>
       </div>
       <el-input v-model="processSearch" :placeholder="t('monitor.searchProcess')" clearable class="process-search" />
-      <el-table :data="filteredProcesses" size="small" height="calc(100% - 2.5rem)" class="process-table" @row-click="onProcessRowClick">
+      <el-table :data="filteredProcesses" size="small" border height="calc(100% - 2.5rem)" class="process-table" @row-click="onProcessRowClick">
         <el-table-column prop="pid" label="PID" sortable :width="uiPx(80)" />
         <el-table-column prop="name" :label="t('monitor.processName')" sortable />
         <el-table-column prop="user" :label="t('monitor.user')" sortable :width="uiPx(100)" />
@@ -152,7 +152,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredPorts" size="small" v-loading="loadingPorts" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredPorts" size="small" border v-loading="loadingPorts" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="protocol" :label="t('monitor.port.protocol')" sortable :width="uiPx(90)" />
         <el-table-column prop="localAddr" :label="t('monitor.port.localAddr')" sortable :width="uiPx(160)" />
         <el-table-column prop="process" :label="t('monitor.port.process')" sortable />
@@ -167,7 +167,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredDisks" size="small" v-loading="loadingDisks" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredDisks" size="small" border v-loading="loadingDisks" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="name" :label="t('monitor.disk.name')" sortable>
           <template #default="{ row }">
             <span :style="{ paddingLeft: (row.name.match(/^ +/)?.[0].length || 0) * 6 + 'px' }">{{ row.name.trim() }}</span>
@@ -196,7 +196,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredNetCards" size="small" v-loading="loadingNetCards" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredNetCards" size="small" border v-loading="loadingNetCards" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="name" :label="t('monitor.net.name')" sortable :width="uiPx(120)" />
         <el-table-column prop="state" :label="t('monitor.net.state')" sortable :width="uiPx(90)" />
         <el-table-column prop="mac" :label="t('monitor.net.mac')" sortable :width="uiPx(160)" />
@@ -233,7 +233,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredServices" size="small" v-loading="loadingServices" height="calc(100% - 2.25rem)" class="od-table" @row-click="onServiceRowClick">
+      <el-table :data="filteredServices" size="small" border v-loading="loadingServices" height="calc(100% - 2.25rem)" class="od-table" @row-click="onServiceRowClick">
         <el-table-column prop="name" :label="t('monitor.service.name')" sortable :min-width="uiPx(220)" />
         <el-table-column prop="active" :label="t('monitor.service.active')" sortable :width="uiPx(100)">
           <template #default="{ row }">
@@ -262,7 +262,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="deviceTreeData" row-key="rowKey" :tree-props="{ children: 'children' }" size="small" v-loading="loadingDevices" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="deviceTreeData" row-key="rowKey" :tree-props="{ children: 'children' }" size="small" border v-loading="loadingDevices" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="id" :label="t('monitor.device.slot')" sortable :width="uiPx(150)" show-overflow-tooltip />
         <el-table-column prop="class" :label="t('monitor.device.class')" :min-width="uiPx(150)" show-overflow-tooltip>
           <template #default="{ row }">
@@ -343,7 +343,7 @@
         <div v-if="hardwareSensors && !hardwareSensors.hasIpmi" class="health-hint health-bottom-hint">
           {{ t('monitor.health.noIpmi') }}
         </div>
-        <el-table v-if="hardwareSensors && hardwareSensors.sensors.length" :data="filteredSensors" size="small" v-loading="loadingHardwareSensors" height="calc(100% - 2.25rem)" class="od-table health-table">
+        <el-table v-if="hardwareSensors && hardwareSensors.sensors.length" :data="filteredSensors" size="small" border v-loading="loadingHardwareSensors" height="calc(100% - 2.25rem)" class="od-table health-table">
           <el-table-column prop="name" :label="t('monitor.health.name')" sortable :min-width="uiPx(160)" />
           <el-table-column prop="value" :label="t('monitor.health.value')" :min-width="uiPx(140)" />
           <el-table-column prop="unit" :label="t('monitor.health.unit')" :width="uiPx(110)">
@@ -1161,13 +1161,23 @@ async function fetchPorts() {
   }
 }
 
+let diskFetchRetried = false
 async function fetchDisks() {
   loadingDisks.value = true
   try {
     diskList.value = await GetDisks(props.sessionId)
+    diskFetchRetried = false
   } catch (e: any) {
     msg.error(e?.message || 'Failed to fetch disks')
     diskList.value = []
+    // The monitor session may still be connecting on the first attempt;
+    // retry once so the list shows without a manual refresh.
+    if (!diskFetchRetried) {
+      diskFetchRetried = true
+      setTimeout(() => {
+        if (diskList.value.length === 0 && activeTab.value === 'disks') fetchDisks()
+      }, 3000)
+    }
   } finally {
     loadingDisks.value = false
   }
@@ -1780,6 +1790,22 @@ watch(activeTab, (tab) => {
   text-align: right;
   white-space: nowrap;
 }
+/* Disk rows: fixed name/bar columns so bars and values line up across rows
+   regardless of how long the mount point or the used/total string is. */
+.perf-sub-row.disk .sub-name {
+  flex: 0 0 9rem;
+}
+.perf-sub-row.disk .sub-bar {
+  flex: 0 0 7rem;
+  max-width: 7rem;
+}
+.perf-sub-row.disk .sub-val {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .perf-sub-empty {
   padding: 0.5rem 0;
   color: var(--text-muted);
@@ -2078,6 +2104,16 @@ watch(activeTab, (tab) => {
 
 .od-table :deep(.cell) {
   user-select: text;
+}
+
+/* Column drag-resize only works in el-table's border mode; hide the vertical
+   grid lines it adds so the tables keep their original look. */
+.monitor-tab :deep(.el-table--border .el-table__cell) {
+  border-right: none;
+}
+.monitor-tab :deep(.el-table--border::after),
+.monitor-tab :deep(.el-table--border::before) {
+  display: none;
 }
 
 /* Services / devices / hardware health */
