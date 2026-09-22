@@ -1061,6 +1061,7 @@
   "credential.title": "Credenciales requeridas",
   "credential.tunnelTitle": "Túnel SSH – Credenciales requeridas",
   "credential.tunnelSubtitle": "Túnel: {name}",
+  "credential.authFailedSubtitle": "Error de autenticación: introduce las credenciales de nuevo.",
   "credential.connect": "Conectar",
   "conn.categoryFileTransfer": "Transferencia de archivos",
   "conn.categoryContainer": "Contenedor",

@@ -1061,6 +1061,7 @@
   "credential.title": "Identifiants requis",
   "credential.tunnelTitle": "Tunnel SSH – Identifiants requis",
   "credential.tunnelSubtitle": "Tunnel : {name}",
+  "credential.authFailedSubtitle": "Échec de l'authentification — saisissez à nouveau vos identifiants.",
   "credential.connect": "Connecter",
   "conn.categoryFileTransfer": "Transfert de fichiers",
   "conn.categoryContainer": "Conteneur",

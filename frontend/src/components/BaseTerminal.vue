@@ -154,6 +154,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useTerminalMenu } from '../composables/useTerminalMenu'
 import { writeClipboard, readClipboardText } from '../composables/useClipboardWrite'
 import { filterTerminalInput } from '../utils/terminalInputFilter'
+import { isAuthFailureError } from '../utils/authError'
 import { DcsReassembler } from '../utils/dcsReassembler'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -1596,7 +1597,7 @@ onMounted(() => {
   if (props.mode === 'ssh' || props.mode === 'local') {
     retryOnEnter = false
     statusUnsubscribe = Events.On('session:status', (ev) => {
-      const payload = ev.data as { id: string; status: string }
+      const payload = ev.data as { id: string; status: string; errorMessage?: string }
       if (!isActive.value) return
       if (payload.id !== props.sessionId) return
       if (payload.status === 'connected') {
@@ -1613,7 +1614,9 @@ onMounted(() => {
       } else if (payload.status === 'error') {
         retryOnEnter = true
         if (props.onSessionStatus) {
-          props.onSessionStatus(payload.status)
+          // 认证类失败（密码被拒）单独上报，让面板立即弹重新认证对话框，
+          // 而不是让用户按回车再全量重连两次（issue #949）。
+          props.onSessionStatus(isAuthFailureError(payload.errorMessage) ? 'auth_failed' : payload.status)
         }
         terminal?.write('\r\n\x1b[31mConnection failed. Press Enter to retry.\x1b[0m\r\n')
       } else if (payload.status === 'disconnected') {
