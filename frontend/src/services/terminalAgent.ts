@@ -1,5 +1,11 @@
 import { queuedSessionWrite } from '../services/sessionWriter'
-import { getManagedTerminal } from '../services/terminalManager'
+import {
+  getManagedTerminal,
+  isTerminalActive,
+  getMirrorPromptSnapshot,
+  readMirrorScreenFromRow,
+  readMirrorTail,
+} from '../services/terminalManager'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -93,7 +99,46 @@ export interface PromptSnapshot {
 // stripped output used in watchOutput. Returns promptLine '' and startRow -1
 // when unavailable, which disables exact prompt detection and screen-buffer
 // capture for that command (idle heuristic still applies).
+// Last non-blank display line buffered in sessionStore for the session — the
+// freshest view of the terminal that does not depend on the (possibly frozen)
+// xterm buffer. Returns '' when nothing has been buffered yet.
+function lastStoreDisplayLine(sessionId: string): string {
+  const sessionStore = useSessionStore()
+  const total = sessionStore.getChunkCount(sessionId)
+  if (total <= 0) return ''
+  // A handful of chunks is enough: while the shell idles at the prompt, the
+  // last data received IS the prompt line.
+  const tail = sessionStore.getDataFromChunk(sessionId, Math.max(0, total - 32))
+  const lines = toDisplayLines(stripAnsi(tail))
+  let last = lines.length - 1
+  while (last >= 0 && lines[last].trimEnd() === '') last--
+  return last >= 0 ? lines[last].trimEnd() : ''
+}
+
 function capturePromptSnapshot(sessionId: string): PromptSnapshot {
+  // Inactive panel: the xterm buffer is frozen at whatever was on screen when
+  // the panel was deactivated, so the cursor line may not be the prompt.
+  // Derive the prompt from the losslessly buffered stream instead. startRow
+  // stays -1 — screen capture is disabled for inactive terminals anyway.
+  if (!isTerminalActive(sessionId)) {
+    // Preferred: the headless mirror parses the stream continuously, so its
+    // buffer matches what the screen would show — faithful through ConPTY
+    // cursor-positioning redraws that raw text reconstruction cannot undo.
+    const mirror = getMirrorPromptSnapshot(sessionId)
+    if (mirror && mirror.promptLine) {
+      return mirror
+    }
+    if (mirror) {
+      // Mirror exists but the cursor row is blank (e.g. a momentary layout
+      // desync): the stream tail still ends with the shell prompt, so take
+      // the prompt from there while keeping the mirror's screen coordinates.
+      return { promptLine: lastStoreDisplayLine(sessionId), startRow: mirror.startRow }
+    }
+    // No mirror (tests / early teardown): fall back to the buffered stream
+    // tail. startRow stays -1 — screen capture is disabled for inactive
+    // terminals anyway.
+    return { promptLine: lastStoreDisplayLine(sessionId), startRow: -1 }
+  }
   const managed = getManagedTerminal(sessionId)
   const terminal = managed?.terminal
   if (!terminal) return { promptLine: '', startRow: -1 }
@@ -114,6 +159,18 @@ function capturePromptSnapshot(sessionId: string): PromptSnapshot {
 // Returns null when no terminal/buffer is available so callers can fall back
 // to raw-stream reconstruction.
 function readScreenFromRow(sessionId: string, absStartRow: number): string | null {
+  // Inactive panel: the xterm buffer is frozen at the deactivation state (live
+  // session:data writes are gated on component activity and replayed on
+  // reactivation), so the screen cannot reflect the command that just ran.
+  // Report unavailability — callers fall back to the buffered raw stream.
+  if (!isTerminalActive(sessionId)) {
+    // Preferred: the headless mirror's emulator-faithful buffer.
+    const mirrorScreen = readMirrorScreenFromRow(sessionId, absStartRow)
+    if (mirrorScreen !== null) return mirrorScreen
+    // No mirror: the raw stream is the last resort — it cannot undo ConPTY
+    // cursor-positioning redraws, but it never comes back empty.
+    return null
+  }
   const managed = getManagedTerminal(sessionId)
   const terminal = managed?.terminal
   if (!terminal || absStartRow < 0) return null
@@ -285,7 +342,7 @@ export function watchOutput(
       cancelPollId = setTimeout(checkCancel, CANCEL_POLL_MS)
     }
 
-    unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data; 
+    unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
       if (payload.id !== sessionId || resolved) return
 
       output += payload.data
@@ -508,6 +565,25 @@ export interface CaptureResult {
 
 export function captureTerminal(tailLines: number = 200, panelTitle?: string): CaptureResult {
   const { sessionId } = resolveActiveSession(panelTitle)
+
+  // Inactive panel: the xterm screen is frozen at the deactivation state, so
+  // rebuild the tail from the losslessly buffered PTY stream instead. Same
+  // semantics as the screen path: up to tailLines lines, ending at the last
+  // non-blank line.
+  if (!isTerminalActive(sessionId)) {
+    // Preferred: the headless mirror's emulator-faithful buffer.
+    const mirrorTail = readMirrorTail(sessionId, tailLines)
+    if (mirrorTail !== null) return { output: mirrorTail }
+    // No mirror: rebuild from the losslessly buffered PTY stream.
+    const sessionStore = useSessionStore()
+    const total = sessionStore.getChunkCount(sessionId)
+    const tail = total > 0
+      ? sessionStore.getDataFromChunk(sessionId, Math.max(0, total - 2000))
+      : ''
+    const lines = toDisplayLines(stripAnsi(tail))
+    while (lines.length > 0 && lines[lines.length - 1].trimEnd() === '') lines.pop()
+    return { output: lines.slice(Math.max(0, lines.length - tailLines)).join('\n') }
+  }
 
   const managed = getManagedTerminal(sessionId)
   if (!managed || !managed.terminal) {

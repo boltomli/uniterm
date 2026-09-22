@@ -62,8 +62,16 @@ const mockGetManagedTerminal = vi.fn(() => ({
   terminal: makeFakeTerminal(),
   lineOffset: 0,
 }))
+const mockIsTerminalActive = vi.fn(() => true)
+const mockGetMirrorPromptSnapshot = vi.fn(() => null)
+const mockReadMirrorScreenFromRow = vi.fn(() => null)
+const mockReadMirrorTail = vi.fn(() => null)
 vi.mock('../services/terminalManager', () => ({
   getManagedTerminal: (...args: any[]) => mockGetManagedTerminal(...(args as [])),
+  isTerminalActive: (...args: any[]) => mockIsTerminalActive(...(args as [])),
+  getMirrorPromptSnapshot: (...args: any[]) => mockGetMirrorPromptSnapshot(...(args as [])),
+  readMirrorScreenFromRow: (...args: any[]) => mockReadMirrorScreenFromRow(...(args as [])),
+  readMirrorTail: (...args: any[]) => mockReadMirrorTail(...(args as [])),
 }))
 
 // ---- mock pinia stores ----
@@ -97,13 +105,15 @@ vi.mock('../stores/panelStore', () => ({
 const mockGetRemoteOS = vi.fn().mockReturnValue(undefined)
 const mockSessionStore = {
   getRemoteOS: mockGetRemoteOS,
+  getChunkCount: vi.fn(() => 0),
+  getDataFromChunk: vi.fn(() => ''),
 }
 vi.mock('../stores/sessionStore', () => ({
   useSessionStore: vi.fn(() => mockSessionStore),
 }))
 
 // ---- import after mocks ----
-import { watchOutput, executeCommand, truncateOutput, startCommand, sendTerminalKey } from './terminalAgent'
+import { watchOutput, executeCommand, truncateOutput, startCommand, sendTerminalKey, captureTerminal } from './terminalAgent'
 import type { ExecuteResult, WatchResult } from './terminalAgent'
 // ---- helpers ----
 const MOCK_TIMESTAMP = 1700000000000
@@ -637,5 +647,137 @@ describe('sendTerminalKey', () => {
     const result = await p
     expect(result.output).toContain('^C')
     vi.useRealTimers()
+  })
+})
+
+// ---- background (deactivated) terminal fallback ----
+// While a panel sits in the background, BaseTerminal gates live session:data
+// writes on isActive and replays on reactivation — the xterm screen buffer
+// stays frozen at the pre-command state. The AI output path must not read
+// that stale buffer: it falls back to the raw PTY stream, which sessionStore
+// buffers losslessly regardless of visibility.
+describe('background terminal fallback (frozen xterm buffer)', () => {
+  const flush = async () => { await new Promise(r => setTimeout(r, 0)) }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Frozen screen: only the pre-command prompt, no command output.
+    setFakeScreen([PROMPT + ' '])
+    mockIsTerminalActive.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    mockIsTerminalActive.mockReturnValue(true)
+    mockGetMirrorPromptSnapshot.mockReturnValue(null)
+    mockReadMirrorScreenFromRow.mockReturnValue(null)
+    mockReadMirrorTail.mockReturnValue(null)
+  })
+
+  it('executeCommand rebuilds output from the raw stream instead of the frozen screen', async () => {
+    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+    // What actually flowed through the PTY while the panel was in background.
+    const stream = `${PROMPT} echo hi\r\nhi\r\n${PROMPT} `
+    mockSessionStore.getChunkCount.mockReturnValue(4)
+    mockSessionStore.getDataFromChunk.mockReturnValue(stream)
+
+    const pending = executeCommand('echo hi', 5000)
+    await flush()
+    capturedCallback!({ data: fakeData('test-session-id', stream) })
+
+    const result = await pending
+    expect(result.timedOut).toBe(false)
+    expect(result.output).toBe(`${PROMPT} echo hi\nhi`)
+  })
+
+  it('capturePromptSnapshot derives the prompt from the buffered stream when inactive', async () => {
+    // Indirect: exact-prompt completion only fires when the snapshot matches
+    // the stream's final line. A frozen-buffer snapshot of a panel that was
+    // backgrounded mid-command would not contain the prompt at all.
+    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+    const stream = `${PROMPT} sleep 1\r\ndone\r\n${PROMPT} `
+    mockSessionStore.getChunkCount.mockReturnValue(7)
+    mockSessionStore.getDataFromChunk.mockReturnValue(stream)
+
+    const pending = executeCommand('sleep 1', 5000)
+    await flush()
+    capturedCallback!({ data: fakeData('test-session-id', stream) })
+
+    const result = await pending
+    expect(result.timedOut).toBe(false)
+    expect(result.output).toContain('done')
+  })
+
+  it('captureTerminal rebuilds the tail from the buffered stream when inactive', () => {
+    mockSessionStore.getChunkCount.mockReturnValue(10)
+    mockSessionStore.getDataFromChunk.mockReturnValue(`${PROMPT} tail\nline1\nline2\n${PROMPT} `)
+
+    const result = captureTerminal(200)
+    // Raw per-line text is kept verbatim (trailing spaces included), matching
+    // the live screen path's translateToString() semantics.
+    expect(result.output).toBe(`${PROMPT} tail\nline1\nline2\n${PROMPT} `)
+  })
+
+  it('captureTerminal still reads the live screen buffer when active', () => {
+    mockIsTerminalActive.mockReturnValue(true)
+    setFakeScreen([`${PROMPT} cmd`, 'out', `${PROMPT} `])
+
+    const result = captureTerminal(200)
+    expect(result.output).toBe(`${PROMPT} cmd\nout\n${PROMPT} `)
+  })
+})
+
+describe('background terminal headless mirror', () => {
+  const flush = async () => { await new Promise(r => setTimeout(r, 0)) }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setFakeScreen([PROMPT + ' '])
+    mockIsTerminalActive.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    mockIsTerminalActive.mockReturnValue(true)
+    mockGetMirrorPromptSnapshot.mockReturnValue(null)
+    mockReadMirrorScreenFromRow.mockReturnValue(null)
+    mockReadMirrorTail.mockReturnValue(null)
+  })
+
+  it('executeCommand prefers the mirror screen over raw reconstruction when inactive', async () => {
+    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+    // The raw stream carries a prompt redraw glued onto the data row (ConPTY
+    // cursor positioning, stripped by stripAnsi) — raw text reconstruction
+    // collapses that line to the prompt and the data row is lost.
+    const stream = `${PROMPT} echo hi\r\nhi\r${PROMPT} `
+    mockGetMirrorPromptSnapshot.mockReturnValue({ promptLine: PROMPT, startRow: 0 })
+    // The mirror buffer, fully emulator-resolved: what the screen would show.
+    mockReadMirrorScreenFromRow.mockReturnValue([`${PROMPT} echo hi`, 'hi', `${PROMPT} `].join('\n'))
+
+    const pending = executeCommand('echo hi', 5000)
+    await flush()
+    capturedCallback!({ data: fakeData('test-session-id', stream) })
+
+    const result = await pending
+    expect(result.timedOut).toBe(false)
+    // The data row survives — it would be gone under raw reconstruction.
+    expect(result.output).toBe(`${PROMPT} echo hi\nhi`)
+  })
+
+  it('captureTerminal prefers the mirror tail when inactive', () => {
+    mockReadMirrorTail.mockReturnValue(`${PROMPT} cmd\nrow1\nrow2\n${PROMPT} `)
+
+    const result = captureTerminal(200)
+    expect(result.output).toBe(`${PROMPT} cmd\nrow1\nrow2\n${PROMPT} `)
   })
 })
