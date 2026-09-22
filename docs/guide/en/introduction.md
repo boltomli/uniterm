@@ -71,7 +71,7 @@ uniTerm ships with a built-in autonomous AI Agent that can independently plan an
 
 #### Connection Management
 
-Group, search, create, and batch-manage server connections, with frequently used connections **pinned as favorites**. One-click import from Xshell, MobaXterm, DBeaver, Navicat, and more — everything at your fingertips.
+Group, search, create, and batch-manage server connections, with frequently used connections **pinned as favorites**. One-click import from Xshell, MobaXterm, DBeaver, Navicat, virt-viewer (.vv), and more — everything at your fingertips.
 
 #### Keystore & Proxies
 

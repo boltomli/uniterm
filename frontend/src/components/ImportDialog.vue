@@ -16,6 +16,7 @@
           <el-option label="Xshell (.xts)" value="xshell" />
           <el-option label="DBeaver (workspace)" value="dbeaver" />
           <el-option label="Navicat (.ncx)" value="navicat" />
+          <el-option label="virt-viewer (.vv)" value="virtviewer" />
         </el-select>
       </el-form-item>
       <el-form-item v-if="format !== 'openssh' && format !== 'dbeaver'" :label="t('importExport.file')">
@@ -63,6 +64,7 @@ const FILTERS: Record<string, { display: string; pattern: string }> = {
   windterm: { display: 'WindTerm (*.sessions)', pattern: '*.sessions' },
   securecrt: { display: 'SecureCRT (*.xml)', pattern: '*.xml' },
   navicat: { display: 'Navicat (*.ncx)', pattern: '*.ncx' },
+  virtviewer: { display: 'virt-viewer (*.vv)', pattern: '*.vv' },
 }
 
 watch(() => props.visible, (v) => {
