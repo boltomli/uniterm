@@ -174,7 +174,7 @@ func main() {
 		// is exempt. RelaunchApp sets relaunchPending and quits first; the
 		// successor is spawned after Run() returns, with the lock released.
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "uniterm-gui",
+			UniqueID: singleInstanceID,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				showMainWindow(window)
 			},
