@@ -8,21 +8,21 @@
 - Tray: a system tray icon with left-click show/hide and a menu (show window, hide to tray, reset window position, open settings, about, quit), an OS-global show/hide hotkey (default Ctrl+M, configurable in the keyboard settings), and single-instance locking — launching a second instance focuses the running window instead.
 - Workspace overhaul: workspaces are now built by pointing and clicking — an "open in workspace" context-menu entry (multi-select aware) and an empty workspace with a drag-here placeholder; connections dragged onto a panel connect and split at the drop position. A workspace can be dissolved (members return to the tab bar as live tabs, broadcast and AI lock preserved) and saved as a "workspace"-type connection that rebuilds the live workspace on open. Connections can also be dragged onto the tab bar to open a tab at that position.
 - SSH: per-connection algorithm modes — **compatible** (default, full support set with security-leaning ordering), **secure** (modern algorithms only: no SHA-1 exchanges, CBC ciphers or DSA host keys) and **custom** (four editable, ordered preference lists for key exchange, ciphers, MACs and host keys, validated against a closed candidate pool). Compatible mode completes the AES-CBC family (aes192-cbc / aes256-cbc) and prefers plain RSA host keys, so legacy devices and servers with malformed ECDSA P-521 keys still connect; negotiation failures carry mode-specific guidance.
-- SSH: "duplicate channel" — open a new tab as a fresh session channel on the source session's already-authenticated connection: no re-dial, no re-authentication (Xshell-style; handy behind a jump host with 2FA). (@surenwuyuwuqiu)
+- SSH: "duplicate channel" — open a new tab as a fresh session channel on the source session's already-authenticated connection: no re-dial, no re-authentication (handy behind a jump host with 2FA). (@surenwuyuwuqiu)
 - SSH: shell integration (the silent OSC-7 cwd-reporting hook) is now injected by default on new SSH sessions; the per-connection toggle is restored in the SSH form, and enabling "follow terminal path" on a connection without the hook asks for confirmation before typing the command into the running shell.
 - Terminal: sixel and iTerm2 (OSC 1337) image support for remote terminals — images render directly in the terminal.
 - Terminal: remote programs (vim, tmux, multi-hop SSH chains) can write to the local clipboard via OSC 52, and applications can drive a tab progress indicator via OSC 9;4, rendered as a thin bar along the tab's bottom edge (percentage / error / indeterminate / paused).
 - Terminal: the text highlighting engine is rewritten — SGR re-injection is upgraded to overlay highlighting that recolors cells directly in the xterm buffer without touching the output stream, completely fixing cases where highlighting did not take effect and the garbled output caused by injection errors; highlighting also now applies to all terminal types (local, WSL, serial, k8s, container, telnet, SSH) instead of SSH only.
 - Terminal: "reset terminal output" and "clear terminal scrollback" actions in the terminal / tab / panel context menus. Reset wipes the screen and the scrollback history and redraws the prompt (like MobaXterm's screen-cleaning); clear-scrollback drops only the rows above the viewport, leaving the screen and any half-typed command intact. Line numbers restart after either action. (@surenwuyuwuqiu)
 - Terminal search: the first match is anchored at the bottom of the buffer (closest to the prompt) instead of the top of scrollback; Enter searches upward and Shift+Enter downward; the search bar gains case-sensitive, regex and whole-word toggles that persist across open/close.
-- Import: SPICE/VNC `.vv` connection files (the one-shot desktop-session files downloaded from hypervisor VM console pages) can be imported, mapping type, host, port, username and password.
+- Import: SPICE/VNC `.vv` connection files used by Virt-Viewer (the one-shot desktop-session files downloaded from hypervisor VM console pages) can be imported, mapping type, host, port, username and password.
 
 **Improvements**
 - SFTP / SCP transfers are now pipelined — concurrent offset-addressed requests overlap round trips instead of stop-and-wait. A 4 MiB transfer over an 80 ms link drops from ~10.7 s to ~0.6 s (upload) and ~6.1 s to ~1.2 s (download); progress, pause and cancel semantics are unchanged.
 - SFTP / SCP: standalone SFTP and SCP tabs gain an "open terminal" tab-context action, and SSH-derived file tabs gain it too — a file tab can now reach a shell on the same host and vice versa. (@surenwuyuwuqiu)
 - Monitor: the process list now includes every process (previously the top 30 by CPU) with progressive loading as you scroll, so search finds all of them.
 - Monitor: polling is robust against hosts whose script output leaves a variable empty (each numeric field defaults, raw output is logged on parse failure), df is guarded with a timeout so stale NFS mounts cannot wedge the poll loop, the disk list now includes every mounted filesystem (overlay, tmpfs, bind mounts) alongside block devices, and monitor table columns are drag-resizable.
-- Native file pickers now open at a useful directory: the private-key picker starts at ~/.ssh, kubeconfig at ~/.kube, SFTP upload / "download to" at the local pane's directory — and hidden files are shown so dot-directories are reachable.
+- Native file pickers now open at a useful directory: the private-key picker starts at ~/.ssh, kubeconfig at ~/.kube, SFTP upload / "download to" at the local pane's directory — and hidden files are shown so dot-directories are reachable. (@surenwuyuwuqiu)
 - Settings: the settings category sidebar is collapsible (auto-collapses on narrow windows) and setting cards stack vertically below phone widths, so settings are usable on small screens.
 - New settings for the host list menu style (button or right-click only) and tab shortcut hints; the tab tooltip always shows the shortcut.
 - Element-plus scrollbars stay visible and are styled like the native ones (no pointer cursor, instant hover highlight).
@@ -38,7 +38,7 @@
 - Tabs: dragging to reorder no longer steals the selection to the neighbouring tab, and the tab merge drop-zone indicator matches the workspace split style.
 - WSL: sessions start in the distro user's home directory instead of a /mnt/c path under the app's own working directory.
 - Settings: tab shortcut hints and host list menu style persist across restarts (they silently reset before), and the system title bar choice survives a relaunch.
-- Linux: the .desktop launcher path matches the packaged binary, so launching from the application menu works after installing the deb/rpm package.
+- Linux: the .desktop launcher path matches the packaged binary, so launching from the application menu works after installing the deb/rpm package. (@surenwuyuwuqiu)
 - SFTP: the max concurrent transfers setting is shown for standalone SFTP connections (the backend applied it, but the form hid the field).
 - UI: batch fixes — custom window controls stay drawn until the native title bar setting takes effect after a relaunch, the chmod octal input is a plain text field again, multi-file SFTP drags show a drag ghost, and the tab strip end-drop indicator no longer pushes the add button to the far right.
 - SSH: `~` in private key paths is expanded at import and connect time.
@@ -56,21 +56,21 @@ Thanks to @surenwuyuwuqiu and @zhangsir1211 for their contributions to this rele
 - 托盘：新增系统托盘图标，左键单击显示/隐藏窗口，菜单包含 显示窗口、隐藏到托盘、重置窗口位置、打开设置、关于、退出；支持系统级全局显隐快捷键（默认 Ctrl+M，可在键盘设置中修改）；应用单实例锁定——再次启动会唤起已运行的窗口而不是开新进程。
 - 工作区大改版：工作区支持点选创建——右键菜单「在工作区中打开」（支持多选）以及带拖放占位的空工作区；连接拖入面板即连接并按落点位置分屏。工作区可解散（成员以实时终端标签回到标签栏，广播与 AI 锁定保留），也可保存为「工作区」类型连接，再次打开即重建整个工作区。连接还可拖到标签栏的任意位置直接在该处打开标签。
 - SSH：连接级算法模式——**兼容**（默认，完整支持集、安全优先排序）、**安全**（仅现代算法：不含 SHA-1 交换、CBC 密码套件与 DSA 主机密钥）与**自定义**（密钥交换 / 密码套件 / MAC / 主机密钥四组可编辑的有序优先列表，限定封闭候选池）。兼容模式补全 AES-CBC 家族（aes192-cbc / aes256-cbc），并优先使用普通 RSA 主机密钥，老旧设备与 ECDSA P-521 主机密钥异常的服务器也能连上；协商失败时给出按模式定制的提示。
-- SSH：新增「复制通道」——在已认证的源会话连接上开一个新的会话通道：无需重新拨号、无需重新认证（Xshell 风格；经 2FA 跳板机时尤其方便）。（@surenwuyuwuqiu）
+- SSH：新增「复制通道」——在已认证的源会话连接上开一个新的会话通道：无需重新拨号、无需重新认证（经 2FA 跳板机时尤其方便）。（@surenwuyuwuqiu）
 - SSH：Shell 集成（静默注入 OSC-7 cwd 上报钩子）改为默认开启；SSH 表单恢复按连接开关；对未注入钩子的连接，在文件边栏开启「跟随终端路径」时会先确认，再向运行中的 shell 键入命令。
 - 终端：远程终端支持 sixel 与 iTerm2（OSC 1337）图片，图像直接在终端中渲染。
 - 终端：远程程序（vim、tmux、多跳 SSH 链）可通过 OSC 52 写入本地剪贴板；应用可通过 OSC 9;4 驱动标签进度指示，沿标签底边渲染一条细进度条（百分比 / 错误 / 不定进度 / 暂停）。
 - 终端：文本高亮方案重构——SGR 重注入升级为覆盖式高亮，直接对 xterm 缓冲区单元格重新着色，不触碰输出流，彻底解决部分场景高亮不生效以及注入错误导致的乱码问题；同时高亮从仅 SSH 扩展到所有终端类型（本地、WSL、串口、k8s、容器、telnet、SSH）。
 - 终端：终端 / 标签 / 面板右键菜单新增「重置终端输出」与「清空终端回滚」。重置会清空屏幕与回滚历史并重绘提示符（类似 MobaXterm 的清屏）；清空回滚只删除视口上方的行，屏幕与正在输入的命令保持不动。两种操作后行号都从 1 重新开始。（@surenwuyuwuqiu）
 - 终端搜索：首个匹配定位到缓冲区底部（紧邻提示符）而不是回滚区顶部；Enter 向上搜索，Shift+Enter 向下搜索；搜索栏新增 区分大小写、正则、全字匹配 三个开关，开关状态在关闭再打开后保留。
-- 导入：支持导入 SPICE/VNC `.vv` 连接文件（从虚拟化管理台控制台页下载的一次性桌面会话文件），映射类型、主机、端口、用户名与密码。
+- 导入：支持导入 Virt-Viewer 的 SPICE/VNC `.vv` 连接文件（从虚拟化管理台控制台页下载的一次性桌面会话文件），映射类型、主机、端口、用户名与密码。
 
 **改进**
 - SFTP / SCP 传输改为流水线式——并发的按偏移寻址请求重叠往返，替代停止等待。80ms 时延链路上传输 4 MiB：上传从约 10.7s 降到约 0.6s，下载从约 6.1s 降到约 1.2s；进度、暂停与取消语义不变。
 - SFTP / SCP：独立的 SFTP 与 SCP 标签页新增「打开终端」标签右键菜单项，SSH 衍生的文件标签页同样支持——文件页签与同一主机的 shell 互通。（@surenwuyuwuqiu）
 - 监控：进程列表改为全量进程（原先只有 CPU 前 30），随滚动渐进加载，搜索可找到全部进程。
 - 监控：脚本输出变量为空不再导致整个 JSON 失效（数值字段逐一兜底，解析失败时记录原始输出）；df 加了超时保护，陈旧的 NFS 挂载不再卡死轮询；磁盘列表涵盖所有挂载文件系统（overlay、tmpfs、bind 挂载）及块设备；监控表格支持拖拽调整列宽。
-- 原生文件选择器从有用的目录打开：私钥选择器从 ~/.ssh、kubeconfig 从 ~/.kube、SFTP 上传 /「下载到」从本地面板当前目录开始，并显示隐藏文件，点目录可达。
+- 原生文件选择器从有用的目录打开：私钥选择器从 ~/.ssh、kubeconfig 从 ~/.kube、SFTP 上传 /「下载到」从本地面板当前目录开始，并显示隐藏文件，点目录可达。（@surenwuyuwuqiu）
 - 设置：设置分类侧栏可折叠（窄窗口自动折叠），窄屏下设置卡片改为纵向堆叠，小屏幕上设置页也可正常使用。
 - 新增 主机列表菜单样式（按钮或仅右键）与 标签快捷键提示 两个设置；标签 tooltip 始终显示快捷键。
 - Element-plus 滚动条常驻显示，样式与原生滚动条一致（无 pointer 光标、悬停即时高亮）。
@@ -86,7 +86,7 @@ Thanks to @surenwuyuwuqiu and @zhangsir1211 for their contributions to this rele
 - 标签：拖拽排序不再把选中抢到相邻标签；标签合并的落区指示样式与工作区分屏保持一致。
 - WSL：会话从发行版用户的主目录启动，而不是落到应用自身工作目录对应的 /mnt/c 路径。
 - 设置：标签快捷键提示与主机列表菜单样式在重启后保留（此前每次重启静默重置）；系统标题栏选择在重启后生效。
-- Linux：.desktop 启动器路径与安装的二进制一致，安装 deb/rpm 包后可从应用菜单正常启动。
+- Linux：.desktop 启动器路径与安装的二进制一致，安装 deb/rpm 包后可从应用菜单正常启动。（@surenwuyuwuqiu）
 - SFTP：独立 SFTP 连接显示最大并发传输数设置（后端已生效，但表单未显示该字段）。
 - 界面：批量修复——重启后原生标题栏设置生效前保留自绘窗口控件；chmod 八进制输入恢复为纯文本框；SFTP 多文件拖拽显示拖拽幻影；标签栏末尾落区指示不再把新增按钮挤到最右侧。
 - SSH：私钥路径中的 `~` 在导入与连接时展开。
