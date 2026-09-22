@@ -15,7 +15,7 @@
     >
       <div class="panel-header-left">
         <span class="panel-icon-wrapper">
-          <component :is="panelIcon" class="panel-type-icon" />
+          <component :is="panelIcon" class="panel-type-icon" :class="{ 'ai-locked-icon': isAILocked }" />
           <span
             v-if="isOutputLogOn"
             class="panel-log-dot"
@@ -705,16 +705,9 @@ watch(() => props.panel.outputLog, (val) => {
   background: var(--bg-elevated);
   border-bottom-color: var(--accent);
 }
-/* Match the AI-locked tab treatment (issue #909): a warning-tinted header
-   instead of an edge marker. The border is left alone so the active panel's
-   accent underline stays the sole "which panel is focused" signal. */
-.panel-header.ai-locked {
-  background: var(--warning-tab);
-}
-.panel-active .panel-header.ai-locked {
-  background: var(--warning-tab-active);
-  border-bottom-color: var(--accent);
-}
+/* The AI-locked panel header keeps its normal surface (issue #928: an
+   alpha-tinted warning background turns muddy on dark themes); the state is
+   carried by the Sparkles button below, which lights up solid amber. */
 .panel-title {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -750,6 +743,14 @@ watch(() => props.panel.outputLog, (val) => {
 }
 .panel-active .panel-type-icon {
   color: var(--accent);
+}
+/* Locked wins over the active accent: the AI state must stay visible when the
+   panel is focused (mirrors the tab icon treatment). */
+.panel-type-icon.ai-locked-icon {
+  color: var(--warning);
+}
+.panel-active .panel-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .panel-log-dot {
   position: absolute;
