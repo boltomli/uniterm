@@ -23,6 +23,7 @@
       <component
         :is="tab.locked ? Lock : tabIcon"
         class="tab-type-icon"
+        :class="{ 'ai-locked-icon': isAILocked }"
       />
       <span
         v-if="isOutputLogOn"
@@ -741,20 +742,13 @@ onMounted(async () => {
   color: var(--text-primary);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-/* AI-locked tabs carry a warning-tinted background, not an edge marker, so the
-   state reads at a glance (issue #909). The border is left alone: the accent
-   ring stays the sole "which tab is selected" signal. */
-.tab-item.ai-locked {
-  background: var(--warning-tab);
-  color: var(--text-primary);
-}
-.tab-item.ai-locked:hover {
-  background: var(--warning-tab-hover);
-}
-.tab-item.active.ai-locked {
-  background: var(--warning-tab-active);
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--accent);
+/* AI-locked tabs are signalled by the tab icon alone: a solid warning-coloured
+   icon with a soft glow. No surface tint — low-alpha warning colour over the
+   dark background turns muddy (issue #928), and at higher alpha it reads as a
+   flat orange block. The accent ring stays the sole "which tab is selected"
+   signal. */
+.tab-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .tab-name {
   font-size: 0.75rem;
@@ -862,6 +856,11 @@ onMounted(async () => {
 }
 .tab-item.active .tab-type-icon {
   color: var(--accent);
+}
+/* Locked wins over the active accent: the AI state must stay visible when the
+   tab is selected. */
+.tab-item.active .tab-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .transfer-indicator {
   color: var(--accent);
