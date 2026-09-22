@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "Regular expression",
   "terminal.searchWholeWord": "Whole word",
   "terminal.export": "Export to Text",
+  "terminal.resetOutput": "Reset Terminal Output",
+  "terminal.clearScrollback": "Clear Scrollback",
   "terminal.aiTranscribing": "AI transcribing...",
   "terminal.aiTranscribeFailed": "AI transcription failed",
   "terminal.suggestionHistory": "History",

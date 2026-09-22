@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "正規表現",
   "terminal.searchWholeWord": "単語単位",
   "terminal.export": "テキストに書き出す",
+  "terminal.resetOutput": "端末の出力をリセット",
+  "terminal.clearScrollback": "スクロールバックを消去",
   "terminal.aiTranscribing": "AI 文字起こし...",
   "terminal.aiTranscribeFailed": "AI 文字起こし失敗",
   "terminal.suggestionHistory": "履歴",

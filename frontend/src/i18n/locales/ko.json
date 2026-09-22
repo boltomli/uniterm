@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "정규식",
   "terminal.searchWholeWord": "단어 단위",
   "terminal.export": "텍스트로 내보내기",
+  "terminal.resetOutput": "터미널 출력 재설정",
+  "terminal.clearScrollback": "스크롤백 지우기",
   "terminal.aiTranscribing": "AI 트랜스크라이빙...",
   "terminal.aiTranscribeFailed": "AI 트랜스크라이빙 실패",
   "terminal.suggestionHistory": "기록",

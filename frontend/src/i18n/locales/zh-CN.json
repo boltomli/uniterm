@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "正则表达式",
   "terminal.searchWholeWord": "全字匹配",
   "terminal.export": "导出内容到文本",
+  "terminal.resetOutput": "清空终端输出",
+  "terminal.clearScrollback": "清除滚动缓冲",
   "terminal.aiTranscribing": "AI 转写...",
   "terminal.aiTranscribeFailed": "AI 转写失败",
   "terminal.suggestionHistory": "历史",
