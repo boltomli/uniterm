@@ -452,6 +452,11 @@ function onSessionStatus(status: string) {
   if (status === 'retry') {
     // Manual retry — user pressed Enter
     retryConnection()
+  } else if (status === 'auth_failed') {
+    // Issue #949: credentials were rejected — re-open the credential dialog
+    // right away instead of making the user press Enter through two full
+    // reconnect attempts before it appears.
+    repromptCredentials()
   } else if (status === 'connected') {
     retryAttempt = 0
   }
@@ -460,6 +465,29 @@ function onSessionStatus(status: string) {
   // That raced the "Press Enter to restart" prompt and left users unable to
   // tell a dead shell from a live one, so a dead local shell now just waits
   // for Enter like every other session type.
+}
+
+// Password-auth SSH-family sessions: prompt for fresh credentials on an auth
+// rejection. Key/identity authTypes are excluded — a new user/password pair
+// cannot fix a rejected key, passphrase or identity-store reference.
+async function repromptCredentials() {
+  const config = props.panel.config
+  if (!config) return
+  const credTypes = ['ssh', 'mosh', 'sftp', 'scp', 'ftp', 'telnet']
+  if (!credTypes.includes(props.panel.type)) return
+  if (['key', 'keyText', 'kerberos', 'agent', 'identity'].includes(config.authType)) return
+  const result = await showCredentialDialog(
+    t('credential.title'),
+    t('credential.authFailedSubtitle'),
+    ['user', 'password'],
+    config.user || '',
+    ''
+  )
+  if (!result) return
+  config.user = result.user || config.user
+  config.password = result.password
+  retryAttempt = 0
+  await retryConnection()
 }
 
 async function retryConnection() {

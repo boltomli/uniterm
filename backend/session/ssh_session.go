@@ -133,6 +133,70 @@ func NewSSHSession(id string) *SSHSession {
 	}
 }
 
+// keyboardInteractiveChallenge builds the keyboard-interactive callback used
+// during the SSH handshake. Saved password-only challenges are auto-answered
+// once (see isSavedPasswordChallenge); every other challenge is prompted in
+// the terminal and read from authAnswerCh. When the server re-challenges —
+// meaning the previous answer was rejected — a denial line precedes the new
+// prompt (matching the OpenSSH client) so the user is not left staring at a
+// silent re-prompt while the server's auth-fail delay runs (issue #949).
+func (s *SSHSession) keyboardInteractiveChallenge(config ConnectionConfig, autoAnswered *int32) ssh.KeyboardInteractiveChallenge {
+	challenged := false
+	return func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+		defer func() { challenged = true }()
+		if isSavedPasswordChallenge(config, questions, echos) && atomic.CompareAndSwapInt32(autoAnswered, 0, 1) {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				answers[i] = config.Password
+			}
+			return answers, nil
+		}
+		answers := make([]string, len(questions))
+		if challenged {
+			s.emitData([]byte("\r\nPermission denied, please try again."))
+		}
+		for i, q := range questions {
+			s.emitData([]byte("\r\n" + q + " "))
+			var answer string
+		loop:
+			for {
+				select {
+				case data := <-s.authAnswerCh:
+					for _, b := range data {
+						switch b {
+						case '\r', '\n':
+							break loop
+						case '\x03':
+							s.emitData([]byte("^C\r\n"))
+							return nil, fmt.Errorf("auth cancelled")
+						case 127, '\b':
+							if len(answer) > 0 {
+								answer = answer[:len(answer)-1]
+								if echos[i] {
+									s.emitData([]byte("\b \b"))
+								}
+							}
+						case '\x15': // Ctrl+U
+							answer = ""
+						default:
+							answer += string(b)
+							if echos[i] {
+								s.emitData([]byte{b})
+							}
+						}
+					}
+				case <-time.After(120 * time.Second):
+					s.emitData([]byte("\r\nAuth timeout\r\n"))
+					return nil, fmt.Errorf("auth timeout")
+				}
+			}
+			s.emitData([]byte("\r\n"))
+			answers[i] = answer
+		}
+		return answers, nil
+	}
+}
+
 // NewSSHChannelSession creates a session that opens a fresh channel on the
 // source session's already-authenticated client (no re-auth, no 2FA prompt —
 // issue #983). The clone inherits the detected remoteOS. The source must be
@@ -251,55 +315,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	// and we fall through to interactive prompting so the user can type the
 	// correct one.
 	var kbAutoAnswered int32
-	kbCallback := func(user, instruction string, questions []string, echos []bool) ([]string, error) {
-		if isSavedPasswordChallenge(config, questions, echos) && atomic.CompareAndSwapInt32(&kbAutoAnswered, 0, 1) {
-			answers := make([]string, len(questions))
-			for i := range questions {
-				answers[i] = config.Password
-			}
-			return answers, nil
-		}
-		answers := make([]string, len(questions))
-		for i, q := range questions {
-			s.emitData([]byte("\r\n" + q + " "))
-			var answer string
-		loop:
-			for {
-				select {
-				case data := <-s.authAnswerCh:
-					for _, b := range data {
-						switch b {
-						case '\r', '\n':
-							break loop
-						case '\x03':
-							s.emitData([]byte("^C\r\n"))
-							return nil, fmt.Errorf("auth cancelled")
-						case 127, '\b':
-							if len(answer) > 0 {
-								answer = answer[:len(answer)-1]
-								if echos[i] {
-									s.emitData([]byte("\b \b"))
-								}
-							}
-						case '\x15': // Ctrl+U
-							answer = ""
-						default:
-							answer += string(b)
-							if echos[i] {
-								s.emitData([]byte{b})
-							}
-						}
-					}
-				case <-time.After(120 * time.Second):
-					s.emitData([]byte("\r\nAuth timeout\r\n"))
-					return nil, fmt.Errorf("auth timeout")
-				}
-			}
-			s.emitData([]byte("\r\n"))
-			answers[i] = answer
-		}
-		return answers, nil
-	}
+	kbCallback := s.keyboardInteractiveChallenge(config, &kbAutoAnswered)
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
@@ -316,16 +332,20 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 			}, cleanup, nil
 		}
 	}
-	var keyboardConfig sshClientConfigFactory
+	// Keyboard-interactive rides the first handshake; the fallback (for
+	// servers that cold-reject it) drops it. Kerberos must report its own
+	// errors instead of silently falling through to a password prompt.
+	var authConfig sshClientConfigFactory
 	if config.AuthType != "kerberos" {
-		keyboardConfig = newConfig(kbCallback)
+		authConfig = newConfig(kbCallback)
 	}
+	fallbackConfig := newConfig(nil)
 	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		s.setStatus(StatusError)
 		return err
 	}
-	client, err := dialSSHWithAuthRetry(addr, sets, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	client, err := dialSSHWithAuthRetry(addr, sets, authConfig, fallbackConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {

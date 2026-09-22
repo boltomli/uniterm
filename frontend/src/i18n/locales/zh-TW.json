@@ -1061,6 +1061,7 @@
   "credential.title": "憑證補全",
   "credential.tunnelTitle": "SSH隧道 - 憑證補全",
   "credential.tunnelSubtitle": "隧道連線: {name}",
+  "credential.authFailedSubtitle": "認證失敗，請重新輸入憑證",
   "credential.connect": "連線",
   "conn.categoryFileTransfer": "檔案傳輸",
   "conn.categoryContainer": "容器",

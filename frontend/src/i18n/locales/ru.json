@@ -1061,6 +1061,7 @@
   "credential.title": "Требуются учетные данные",
   "credential.tunnelTitle": "SSH-туннель – требуются учетные данные",
   "credential.tunnelSubtitle": "Туннель: {name}",
+  "credential.authFailedSubtitle": "Ошибка аутентификации — введите учётные данные заново.",
   "credential.connect": "Подключиться",
   "conn.categoryFileTransfer": "Передача файлов",
   "conn.categoryContainer": "Контейнер",

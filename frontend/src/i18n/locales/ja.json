@@ -1061,6 +1061,7 @@
   "credential.title": "認証情報が必要です",
   "credential.tunnelTitle": "SSHトンネル - 認証情報が必要です",
   "credential.tunnelSubtitle": "トンネル: {name}",
+  "credential.authFailedSubtitle": "認証に失敗しました。資格情報を再入力してください。",
   "credential.connect": "接続",
   "conn.categoryFileTransfer": "ファイル転送",
   "conn.categoryContainer": "コンテナ",
