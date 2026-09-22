@@ -1849,14 +1849,6 @@ func (a *App) GetAllFonts() ([]platform.FontInfo, error) {
 	return platform.GetAllFonts()
 }
 
-func (a *App) OnConnectionsChanged(callback func(session.ConnectionStoreData)) {
-	a.app.Event.On("store:connections:changed", func(e *application.CustomEvent) {
-		if data, ok := e.Data.(session.ConnectionStoreData); ok {
-			callback(data)
-		}
-	})
-}
-
 type AppInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
