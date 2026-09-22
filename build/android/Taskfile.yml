@@ -10,12 +10,13 @@ vars:
   # Release version injected into the binary via -ldflags "-X main.Version=...".
   # Empty for dev builds (main.Version stays "dev").
   VERSION: '{{.VERSION | default ""}}'
-  # The emulator runs the host architecture; physical devices are arm64
-  HOST_ARCH:
-    sh: '[ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64"'
+  # The emulator runs the host architecture; physical devices are arm64.
+  # Derived from the Go runtime via the ARCH template func — `uname` does not
+  # exist on stock Windows, and these globals are evaluated on every
+  # `wails3 build`, which printed a lookup error on each run.
+  HOST_ARCH: '{{ARCH}}'
   # System-image ABI for the host, used in the "create an AVD" hint below.
-  ANDROID_ABI:
-    sh: '[ "$(uname -m)" = "arm64" ] && echo "arm64-v8a" || echo "x86_64"'
+  ANDROID_ABI: '{{if eq (ARCH) "arm64"}}arm64-v8a{{else}}x86_64{{end}}'
   # SDK location: $ANDROID_HOME / $ANDROID_SDK_ROOT, else the per-OS default
   # (macOS: ~/Library/Android/sdk, Linux/other: ~/Android/Sdk)
   SDK_ROOT:
