@@ -167,6 +167,7 @@ import {
   getManagedTerminal,
   transferTerminal,
   bumpOnDataGeneration,
+  markTerminalActive,
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
@@ -1164,6 +1165,11 @@ onMounted(() => {
   // Acquire shared terminal from manager (or create if first mount)
   const opts = getTerminalOptions()
   terminal = acquireTerminal(props.sessionId || '', terminalInstanceRef, opts, settingsStore.settings.customTerminalThemes)
+  // Publish component activity to the terminal manager: screen-buffer readers
+  // (AI output capture, prompt snapshots) must only trust the buffer while at
+  // least one visible component drives it — a deactivated panel's buffer is
+  // frozen because the live session:data handler below gates on isActive.
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, true)
   // Keyword highlighting scans the parsed buffer and overlays decorations;
   // the enable switch is re-read on every refresh, so toggling the setting
   // takes effect live. Applies to every terminal type.
@@ -1493,7 +1499,7 @@ onMounted(() => {
   document.addEventListener('auxclick', onTerminalAuxClick)
 
   // Session data
-  unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data; 
+  unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
     if (!isActive.value) {
       // Mark notification dot on the tab when inactive terminal receives output
       // Only process events for this instance's session (events are global)
@@ -1761,6 +1767,7 @@ onActivated(() => {
   // Component restored from KeepAlive cache.
 
   nativeDrop.bind()
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, true)
 
   // Replay session data that arrived while deactivated BEFORE
   // setting isActive = true. The session:data handler gates on
@@ -1835,6 +1842,9 @@ onDeactivated(() => {
   // Mark inactive so session event handlers become no-ops.
   nativeDrop.unbind()
   isActive.value = false
+  // Buffer freezes from here (live session:data handler gates on isActive) —
+  // publish it so buffer readers stop trusting the screen.
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
   // Reset IME composition state so the OS IME doesn't continue feeding
   // characters into the textarea while the terminal is hidden. Without
   // this, the stale composition state causes input duplication when the
@@ -1871,10 +1881,16 @@ watch(() => props.sessionId, (newId, oldId) => {
   if (oldId && oldId !== newId) {
     if (terminalRef.value) detachTerminal(oldId, terminalRef.value)
     disposeZmodemService(oldId)
+    // Publish the active state before/after the terminal object moves between
+    // session ids: transferTerminal relocates the whole ManagedTerminal
+    // (activeRefs travel with it), so the old id must drop the ref first and
+    // the new id re-add it after.
+    markTerminalActive(oldId, terminalInstanceRef, false)
     // Transfer the terminal to the new sessionId so scrollback is
     // preserved across reconnects. releaseTerminal is intentionally
     // skipped — we want to keep the same terminal instance alive.
     if (newId) transferTerminal(oldId, newId)
+    markTerminalActive(newId || '', terminalInstanceRef, true)
   }
   // Reset write tracking when session changes so onActivated replay
   // starts from the correct offset for the new session.
@@ -2074,6 +2090,7 @@ onBeforeUnmount(() => {
   if (props.sessionId && terminalRef.value) {
     detachTerminal(props.sessionId, terminalRef.value)
   }
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
 })
 
 onUnmounted(() => {
