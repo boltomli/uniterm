@@ -14,6 +14,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 type MoshSession struct {
@@ -61,11 +63,12 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	clientConfig := &ssh.ClientConfig{
 		User:            config.User,
 		Auth:            authMethods,
 		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 		Config:          sshAlgorithms(),
 	}
 
@@ -82,6 +85,9 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("mosh ssh handshake: %w", err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
+	if trust != nil && trust.FirstTrust {
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+	}
 
 	key, udpPort, err := startMoshServer(client)
 	if err != nil {

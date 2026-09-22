@@ -229,6 +229,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	}
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -239,7 +240,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 				User:            config.User,
 				Auth:            authMethods,
 				Timeout:         30 * time.Second,
-				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+				HostKeyCallback: cb,
 			}, cleanup, nil
 		}
 	}
@@ -253,6 +254,9 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	if err != nil {
 		s.setStatus(StatusError)
 		return err
+	}
+	if trust != nil && trust.FirstTrust {
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	// Detect Windows OpenSSH from the server identification string exchanged

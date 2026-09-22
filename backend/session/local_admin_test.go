@@ -45,6 +45,54 @@ func TestShellNameAdminSuffix(t *testing.T) {
 	}
 }
 
+// TestElevatedShellBaseAndAllowlist pins the broker's executable allowlist:
+// parse the first token of the spawn command line, then allow only known
+// shell executables to run elevated.
+func TestElevatedShellBaseAndAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmdline string
+		wantBase      string
+		wantAllowed   bool
+	}{
+		{"quoted system32 cmd", `"C:\Windows\System32\cmd.exe" /k echo hi`, "cmd.exe", true},
+		{"unquoted wsl", "wsl.exe -d Ubuntu --cd ~", "wsl.exe", true},
+		{"unquoted powershell", "powershell.exe -NoExit", "powershell.exe", true},
+		{"forward slash path", "C:/Tools/pwsh.exe -NoLogo", "pwsh.exe", true},
+		{"disallowed executable", `C:\evil\bad.exe`, "bad.exe", false},
+		{"empty", "", "", false},
+		{"quotes only", `""`, "", false},
+		{"unclosed quote", `"C:\Windows\System32\cmd.exe`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := elevatedShellBase(tc.cmdline)
+			if got != tc.wantBase {
+				t.Fatalf("elevatedShellBase(%q) = %q, want %q", tc.cmdline, got, tc.wantBase)
+			}
+			if allowed := isAllowedElevatedShell(got); allowed != tc.wantAllowed {
+				t.Fatalf("isAllowedElevatedShell(%q) = %v, want %v", got, allowed, tc.wantAllowed)
+			}
+		})
+	}
+}
+
+// TestIsAllowedElevatedShell covers set membership directly, including the
+// case-insensitive comparison (Windows file names are case-insensitive).
+func TestIsAllowedElevatedShell(t *testing.T) {
+	for _, tc := range []struct {
+		base string
+		want bool
+	}{
+		{"cmd.exe", true},
+		{"netcat.exe", false},
+		{"CMD.EXE", true},
+		{"", false},
+	} {
+		if got := isAllowedElevatedShell(tc.base); got != tc.want {
+			t.Errorf("isAllowedElevatedShell(%q) = %v, want %v", tc.base, got, tc.want)
+		}
+	}
+}
+
 // TestAdminPtyBrokerRelay drives the full broker protocol in-process, without
 // elevation: the test plays the app side (pipe server, spawn frame, adminPty)
 // while serveLocalPtyBroker runs in a goroutine playing the broker.

@@ -25,10 +25,18 @@ export function sanitizeRenderedHtml(html: string): string {
   // matches a quoted value so URLs like href="/online=1" stay intact.
   html = html.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
   html = html.replace(/\/on[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '')
-  // Strip javascript:/data:/vbscript: URL schemes in href/src.
+  // Strip javascript:/data:/vbscript: URL schemes in href/src. The value is
+  // normalized before testing: HTML URL parsing drops tab/newline/formfeed
+  // anywhere in the URL, so `java\tscript:` would execute in a browser even
+  // though the literal scheme never appears. Safe values are returned
+  // byte-identical (the original match).
   html = html.replace(
-    /\s+(href|src|action|formaction|xlink:href)\s*=\s*("\s*(?:javascript|data|vbscript):[^"]*"|'\s*(?:javascript|data|vbscript):[^']*'|(?:javascript|data|vbscript):[^\s>]+)/gi,
-    '',
+    /\s+(href|src|action|formaction|xlink:href)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (match: string, _attr: string, _raw: string, dq?: string, sq?: string, unquoted?: string) => {
+      const value = dq ?? sq ?? unquoted ?? ''
+      const normalized = value.replace(/[\t\n\r\f]/g, '').replace(/^\s+/, '')
+      return /^(javascript|data|vbscript):/i.test(normalized) ? '' : match
+    },
   )
   return html
 }

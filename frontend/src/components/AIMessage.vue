@@ -405,9 +405,9 @@ function renderMarkdown(text: string): string {
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>')
   html = html.replace(/~~(.+?)~~/g, '<del>$1</del>')
   // Images (must be before links so ![ doesn't get partially matched)
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1">')
+  html = html.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1">')
   // Markdown links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
   // Auto-link raw URLs (after markdown links/images, only in text outside HTML tags)
   html = autoLinkUrls(html)
 

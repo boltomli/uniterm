@@ -82,3 +82,53 @@ describe('markdown pipeline attribute-breakout hardening (FE-01 follow-up)', () 
     expect(out).toContain('href="https://example.com/a?b=1"')
   })
 })
+
+describe('sanitizeRenderedHtml (whitespace-obfuscated URL schemes)', () => {
+  // HTML URL parsing strips tab/newline/formfeed inside the href value, so
+  // `java\tscript:` reaches the browser as `javascript:`. The sanitizer must
+  // remove the whole attribute, not just the scheme literal.
+
+  it('strips href whose scheme is tab-obfuscated', () => {
+    const out = sanitizeRenderedHtml('<a href="java\tscript:alert(1)">x</a>')
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toContain('java\tscript')
+    expect(out).toContain('>x</a>')
+  })
+
+  it('strips href whose scheme is newline-obfuscated', () => {
+    const out = sanitizeRenderedHtml('<a href="java\nscript:alert(1)">x</a>')
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toContain('java\nscript')
+  })
+
+  it('strips single-quoted href whose scheme is newline-obfuscated', () => {
+    const out = sanitizeRenderedHtml("<a href='java\nscript:alert(1)'>x</a>")
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toContain('java\nscript')
+  })
+
+  it('strips src whose scheme is newline-obfuscated data:', () => {
+    const out = sanitizeRenderedHtml('<img src="da\nta:text/html;base64,PHNjcmlwdD4=">')
+    expect(out).not.toMatch(/src/i)
+    expect(out).not.toContain('da\nta:')
+  })
+
+  it('strips scheme regardless of letter case', () => {
+    const out = sanitizeRenderedHtml('<a href="JaVa\tScRiPt:alert(1)">x</a>')
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toContain('JaVa\tScRiPt')
+  })
+
+  it('leaves safe quoted hrefs byte-identical (positive control)', () => {
+    const safe = '<a href="https://x/a?b=1" target="_blank">x</a>'
+    expect(sanitizeRenderedHtml(safe)).toBe(safe)
+    const path = '<a href="/online=1">x</a>'
+    expect(sanitizeRenderedHtml(path)).toBe(path)
+  })
+
+  it('still strips unquoted javascript: href', () => {
+    const out = sanitizeRenderedHtml('<a href=javascript:alert(1)>x</a>')
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toMatch(/javascript:/i)
+  })
+})

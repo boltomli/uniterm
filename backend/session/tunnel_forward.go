@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 // ConnResolver resolves a saved SSH connection by its ID. app.go supplies one
@@ -246,11 +248,12 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("dial %s: %w", addr, err)
 		}
 
+		cb, trust := NewHostKeyVerifier(addr)
 		clientConfig := &ssh.ClientConfig{
 			User:            cfg.User,
 			Auth:            authMethods,
 			Timeout:         30 * time.Second,
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			HostKeyCallback: cb,
 			Config:          sshAlgorithms(),
 		}
 		sshConn, chans, reqs, err := ssh.NewClientConn(raw, addr, clientConfig)
@@ -261,6 +264,9 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
 		}
 		client := ssh.NewClient(sshConn, chans, reqs)
+		if trust != nil && trust.FirstTrust {
+			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		}
 		clients = append(clients, client)
 		prev = client
 	}

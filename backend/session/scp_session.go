@@ -70,19 +70,23 @@ func (s *SCPSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 
+	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	clientConfig := &ssh.ClientConfig{
 		User:            config.User,
 		Auth:            authMethods,
 		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 		Config:          sshAlgorithms(),
 	}
 
-	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	client, err := dialSSHTCP(addr, clientConfig, config.Proxy)
 	if err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("ssh dial: %w", err)
+	}
+	if trust != nil && trust.FirstTrust {
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	go func() {

@@ -5,6 +5,7 @@ package session
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,10 +59,12 @@ func TestApplyLsEnrichment(t *testing.T) {
 	}
 }
 
-// The batched "which symlinks point at directories" probe script. It must be
-// free of shell variables: wsl.exe re-quotes argv inside double quotes, so
-// $n/$p/$((...)) would be expanded to nothing by the login shell before sh
-// ever sees the script (this broke the dir detection in production once).
+// The batched "which symlinks point at directories" probe script, delivered
+// to sh over stdin (wslShStdin): each path stays inside shellEscape's single
+// quotes, which is exactly what the executing sh sees — no login-shell
+// re-parse of argv can make a $(...) in a path run or single quotes literal.
+// (The old argv form expanded shell variables to nothing and broke dir
+// detection in production once.)
 func TestTestDirScript(t *testing.T) {
 	got := testDirScript([]string{"/a b", "/c'd"})
 	want := "if [ -d '/a b' ]; then echo '1 d'; fi; if [ -d '/c'\\''d' ]; then echo '2 d'; fi"
@@ -80,6 +83,35 @@ func TestReadlinkFollowScript(t *testing.T) {
 	want := "readlink '/tmp/my link' >/dev/null && readlink -f '/tmp/my link'"
 	if got != want {
 		t.Errorf("readlinkFollowScript = %q, want %q", got, want)
+	}
+}
+
+// Every script that travels to sh over stdin (wslShStdin) must keep a
+// command-substitution/quote-laden path inside ONE single-quoted token —
+// stdin delivery means that quoting is what actually executes, so a
+// `$(reboot)` payload in a filename can never run.
+func TestWslStdinScriptsQuotePayloadPaths(t *testing.T) {
+	p := `/tmp/x $(reboot) "p"`
+
+	if got, want := testDirScript([]string{p}),
+		`if [ -d '/tmp/x $(reboot) "p"' ]; then echo '1 d'; fi`; got != want {
+		t.Errorf("testDirScript = %q, want %q", got, want)
+	}
+	if got, want := readlinkFollowScript(p),
+		`readlink '/tmp/x $(reboot) "p"' >/dev/null && readlink -f '/tmp/x $(reboot) "p"'`; got != want {
+		t.Errorf("readlinkFollowScript = %q, want %q", got, want)
+	}
+
+	cmd := wslSymlinkCmd("Ubuntu", p, `/tmp/li'nk`)
+	if script, err := io.ReadAll(cmd.Stdin); err != nil {
+		t.Fatalf("read wslSymlinkCmd stdin: %v", err)
+	} else if got, want := string(script),
+		`ln -s '/tmp/x $(reboot) "p"' '/tmp/li'\''nk'`; got != want {
+		t.Errorf("wslSymlinkCmd stdin = %q, want %q", got, want)
+	}
+	wantArgs := []string{"wsl.exe", "-d", "Ubuntu", "--", "sh"}
+	if !reflect.DeepEqual(cmd.Args, wantArgs) {
+		t.Errorf("wslSymlinkCmd args = %v, want %v", cmd.Args, wantArgs)
 	}
 }
 
@@ -426,12 +458,19 @@ func TestWSLMidPathLinkHealing(t *testing.T) {
 }
 
 // The wsl.exe invocation that creates a symbolic link inside the distro (the
-// wsl.localhost UNC share cannot create Linux links).
+// wsl.localhost UNC share cannot create Linux links). The ln command rides
+// stdin as a single-quoted script — passed as argv the paths would be
+// re-parsed by the login shell behind wsl.exe.
 func TestWSLSymlinkCmd(t *testing.T) {
 	cmd := wslSymlinkCmd("Ubuntu-22.04", "/home/u/target", "/home/u/link")
-	want := []string{"wsl.exe", "-d", "Ubuntu-22.04", "--", "ln", "-s", "/home/u/target", "/home/u/link"}
+	want := []string{"wsl.exe", "-d", "Ubuntu-22.04", "--", "sh"}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Errorf("wslSymlinkCmd args = %v, want %v", cmd.Args, want)
+	}
+	if script, err := io.ReadAll(cmd.Stdin); err != nil {
+		t.Fatalf("read wslSymlinkCmd stdin: %v", err)
+	} else if got, want := string(script), `ln -s '/home/u/target' '/home/u/link'`; got != want {
+		t.Errorf("wslSymlinkCmd stdin = %q, want %q", got, want)
 	}
 }
 

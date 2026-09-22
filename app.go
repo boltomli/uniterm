@@ -234,6 +234,10 @@ func (a *App) initStores(dataDir string, upgrade bool) {
 	// Point clink:// local shells at the app data dir (they drop a tuned
 	// clink profile next to the stores; see backend/session/local_clink.go).
 	session.SetClinkProfileDir(filepath.Join(dataDir, "clink"))
+	// Trust-on-first-use host-key store lives next to the other stores;
+	// until this runs, session dials stay in legacy accept-all mode (see
+	// backend/session/knownhosts.go).
+	session.ConfigureKnownHosts(filepath.Join(dataDir, "known_hosts.json"))
 
 	cs, err := store.NewConnectionStore(dataDir)
 	if err != nil {
@@ -794,6 +798,10 @@ func (a *App) ApplyImport(data session.ConnectionStoreData) error {
 	if err != nil {
 		return err
 	}
+	// An imported file is an untrusted boundary: strip the fields that would
+	// execute without further confirmation (post-login script/steps, X11
+	// custom command) before they merge into the store.
+	importer.SanitizeImported(&data)
 	merged := importer.MergeImported(existing, data)
 	return a.SaveConnections(merged)
 }

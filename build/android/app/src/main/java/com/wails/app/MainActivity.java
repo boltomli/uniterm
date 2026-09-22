@@ -115,6 +115,44 @@ public class MainActivity extends AppCompatActivity {
         loadApplication();
     }
 
+    /**
+     * True only for the trusted app origin (https://wails.localhost, served by
+     * WebViewAssetLoader) and the initial about:blank. Scheme and host must
+     * match exactly — a plain startsWith would also admit lookalikes such as
+     * "https://wails.localhost.evil.example".
+     */
+    private boolean isAppOrigin(String url) {
+        if (url == null) return false;
+        if ("about:blank".equals(url)) return true;
+        Uri uri = Uri.parse(url);
+        return WAILS_SCHEME.equals(uri.getScheme()) && WAILS_HOST.equals(uri.getHost());
+    }
+
+    /**
+     * Single navigation gate shared by both shouldOverrideUrlLoading overloads.
+     * Threat: an external origin loaded in this WebView runs while the
+     * addJavascriptInterface bridge is attached, so the page would inherit the
+     * full Go binding surface — binding takeover. Only the app origin may load
+     * in-webview; every other URL is handed to the system browser instead.
+     *
+     * @return true if the WebView must NOT load the URL
+     */
+    private boolean shouldOverrideNavigation(String url) {
+        if (isAppOrigin(url)) return false;
+        if (url != null) {
+            try {
+                Uri uri = Uri.parse(url);
+                if (uri.getScheme() != null) {
+                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                }
+            } catch (android.content.ActivityNotFoundException e) {
+                // No app can handle this scheme — drop the navigation entirely.
+                if (DEBUG) Log.d(TAG, "No handler for external URL: " + url);
+            }
+        }
+        return true;
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
         webView = findViewById(R.id.webview);
@@ -201,6 +239,21 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 return super.shouldInterceptRequest(view, request);
+            }
+
+            // Origin lock: external origin in-webview + addJavascriptInterface
+            // = Go-binding takeover (see shouldOverrideNavigation). Both
+            // overloads delegate to the same gate — API 24+ passes a
+            // WebResourceRequest, minSdk 21 still reaches the String variant.
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return shouldOverrideNavigation(request.getUrl().toString());
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return shouldOverrideNavigation(url);
             }
 
             @Override

@@ -7,6 +7,9 @@ vars:
   APP_ID: '{{.APP_ID | default "com.wails.app"}}'
   MIN_SDK: '21'
   TARGET_SDK: '35'
+  # Release version injected into the binary via -ldflags "-X main.Version=...".
+  # Empty for dev builds (main.Version stays "dev").
+  VERSION: '{{.VERSION | default ""}}'
   # The emulator runs the host architecture; physical devices are arm64
   HOST_ARCH:
     sh: '[ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64"'
@@ -51,8 +54,9 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default .HOST_ARCH}}'
+          VERSION: '{{.VERSION}}'
     vars:
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s{{if .VERSION}} -X main.Version={{.VERSION}}{{end}}"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
       PRODUCTION: '{{.PRODUCTION | default "false"}}'
 
@@ -111,7 +115,7 @@ tasks:
         go build -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
-      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
+      BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s{{if .VERSION}} -X main.Version={{.VERSION}}{{end}}"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
   compile:go:all-archs:
     summary: Compile Go code for all Android architectures (fat APK)

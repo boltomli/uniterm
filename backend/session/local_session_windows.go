@@ -203,10 +203,6 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	isMSYSBash := false
 
 	if distro, ok := parseWSLPath(shell); ok {
-		if distro == "" {
-			s.setStatus(StatusError)
-			return fmt.Errorf("empty WSL distribution name")
-		}
 		// Shell integration: probe the distro's shell and inject an OSC-7
 		// cwd hook. Any failure or timeout degrades silently to a plain
 		// `wsl.exe -d <distro>` — integration must never fail the session.
@@ -218,6 +214,13 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		commandLine = "wsl.exe " + strings.Join(wslArgs, " ")
 		cmd = exec.Command("wsl.exe", wslArgs...)
 		cmd.Env = os.Environ()
+	} else if strings.HasPrefix(strings.ToLower(shell), "wsl://") {
+		// The wsl:// prefix is there but parseWSLPath rejected the distro
+		// name: empty, or carrying shell metacharacters ($, backticks,
+		// quotes, backslashes) that the login shell behind wsl.exe would
+		// re-parse (see validWSLDistroName).
+		s.setStatus(StatusError)
+		return fmt.Errorf("empty or invalid WSL distribution name")
 	} else if clinkExe != "" {
 		// Tabby-style clink injection: cmd.exe /k <clink> inject --profile
 		// <dir>, started through ConPTY (clink's DLL injection needs the
@@ -347,7 +350,25 @@ func parseWSLPath(path string) (distro string, ok bool) {
 	if !strings.HasPrefix(strings.ToLower(path), prefix) {
 		return "", false
 	}
-	return path[len(prefix):], true
+	distro = path[len(prefix):]
+	if !validWSLDistroName(distro) {
+		return "", false
+	}
+	return distro, true
+}
+
+// validWSLDistroName reports whether name is safe to pass as `wsl.exe -d
+// <name>`. The name rides wsl.exe argv, which wsl.exe re-quotes inside
+// double quotes before handing it to the login shell — so anything that
+// shell expands or breaks out on there ($, backticks, quote, backslash),
+// plus CR/LF that could end the quoted line, is rejected. Empty is not a
+// name. Real distro names ("Ubuntu-22.04", "AlmaLinux 9") contain none of
+// these characters.
+func validWSLDistroName(name string) bool {
+	if name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, "$`\"\\\r\n")
 }
 
 // wslIntegrationTimeout bounds every wsl.exe one-shot call of the WSL shell
@@ -493,19 +514,49 @@ func buildWSLStartArgs(distro string, cwd string, startArgs []string) []string {
 
 func buildCommandLine(shell string) string {
 	lower := strings.ToLower(shell)
-	quoted := fmt.Sprintf(`"%s"`, shell)
+	quoted := quoteWindowsArg(shell)
 
 	if strings.Contains(lower, "bash") {
 		// WSL bash (inside System32) does not support --login -i passed this way.
 		if strings.Contains(lower, "system32") || strings.Contains(lower, "wsl") {
 			return quoted
 		}
-		return fmt.Sprintf(`"%s" --login -i`, shell)
+		return quoted + " --login -i"
 	}
 	if strings.Contains(lower, "cmd.exe") {
-		return fmt.Sprintf(`"%s" /k`, shell)
+		return quoted + " /k"
 	}
 	return quoted
+}
+
+// quoteWindowsArg wraps s as one Windows command-line token using the
+// standard CommandLineToArgvW escaping: every embedded double quote becomes
+// \" (doubling any backslashes in front of it first), and backslashes
+// trailing the final quote are doubled so they cannot escape the closing
+// quote. A shell path containing quotes or trailing backslashes therefore
+// stays one token instead of breaking out and injecting arguments.
+func quoteWindowsArg(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	backslashes := 0 // pending, not yet written
+	for i := range s {
+		switch c := s[i]; c {
+		case '\\':
+			backslashes++
+		case '"':
+			b.WriteString(strings.Repeat(`\`, backslashes*2+1))
+			b.WriteByte('"')
+			backslashes = 0
+		default:
+			b.WriteString(strings.Repeat(`\`, backslashes))
+			b.WriteByte(c)
+			backslashes = 0
+		}
+	}
+	b.WriteString(strings.Repeat(`\`, backslashes*2))
+	b.WriteByte('"')
+	return b.String()
 }
 
 func shellName(path string) string {

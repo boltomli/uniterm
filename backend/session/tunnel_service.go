@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 // tunnelEntry holds the SSH client and listener for a single tunnel.
@@ -59,11 +61,12 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	}
 	defer cleanup()
 	addr := net.JoinHostPort(sshConfig.Host, strconv.Itoa(sshConfig.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	clientConfig := &ssh.ClientConfig{
 		User:            sshConfig.User,
 		Auth:            authMethods,
 		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 		Config:          sshAlgorithms(),
 	}
 
@@ -85,6 +88,9 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 		return 0, fmt.Errorf("tunnel ssh handshake: %w", err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
+	if trust != nil && trust.FirstTrust {
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+	}
 
 	// 2. Listen on random local port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

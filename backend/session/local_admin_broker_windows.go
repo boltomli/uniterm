@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +30,67 @@ func RunLocalPtyBroker(args []string) bool {
 	}
 	os.Exit(serveLocalPtyBroker(args[2]))
 	return true
+}
+
+// elevatedShellBase extracts the normalized executable base name from a shell
+// command line: the first token (the whole quoted string when it starts with
+// a quote, otherwise the text up to the first space), reduced with
+// filepath.Base (which handles both '\' and '/' separators on Windows) and
+// lowercased. Returns "" when the command line is empty or unparseable
+// (e.g. an opening quote with no closing quote).
+func elevatedShellBase(cmdline string) string {
+	s := strings.TrimSpace(cmdline)
+	if s == "" {
+		return ""
+	}
+	tok := s
+	if s[0] == '"' {
+		closing := strings.IndexByte(s[1:], '"')
+		if closing < 0 {
+			return ""
+		}
+		tok = s[1 : 1+closing]
+	} else if i := strings.IndexAny(s, " \t"); i >= 0 {
+		tok = s[:i]
+	}
+	// Strip any quotes still surrounding the token (quoted first token
+	// arrives bare already; this guards double-wrapped input like ""cmd.exe"").
+	tok = strings.Trim(tok, `"`)
+	if tok == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Base(tok))
+}
+
+// allowedElevatedShells is the allowlist of executables the elevated broker
+// may spawn. This process runs with an administrator token, so only known
+// shell executables may be started here — any other command line would turn
+// a single UAC consent into arbitrary elevated execution for any same-user
+// code that can reach the broker's spawn frame. admin://clink://... produces
+// a cmd.exe-leading command line ("cmd.exe /k <clink> inject ...") and
+// admin://wsl://... produces a wsl.exe-leading one ("wsl.exe -d <distro>
+// ..."), so both admin compositions still pass. The allowlist pins only the
+// executable: it composes with the buildCommandLine quoting fix landing in
+// local_session_windows.go (owner: sibling agent) — this check closes
+// wrong-executable, theirs closes argument breakout.
+var allowedElevatedShells = map[string]bool{
+	"cmd.exe":        true,
+	"powershell.exe": true,
+	"pwsh.exe":       true,
+	"wsl.exe":        true,
+	"bash.exe":       true,
+	"sh.exe":         true,
+	"zsh.exe":        true,
+	"fish.exe":       true,
+	"nu.exe":         true,
+	"elvish.exe":     true,
+}
+
+// isAllowedElevatedShell reports whether base (see elevatedShellBase) is a
+// shell the elevated broker may spawn. Case-insensitive — Windows file
+// names are.
+func isAllowedElevatedShell(base string) bool {
+	return allowedElevatedShells[strings.ToLower(base)]
 }
 
 // serveLocalPtyBroker serves one elevated shell and returns the process exit
@@ -56,6 +119,15 @@ func serveLocalPtyBroker(pipeName string) int {
 	var spec localPtySpawn
 	if err := json.Unmarshal(payload, &spec); err != nil {
 		pipe.Close()
+		return 1
+	}
+
+	// Fail fast on anything but a known shell executable: this process is
+	// elevated, so the refusal reason must reach the terminal feed before
+	// any ConPTY capability check.
+	base := elevatedShellBase(spec.CommandLine)
+	if spec.CommandLine == "" || !isAllowedElevatedShell(base) {
+		noteAndClose(pipe, fmt.Sprintf("refused: not an allowed administrator shell (%q)", base))
 		return 1
 	}
 

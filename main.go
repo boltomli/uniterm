@@ -348,6 +348,11 @@ func windowBackgroundColour(theme string) application.RGBA {
 // connect and capture CPU/heap/block/goroutine profiles during
 // reproduction of perf issues (see F-201 / audit §8.2).
 func startPprofIfDev() {
+	// Android: other apps on-device share this process's network namespace and
+	// can reach 127.0.0.1:6060, so never open the listener there (H4).
+	if runtime.GOOS == "android" {
+		return
+	}
 	if !devBuild {
 		return
 	}

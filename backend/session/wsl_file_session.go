@@ -28,9 +28,11 @@ import (
 
 // testDirScript builds the sh snippet that reports which paths resolve to a
 // directory: one "<n> d" line per directory, in order; files print nothing.
-// It must be free of shell variables — wsl.exe re-quotes argv inside double
-// quotes before handing it to the login shell, so $vars/$((...)) would be
-// expanded to nothing before sh ever sees the script.
+// The script reaches sh through wslShStdin (stdin), never argv: wsl.exe
+// re-quotes argv inside double quotes before handing it to the login shell,
+// where shellEscape's single quotes would be literal and a $(...) in a path
+// would execute before sh ever sees the script. (The argv form once expanded
+// this snippet's shell variables to nothing and broke dir detection.)
 func testDirScript(paths []string) string {
 	var b strings.Builder
 	for i, p := range paths {
@@ -164,12 +166,18 @@ func NewWSLFileSession(id string) *WSLFileSession {
 	}
 }
 
-// Connect resolves the distro (config.Distro, else config.ShellPath wsl://name),
-// probes the user home inside the distro and marks the session connected.
+// Connect resolves the distro from config.ShellPath (wsl://name, validated by
+// parseWSLPath), probes the user home inside the distro and marks the session
+// connected.
 func (s *WSLFileSession) Connect(config ConnectionConfig) error {
-	distro, _ := parseWSLPath(config.ShellPath)
-	if distro == "" {
+	distro, ok := parseWSLPath(config.ShellPath)
+	if !ok {
 		s.setStatus(StatusError)
+		if strings.HasPrefix(strings.ToLower(config.ShellPath), "wsl://") {
+			// The name failed validWSLDistroName: it rides wsl.exe argv,
+			// which the login shell behind wsl.exe re-parses.
+			return fmt.Errorf("invalid WSL distribution name %q", config.ShellPath[len("wsl://"):])
+		}
 		return fmt.Errorf("empty WSL distribution name")
 	}
 	s.distro = distro
@@ -192,7 +200,22 @@ func (s *WSLFileSession) resolveHome(ctx context.Context, distro string) string 
 	return "/"
 }
 
+// wslShStdin runs script through `sh` inside the distro with the script fed
+// on stdin. wsl.exe re-quotes argv inside double quotes before handing it to
+// the login shell, which re-parses anything passed as `sh -c <script>` argv —
+// stdin keeps the script out of that outer parse, so shellEscape's
+// single-quoting holds. argv carries only static literals plus the distro
+// name, which parseWSLPath validated (validWSLDistroName).
+func wslShStdin(distro, script string) ([]byte, error) {
+	cmd := exec.Command("wsl.exe", "-d", distro, "--", "sh")
+	cmd.Stdin = strings.NewReader(script)
+	platform.HideConsoleWindow(cmd)
+	return cmd.Output()
+}
+
 func (s *WSLFileSession) probeHome(ctx context.Context, distro string) (string, bool) {
+	// argv here is fully static — a literal script plus the distro name
+	// validated in Connect; no user-controlled byte reaches wsl.exe.
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--", "sh", "-c", "echo $HOME")
 	platform.HideConsoleWindow(cmd)
 	out, err := cmd.Output()
@@ -391,9 +414,7 @@ func (s *WSLFileSession) enrichListing(files []FileItem, dir string) {
 	if len(files) == 0 {
 		return
 	}
-	cmd := exec.Command("wsl.exe", "-d", s.distro, "--", "ls", "-lAn", dir)
-	platform.HideConsoleWindow(cmd)
-	out, err := cmd.Output()
+	out, err := wslShStdin(s.distro, "ls -lAn -- "+shellEscape(dir))
 	if err != nil {
 		return
 	}
@@ -418,9 +439,7 @@ func (s *WSLFileSession) resolveSymlinkDirs(dir string, names []string) map[stri
 	for i, n := range names {
 		paths[i] = path.Join(dir, n)
 	}
-	cmd := exec.Command("wsl.exe", "-d", s.distro, "--", "sh", "-c", testDirScript(paths))
-	platform.HideConsoleWindow(cmd)
-	out, err := cmd.Output()
+	out, err := wslShStdin(s.distro, testDirScript(paths))
 	if err != nil {
 		return nil
 	}
@@ -430,9 +449,7 @@ func (s *WSLFileSession) resolveSymlinkDirs(dir string, names []string) map[stri
 // readlinkTarget resolves p when it is a symbolic link, returning its
 // canonical absolute target. Non-links (or wsl failures) yield an error.
 func (s *WSLFileSession) readlinkTarget(p string) (string, error) {
-	cmd := exec.Command("wsl.exe", "-d", s.distro, "--", "sh", "-c", readlinkFollowScript(p))
-	platform.HideConsoleWindow(cmd)
-	out, err := cmd.Output()
+	out, err := wslShStdin(s.distro, readlinkFollowScript(p))
 	if err != nil {
 		return "", err
 	}
@@ -449,9 +466,7 @@ func (s *WSLFileSession) readlinkTarget(p string) (string, error) {
 // directory name is invalid"), so any path it will open must be canonical
 // first. Errors mean the path's parent chain is broken.
 func (s *WSLFileSession) canonicalPath(p string) (string, error) {
-	cmd := exec.Command("wsl.exe", "-d", s.distro, "--", "readlink", "-f", p)
-	platform.HideConsoleWindow(cmd)
-	out, err := cmd.Output()
+	out, err := wslShStdin(s.distro, "readlink -f "+shellEscape(p))
 	if err != nil {
 		return "", err
 	}
@@ -536,8 +551,12 @@ func (s *WSLFileSession) MakeDir(dir string) error {
 
 // wslSymlinkCmd builds the wsl.exe invocation that creates a symbolic link
 // inside the distro (the wsl.localhost UNC share cannot create Linux links).
+// The ln command reaches sh on stdin (see wslShStdin): passed as argv, the
+// target/linkPath would be re-parsed by the login shell behind wsl.exe,
+// where shellEscape's single quotes are literal.
 func wslSymlinkCmd(distro, target, linkPath string) *exec.Cmd {
-	cmd := exec.Command("wsl.exe", "-d", distro, "--", "ln", "-s", target, linkPath)
+	cmd := exec.Command("wsl.exe", "-d", distro, "--", "sh")
+	cmd.Stdin = strings.NewReader("ln -s " + shellEscape(target) + " " + shellEscape(linkPath))
 	platform.HideConsoleWindow(cmd)
 	return cmd
 }
@@ -889,4 +908,3 @@ func (s *WSLFileSession) Disconnect() error {
 	s.setStatus(StatusDisconnected)
 	return nil
 }
-

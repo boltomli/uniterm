@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 type sshConnDialer func() (net.Conn, error)
@@ -123,6 +125,7 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 		return nil, fmt.Errorf("keyboard-interactive not supported in this context")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -133,7 +136,7 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 				User:            config.User,
 				Auth:            authMethods,
 				Timeout:         30 * time.Second,
-				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+				HostKeyCallback: cb,
 			}, cleanup, nil
 		}
 	}
@@ -141,7 +144,14 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	if config.AuthType != "kerberos" {
 		keyboardConfig = newConfig(kb)
 	}
-	return dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
 		return net.DialTimeout("tcp", addr, 30*time.Second)
 	})
+	if err != nil {
+		return nil, err
+	}
+	if trust != nil && trust.FirstTrust {
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+	}
+	return client, nil
 }

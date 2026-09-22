@@ -86,19 +86,23 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 
+	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	cb, trust := NewHostKeyVerifier(addr)
 	clientConfig := &ssh.ClientConfig{
 		User:            config.User,
 		Auth:            authMethods,
 		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cb,
 		Config:          sshAlgorithms(),
 	}
 
-	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	client, err := dialSSHTCP(addr, clientConfig, config.Proxy)
 	if err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("ssh dial: %w", err)
+	}
+	if trust != nil && trust.FirstTrust {
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	sc, err := sftp.NewClient(client)
@@ -302,8 +306,8 @@ type TransferTask struct {
 	Total      int64  // write via setTotal, read via loadTotal (guarded by fileMu)
 	Status     string // "pending" | "running" | "paused" | "done" | "error" | "cancelled"
 
-	CurrentFile    string        // first in-flight file (display)
-	FileCount      int           // total files in a directory transfer (0 = single file)
+	CurrentFile    string // first in-flight file (display)
+	FileCount      int    // total files in a directory transfer (0 = single file)
 	CompletedFiles int
 	FailedFiles    []FileFailure
 
@@ -312,8 +316,8 @@ type TransferTask struct {
 	skip   map[string]bool
 	fileMu sync.RWMutex
 
-	ctx     context.Context
-	cancel  context.CancelFunc
+	ctx    context.Context
+	cancel context.CancelFunc
 	// paused is read by transfer worker goroutines (waitIfPaused) and written
 	// by the frontend-driven Pause/Resume entry points on other goroutines, so
 	// it is an atomic rather than a plain bool (was a data race).
@@ -327,8 +331,16 @@ func (t *TransferTask) setProgress(v int64) { t.Progress.Store(v) }
 func (t *TransferTask) setTotal(v int64)    { t.fileMu.Lock(); t.Total = v; t.fileMu.Unlock() }
 func (t *TransferTask) loadTotal() int64    { t.fileMu.RLock(); defer t.fileMu.RUnlock(); return t.Total }
 func (t *TransferTask) setFileCount(n int)  { t.fileMu.Lock(); t.FileCount = n; t.fileMu.Unlock() }
-func (t *TransferTask) fileCount() int      { t.fileMu.RLock(); defer t.fileMu.RUnlock(); return t.FileCount }
-func (t *TransferTask) completedCount() int { t.fileMu.Lock(); defer t.fileMu.Unlock(); return t.CompletedFiles }
+func (t *TransferTask) fileCount() int {
+	t.fileMu.RLock()
+	defer t.fileMu.RUnlock()
+	return t.FileCount
+}
+func (t *TransferTask) completedCount() int {
+	t.fileMu.Lock()
+	defer t.fileMu.Unlock()
+	return t.CompletedFiles
+}
 
 func (t *TransferTask) SetSkip(rels []string) {
 	t.fileMu.Lock()
@@ -1499,4 +1511,3 @@ func (s *SFTPSession) transferFile(task *TransferTask, localPath, remotePath, tf
 	}
 	return nil
 }
-
