@@ -285,3 +285,17 @@ export function currentAbsoluteLine(sessionId: string): number {
   const managed = getManagedTerminal(sessionId)
   return managed ? absoluteCursorLine(sessionId, managed.lineOffset) : 0
 }
+
+/**
+ * Drop every registered line and restart numbering at 1 — used by the
+ * "reset terminal output / clear scrollback" actions (issue #989): the
+ * cleared buffer's surviving line is the cursor row, whose number would
+ * otherwise keep counting from the pre-clear total.
+ */
+export function clearRegistry(sessionId: string): void {
+  const managed = getManagedTerminal(sessionId)
+  if (!managed) return
+  managed.lineRegistry.nextNumber = 1
+  managed.lineRegistry.entries.clear()
+  notifyGutter()
+}

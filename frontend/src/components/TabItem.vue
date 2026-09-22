@@ -104,6 +104,8 @@
         {{ t('terminal.searchText') }}
       </MenuItem>
       <MenuItem v-if="tab.type === 'terminal'" @click="triggerExport">{{ t('terminal.export') }}</MenuItem>
+      <MenuItem v-if="tab.type === 'terminal'" @click="triggerResetOutput">{{ t('terminal.resetOutput') }}</MenuItem>
+      <MenuItem v-if="tab.type === 'terminal'" @click="triggerClearScrollback">{{ t('terminal.clearScrollback') }}</MenuItem>
       <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
         {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
       </MenuItem>
@@ -689,6 +691,16 @@ function triggerSearch() {
 
 function triggerExport() {
   window.dispatchEvent(new CustomEvent('terminal:export', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
+  closeContextMenu()
+}
+
+function triggerResetOutput() {
+  window.dispatchEvent(new CustomEvent('terminal:reset-output', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
+  closeContextMenu()
+}
+
+function triggerClearScrollback() {
+  window.dispatchEvent(new CustomEvent('terminal:clear-scrollback', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
   closeContextMenu()
 }
 

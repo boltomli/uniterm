@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "Regulärer Ausdruck",
   "terminal.searchWholeWord": "Ganzes Wort",
   "terminal.export": "In Text exportieren",
+  "terminal.resetOutput": "Terminal-Ausgabe zurücksetzen",
+  "terminal.clearScrollback": "Scrollback leeren",
   "terminal.aiTranscribing": "KI-Transkription...",
   "terminal.aiTranscribeFailed": "KI-Transkription fehlgeschlagen",
   "terminal.suggestionHistory": "Verlauf",

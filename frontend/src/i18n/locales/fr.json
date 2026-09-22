@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "Expression régulière",
   "terminal.searchWholeWord": "Mot entier",
   "terminal.export": "Exporter en texte",
+  "terminal.resetOutput": "Réinitialiser la sortie du terminal",
+  "terminal.clearScrollback": "Effacer le défilement",
   "terminal.aiTranscribing": "Transcription IA...",
   "terminal.aiTranscribeFailed": "Échec de la transcription IA",
   "terminal.suggestionHistory": "Historique",

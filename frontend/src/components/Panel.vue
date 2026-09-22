@@ -99,6 +99,8 @@
               {{ t('terminal.searchText') }}
             </MenuItem>
             <MenuItem @click="triggerExport(); moreMenuVisible = false">{{ t('terminal.export') }}</MenuItem>
+            <MenuItem @click="triggerResetOutput(); moreMenuVisible = false">{{ t('terminal.resetOutput') }}</MenuItem>
+            <MenuItem @click="triggerClearScrollback(); moreMenuVisible = false">{{ t('terminal.clearScrollback') }}</MenuItem>
             <MenuItem @click="toggleOutputLog(); moreMenuVisible = false">
               {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
             </MenuItem>
@@ -400,6 +402,14 @@ function triggerSearch() {
 
 function triggerExport() {
   window.dispatchEvent(new CustomEvent('terminal:export', { detail: { panelId: props.panel.id } }))
+}
+
+function triggerResetOutput() {
+  window.dispatchEvent(new CustomEvent('terminal:reset-output', { detail: { panelId: props.panel.id } }))
+}
+
+function triggerClearScrollback() {
+  window.dispatchEvent(new CustomEvent('terminal:clear-scrollback', { detail: { panelId: props.panel.id } }))
 }
 
 function startEdit() {

@@ -179,6 +179,8 @@
   "terminal.searchRegexp": "Регулярное выражение",
   "terminal.searchWholeWord": "Целое слово",
   "terminal.export": "Экспорт в текст",
+  "terminal.resetOutput": "Сбросить вывод терминала",
+  "terminal.clearScrollback": "Очистить прокрутку",
   "terminal.aiTranscribing": "Транскрибация ИИ...",
   "terminal.aiTranscribeFailed": "Ошибка транскрибации ИИ",
   "terminal.suggestionHistory": "История",

@@ -78,6 +78,8 @@
         {{ t('terminal.searchText') }}
       </MenuItem>
       <MenuItem @click="menu.closeMenu(); exportContent()">{{ t('terminal.export') }}</MenuItem>
+      <MenuItem @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
+      <MenuItem @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
       <MenuItem :shortcut="menuShortcut('toggleLineNumbers')" @click="toggleLineNumbers">
         {{ showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
       </MenuItem>
@@ -181,7 +183,7 @@ import { useSuggestions } from '../composables/useSuggestions'
 import TerminalSuggestion from './TerminalSuggestion.vue'
 import TerminalGutter from './TerminalGutter.vue'
 import { startZmodemService } from '../services/zmodemService'
-import { recordWrite, stampCommandLine, currentAbsoluteLine } from '../services/terminalTimestamps'
+import { recordWrite, stampCommandLine, currentAbsoluteLine, clearRegistry } from '../services/terminalTimestamps'
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
@@ -301,6 +303,8 @@ let onDocumentMouseDown: ((e: MouseEvent) => void) | null = null
 let onTerminalAuxClick: ((e: MouseEvent) => void) | null = null
 let onOpenSearch: ((e: Event) => void) | null = null
 let onExport: ((e: Event) => void) | null = null
+let onResetOutput: ((e: Event) => void) | null = null
+let onClearScrollback: ((e: Event) => void) | null = null
 let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
@@ -786,6 +790,69 @@ async function exportContent() {
   } finally {
     exporting = false
   }
+}
+
+// Shell-idle heuristic for the post-reset Enter: only fire when the cursor
+// sits on the last non-blank row of the normal buffer — i.e. it looks like a
+// fresh prompt with nothing running in the foreground. If a program owns the
+// terminal (vim/less → alternate buffer, or a running command mid-output),
+// injecting Enter would land in that program, so we keep MobaXterm's plain
+// behavior instead: wipe and wait for the next real keypress.
+function shellLooksIdle(): boolean {
+  if (!terminal) return false
+  const buf = terminal.buffer.active
+  if (buf.type === 'alternate') return false
+  const cursorLine = buf.getLine(buf.baseY + buf.cursorY)
+  const text = cursorLine ? (cursorLine.translateToString(true) || '').trim() : ''
+  if (!text) return false
+  // The cursor row must be the last row holding content.
+  let lastContent = buf.length - 1
+  while (lastContent > 0) {
+    const line = buf.getLine(lastContent)
+    if (line && (line.translateToString(true) || '').trim()) break
+    lastContent--
+  }
+  return buf.baseY + buf.cursorY >= lastContent
+}
+
+// Reset terminal output (MobaXterm-style, issue #989): wipe the screen AND
+// the scrollback, then home the cursor. The wipe is client-side only — the
+// shell never learns the screen was cleared, so when it looks idle send an
+// Enter for the prompt to redraw immediately (MobaXterm stops here and
+// waits for the next keypress; we only inject the Enter when it is safe).
+function resetTerminalOutput() {
+  if (!terminal) return
+  const idle = shellLooksIdle()
+  const scrollback = terminal.options.scrollback
+  terminal.clear()
+  terminal.options.scrollback = 0
+  terminal.clear()
+  terminal.options.scrollback = scrollback
+  terminal.write('\r\x1b[H\x1b[2J')
+  if (props.sessionId) clearRegistry(props.sessionId)
+  if (props.sessionId && idle && !zmodemStore.getActiveTransfer(props.sessionId)) {
+    queuedSessionWrite(props.sessionId, '\n')
+  }
+}
+
+// Clear scrollback only (issue #989): the visible screen stays; rows above
+// the viewport are dropped.
+function clearScrollback() {
+  if (!terminal) return
+  const buf = terminal.buffer.active
+  const above = buf.baseY
+  if (above > 0) {
+    terminal.scrollLines(-above)
+  }
+  // Same trick as reset: a 0-sized scrollback discards the rows that just
+  // scrolled out of the viewport.
+  const scrollback = terminal.options.scrollback
+  terminal.options.scrollback = 0
+  terminal.clear()
+  terminal.options.scrollback = scrollback
+  // Return the viewport to the (bottom) live screen.
+  terminal.scrollToBottom()
+  if (props.sessionId) clearRegistry(props.sessionId)
 }
 
 function setRetryOnEnter(value: boolean) {
@@ -1592,6 +1659,22 @@ onMounted(() => {
   }
   window.addEventListener('terminal:export', onExport)
 
+  onResetOutput = (e: Event) => {
+    if (!isActive.value) return
+    const detail = (e as CustomEvent).detail
+    if (!props.panelId || detail?.panelId !== props.panelId) return
+    resetTerminalOutput()
+  }
+  window.addEventListener('terminal:reset-output', onResetOutput)
+
+  onClearScrollback = (e: Event) => {
+    if (!isActive.value) return
+    const detail = (e as CustomEvent).detail
+    if (!props.panelId || detail?.panelId !== props.panelId) return
+    clearScrollback()
+  }
+  window.addEventListener('terminal:clear-scrollback', onClearScrollback)
+
   onSendRz = (e: Event) => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
@@ -2033,6 +2116,8 @@ onUnmounted(() => {
   unsubNativeResizeEnd = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
+  if (onResetOutput) window.removeEventListener('terminal:reset-output', onResetOutput)
+  if (onClearScrollback) window.removeEventListener('terminal:clear-scrollback', onClearScrollback)
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
   if (onTerminalCopy) window.removeEventListener('terminal:copy', onTerminalCopy)
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
