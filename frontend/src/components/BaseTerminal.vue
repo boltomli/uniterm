@@ -152,7 +152,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTerminalMenu } from '../composables/useTerminalMenu'
-import { writeClipboard } from '../composables/useClipboardWrite'
+import { writeClipboard, readClipboardText } from '../composables/useClipboardWrite'
 import { filterTerminalInput } from '../utils/terminalInputFilter'
 import { DcsReassembler } from '../utils/dcsReassembler'
 import Menu from './Menu.vue'
@@ -188,7 +188,7 @@ import { recordWrite, stampCommandLine, currentAbsoluteLine, clearRegistry } fro
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
-import { Browser, Clipboard, Events } from '@wailsio/runtime'
+import { Browser, Events } from '@wailsio/runtime'
 import type { ISearchOptions } from '@xterm/addon-search'
 import { CaseSensitive, ChevronUp, ChevronDown, Regex, WholeWord, X } from '@lucide/vue'
 
@@ -973,9 +973,9 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
   if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V') && e.type === 'keydown') {
     e.preventDefault()
     if (props.mode === 'ssh' || props.mode === 'local') {
-      Clipboard.Text().then(text => {
+      readClipboardText().then(text => {
         if (text) pasteToSession(text)
-      }).catch(() => {})
+      })
     }
     return false
   }
@@ -1453,10 +1453,14 @@ onMounted(() => {
     if (settingsStore.settings.terminal.selectionAction !== 'copy') return
     setTimeout(() => {
       const text = terminal?.getSelection()
-      if (text && text !== lastSelectionText) {
+      if (!text) {
+        // Selection cleared: reset the dedup guard, or re-selecting the same
+        // text would never re-copy and a lost write could never be retried.
+        lastSelectionText = ''
+        return
+      }
+      if (text !== lastSelectionText) {
         lastSelectionText = text
-        // Wails clipboard writer: navigator.clipboard silently fails in
-        // WKWebView when the webview isn't first responder (#827).
         writeClipboard(text)
       }
     }, 0)
@@ -1490,11 +1494,11 @@ onMounted(() => {
     if (action !== 'paste') return
     event.preventDefault()
     event.stopPropagation()
-    Clipboard.Text().then(text => {
+    readClipboardText().then(text => {
       if (text && props.sessionId) {
         pasteToSession(text)
       }
-    }).catch(() => {})
+    })
   }
   document.addEventListener('auxclick', onTerminalAuxClick)
 
@@ -1708,9 +1712,9 @@ onMounted(() => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
     if (props.mode === 'ssh' || props.mode === 'local') {
-      Clipboard.Text().then(text => {
+      readClipboardText().then(text => {
         if (text) pasteToSession(text)
-      }).catch(() => {})
+      })
     }
   }
   window.addEventListener('terminal:paste', onTerminalPaste)
