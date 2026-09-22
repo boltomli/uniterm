@@ -106,7 +106,7 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("ssh dial: %w", err)
 	}
 
-	sc, err := sftp.NewClient(client)
+	sc, err := sftp.NewClient(client, sftpClientOptions()...)
 	if err != nil {
 		// subsystem 启动失败：若是协议流被污染(登录脚本打印)，像 MobaXterm 那样
 		// fallback 到 exec sftp-server 并跳过噪声；仍失败再抛可操作提示。
@@ -211,7 +211,7 @@ func trySFTPExecFallback(client *ssh.Client, subsystemErr error) (*sftp.Client, 
 		sess.Close()
 		return nil, fmt.Errorf("fallback marker: %w", err)
 	}
-	sc, err := sftp.NewClientPipe(clean, stdin)
+	sc, err := sftp.NewClientPipe(clean, stdin, sftpClientOptions()...)
 	if err != nil {
 		sess.Close()
 		return nil, fmt.Errorf("fallback sftp handshake: %w", err)
@@ -1204,9 +1204,6 @@ func (s *SFTPSession) startTransfer(task *TransferTask) {
 			}
 		}
 
-		var src io.Reader
-		var dst io.Writer
-
 		if task.Type == "download" {
 			remoteFile, e := s.sftpClient.Open(task.RemotePath)
 			if e != nil {
@@ -1218,14 +1215,23 @@ func (s *SFTPSession) startTransfer(task *TransferTask) {
 			if fi != nil {
 				task.setTotal(fi.Size())
 			}
-			src = remoteFile
 			localFile, e := os.Create(task.LocalPath)
 			if e != nil {
 				s.emitTransferEvent(task, e)
 				return
 			}
 			defer localFile.Close()
-			dst = localFile
+			if e := s.copyFileDownload(task, remoteFile, localFile); e != nil {
+				if task.ctx.Err() != nil {
+					// cancelled mid-transfer: not a transfer error
+					task.Status = "cancelled"
+					s.emitTransferComplete(task)
+					removeTask()
+					return
+				}
+				s.emitTransferEvent(task, e)
+				return
+			}
 		} else {
 			localFile, e := os.Open(task.LocalPath)
 			if e != nil {
@@ -1237,45 +1243,20 @@ func (s *SFTPSession) startTransfer(task *TransferTask) {
 			if fi != nil {
 				task.setTotal(fi.Size())
 			}
-			src = localFile
 			remoteFile, e := s.sftpClient.Create(task.RemotePath)
 			if e != nil {
 				s.emitTransferEvent(task, e)
 				return
 			}
 			defer remoteFile.Close()
-			dst = remoteFile
-		}
-
-		buf := make([]byte, 64*1024)
-		for {
-			select {
-			case <-task.ctx.Done():
-				task.Status = "cancelled"
-				s.emitTransferComplete(task)
-				removeTask()
-				return
-			default:
-			}
-			task.waitIfPaused()
-			select {
-			case <-task.ctx.Done():
-				task.Status = "cancelled"
-				s.emitTransferComplete(task)
-				removeTask()
-				return
-			default:
-			}
-			n, e := src.Read(buf)
-			if n > 0 {
-				dst.Write(buf[:n])
-				task.addProgress(int64(n))
-				s.emitTransferProgress(task)
-			}
-			if e == io.EOF {
-				break
-			}
-			if e != nil {
+			if e := s.copyFileUpload(task, remoteFile, localFile); e != nil {
+				if task.ctx.Err() != nil {
+					// cancelled mid-transfer: not a transfer error
+					task.Status = "cancelled"
+					s.emitTransferComplete(task)
+					removeTask()
+					return
+				}
 				s.emitTransferEvent(task, e)
 				return
 			}
@@ -1450,6 +1431,91 @@ feed:
 	wg.Wait()
 }
 
+// sftpClientOptions returns the client options applied to every SFTP client
+// this package creates. UseConcurrentWrites pipelines WRITE requests so
+// throughput is no longer bounded by one round trip per 32 KiB chunk; reads
+// are pipelined by WriteTo by default (disableConcurrentReads is false).
+func sftpClientOptions() []sftp.ClientOption {
+	return []sftp.ClientOption{sftp.UseConcurrentWrites(true)}
+}
+
+// transferProgressWriter wraps the local destination of a download to keep the
+// TransferTask's progress accounting, pause and cancel checks working while
+// the actual copying is delegated to sftp.File.WriteTo.
+type transferProgressWriter struct {
+	task *TransferTask
+	s    *SFTPSession
+	w    io.Writer
+}
+
+func (p *transferProgressWriter) Write(b []byte) (int, error) {
+	select {
+	case <-p.task.ctx.Done():
+		return 0, p.task.ctx.Err()
+	default:
+	}
+	p.task.waitIfPaused()
+	n, err := p.w.Write(b)
+	if n > 0 {
+		p.task.addProgress(int64(n))
+		p.s.emitTransferProgress(p.task)
+	}
+	return n, err
+}
+
+// transferProgressReader wraps the local source of an upload. It implements
+// Stat() so sftp.File.ReadFrom can use the file size to size its concurrency
+// window (see pkg/sftp ReadFrom's size heuristic).
+type transferProgressReader struct {
+	task *TransferTask
+	s    *SFTPSession
+	r    *os.File
+}
+
+func (p *transferProgressReader) Read(b []byte) (int, error) {
+	select {
+	case <-p.task.ctx.Done():
+		return 0, p.task.ctx.Err()
+	default:
+	}
+	p.task.waitIfPaused()
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.task.addProgress(int64(n))
+		p.s.emitTransferProgress(p.task)
+	}
+	return n, err
+}
+
+func (p *transferProgressReader) Stat() (os.FileInfo, error) {
+	return p.r.Stat()
+}
+
+// copyFileDownload streams a remote file to a local writer via
+// sftp.File.WriteTo, which issues concurrent READ requests bounded by the
+// client's max concurrent requests instead of one round trip per chunk.
+func (s *SFTPSession) copyFileDownload(task *TransferTask, src *sftp.File, dst io.Writer) error {
+	_, err := src.WriteTo(&transferProgressWriter{task: task, s: s, w: dst})
+	return err
+}
+
+// copyFileUpload streams a local file to a remote SFTP file via
+// sftp.File.ReadFrom, which with UseConcurrentWrites issues concurrent WRITE
+// requests. On error the remote file is truncated to the client-confirmed safe
+// length: concurrent writes past the first failure may have landed, leaving
+// "holes" in the remote file (see pkg/sftp UseConcurrentWrites docs).
+func (s *SFTPSession) copyFileUpload(task *TransferTask, dst *sftp.File, src *os.File) error {
+	_, err := dst.ReadFrom(&transferProgressReader{task: task, s: s, r: src})
+	if err != nil {
+		// Seek(0, io.SeekCurrent) yields the client's confirmed-safe offset,
+		// which pkg/sftp rewinds to the first failing write offset on error.
+		if safe, serr := dst.Seek(0, io.SeekCurrent); serr == nil {
+			_ = dst.Truncate(safe)
+		}
+	}
+	return err
+}
+
 func (s *SFTPSession) transferFile(task *TransferTask, localPath, remotePath, tfType string) error {
 	if tfType == "download" {
 		src, err := s.sftpClient.Open(remotePath)
@@ -1462,53 +1528,17 @@ func (s *SFTPSession) transferFile(task *TransferTask, localPath, remotePath, tf
 			return err
 		}
 		defer dst.Close()
-		buf := make([]byte, 64*1024)
-		for {
-			select {
-			case <-task.ctx.Done():
-				return task.ctx.Err()
-			default:
-			}
-			task.waitIfPaused()
-			n, e := src.Read(buf)
-			if n > 0 {
-				dst.Write(buf[:n])
-				task.addProgress(int64(n))
-				s.emitTransferProgress(task)
-			}
-			if e != nil {
-				break
-			}
-		}
-	} else {
-		src, err := os.Open(localPath)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-		dst, err := s.sftpClient.Create(remotePath)
-		if err != nil {
-			return err
-		}
-		defer dst.Close()
-		buf := make([]byte, 64*1024)
-		for {
-			select {
-			case <-task.ctx.Done():
-				return task.ctx.Err()
-			default:
-			}
-			task.waitIfPaused()
-			n, e := src.Read(buf)
-			if n > 0 {
-				dst.Write(buf[:n])
-				task.addProgress(int64(n))
-				s.emitTransferProgress(task)
-			}
-			if e != nil {
-				break
-			}
-		}
+		return s.copyFileDownload(task, src, dst)
 	}
-	return nil
+	src, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := s.sftpClient.Create(remotePath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	return s.copyFileUpload(task, dst, src)
 }

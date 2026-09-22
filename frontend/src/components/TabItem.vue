@@ -155,7 +155,7 @@ import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
 import { saveWorkspaceToConnections } from '../composables/savedWorkspace'
 import type { TerminalTab, SettingsTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
-import { connectFileMenuKey, fileTransferProto } from '../utils/fileTransferUtils'
+import { connectFileMenuKey, fileTransferProto, canOpenSshTerminal, asSshTerminalConfig } from '../utils/fileTransferUtils'
 import { connectionTypeIconOfKind } from '../utils/connectionTypes'
 import { useDuplicateSession } from '../composables/useDuplicateSession'
 import Menu from './Menu.vue'
@@ -377,13 +377,13 @@ const isSsh = computed(() => {
   return p?.type === 'ssh'
 })
 
-// SSH-derived file tabs (SFTP/SCP from an SSH connection) — used to show the
-// reverse action: open a terminal for the same host.
+// SSH-backed file tabs — used to show the reverse action: open a terminal for
+// the same host. Covers the ssh companion (sftp/scp per fileTransferProto) and
+// standalone sftp/scp connections; non-SSH file protocols are excluded.
 const isSftpOverSsh = computed(() => {
   if (props.tab.type !== 'sftp') return false
   const p = panelStore.getPanel((props.tab as SFTPTab).panelId)
-  // SCP panels also have config.type === 'ssh'; include them as well.
-  return p?.config?.type === 'ssh'
+  return canOpenSshTerminal(p?.config)
 })
 
 // Menu label for the file-transfer action follows the connection's protocol
@@ -623,8 +623,10 @@ function openMonitor() {
 
 function openTerminal() {
   const panel = panelStore.getPanel((props.tab as SFTPTab).panelId)
-  if (panel) {
-    window.dispatchEvent(new CustomEvent('app:connect-terminal', { detail: panel }))
+  if (panel?.config) {
+    // Rewrite standalone sftp/scp configs to 'ssh' so onConnect opens a
+    // terminal instead of following their file-browser spec.
+    window.dispatchEvent(new CustomEvent('app:connect-terminal', { detail: { ...panel, config: asSshTerminalConfig(panel.config) } }))
   }
   closeContextMenu()
 }

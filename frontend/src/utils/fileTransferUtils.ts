@@ -24,6 +24,22 @@ export function supportsRemoteSymlink(config?: { type?: string } | null): boolea
   return config.type === 'ssh' || config.type === 'sftp' || config.type === 'scp' || config.type === 'wsl' || config.type === 'wsl-file'
 }
 
+// True when a file-browser tab may offer "open terminal": the backing config
+// is SSH-backed — the ssh companion (sftp/scp per fileTransferProto) or a
+// standalone sftp/scp connection, whose config already carries the SSH
+// host/port/auth. FTP, SMB, WebDAV and S3 have no SSH session to open.
+export function canOpenSshTerminal(config?: { type?: string } | null): boolean {
+  return !!config && ['ssh', 'sftp', 'scp'].includes(config.type ?? '')
+}
+
+// Config for launching an SSH terminal from a file-browser tab. Standalone
+// sftp/scp configs must be rewritten to type 'ssh' — launchConnection would
+// otherwise follow their spec and open another file browser instead of a
+// terminal. An ssh config passes through unchanged.
+export function asSshTerminalConfig<T extends { type?: string }>(config: T): T {
+  return config.type === 'ssh' ? config : { ...config, type: 'ssh' }
+}
+
 // True when an operation failed because the transport died rather than because
 // the remote side rejected the request. Covers pkg/sftp's "connection lost"
 // (SFTP/SCP), crypto/ssh and net package wording, and the HTTP transport
