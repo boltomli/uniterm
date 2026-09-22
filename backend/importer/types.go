@@ -4,12 +4,13 @@ import "github.com/ys-ll/uniterm/backend/session"
 
 // Format names match the frontend import-type dropdown values verbatim.
 const (
-	FormatUniterm   = "uniterm"
-	FormatXshell    = "xshell"
-	FormatMobaXterm = "mobaxterm"
-	FormatWindTerm  = "windterm"
-	FormatSecureCRT = "securecrt"
-	FormatOpenSSH   = "openssh"
+	FormatUniterm    = "uniterm"
+	FormatXshell     = "xshell"
+	FormatMobaXterm  = "mobaxterm"
+	FormatWindTerm   = "windterm"
+	FormatSecureCRT  = "securecrt"
+	FormatOpenSSH    = "openssh"
+	FormatVirtViewer = "virtviewer"
 )
 
 // ParseOptions carries per-parse inputs. Password is the import password for the
