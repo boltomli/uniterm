@@ -320,12 +320,17 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	if config.AuthType != "kerberos" {
 		keyboardConfig = newConfig(kbCallback)
 	}
-	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		s.setStatus(StatusError)
+		return err
+	}
+	client, err := dialSSHWithAuthRetry(addr, sets, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {
 		s.setStatus(StatusError)
-		return err
+		return wrapSSHAlgorithmError(sshAlgoModeOf(config.SSHAlgorithms), err)
 	}
 
 	// Detect Windows OpenSSH from the server identification string exchanged

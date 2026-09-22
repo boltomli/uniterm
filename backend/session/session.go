@@ -31,6 +31,19 @@ type ConnectionGroup struct {
 	ParentId *string `json:"parentId,omitempty"`
 }
 
+// SSHAlgoConfig holds per-connection SSH algorithm preferences. See
+// ssh_config.go for the mode semantics. nil (or an empty Mode) on
+// ConnectionConfig.SSHAlgorithms selects the compatible mode.
+type SSHAlgoConfig struct {
+	Mode string `json:"mode,omitempty"`
+	// Only consulted in custom mode; each list is the negotiation preference
+	// order and must be non-empty with supported algorithm names only.
+	KeyExchanges []string `json:"keyExchanges,omitempty"`
+	Ciphers      []string `json:"ciphers,omitempty"`
+	MACs         []string `json:"macs,omitempty"`
+	HostKeys     []string `json:"hostKeys,omitempty"`
+}
+
 type ConnectionConfig struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -39,6 +52,9 @@ type ConnectionConfig struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	User     string `json:"user"`
+	// SSHAlgorithms customizes the negotiated algorithms for SSH-based
+	// sessions. nil keeps the compatible default.
+	SSHAlgorithms *SSHAlgoConfig `json:"sshAlgorithms,omitempty"`
 	AuthType string `json:"authType"`
 	// AuthType "agent" uses SSH_AUTH_SOCK on Unix. On Windows it uses Pageant,
 	// falling back to the Windows OpenSSH agent named pipe.

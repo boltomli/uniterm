@@ -70,12 +70,17 @@ func (s *SCPSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 
+	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return err
+	}
 	clientConfig := &ssh.ClientConfig{
-		User:            config.User,
-		Auth:            authMethods,
-		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Config:          sshAlgorithms(),
+		User:              config.User,
+		Auth:              authMethods,
+		Timeout:           30 * time.Second,
+		HostKeyCallback:   ssh.InsecureIgnoreHostKey(),
+		Config:            algoSet.config(),
+		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))

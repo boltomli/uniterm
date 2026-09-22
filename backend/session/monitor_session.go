@@ -33,8 +33,8 @@ type monitorState struct {
 	hasPrev       bool
 
 	// Per-core and per-interface deltas for the expandable detail lists.
-	lastPerCpu       map[int]cpuSample
-	lastNetPerIface  map[string]netSample
+	lastPerCpu      map[int]cpuSample
+	lastNetPerIface map[string]netSample
 
 	// Separate counters for collectProcesses so overview mode
 	// (performance + processes each tick) cannot corrupt deltas.
@@ -65,7 +65,10 @@ type DiskInfo struct {
 	Model      string `json:"model"`
 }
 
-type dfEntry struct{ Used, Total, Mount string; Usage int }
+type dfEntry struct {
+	Used, Total, Mount string
+	Usage              int
+}
 
 type NetCardInfo struct {
 	Name       string   `json:"name"`
@@ -139,12 +142,17 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 
+	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return err
+	}
 	clientConfig := &ssh.ClientConfig{
-		User:            config.User,
-		Auth:            authMethods,
-		Timeout:         30 * time.Second,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Config: sshAlgorithms(),
+		User:              config.User,
+		Auth:              authMethods,
+		Timeout:           30 * time.Second,
+		HostKeyCallback:   ssh.InsecureIgnoreHostKey(),
+		Config:            algoSet.config(),
+		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
@@ -1100,7 +1108,10 @@ fi`
 // column (which previously surfaced "QEMU"/"1" as fake mounts for sr0/vda/vdc).
 // Returns nil when the output is not in pairs form (ancient lsblk fell back to
 // plain columns); the caller then retries with column parsing.
-func parseLsblkPairsDisks(out string, mountUsage map[string]struct{ Used, Total string; Usage int }) []DiskInfo {
+func parseLsblkPairsDisks(out string, mountUsage map[string]struct {
+	Used, Total string
+	Usage       int
+}) []DiskInfo {
 	var disks []DiskInfo
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -1217,7 +1228,10 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 		dfOut = []byte(strings.TrimSpace(parts[1]))
 	}
 
-	mountUsage := map[string]struct{ Used, Total string; Usage int }{}
+	mountUsage := map[string]struct {
+		Used, Total string
+		Usage       int
+	}{}
 	dfByDev := map[string]dfEntry{}
 	for _, line := range strings.Split(string(dfOut), "\n") {
 		line = strings.TrimSpace(line)
@@ -1229,7 +1243,10 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 			mount := fields[5]
 			usageStr := strings.TrimSuffix(fields[4], "%")
 			usage, _ := strconv.Atoi(usageStr)
-			mountUsage[mount] = struct{ Used, Total string; Usage int }{
+			mountUsage[mount] = struct {
+				Used, Total string
+				Usage       int
+			}{
 				Used:  fields[2],
 				Total: fields[1],
 				Usage: usage,
@@ -1251,110 +1268,110 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 	if err == nil && json.Unmarshal(jsonOut, &lsblkJSON) == nil {
 		var walk func(devs []map[string]interface{}, depth int)
 		walk = func(devs []map[string]interface{}, depth int) {
-				for _, dev := range devs {
-					name, _ := dev["name"].(string)
-					devType, _ := dev["type"].(string)
+			for _, dev := range devs {
+				name, _ := dev["name"].(string)
+				devType, _ := dev["type"].(string)
 
-					var sizeBytes uint64
-					switch s := dev["size"].(type) {
-					case float64:
-						sizeBytes = uint64(s)
-					case string:
-						sizeBytes, _ = strconv.ParseUint(s, 10, 64)
-					}
+				var sizeBytes uint64
+				switch s := dev["size"].(type) {
+				case float64:
+					sizeBytes = uint64(s)
+				case string:
+					sizeBytes, _ = strconv.ParseUint(s, 10, 64)
+				}
 
-					var mount string
-					switch mp := dev["mountpoint"].(type) {
-					case string:
-						if mp != "" {
-							mount = mp
-						}
-					}
-
-					var model string
-					switch m := dev["model"].(type) {
-					case string:
-						if m != "" {
-							model = m
-						}
-					}
-
-					media := "-"
-					if devType == "rom" {
-						media = "ROM"
-					} else {
-						switch r := dev["rota"].(type) {
-						case bool:
-							if r {
-								media = "HDD"
-							} else {
-								media = "SSD"
-							}
-						case string:
-							if r == "1" || r == "true" {
-								media = "HDD"
-							} else if r == "0" || r == "false" {
-								media = "SSD"
-							}
-						case float64:
-							if r != 0 {
-								media = "HDD"
-							} else {
-								media = "SSD"
-							}
-						}
-					}
-
-					var fsType, uuid, vendor string
-					if v, ok := dev["fstype"].(string); ok && v != "" {
-						fsType = v
-					}
-					if v, ok := dev["uuid"].(string); ok && v != "" {
-						uuid = v
-					}
-					if v, ok := dev["vendor"].(string); ok && v != "" {
-						vendor = v
-					}
-
-					disk := DiskInfo{
-						Name:       strings.Repeat("  ", depth) + name,
-						Type:       devType,
-						Size:       formatBytes(sizeBytes),
-						Media:      media,
-						FSType:     fsType,
-						UUID:       uuid,
-						Vendor:     vendor,
-						Model:      model,
-					}
-					// Prefer df (authoritative) for mount point + usage: lsblk JSON can
-					// leave mountpoint empty for filesystems mounted directly on a disk.
-					if d, ok := dfByDev[name]; ok {
-						disk.MountPoint = d.Mount
-						disk.Used = d.Used
-						disk.Total = d.Total
-						disk.Usage = d.Usage
-					} else if mount != "" {
-						disk.MountPoint = mount
-						disk.Used = mountUsage[mount].Used
-						disk.Total = mountUsage[mount].Total
-						disk.Usage = mountUsage[mount].Usage
-					}
-					disks = append(disks, disk)
-
-					if children, ok := dev["children"].([]interface{}); ok {
-						childMaps := make([]map[string]interface{}, 0, len(children))
-						for _, c := range children {
-							if cm, ok := c.(map[string]interface{}); ok {
-								childMaps = append(childMaps, cm)
-							}
-						}
-						walk(childMaps, depth+1)
+				var mount string
+				switch mp := dev["mountpoint"].(type) {
+				case string:
+					if mp != "" {
+						mount = mp
 					}
 				}
+
+				var model string
+				switch m := dev["model"].(type) {
+				case string:
+					if m != "" {
+						model = m
+					}
+				}
+
+				media := "-"
+				if devType == "rom" {
+					media = "ROM"
+				} else {
+					switch r := dev["rota"].(type) {
+					case bool:
+						if r {
+							media = "HDD"
+						} else {
+							media = "SSD"
+						}
+					case string:
+						if r == "1" || r == "true" {
+							media = "HDD"
+						} else if r == "0" || r == "false" {
+							media = "SSD"
+						}
+					case float64:
+						if r != 0 {
+							media = "HDD"
+						} else {
+							media = "SSD"
+						}
+					}
+				}
+
+				var fsType, uuid, vendor string
+				if v, ok := dev["fstype"].(string); ok && v != "" {
+					fsType = v
+				}
+				if v, ok := dev["uuid"].(string); ok && v != "" {
+					uuid = v
+				}
+				if v, ok := dev["vendor"].(string); ok && v != "" {
+					vendor = v
+				}
+
+				disk := DiskInfo{
+					Name:   strings.Repeat("  ", depth) + name,
+					Type:   devType,
+					Size:   formatBytes(sizeBytes),
+					Media:  media,
+					FSType: fsType,
+					UUID:   uuid,
+					Vendor: vendor,
+					Model:  model,
+				}
+				// Prefer df (authoritative) for mount point + usage: lsblk JSON can
+				// leave mountpoint empty for filesystems mounted directly on a disk.
+				if d, ok := dfByDev[name]; ok {
+					disk.MountPoint = d.Mount
+					disk.Used = d.Used
+					disk.Total = d.Total
+					disk.Usage = d.Usage
+				} else if mount != "" {
+					disk.MountPoint = mount
+					disk.Used = mountUsage[mount].Used
+					disk.Total = mountUsage[mount].Total
+					disk.Usage = mountUsage[mount].Usage
+				}
+				disks = append(disks, disk)
+
+				if children, ok := dev["children"].([]interface{}); ok {
+					childMaps := make([]map[string]interface{}, 0, len(children))
+					for _, c := range children {
+						if cm, ok := c.(map[string]interface{}); ok {
+							childMaps = append(childMaps, cm)
+						}
+					}
+					walk(childMaps, depth+1)
+				}
 			}
-			walk(lsblkJSON.BlockDevices, 0)
-			return disks, nil
 		}
+		walk(lsblkJSON.BlockDevices, 0)
+		return disks, nil
+	}
 
 	// Fallback to text parsing
 	session2, err := s.client.NewSession()
