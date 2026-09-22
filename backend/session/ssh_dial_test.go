@@ -77,7 +77,11 @@ func dialAuthTest(t *testing.T, addr, password string, kb ssh.KeyboardInteractiv
 			}, cleanup, nil
 		}
 	}
-	return dialSSHWithAuthRetry(addr, newConfig(nil), newConfig(kb), func() (net.Conn, error) {
+	sets, err := resolveSSHDialAlgorithms(nil)
+	if err != nil {
+		t.Fatalf("resolve algorithms: %v", err)
+	}
+	return dialSSHWithAuthRetry(addr, sets, newConfig(nil), newConfig(kb), func() (net.Conn, error) {
 		return net.DialTimeout("tcp", addr, 5*time.Second)
 	})
 }
@@ -227,7 +231,11 @@ func TestDialSSHWithCipherFallbackRebuildsClientConfig(t *testing.T) {
 		return client, nil
 	}
 
-	if _, err := dialSSHWithCipherFallback("example.invalid:22", newConfig, dial); err == nil {
+	sets, algoErr := resolveSSHDialAlgorithms(nil)
+	if algoErr != nil {
+		t.Fatalf("resolve algorithms: %v", algoErr)
+	}
+	if _, err := dialSSHWithCipherFallback("example.invalid:22", sets, newConfig, dial); err == nil {
 		t.Fatal("dialSSHWithCipherFallback() error = nil, want handshake error")
 	}
 	if configCalls != 2 {

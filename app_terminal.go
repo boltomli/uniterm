@@ -1295,3 +1295,10 @@ func (a *App) GetDefaultSessionLogDir() string {
 	}
 	return session.DefaultSessionLogDir()
 }
+
+// GetSupportedSSHAlgorithms returns the SSH algorithm candidate pool with
+// security levels plus the compatible/secure presets, for the connection
+// form's algorithm editor.
+func (a *App) GetSupportedSSHAlgorithms() session.SupportedSSHAlgorithms {
+	return session.GetSupportedSSHAlgorithms()
+}

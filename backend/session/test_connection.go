@@ -102,7 +102,11 @@ func probeSSH(config ConnectionConfig) (string, error) {
 	if config.AuthType != "kerberos" {
 		keyboardConfig = newConfig(kb)
 	}
-	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return "", err
+	}
+	client, err := dialSSHWithAuthRetry(addr, sets, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {
@@ -133,7 +137,11 @@ func probeSFTP(config ConnectionConfig) (string, error) {
 	if config.AuthType != "kerberos" {
 		keyboardConfig = newConfig(kb)
 	}
-	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return "", err
+	}
+	client, err := dialSSHWithAuthRetry(addr, sets, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {
@@ -168,7 +176,11 @@ func probeSCP(config ConnectionConfig) (string, error) {
 	if config.AuthType != "kerberos" {
 		keyboardConfig = newConfig(kb)
 	}
-	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return "", err
+	}
+	client, err := dialSSHWithAuthRetry(addr, sets, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {

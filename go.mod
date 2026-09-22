@@ -32,11 +32,11 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	go.bug.st/serial v1.7.1
 	go.mongodb.org/mongo-driver v1.17.9
-	golang.org/x/crypto v0.53.0
-	golang.org/x/net v0.56.0
-	golang.org/x/sync v0.21.0
-	golang.org/x/sys v0.46.0
-	golang.org/x/text v0.39.0
+	golang.org/x/crypto v0.55.0
+	golang.org/x/net v0.58.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -106,3 +106,5 @@ require (
 replace github.com/unixshells/mosh-go v0.5.2 => github.com/ys-ll/mosh-go v0.0.0-20260702130124-e17b92cd9dab
 
 replace github.com/rhnvrm/simples3 v0.11.1 => github.com/ys-ll/simples3 v0.0.0-20260801154215-9210db974cd6
+
+replace golang.org/x/crypto => github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e
