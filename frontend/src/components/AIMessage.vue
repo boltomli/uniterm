@@ -65,8 +65,9 @@
       <div v-if="pendingCmd" class="pending-tools">
         <div class="pending-tool" :class="{ dangerous: pendingCmd.dangerous }">
           <div class="tool-name">
-            execute_command
+            {{ pendingCmd.toolName }}
             <span v-if="pendingCmd.dangerous" class="danger-badge">{{ t('ai.dangerous') }}</span>
+            <span v-if="pendingCmd.panel" class="panel-badge">#{{ pendingCmd.panel }}</span>
           </div>
           <code class="tool-args">{{ pendingCmd.command }}</code>
           <div class="tool-actions">
@@ -998,6 +999,15 @@ function escapeHtml(text: string): string {
   background: var(--error);
   color: var(--on-accent);
   text-transform: uppercase;
+}
+.panel-badge {
+  margin-left: 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  padding: 1px 0.375rem;
+  border-radius: 0.1875rem;
+  border: 1px solid var(--border-hover);
+  color: var(--text-secondary);
 }
 .pending-tool {
   margin-top: 0.5rem;

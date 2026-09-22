@@ -194,12 +194,6 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.fileTransferProto')">
-              <el-radio-group v-model="form.fileTransferProto">
-                <el-radio-button value="sftp">SFTP</el-radio-button>
-                <el-radio-button value="scp">SCP</el-radio-button>
-              </el-radio-group>
-            </el-form-item>
             <el-form-item v-if="form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
               <el-input v-model="form.dbName" :placeholder="t('db.databases')" />
             </el-form-item>
@@ -547,20 +541,36 @@
                 <el-option label="VT220 Delete (ESC[3~)" value="vt220" />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
+            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.fileTransferProto')">
+              <el-radio-group v-model="form.fileTransferProto">
+                <el-radio-button value="sftp">SFTP</el-radio-button>
+                <el-radio-button value="scp">SCP</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item v-if="form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
               <el-input-number v-model="form.sftpMaxConcurrency" :min="0" :max="20" />
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.x11Forwarding')">
-              <el-switch v-model="form.x11Forwarding" />
-              <span v-if="x11HintKey" class="field-hint" style="margin-left: 0.75rem;">{{ t(x11HintKey) }}</span>
+            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.shellIntegration')">
+              <el-switch v-model="form.shellIntegration" />
+              <span class="field-hint" style="margin-left: 0.75rem; flex: 1; min-width: 0;">{{ t('conn.shellIntegrationDesc') }}</span>
             </el-form-item>
             <el-form-item v-if="form.type === 'ssh'" :label="t('conn.agentForwarding')">
               <el-switch v-model="form.agentForwarding" />
               <span class="field-hint" style="margin-left: 0.75rem;">{{ t('conn.agentForwardingDesc') }}</span>
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.shellIntegration')">
-              <el-switch v-model="form.shellIntegration" />
-              <span class="field-hint" style="margin-left: 0.75rem;">{{ t('conn.shellIntegrationDesc') }}</span>
+            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.x11Forwarding')">
+              <el-switch v-model="form.x11Forwarding" />
+              <span v-if="x11HintKey" class="field-hint" style="margin-left: 0.75rem;">{{ t(x11HintKey) }}</span>
+            </el-form-item>
+            <el-form-item v-if="isSSHAlgoType" :label="t('conn.sshAlgoMode')">
+              <el-radio-group v-model="sshAlgoMode">
+                <el-radio-button value="compatible">{{ t('conn.sshAlgoModeCompatible') }}</el-radio-button>
+                <el-radio-button value="secure">{{ t('conn.sshAlgoModeSecure') }}</el-radio-button>
+                <el-radio-button value="custom">{{ t('conn.sshAlgoModeCustom') }}</el-radio-button>
+              </el-radio-group>
+              <el-button v-if="sshAlgoMode === 'custom'" size="small" style="margin-left: 0.75rem;" @click="sshAlgoDialogVisible = true">
+                {{ t('conn.sshAlgoConfigure') }}
+              </el-button>
             </el-form-item>
             <template v-if="form.type === 'ftp'">
               <el-form-item :label="t('conn.ftpEncryption')">
@@ -699,6 +709,8 @@
   <IdentityEditDialog v-model:visible="identityDialogVisible" :identity="null" @saved="onIdentitySaved" />
   <!-- New proxy dialog (reuses the settings one) -->
   <ProxyEditDialog v-model:visible="proxyDialogVisible" :proxy="null" @saved="onProxySaved" />
+  <!-- SSH algorithm editor for custom mode -->
+  <SSHAlgorithmsDialog v-model:visible="sshAlgoDialogVisible" :config="form.sshAlgorithms" @save="onSSHAlgoSaved" />
 </template>
 
 <script setup lang="ts">
@@ -708,7 +720,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useIdentityStore } from '../stores/identityStore'
 import { useProxyStore } from '../stores/proxyStore'
 import { useI18n } from '../i18n'
-import type { ConnectionConfig, PostLoginExpectStep } from '../types/session'
+import type { ConnectionConfig, PostLoginExpectStep, SSHAlgoConfig } from '../types/session'
 import { OpenFileDialog, OpenPrivateKeyFile, OpenKubeconfigFile, GetPlatform, ListSerialPorts, TestConnection, GetDefaultSSHKeyPaths } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
@@ -718,6 +730,7 @@ import SyntaxEditor from './SyntaxEditor.vue'
 import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
+import SSHAlgorithmsDialog from './SSHAlgorithmsDialog.vue'
 import { isSqlDbType } from '../utils/quickConnect'
 import { CATEGORY_META, CATEGORY_ORDER, CONNECTION_TYPES, connectionTypeFormLabel, connectionTypeInfo, defaultPortFor } from '../utils/connectionTypes'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -974,7 +987,7 @@ const showTunnel = computed(() =>
 )
 const showProxy = computed(() => ['ssh', 'sftp', 'scp', 'monitor'].includes(form.type))
 const showAdvancedToggle = computed(() =>
-  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database'
+  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'x11-desktop'
 )
 
 const isRedisSentinel = computed(() =>
@@ -1064,7 +1077,33 @@ const form = reactive<ConnectionConfig>({
   proxyId: undefined,
   x11DesktopDesktopType: 'gnome',
   x11DesktopCustomCmd: '',
+  sshAlgorithms: undefined,
 })
+
+// SSH algorithm mode: a connection-level preference stored in
+// sshAlgorithms. undefined = compatible (the built-in full set); custom
+// mode opens the algorithm editor to fill the four preference lists.
+const isSSHAlgoType = computed(() => ['ssh', 'scp', 'sftp', 'mosh', 'x11-desktop'].includes(form.type))
+const sshAlgoDialogVisible = ref(false)
+const sshAlgoMode = computed<'compatible' | 'secure' | 'custom'>({
+  get: () => form.sshAlgorithms?.mode ?? 'compatible',
+  set: (mode) => {
+    if (mode === 'compatible') {
+      form.sshAlgorithms = undefined
+      return
+    }
+    if (mode === 'secure') {
+      form.sshAlgorithms = { mode: 'secure' }
+      return
+    }
+    form.sshAlgorithms = { mode: 'custom', keyExchanges: [], ciphers: [], macs: [], hostKeys: [] }
+    sshAlgoDialogVisible.value = true
+  },
+})
+
+function onSSHAlgoSaved(config: SSHAlgoConfig) {
+  form.sshAlgorithms = config
+}
 
 const RDP_CUSTOM_RESOLUTION = 'custom'
 
@@ -1368,6 +1407,7 @@ function resetForm() {
   form.rdpDomain = ''
   form.rdpAdminSession = false
   form.kerberosRealm = ''
+  form.sshAlgorithms = undefined
   form.dbType = ''
   form.dbName = ''
   form.dbParams = ''
@@ -1581,6 +1621,21 @@ function normalizeForm(): ConnectionConfig {
     form.serialParity = serialParityValue.value
   }
   const normalized = { ...form }
+  // SSH algorithms: only SSH-like session types carry the preference.
+  // Compatible mode stores nothing (backend default), secure mode stores
+  // just the mode; custom mode requires all four lists filled.
+  if (!isSSHAlgoType.value) {
+    normalized.sshAlgorithms = undefined
+  } else if (normalized.sshAlgorithms?.mode === 'compatible') {
+    normalized.sshAlgorithms = undefined
+  } else if (normalized.sshAlgorithms?.mode === 'secure') {
+    normalized.sshAlgorithms = { mode: 'secure' }
+  } else if (normalized.sshAlgorithms?.mode === 'custom') {
+    const algo = normalized.sshAlgorithms
+    if (!algo.keyExchanges?.length || !algo.ciphers?.length || !algo.macs?.length || !algo.hostKeys?.length) {
+      throw new Error(t('conn.sshAlgoEmptyList'))
+    }
+  }
   // Identity (密钥库) 的用户名与凭据完全由所引用的 identity 提供，连接时
   // MaterializeIdentity 会以 identity 的 username/password 覆盖本字段。
   // 从别的认证方式切到 identity 时，旧字段若残留 enc:v1: 密文，会被

@@ -544,6 +544,46 @@ func (a *App) SaveWindowState(x, y, width, height int, maximised bool) {
 	a.localStateStore.Save(ls)
 }
 
+// resetWindowGeometry recovers a lost window (tray menu item): shows it,
+// restores it from maximised, centres it on the PRIMARY screen at the app's
+// standard 1200x800, and persists the new geometry so the next start doesn't
+// restore the lost position. The size is clamped to the primary screen's
+// work area so the taskbar isn't covered.
+func (a *App) resetWindowGeometry() {
+	win := a.win()
+	if win == nil || a.app == nil {
+		return
+	}
+	win.UnMaximise()
+
+	const stdW, stdH = 1200, 800
+	screen := a.app.Screen.GetPrimary()
+	if screen == nil {
+		// Screen API unavailable — at least centre it on the default screen.
+		win.SetSize(stdW, stdH)
+		win.Center()
+	} else {
+		wa := screen.WorkArea
+		w, h := stdW, stdH
+		if w > wa.Width {
+			w = wa.Width
+		}
+		if h > wa.Height {
+			h = wa.Height
+		}
+		win.SetSize(w, h)
+		win.SetPosition(wa.X+(wa.Width-w)/2, wa.Y+(wa.Height-h)/2)
+	}
+
+	// Persist so a restart doesn't resurrect the lost position. Deferred so
+	// the window manager settles the move/resize first.
+	time.AfterFunc(300*time.Millisecond, a.saveWindowStateFromRuntime)
+
+	// The whole point is recovering a lost window — raise it to the
+	// foreground last so the repositioned result is what the user sees.
+	showMainWindow(win)
+}
+
 // IsForeground reports whether the app window is currently in the
 // foreground. Background goroutines consult this before running work
 // that should pause when the user can't see the terminal (F-043).
@@ -1450,6 +1490,9 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
 		a.setSessionLogFilename(settings.Terminal.SessionLogFilename)
 		a.triggerAutoSync()
+		// Re-apply the global show/hide hotkey so binding changes (and the
+		// enable switch) take effect immediately. No-op when unchanged.
+		applyGlobalShowHideHotkey(a.app, a.window, trayHotkeyBinding(&settings))
 	}
 	return err
 }
@@ -1826,20 +1869,21 @@ func (a *App) GetAppInfo() AppInfo {
 	}
 }
 
-// RelaunchApp spawns a fresh instance, then quits the current one so settings
-// that are fixed at startup (e.g. the window title bar) can take effect. The
-// new process is started first; a delay lets it finish spawning and raise its
-// own window to the foreground (see bringMainWindowToFront) before this instance
-// exits — while this process is still the foreground process, which is what
-// grants the new one set-foreground permission on Windows.
+// relaunchPending marks that the successor process should be spawned once
+// the current one has fully exited (checked in main() after w3app.Run()
+// returns). Quitting BEFORE spawning is what makes RelaunchApp compatible
+// with single-instance locking: if the successor were spawned first, it
+// would see the lock still held and exit immediately, killing the app.
+// (The old spawn-first order existed to inherit Windows set-foreground
+// permission; the successor now focuses itself at startup instead.)
+var relaunchPending atomic.Bool
+
+// RelaunchApp quits the current instance and spawns a fresh one afterwards
+// so settings that are fixed at startup (e.g. the window title bar) can take
+// effect.
 func (a *App) RelaunchApp() {
-	if err := a.relaunchProcess(); err != nil {
-		log.Writef("relaunch failed: %v", err)
-	}
-	go func() {
-		time.Sleep(800 * time.Millisecond)
-		a.app.Quit()
-	}()
+	relaunchPending.Store(true)
+	a.app.Quit()
 }
 
 func (a *App) CheckForUpdate(source string) (*update.UpdateInfo, error) {

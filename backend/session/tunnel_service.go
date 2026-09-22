@@ -62,12 +62,17 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	defer cleanup()
 	addr := net.JoinHostPort(sshConfig.Host, strconv.Itoa(sshConfig.Port))
 	cb, trust := NewHostKeyVerifier(addr)
+	algoSet, _, err := resolveSSHAlgorithms(sshConfig.SSHAlgorithms)
+	if err != nil {
+		return 0, err
+	}
 	clientConfig := &ssh.ClientConfig{
-		User:            sshConfig.User,
-		Auth:            authMethods,
-		Timeout:         30 * time.Second,
-		HostKeyCallback: cb,
-		Config:          sshAlgorithms(),
+		User:              sshConfig.User,
+		Auth:              authMethods,
+		Timeout:           30 * time.Second,
+		HostKeyCallback:   cb,
+		Config:            algoSet.config(),
+		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
 	conn, err := dialFirstHop(addr, upstream)

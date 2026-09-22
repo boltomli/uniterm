@@ -7,6 +7,7 @@ build/windows/installer/*
 !build/windows/installer/project.nsi
 !build/windows/icon.ico
 !build/appicon.png
+!build/appicon_tray.png
 !build/linux/
 # Wails v3 task-driven build config (must be tracked so `wails3 build` works)
 !build/Taskfile.yml

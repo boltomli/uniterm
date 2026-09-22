@@ -15,7 +15,7 @@
     >
       <div class="panel-header-left">
         <span class="panel-icon-wrapper">
-          <component :is="panelIcon" class="panel-type-icon" />
+          <component :is="panelIcon" class="panel-type-icon" :class="{ 'ai-locked-icon': isAILocked }" />
           <span
             v-if="isOutputLogOn"
             class="panel-log-dot"
@@ -76,6 +76,9 @@
             <MenuItem :shortcut="menuShortcut('duplicateSession')" @click="emit('duplicate', panel.id); moreMenuVisible = false">
               {{ t('tab.duplicate') }}
             </MenuItem>
+            <MenuItem v-if="canDuplicateChannel" @click="onDuplicateChannel(); moreMenuVisible = false">
+              {{ t('tab.duplicateChannel') }}
+            </MenuItem>
             <MenuItem @click="forceReconnect(); moreMenuVisible = false">{{ t('tab.reconnect') }}</MenuItem>
             <MenuItem v-if="serverHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
             <MenuItem :shortcut="menuShortcut('lockAI')" @click="toggleAiLockFromMenu">
@@ -96,6 +99,8 @@
               {{ t('terminal.searchText') }}
             </MenuItem>
             <MenuItem @click="triggerExport(); moreMenuVisible = false">{{ t('terminal.export') }}</MenuItem>
+            <MenuItem @click="triggerResetOutput(); moreMenuVisible = false">{{ t('terminal.resetOutput') }}</MenuItem>
+            <MenuItem @click="triggerClearScrollback(); moreMenuVisible = false">{{ t('terminal.clearScrollback') }}</MenuItem>
             <MenuItem @click="toggleOutputLog(); moreMenuVisible = false">
               {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
             </MenuItem>
@@ -143,6 +148,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding, panelDigitShortcutsSuppressed, panelDigitShortcutPrefix, formatDigitShortcut } from '../composables/useKeyboardShortcuts'
+import { useDuplicateSession } from '../composables/useDuplicateSession'
 import type { ShortcutAction } from '../types/settings'
 import {
   CreateSession,
@@ -398,6 +404,14 @@ function triggerExport() {
   window.dispatchEvent(new CustomEvent('terminal:export', { detail: { panelId: props.panel.id } }))
 }
 
+function triggerResetOutput() {
+  window.dispatchEvent(new CustomEvent('terminal:reset-output', { detail: { panelId: props.panel.id } }))
+}
+
+function triggerClearScrollback() {
+  window.dispatchEvent(new CustomEvent('terminal:clear-scrollback', { detail: { panelId: props.panel.id } }))
+}
+
 function startEdit() {
   editName.value = props.panel.title
   editing.value = true
@@ -438,6 +452,11 @@ function onSessionStatus(status: string) {
   if (status === 'retry') {
     // Manual retry — user pressed Enter
     retryConnection()
+  } else if (status === 'auth_failed') {
+    // Issue #949: credentials were rejected — re-open the credential dialog
+    // right away instead of making the user press Enter through two full
+    // reconnect attempts before it appears.
+    repromptCredentials()
   } else if (status === 'connected') {
     retryAttempt = 0
   }
@@ -446,6 +465,29 @@ function onSessionStatus(status: string) {
   // That raced the "Press Enter to restart" prompt and left users unable to
   // tell a dead shell from a live one, so a dead local shell now just waits
   // for Enter like every other session type.
+}
+
+// Password-auth SSH-family sessions: prompt for fresh credentials on an auth
+// rejection. Key/identity authTypes are excluded — a new user/password pair
+// cannot fix a rejected key, passphrase or identity-store reference.
+async function repromptCredentials() {
+  const config = props.panel.config
+  if (!config) return
+  const credTypes = ['ssh', 'mosh', 'sftp', 'scp', 'ftp', 'telnet']
+  if (!credTypes.includes(props.panel.type)) return
+  if (['key', 'keyText', 'kerberos', 'agent', 'identity'].includes(config.authType)) return
+  const result = await showCredentialDialog(
+    t('credential.title'),
+    t('credential.authFailedSubtitle'),
+    ['user', 'password'],
+    config.user || '',
+    ''
+  )
+  if (!result) return
+  config.user = result.user || config.user
+  config.password = result.password
+  retryAttempt = 0
+  await retryConnection()
 }
 
 async function retryConnection() {
@@ -572,6 +614,20 @@ async function forceReconnect() {
   await retryConnection()
 }
 
+// Channel clone (issue #983): only meaningful for a connected SSH panel.
+const canDuplicateChannel = computed(() =>
+  props.panel.type === 'ssh' && !!props.panel.sessionId &&
+  sessionStore.getStatus(props.panel.sessionId) === 'connected'
+)
+
+function onDuplicateChannel() {
+  const { duplicateChannel } = useDuplicateSession()
+  duplicateChannel(
+    { type: 'terminal', panelId: props.panel.id, title: props.panel.title },
+    props.workspaceId ? { workspaceId: props.workspaceId, targetPanelId: props.panel.id } : undefined,
+  )
+}
+
 // Reconnect menu in the tab right-click menu dispatches a 'panel:reconnect'
 // CustomEvent carrying the target panel id; only the matching panel acts.
 function onReconnectEvent(e: Event) {
@@ -649,16 +705,9 @@ watch(() => props.panel.outputLog, (val) => {
   background: var(--bg-elevated);
   border-bottom-color: var(--accent);
 }
-/* Match the AI-locked tab treatment (issue #909): a warning-tinted header
-   instead of an edge marker. The border is left alone so the active panel's
-   accent underline stays the sole "which panel is focused" signal. */
-.panel-header.ai-locked {
-  background: var(--warning-tab);
-}
-.panel-active .panel-header.ai-locked {
-  background: var(--warning-tab-active);
-  border-bottom-color: var(--accent);
-}
+/* The AI-locked panel header keeps its normal surface (issue #928: an
+   alpha-tinted warning background turns muddy on dark themes); the state is
+   carried by the Sparkles button below, which lights up solid amber. */
 .panel-title {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -694,6 +743,14 @@ watch(() => props.panel.outputLog, (val) => {
 }
 .panel-active .panel-type-icon {
   color: var(--accent);
+}
+/* Locked wins over the active accent: the AI state must stay visible when the
+   panel is focused (mirrors the tab icon treatment). */
+.panel-type-icon.ai-locked-icon {
+  color: var(--warning);
+}
+.panel-active .panel-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .panel-log-dot {
   position: absolute;

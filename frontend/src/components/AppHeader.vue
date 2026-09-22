@@ -106,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, h } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { Menu as MenuIcon, PanelLeft, Bot } from '@lucide/vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
 import { useI18n } from '../i18n'
@@ -138,10 +138,21 @@ const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
 const localStateStore = useLocalStateStore()
 // Window frame is fixed at startup (Wails limitation): the OS title bar only
-// appears after a relaunch. Snapshot the choice now instead of following the
-// live store, so toggling it in settings doesn't strip our own window
-// controls (close/min/max) before the restart takes effect (issue #935).
-const systemTitleBarAtStartup = localStateStore.state.systemTitleBar
+// appears after a relaunch. Snapshot the choice once the persisted local
+// state has loaded (reads before that would only see the default, since
+// LocalState loads via async IPC), then stop following the store — so
+// toggling it in settings doesn't strip our own window controls
+// (close/min/max) before the restart takes effect (issue #935).
+const systemTitleBarAtStartup = ref<boolean | null>(null)
+watch(
+  () => localStateStore.loaded,
+  (loaded) => {
+    if (loaded && systemTitleBarAtStartup.value === null) {
+      systemTitleBarAtStartup.value = localStateStore.state.systemTitleBar
+    }
+  },
+  { immediate: true }
+)
 
 // ── Settings dropdown menu ──
 const updateCheck = useUpdateCheck()
@@ -245,9 +256,12 @@ const isMaximised = ref(false)
 // The app draws its own window controls on every platform — but not when the
 // user opted into the OS native title bar at startup, which already provides
 // them, and never on mobile (no OS window to minimise/maximise/close). On
-// macOS they render as traffic lights on the left (see template).
+// macOS they render as traffic lights on the left (see template). Before the
+// snapshot lands, fall back to the live store value (the frameless default).
 const showWindowControls = computed(
-  () => !systemTitleBarAtStartup && !isMobilePlatform(platform.value)
+  () =>
+    !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar) &&
+    !isMobilePlatform(platform.value)
 )
 
 async function updateMaximisedState() {

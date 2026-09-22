@@ -74,7 +74,7 @@
             </div>
             <div v-if="showDisks" class="perf-sub-list">
               <div v-if="diskLoading" class="perf-sub-empty">{{ t('monitor.loading') }}</div>
-              <div v-for="d in mountedDisks" v-else :key="d.name + d.mountPoint" class="perf-sub-row">
+              <div v-for="d in mountedDisks" v-else :key="d.name + d.mountPoint" class="perf-sub-row disk">
                 <span class="sub-name" :title="d.mountPoint || d.name">{{ d.mountPoint || d.name }}</span>
                 <div class="sub-bar"><div class="sub-fill" :style="{ width: fmtWidth(d.usage) }" /></div>
                 <span class="sub-val">{{ d.used }} / {{ d.total }}</span>
@@ -121,17 +121,26 @@
         </div>
       </div>
       <el-input v-model="processSearch" :placeholder="t('monitor.searchProcess')" clearable class="process-search" />
-      <el-table :data="filteredProcesses" size="small" height="calc(100% - 2.5rem)" class="process-table" @row-click="onProcessRowClick">
-        <el-table-column prop="pid" label="PID" sortable :width="uiPx(80)" />
-        <el-table-column prop="name" :label="t('monitor.processName')" sortable />
-        <el-table-column prop="user" :label="t('monitor.user')" sortable :width="uiPx(100)" />
-        <el-table-column prop="state" :label="t('monitor.state')" sortable :width="uiPx(80)">
+      <el-table
+        ref="processTableRef"
+        :data="visibleProcesses"
+        size="small"
+        border
+        height="calc(100% - 2.5rem)"
+        class="process-table"
+        @sort-change="onProcessSortChange"
+        @row-click="onProcessRowClick"
+      >
+        <el-table-column prop="pid" label="PID" sortable="custom" :width="uiPx(80)" />
+        <el-table-column prop="name" :label="t('monitor.processName')" sortable="custom" />
+        <el-table-column prop="user" :label="t('monitor.user')" sortable="custom" :width="uiPx(100)" />
+        <el-table-column prop="state" :label="t('monitor.state')" sortable="custom" :width="uiPx(80)">
           <template #default="{ row }">{{ row.state ? String(row.state)[0] : '-' }}</template>
         </el-table-column>
-        <el-table-column prop="cpu" :label="t('monitor.cpu')" sortable :width="uiPx(90)">
+        <el-table-column prop="cpu" :label="t('monitor.cpu')" sortable="custom" :width="uiPx(90)">
           <template #default="{ row }">{{ row.cpu }}%</template>
         </el-table-column>
-        <el-table-column prop="mem" :label="t('monitor.mem')" sortable :width="uiPx(90)">
+        <el-table-column prop="mem" :label="t('monitor.mem')" sortable="custom" :width="uiPx(90)">
           <template #default="{ row }">{{ row.mem }}%</template>
         </el-table-column>
         <el-table-column :label="''" :width="uiPx(86)" align="center" class-name="proc-act-cell">
@@ -152,7 +161,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredPorts" size="small" v-loading="loadingPorts" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredPorts" size="small" border v-loading="loadingPorts" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="protocol" :label="t('monitor.port.protocol')" sortable :width="uiPx(90)" />
         <el-table-column prop="localAddr" :label="t('monitor.port.localAddr')" sortable :width="uiPx(160)" />
         <el-table-column prop="process" :label="t('monitor.port.process')" sortable />
@@ -167,7 +176,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredDisks" size="small" v-loading="loadingDisks" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredDisks" size="small" border v-loading="loadingDisks" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="name" :label="t('monitor.disk.name')" sortable>
           <template #default="{ row }">
             <span :style="{ paddingLeft: (row.name.match(/^ +/)?.[0].length || 0) * 6 + 'px' }">{{ row.name.trim() }}</span>
@@ -196,7 +205,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredNetCards" size="small" v-loading="loadingNetCards" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="filteredNetCards" size="small" border v-loading="loadingNetCards" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="name" :label="t('monitor.net.name')" sortable :width="uiPx(120)" />
         <el-table-column prop="state" :label="t('monitor.net.state')" sortable :width="uiPx(90)" />
         <el-table-column prop="mac" :label="t('monitor.net.mac')" sortable :width="uiPx(160)" />
@@ -233,7 +242,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="filteredServices" size="small" v-loading="loadingServices" height="calc(100% - 2.25rem)" class="od-table" @row-click="onServiceRowClick">
+      <el-table :data="filteredServices" size="small" border v-loading="loadingServices" height="calc(100% - 2.25rem)" class="od-table" @row-click="onServiceRowClick">
         <el-table-column prop="name" :label="t('monitor.service.name')" sortable :min-width="uiPx(220)" />
         <el-table-column prop="active" :label="t('monitor.service.active')" sortable :width="uiPx(100)">
           <template #default="{ row }">
@@ -262,7 +271,7 @@
           {{ t('monitor.refresh') }}
         </el-button>
       </div>
-      <el-table :data="deviceTreeData" row-key="rowKey" :tree-props="{ children: 'children' }" size="small" v-loading="loadingDevices" height="calc(100% - 2.25rem)" class="od-table">
+      <el-table :data="deviceTreeData" row-key="rowKey" :tree-props="{ children: 'children' }" size="small" border v-loading="loadingDevices" height="calc(100% - 2.25rem)" class="od-table">
         <el-table-column prop="id" :label="t('monitor.device.slot')" sortable :width="uiPx(150)" show-overflow-tooltip />
         <el-table-column prop="class" :label="t('monitor.device.class')" :min-width="uiPx(150)" show-overflow-tooltip>
           <template #default="{ row }">
@@ -343,7 +352,7 @@
         <div v-if="hardwareSensors && !hardwareSensors.hasIpmi" class="health-hint health-bottom-hint">
           {{ t('monitor.health.noIpmi') }}
         </div>
-        <el-table v-if="hardwareSensors && hardwareSensors.sensors.length" :data="filteredSensors" size="small" v-loading="loadingHardwareSensors" height="calc(100% - 2.25rem)" class="od-table health-table">
+        <el-table v-if="hardwareSensors && hardwareSensors.sensors.length" :data="filteredSensors" size="small" border v-loading="loadingHardwareSensors" height="calc(100% - 2.25rem)" class="od-table health-table">
           <el-table-column prop="name" :label="t('monitor.health.name')" sortable :min-width="uiPx(160)" />
           <el-table-column prop="value" :label="t('monitor.health.value')" :min-width="uiPx(140)" />
           <el-table-column prop="unit" :label="t('monitor.health.unit')" :width="uiPx(110)">
@@ -608,6 +617,10 @@ const currentSwap = ref({ total: 0, used: 0, usage: 0 })
 const currentDisk = ref({ total: '', used: '', usage: 0 })
 const currentNet = ref({ rx: 0, tx: 0, rxTotal: 0, txTotal: 0 })
 const processList = ref<any[]>([])
+const processTableRef = ref<any>(null)
+// False while the component is hidden by KeepAlive: the full process payload
+// is skipped instead of being rendered in a hidden pane.
+const monitorActive = ref(true)
 const systemInfo = ref<Record<string, any> | null>(null)
 
 // Expandable detail lists: per-core / per-NIC (live from perf payload) and
@@ -847,6 +860,14 @@ function fmtWidth(v: unknown): string {
   return Math.min(100, Math.max(0, n)) + '%'
 }
 
+// --- Process table ----------------------------------------------------------
+// The poll now delivers the FULL process list, which can be thousands of rows.
+// Like the SFTP file list, only a bounded slice is handed to el-table and it
+// grows as the user scrolls near the bottom; search and sort always operate
+// on the complete list.
+const PAGE_SIZE = 200
+const NEAR_BOTTOM_PX = 300
+
 const filteredProcesses = computed(() => {
   const q = processSearch.value.trim().toLowerCase()
   if (!q) return processList.value
@@ -855,6 +876,61 @@ const filteredProcesses = computed(() => {
     String(p.user).toLowerCase().includes(q) ||
     String(p.pid).includes(q)
   )
+})
+
+// Client-side sort over the full (filtered) list; el-table's own sort would
+// only order the rendered slice.
+const processSortState = ref<{ prop: string; order: string } | null>(null)
+
+function onProcessSortChange({ prop, order }: { prop: string; order: string | null }) {
+  processSortState.value = order ? { prop, order } : null
+}
+
+const sortedProcesses = computed(() => {
+  const list = [...filteredProcesses.value]
+  const s = processSortState.value
+  if (!s) return list
+  const dir = s.order === 'descending' ? -1 : 1
+  return list.sort((a: any, b: any) => {
+    const av = a[s.prop]
+    const bv = b[s.prop]
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+    return String(av ?? '').localeCompare(String(bv ?? '')) * dir
+  })
+})
+
+const processVisiblePages = ref(1)
+const visibleProcesses = computed(() => sortedProcesses.value.slice(0, processVisiblePages.value * PAGE_SIZE))
+
+let processScrollWrapEl: HTMLElement | null = null
+
+function bindProcessTableScroll() {
+  const el = (processTableRef.value?.$el ?? null) as HTMLElement | null
+  processScrollWrapEl = el?.querySelector('.el-scrollbar__wrap') ?? null
+  if (processScrollWrapEl && !processScrollWrapEl.dataset.lazyBinded) {
+    processScrollWrapEl.dataset.lazyBinded = '1'
+    processScrollWrapEl.addEventListener('scroll', onProcessTableScroll, { passive: true })
+  }
+}
+
+function onProcessTableScroll() {
+  // Defer to the next frame so the threshold is computed against the scroll
+  // height AFTER any just-triggered batch has been added to the DOM.
+  requestAnimationFrame(loadMoreProcessesIfNeeded)
+}
+
+function loadMoreProcessesIfNeeded() {
+  if (!processScrollWrapEl) return
+  const { scrollTop, clientHeight, scrollHeight } = processScrollWrapEl
+  if (scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_PX) {
+    processVisiblePages.value += 1
+  }
+}
+
+// New search text restarts at the top. Incoming poll data must NOT reset the
+// scroll position, so this watches only the filter.
+watch(processSearch, () => {
+  processVisiblePages.value = 1
 })
 
 const filteredPorts = computed(() => {
@@ -1161,13 +1237,23 @@ async function fetchPorts() {
   }
 }
 
+let diskFetchRetried = false
 async function fetchDisks() {
   loadingDisks.value = true
   try {
     diskList.value = await GetDisks(props.sessionId)
+    diskFetchRetried = false
   } catch (e: any) {
     msg.error(e?.message || 'Failed to fetch disks')
     diskList.value = []
+    // The monitor session may still be connecting on the first attempt;
+    // retry once so the list shows without a manual refresh.
+    if (!diskFetchRetried) {
+      diskFetchRetried = true
+      setTimeout(() => {
+        if (diskList.value.length === 0 && activeTab.value === 'disks') fetchDisks()
+      }, 3000)
+    }
   } finally {
     loadingDisks.value = false
   }
@@ -1448,6 +1534,9 @@ onMounted(() => {
   clockNow.value = Date.now()
   clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 1000)
 
+  // Progressive process list: grow the rendered slice on scroll.
+  bindProcessTableScroll()
+
   unlisten =Events.On('session:data', (ev) => { const data: any = ev.data;
     if (data?.id !== props.sessionId) return
     try {
@@ -1481,7 +1570,6 @@ onMounted(() => {
         if (Array.isArray(payload.cpus)) cpus.value = payload.cpus
       }
       if (payload.type === 'processes' && payload.processes) {
-        processList.value = payload.processes
         if (payload.summary) {
           if (payload.summary.cpu) {
             processSummaryCpu.value = payload.summary.cpu
@@ -1489,6 +1577,12 @@ onMounted(() => {
           if (payload.summary.memory) {
             processSummaryMem.value = payload.summary.memory
           }
+        }
+        // The full listing can be thousands of rows — only feed it into the
+        // reactive tree (and the table) while the processes pane is actually
+        // on screen, so hidden panes never re-render it.
+        if (monitorActive.value && activeTab.value === 'processes') {
+          processList.value = payload.processes
         }
       }
       nextTick(drawChart)
@@ -1502,12 +1596,14 @@ onMounted(() => {
 })
 
 onActivated(() => {
+  monitorActive.value = true
   // Sync active tab when component is reactivated from KeepAlive cache
   SetMonitorActiveTab(props.sessionId, activeTab.value).catch(() => {})
   SetMonitorPaused(props.sessionId, false).catch(() => {})
 })
 
 onDeactivated(() => {
+  monitorActive.value = false
   // Pause data collection when component is hidden by KeepAlive
   SetMonitorPaused(props.sessionId, true).catch(() => {})
 })
@@ -1779,6 +1875,22 @@ watch(activeTab, (tab) => {
   min-width: 0;
   text-align: right;
   white-space: nowrap;
+}
+/* Disk rows: fixed name/bar columns so bars and values line up across rows
+   regardless of how long the mount point or the used/total string is. */
+.perf-sub-row.disk .sub-name {
+  flex: 0 0 9rem;
+}
+.perf-sub-row.disk .sub-bar {
+  flex: 0 0 7rem;
+  max-width: 7rem;
+}
+.perf-sub-row.disk .sub-val {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .perf-sub-empty {
   padding: 0.5rem 0;
@@ -2078,6 +2190,16 @@ watch(activeTab, (tab) => {
 
 .od-table :deep(.cell) {
   user-select: text;
+}
+
+/* Column drag-resize only works in el-table's border mode; hide the vertical
+   grid lines it adds so the tables keep their original look. */
+.monitor-tab :deep(.el-table--border .el-table__cell) {
+  border-right: none;
+}
+.monitor-tab :deep(.el-table--border::after),
+.monitor-tab :deep(.el-table--border::before) {
+  display: none;
 }
 
 /* Services / devices / hardware health */

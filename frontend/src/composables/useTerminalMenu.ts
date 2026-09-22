@@ -1,8 +1,7 @@
 import { ref } from 'vue'
 import type { Ref } from 'vue'
-import { Clipboard } from '@wailsio/runtime'
 import { useSettingsStore } from '../stores/settingsStore'
-import { writeClipboard } from './useClipboardWrite'
+import { writeClipboard, readClipboardText } from './useClipboardWrite'
 export interface UseTerminalMenuOptions {
   getSelection: () => string
   onPaste: (text: string) => Promise<void> | void
@@ -93,9 +92,10 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
 
   async function pasteFromClipboard() {
     try {
-      // Wails clipboard, not navigator.clipboard.readText() — the latter pops
-      // a system "Paste" confirmation on macOS WKWebView.
-      const text = await Clipboard.Text()
+      // readClipboardText, not navigator.clipboard.readText() — the latter pops
+      // a system "Paste" confirmation on macOS WKWebView. It also retries once
+      // on empty so a transient clipboard lock doesn't kill the paste.
+      const text = await readClipboardText()
       if (text) {
         await options.onPaste(text)
       }

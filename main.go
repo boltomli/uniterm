@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
+	"sync"
 	"time"
 
 	// F-201: register pprof handlers on the default mux.
@@ -30,14 +32,30 @@ var devBuild = Version == "dev"
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// appIconTrayPNG is a dedicated tray icon: just the cyan "U" glyph cropped
+// from the app icon, pre-scaled to 64px. At the tray's 16-24px sizes the full
+// app icon (dark rounded tile + small glyph) turns into an unreadable dark
+// blob, and GDI's own downscale of the 1024px icon is mushy — a high-contrast
+// glyph filling the canvas stays legible. Scaled at runtime to the exact
+// OS small-icon size on Windows (see trayIconPNG in app_windows.go).
+//
+//go:embed build/appicon_tray.png
+var appIconTrayPNG []byte
+
 func main() {
 	// Administrator-shell broker mode: an elevated copy of uniTerm launched
 	// via the "runas" verb relays ConPTY I/O for admin local terminals (see
 	// backend/session/local_admin_windows.go). Must run before anything else
-	// so the broker never creates a window, webview or app store.
+	// so the broker never creates a window, webview or app store. It also
+	// runs before the single-instance lock, which keeps the broker process
+	// exempt — only GUI instances compete for the lock.
 	if session.RunLocalPtyBroker(os.Args) {
 		return
 	}
+
+	// Single-instance relaunch: RelaunchApp/autotest set relaunchPending and
+	// quit; the successor is spawned after Run() returns, once the lock is
+	// released.
 
 	// Capture top-level panics
 	defer func() {
@@ -73,19 +91,20 @@ func main() {
 	//
 	// Geometry comes from localState.json. The theme comes from settings.json,
 	// whose store normally starts later in ServiceStartup, so it is loaded
-	// directly here via the data-dir bootstrap (loadSavedTheme). Both loads
+	// directly here via the data-dir bootstrap (loadSavedSettings). Both loads
 	// run in parallel against the same deadline.
 	systemTitleBar := false
 	winW, winH := 1200, 800 // fallback before any saved geometry is applied
 	savedX, savedY := 0, 0
 	savedMaxed := false
 	savedTheme := ""
+	var savedSettings store.AppSettings
 
 	deadline := time.After(100 * time.Millisecond)
 
-	themeCh := make(chan string, 1)
+	settingsCh := make(chan store.AppSettings, 1)
 	go func() {
-		themeCh <- loadSavedTheme()
+		settingsCh <- loadSavedSettings()
 	}()
 
 	if configDir, err := os.UserConfigDir(); err == nil {
@@ -114,7 +133,8 @@ func main() {
 	}
 
 	select {
-	case savedTheme = <-themeCh:
+	case savedSettings = <-settingsCh:
+		savedTheme = savedSettings.Theme
 	case <-deadline:
 		// Too slow — windowBackgroundColour falls back to the dark default.
 	}
@@ -138,10 +158,27 @@ func main() {
 	// on it.
 	go sweepStaleExtEditDirs()
 
+	// Declared before application.New so the single-instance callback (which
+	// runs after startup) can capture it.
+	var window *application.WebviewWindow
+
 	w3app := application.New(application.Options{
 		Name:       "uniTerm",
 		Assets:     application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		OnShutdown: app.shutdown,
+		// Single-instance: a second GUI launch acquires the OS lock, notifies
+		// this instance (which shows/focuses the existing window) and exits.
+		// This prevents two GUI processes from racing on the shared stores in
+		// the user's data directory (settings.json, connections, credentials).
+		// The admin-shell broker process never reaches application.New, so it
+		// is exempt. RelaunchApp sets relaunchPending and quits first; the
+		// successor is spawned after Run() returns, with the lock released.
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: singleInstanceID,
+			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
+				showMainWindow(window)
+			},
+		},
 		// WebviewUserDataPath is a Windows-only path for WebView2 user data; it is
 		// harmless (ignored) on other platforms.
 		Windows: application.WindowsOptions{
@@ -194,7 +231,7 @@ func main() {
 		w3app.Menu.SetApplicationMenu(appMenu)
 	}
 
-	window := w3app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window = w3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:           "uniTerm",
 		Width:           winW,
 		Height:          winH,
@@ -261,6 +298,18 @@ func main() {
 	app.window = window
 	w3app.RegisterService(application.NewService(app))
 
+	// System tray (issue #982): persistent icon with left-click show/hide
+	// toggle and a menu (show / hide / reset position / settings / about /
+	// quit). Menu labels follow the persisted UI language; English is the
+	// fallback for unknown codes. Tray creation must happen after the window
+	// exists so the click handlers can drive it.
+	setupTray(w3app, app, window, savedSettings.Language)
+
+	// Global show/hide hotkey (issue #982, Windows + platform backends via
+	// the wails GlobalShortcutManager). Default Ctrl+M when unset; can be
+	// changed or disabled in Settings → Shortcuts.
+	applyGlobalShowHideHotkey(w3app, window, trayHotkeyBinding(&savedSettings))
+
 	// Local end-to-end update test hook — inert unless the env var is set
 	// (see autotest_update.go).
 	if os.Getenv("UNITERM_UPDATE_AUTOTEST") == "1" {
@@ -286,30 +335,41 @@ func main() {
 	if err != nil {
 		log.Writef("Wails run error: %v", err)
 	}
+
+	// Quit-then-spawn relaunch (RelaunchApp / update autotest): the process
+	// is exiting and the single-instance lock is released, so the successor
+	// starts clean — it would otherwise be rejected as a "second instance".
+	if relaunchPending.Load() {
+		if err := spawnSuccessorProcess(); err != nil {
+			log.Writef("relaunch: spawn successor failed: %v", err)
+		}
+	}
 }
 
-// loadSavedTheme reads the persisted app theme so the window can be created
-// with a background colour matching it (see windowBackgroundColour). The
-// settings store normally initializes later in ServiceStartup, so this goes
-// through the data-dir bootstrap directly. Returns "" when unavailable
-// (first run / read error) — the caller maps that to the dark default.
-func loadSavedTheme() string {
+// loadSavedSettings reads the persisted app settings so the window can be
+// created with a background colour matching the theme (see
+// windowBackgroundColour), the tray menu can follow the UI language, and the
+// global hotkey can be registered before Run(). The settings store normally
+// initializes later in ServiceStartup, so this goes through the data-dir
+// bootstrap directly. Returns the zero value when unavailable (first run /
+// read error) — the caller maps that to the dark theme default and Ctrl+M.
+func loadSavedSettings() store.AppSettings {
 	dd, err := store.ResolveDataDir()
 	if err != nil || dd.FirstRun || dd.Path == "" {
-		return ""
+		return store.AppSettings{}
 	}
 	// ResolveDataDir only returns paths that exist (bootstrap paths are
 	// validated, the upgrade path is checked for config files), so
 	// NewSettingsStore's MkdirAll is a no-op here.
 	ss, err := store.NewSettingsStore(dd.Path)
 	if err != nil {
-		return ""
+		return store.AppSettings{}
 	}
 	settings, err := ss.Load()
 	if err != nil {
-		return ""
+		return store.AppSettings{}
 	}
-	return settings.Theme
+	return settings
 }
 
 // windowBackgroundColour maps the persisted app theme to the native window
@@ -361,4 +421,194 @@ func startPprofIfDev() {
 			log.Writef("pprof listener failed: %v", err)
 		}
 	}()
+}
+
+// System tray support (issue #982): a persistent tray icon with a left-click
+// show/hide toggle and a small right-click menu. The tray is what makes the
+// window "hide to the notification area" recoverable — without it a hidden
+// window could only be brought back via the global hotkey.
+
+// trayLabels carries the tray menu strings for every UI language the
+// frontend offers. The Go side can't use the frontend's i18n bundles, so the
+// labels live here, keyed by the settings language code; unknown codes fall
+// back to English.
+var trayLabels = map[string][6]string{
+	// show, hide, reset, settings, about, quit
+	"en":    {"Show Main Window", "Hide to Tray", "Reset Window Position", "Settings", "About", "Quit"},
+	"zh-CN": {"显示主窗口", "隐藏到托盘", "重置窗口位置", "设置", "关于", "退出"},
+	"zh-TW": {"顯示主視窗", "隱藏到系統匣", "重置視窗位置", "設定", "關於", "結束"},
+	"ja":    {"メインウィンドウを表示", "トレイに隠す", "ウィンドウ位置をリセット", "設定", "バージョン情報", "終了"},
+	"ko":    {"메인 창 표시", "트레이로 숨기기", "창 위치 재설정", "설정", "정보", "종료"},
+	"de":    {"Hauptfenster anzeigen", "In den Tray minimieren", "Fensterposition zurücksetzen", "Einstellungen", "Über", "Beenden"},
+	"es":    {"Mostrar ventana principal", "Ocultar en la bandeja", "Restablecer posición", "Ajustes", "Acerca de", "Salir"},
+	"fr":    {"Afficher la fenêtre", "Réduire dans la zone de notification", "Réinitialiser la position", "Paramètres", "À propos", "Quitter"},
+	"ru":    {"Показать главное окно", "Свернуть в трей", "Сбросить положение окна", "Настройки", "О программе", "Выход"},
+}
+
+func trayLabel(lang string, idx int) string {
+	if labels, ok := trayLabels[lang]; ok {
+		return labels[idx]
+	}
+	return trayLabels["en"][idx]
+}
+
+const (
+	trayShow   = 0
+	trayHide   = 1
+	trayReset  = 2
+	traySet    = 3
+	trayAbout  = 4
+	trayQuit   = 5
+)
+
+// setupTray creates the system tray icon and menu. lang is the persisted UI
+// language (from settings.json) used to localize the menu labels.
+func setupTray(w3app *application.App, app *App, window *application.WebviewWindow, lang string) {
+	tray := w3app.SystemTray.New()
+	tray.SetIcon(trayIconPNG())
+	tray.SetTooltip("uniTerm")
+
+	menu := application.NewMenu()
+	menu.Add(trayLabel(lang, trayShow)).OnClick(func(*application.Context) {
+		showMainWindow(window)
+	})
+	menu.Add(trayLabel(lang, trayHide)).OnClick(func(*application.Context) {
+		window.Hide()
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, trayReset)).OnClick(func(*application.Context) {
+		app.resetWindowGeometry()
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, traySet)).OnClick(func(*application.Context) {
+		showMainWindow(window)
+		app.emit("app:open-settings")
+	})
+	menu.Add(trayLabel(lang, trayAbout)).OnClick(func(*application.Context) {
+		showMainWindow(window)
+		app.emit("app:open-about")
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, trayQuit)).OnClick(func(*application.Context) {
+		w3app.Quit()
+	})
+
+	tray.SetMenu(menu)
+
+	// Left click toggles visibility, mirroring MobaXterm's tray behaviour.
+	tray.OnClick(func() {
+		if window.IsVisible() {
+			window.Hide()
+		} else {
+			showMainWindow(window)
+		}
+	})
+
+	tray.Show()
+}
+
+// showMainWindow brings the window back from hidden/minimised state and
+// gives it focus. Safe to call from any goroutine — the wails v3 window
+// methods dispatch to the main thread internally.
+func showMainWindow(window *application.WebviewWindow) {
+	if window == nil {
+		return
+	}
+	if !window.IsVisible() {
+		window.Show()
+	}
+	window.UnMinimise()
+	window.Focus()
+}
+
+// toggleMainWindow shows the window when hidden (or minimised), hides it
+// otherwise.
+func toggleMainWindow(window *application.WebviewWindow) {
+	if window == nil {
+		return
+	}
+	if window.IsVisible() {
+		window.Hide()
+	} else {
+		showMainWindow(window)
+	}
+}
+
+// Global show/hide hotkey state. applyGlobalShowHideHotkey swaps the
+// registered accelerator; the currently registered string is tracked here so
+// unrelated settings saves don't re-register (which would briefly release
+// the OS-wide binding). Access is mutex-guarded: SaveSettings runs on a
+// binding goroutine while startup applies the initial binding from main.
+var (
+	trayHotkeyMu      sync.Mutex
+	trayHotkeyCurrent string
+)
+
+// applyGlobalShowHideHotkey registers (or re-registers) the OS-global
+// show/hide shortcut via the wails GlobalShortcutManager, which handles the
+// platform backends (RegisterHotKey on Windows, Carbon on macOS, X11 on
+// Linux). A nil binding means the default Ctrl+M; a binding with an empty
+// key (the UI's "cleared" state) unregisters. Failures (the combo already
+// owned by another app) are logged and leave no binding registered.
+func applyGlobalShowHideHotkey(w3app *application.App, window *application.WebviewWindow, binding *store.KeyBinding) {
+	if w3app == nil {
+		return
+	}
+	trayHotkeyMu.Lock()
+	defer trayHotkeyMu.Unlock()
+
+	if trayHotkeyCurrent != "" {
+		if err := w3app.GlobalShortcut.Unregister(trayHotkeyCurrent); err != nil {
+			log.Writef("global hotkey: unregister %q failed: %v", trayHotkeyCurrent, err)
+		}
+		trayHotkeyCurrent = ""
+	}
+	if binding == nil {
+		binding = &store.KeyBinding{Ctrl: true, Key: "m"}
+	}
+	accel := keyBindingAccelerator(binding)
+	if accel == "" {
+		// Empty key = the UI's "cleared" state — stays unregistered.
+		return
+	}
+	if err := w3app.GlobalShortcut.Register(accel, func() {
+		toggleMainWindow(window)
+	}); err != nil {
+		log.Writef("global hotkey: register %q failed: %v", accel, err)
+		return
+	}
+	trayHotkeyCurrent = accel
+}
+
+// keyBindingAccelerator renders a frontend KeyBinding as a wails accelerator
+// string ("Ctrl+Alt+M"). Empty string when the binding has no key.
+func keyBindingAccelerator(b *store.KeyBinding) string {
+	key := strings.ToLower(strings.TrimSpace(b.Key))
+	if key == "" {
+		return ""
+	}
+	var parts []string
+	if b.Ctrl {
+		parts = append(parts, "Ctrl")
+	}
+	if b.Alt {
+		parts = append(parts, "Alt")
+	}
+	if b.Shift {
+		parts = append(parts, "Shift")
+	}
+	if b.Meta {
+		parts = append(parts, "Super")
+	}
+	return strings.Join(append(parts, key), "+")
+}
+
+// trayHotkeyBinding extracts the global show/hide hotkey from the keyboard
+// settings map ("trayShowHide" key, same shape as the in-app bindings).
+// Absent = default Ctrl+M; present-with-empty-key = disabled.
+func trayHotkeyBinding(s *store.AppSettings) *store.KeyBinding {
+	if b, ok := s.Keyboard["trayShowHide"]; ok {
+		return &b
+	}
+	return nil
 }

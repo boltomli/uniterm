@@ -170,6 +170,15 @@ type AppSettings struct {
 	CustomTerminalThemes     []CustomTerminalTheme `json:"customTerminalThemes"`
 	DefaultLocalShell        string                `json:"defaultLocalShell"`
 	TabCloseButton           string                `json:"tabCloseButton"`
+	// ShowTabShortcutHints toggles the per-tab numeric shortcut hint
+	// (e.g. Ctrl+1) on the tab itself. Pointer + omitempty so settings.json
+	// written by older builds (which lack this field) still loads; the
+	// frontend defaults to `true` when nil.
+	ShowTabShortcutHints *bool `json:"showTabShortcutHints,omitempty"`
+	// HostListMenuStyle selects how the host list opens the connection
+	// menu: "button" (hover buttons) or "rightclick". Empty means the
+	// frontend falls back to `button`.
+	HostListMenuStyle string `json:"hostListMenuStyle,omitempty"`
 	// SidebarTabs toggles which connection-sidebar tab icons are visible,
 	// keyed by view id (connections/files/monitor/tunnels/quickCommands/
 	// history/personalization). "connections" is always shown in the UI and

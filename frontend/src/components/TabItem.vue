@@ -23,6 +23,7 @@
       <component
         :is="tab.locked ? Lock : tabIcon"
         class="tab-type-icon"
+        :class="{ 'ai-locked-icon': isAILocked }"
       />
       <span
         v-if="isOutputLogOn"
@@ -81,6 +82,9 @@
       <MenuItem v-if="canDuplicate" :shortcut="menuShortcut('duplicateSession')" @click="onDuplicate">
         {{ t('tab.duplicate') }}
       </MenuItem>
+      <MenuItem v-if="canDuplicateChannel" @click="onDuplicateChannel">
+        {{ t('tab.duplicateChannel') }}
+      </MenuItem>
       <MenuItem v-if="canReconnect" @click="onReconnect">{{ t('tab.reconnect') }}</MenuItem>
       <MenuItem v-if="hasServerHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
       <MenuItem v-if="tab.type === 'terminal'" :shortcut="menuShortcut('lockAI')" @click="toggleAiLock">
@@ -101,6 +105,8 @@
         {{ t('terminal.searchText') }}
       </MenuItem>
       <MenuItem v-if="tab.type === 'terminal'" @click="triggerExport">{{ t('terminal.export') }}</MenuItem>
+      <MenuItem v-if="tab.type === 'terminal'" @click="triggerResetOutput">{{ t('terminal.resetOutput') }}</MenuItem>
+      <MenuItem v-if="tab.type === 'terminal'" @click="triggerClearScrollback">{{ t('terminal.clearScrollback') }}</MenuItem>
       <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
         {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
       </MenuItem>
@@ -150,7 +156,7 @@ import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
 import { saveWorkspaceToConnections } from '../composables/savedWorkspace'
 import type { TerminalTab, SettingsTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
-import { connectFileMenuKey, fileTransferProto } from '../utils/fileTransferUtils'
+import { connectFileMenuKey, fileTransferProto, canOpenSshTerminal, asSshTerminalConfig } from '../utils/fileTransferUtils'
 import { connectionTypeIconOfKind } from '../utils/connectionTypes'
 import { useDuplicateSession } from '../composables/useDuplicateSession'
 import Menu from './Menu.vue'
@@ -189,7 +195,7 @@ const activeProgress = computed(() => {
 const containerStore = useContainerStore()
 const settingsStore = useSettingsStore()
 const companionStore = useCompanionStore()
-const { duplicateSession } = useDuplicateSession()
+const { duplicateSession, duplicateChannel } = useDuplicateSession()
 const { t } = useI18n()
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -335,6 +341,14 @@ const canDuplicate = computed(() => {
   return type === 'terminal' || type === 'sftp' || type === 'database' || type === 'mongodb' || type === 'redis' || type === 'elasticsearch' || type === 'k8s'
 })
 
+// Channel clone (issue #983): SSH terminal tabs with a live session — the
+// backend re-validates, this gate only hides the menu item early.
+const canDuplicateChannel = computed(() => {
+  if (props.tab.type !== 'terminal') return false
+  const p = panelStore.getPanel((props.tab as TerminalTab).panelId)
+  return !!p && p.type === 'ssh' && !!p.sessionId && sessionStore.getStatus(p.sessionId) === 'connected'
+})
+
 // Reconnectable panels — terminal types that Panel.vue can re-initiate.
 const TTY_RECONNECT_TYPES: readonly string[] = ['ssh', 'telnet', 'serial', 'mosh', 'local', 'tcp', 'k8s-exec', 'container-exec']
 
@@ -364,13 +378,13 @@ const isSsh = computed(() => {
   return p?.type === 'ssh'
 })
 
-// SSH-derived file tabs (SFTP/SCP from an SSH connection) — used to show the
-// reverse action: open a terminal for the same host.
+// SSH-backed file tabs — used to show the reverse action: open a terminal for
+// the same host. Covers the ssh companion (sftp/scp per fileTransferProto) and
+// standalone sftp/scp connections; non-SSH file protocols are excluded.
 const isSftpOverSsh = computed(() => {
   if (props.tab.type !== 'sftp') return false
   const p = panelStore.getPanel((props.tab as SFTPTab).panelId)
-  // SCP panels also have config.type === 'ssh'; include them as well.
-  return p?.config?.type === 'ssh'
+  return canOpenSshTerminal(p?.config)
 })
 
 // Menu label for the file-transfer action follows the connection's protocol
@@ -546,6 +560,11 @@ function onDuplicate() {
   duplicateSession(props.tab)
 }
 
+function onDuplicateChannel() {
+  closeContextMenu()
+  duplicateChannel(props.tab)
+}
+
 // Dissolve: every member panel returns to the tab bar as a live terminal tab
 // (sessions stay alive, broadcast cleared). NOT routed through closeTab —
 // that would close the sessions.
@@ -605,8 +624,10 @@ function openMonitor() {
 
 function openTerminal() {
   const panel = panelStore.getPanel((props.tab as SFTPTab).panelId)
-  if (panel) {
-    window.dispatchEvent(new CustomEvent('app:connect-terminal', { detail: panel }))
+  if (panel?.config) {
+    // Rewrite standalone sftp/scp configs to 'ssh' so onConnect opens a
+    // terminal instead of following their file-browser spec.
+    window.dispatchEvent(new CustomEvent('app:connect-terminal', { detail: { ...panel, config: asSshTerminalConfig(panel.config) } }))
   }
   closeContextMenu()
 }
@@ -676,6 +697,16 @@ function triggerExport() {
   closeContextMenu()
 }
 
+function triggerResetOutput() {
+  window.dispatchEvent(new CustomEvent('terminal:reset-output', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
+  closeContextMenu()
+}
+
+function triggerClearScrollback() {
+  window.dispatchEvent(new CustomEvent('terminal:clear-scrollback', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
+  closeContextMenu()
+}
+
 onMounted(async () => {
   if (supportsOutputLog.value) {
     await refreshOutputLogState()
@@ -711,20 +742,13 @@ onMounted(async () => {
   color: var(--text-primary);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-/* AI-locked tabs carry a warning-tinted background, not an edge marker, so the
-   state reads at a glance (issue #909). The border is left alone: the accent
-   ring stays the sole "which tab is selected" signal. */
-.tab-item.ai-locked {
-  background: var(--warning-tab);
-  color: var(--text-primary);
-}
-.tab-item.ai-locked:hover {
-  background: var(--warning-tab-hover);
-}
-.tab-item.active.ai-locked {
-  background: var(--warning-tab-active);
-  color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--accent);
+/* AI-locked tabs are signalled by the tab icon alone: a solid warning-coloured
+   icon with a soft glow. No surface tint — low-alpha warning colour over the
+   dark background turns muddy (issue #928), and at higher alpha it reads as a
+   flat orange block. The accent ring stays the sole "which tab is selected"
+   signal. */
+.tab-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .tab-name {
   font-size: 0.75rem;
@@ -832,6 +856,11 @@ onMounted(async () => {
 }
 .tab-item.active .tab-type-icon {
   color: var(--accent);
+}
+/* Locked wins over the active accent: the AI state must stay visible when the
+   tab is selected. */
+.tab-item.active .tab-type-icon.ai-locked-icon {
+  color: var(--warning);
 }
 .transfer-indicator {
   color: var(--accent);

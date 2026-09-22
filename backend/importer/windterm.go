@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ys-ll/uniterm/backend/session"
+	"github.com/ys-ll/uniterm/backend/utils"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -161,16 +162,7 @@ func windTermResolveKeyPath(p string) string {
 	}
 	p = strings.ReplaceAll(p, "$(HomeDir)", home)
 	p = strings.ReplaceAll(p, "${HomeDir}", home)
-	if p == "~" {
-		return home
-	}
-	if strings.HasPrefix(p, "~/") {
-		return filepath.Join(home, p[2:])
-	}
-	if strings.HasPrefix(p, `~\`) {
-		return filepath.Join(home, p[2:])
-	}
-	return p
+	return utils.ExpandHomePath(p)
 }
 
 // windTermCrypto loads the profile's user.config next to the sessions file and,

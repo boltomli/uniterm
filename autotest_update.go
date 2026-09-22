@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/log"
@@ -59,19 +58,10 @@ func (a *App) autotestUpdate() {
 
 	log.Writef("[autotest] APPLIED %s -> %s; relaunching same env", Version, info.Latest)
 
-	// Spawn the (now updated) binary directly so the test env — including
-	// UNITERM_UPDATE_AUTOTEST — carries over to run 2. Production relaunches
-	// go through RelaunchApp (LaunchServices), which does not propagate env.
-	exe, err := os.Executable()
-	if err == nil {
-		cmd := exec.Command(exe)
-		cmd.Env = os.Environ()
-		if err := cmd.Start(); err != nil {
-			log.Writef("[autotest] relaunch failed: %v", err)
-		}
-	}
-	go func() {
-		time.Sleep(800 * time.Millisecond)
-		a.app.Quit()
-	}()
+	// Relaunch through the shared quit-then-spawn path: run 2 inherits the
+	// full environment (including UNITERM_UPDATE_AUTOTEST) and starts only
+	// after run 1 has released the single-instance lock. Spawning first
+	// would make run 2 exit as a "second instance".
+	relaunchPending.Store(true)
+	a.app.Quit()
 }

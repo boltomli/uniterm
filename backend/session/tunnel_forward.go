@@ -249,12 +249,18 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 		}
 
 		cb, trust := NewHostKeyVerifier(addr)
+		algoSet, _, err := resolveSSHAlgorithms(cfg.SSHAlgorithms)
+		if err != nil {
+			closeClients(clients)
+			return nil, nil, err
+		}
 		clientConfig := &ssh.ClientConfig{
-			User:            cfg.User,
-			Auth:            authMethods,
-			Timeout:         30 * time.Second,
-			HostKeyCallback: cb,
-			Config:          sshAlgorithms(),
+			User:              cfg.User,
+			Auth:              authMethods,
+			Timeout:           30 * time.Second,
+			HostKeyCallback:   cb,
+			Config:            algoSet.config(),
+			HostKeyAlgorithms: algoSet.HostKeys,
 		}
 		sshConn, chans, reqs, err := ssh.NewClientConn(raw, addr, clientConfig)
 		cleanup()

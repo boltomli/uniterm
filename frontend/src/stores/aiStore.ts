@@ -159,6 +159,10 @@ export const useAIStore = defineStore('ai', () => {
     command: string
     risk: string
     dangerous: boolean
+    panel?: string
+    timeout?: number
+    headLines?: number
+    tailLines?: number
   } | null>(null)
   const pendingQuestion = ref<{
     messageId: string
@@ -226,7 +230,7 @@ export const useAIStore = defineStore('ai', () => {
     lastDebugInfo.value = null
   }
 
-  function setPendingCommand(cmd: { messageId: string; toolId: string; command: string; risk: string; dangerous: boolean }) {
+  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; headLines?: number; tailLines?: number }) {
     pendingCommand.value = cmd
   }
 

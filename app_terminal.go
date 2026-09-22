@@ -16,6 +16,7 @@ import (
 
 	"go.bug.st/serial"
 
+	"github.com/google/uuid"
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -447,6 +448,70 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	return nil
 }
 
+// DuplicateSSHChannel opens a new session channel on an existing connected
+// SSH session's authenticated client (Xshell-style "duplicate channel",
+// issue #983). No re-dial, no re-auth — a jump-host/2FA login is not
+// repeated. The new session defers its channel attach until SessionStart,
+// like CreateSession's terminal types.
+func (a *App) DuplicateSSHChannel(sourceSessionID string, config session.ConnectionConfig) (*session.SessionInfo, error) {
+	if a.sessionManager == nil {
+		return nil, fmt.Errorf("session manager not initialized")
+	}
+	src, ok := a.sessionManager.Get(sourceSessionID)
+	if !ok {
+		return nil, fmt.Errorf("session %s not found", sourceSessionID)
+	}
+	srcSSH, ok := src.(*session.SSHSession)
+	if !ok {
+		return nil, fmt.Errorf("session %s is not an SSH session", sourceSessionID)
+	}
+	if !srcSSH.IsConnected() {
+		return nil, fmt.Errorf("source session %s is not connected", sourceSessionID)
+	}
+
+	s := session.NewSSHChannelSession(uuid.New().String(), srcSSH)
+	s.SetLogIdentity(config.Name, config.Host)
+	s.SetLogOnConnect(config.LogOnConnect)
+	if config.InitialCols > 0 && config.InitialRows > 0 {
+		s.SetPendingSize(config.InitialCols, config.InitialRows)
+	}
+	s.SetEncoding(config.Encoding)
+
+	s.SetOnDataCallback(func(data []byte) {
+		a.emit("session:data", map[string]interface{}{
+			"id":   s.ID(),
+			"data": string(data),
+		})
+	})
+	s.SetOnBinaryCallback(func(data []byte) {
+		a.emit("session:binary", map[string]interface{}{
+			"id":   s.ID(),
+			"data": base64.StdEncoding.EncodeToString(data),
+		})
+	})
+	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
+		payload := map[string]interface{}{
+			"id":     s.ID(),
+			"status": status,
+		}
+		if status == session.StatusConnected {
+			if remoteOS := s.RemoteOS(); remoteOS != "" {
+				payload["remoteOS"] = remoteOS
+			}
+		}
+		a.emit("session:status", payload)
+	})
+
+	a.sessionManager.Add(s)
+	log.Writef("[DuplicateSSHChannel] channel clone created, id=%s from=%s", s.ID(), sourceSessionID)
+	return &session.SessionInfo{
+		ID:     s.ID(),
+		Type:   s.Type(),
+		Title:  s.Title(),
+		Status: s.Status(),
+	}, nil
+}
+
 // SessionStart triggers the actual Connect() for terminal sessions
 // (ssh, local, telnet, mosh, serial) whose Connect was deferred by
 // CreateSession. The frontend calls this AFTER mounting the xterm
@@ -465,6 +530,23 @@ func (a *App) SessionStart(sessionID string, config session.ConnectionConfig) er
 	// carries the real cols/rows the frontend discovered after mount.
 	if config.InitialCols > 0 && config.InitialRows > 0 {
 		s.SetPendingSize(config.InitialCols, config.InitialRows)
+	}
+	// Channel clones (issue #983) attach to an already-authenticated client:
+	// skip identity/proxy resolution and jump-host tunnel setup — no dial
+	// happens, and a clone of a tunneled session would otherwise spin up a
+	// redundant second tunnel from the (unused) config.
+	if c, ok := s.(interface{ IsChannelClone() bool }); ok && c.IsChannelClone() {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Writef("session %s connect panic: %v\n%s", s.ID(), r, string(debug.Stack()))
+				}
+			}()
+			if err := s.Connect(config); err != nil {
+				a.failSessionConnect(s, err)
+			}
+		}()
+		return nil
 	}
 	// Terminal session types defer Connect() until SessionStart, and the
 	// frontend passes a fresh config here. If that fresh config still has
@@ -1212,4 +1294,11 @@ func (a *App) GetDefaultSessionLogDir() string {
 		return custom
 	}
 	return session.DefaultSessionLogDir()
+}
+
+// GetSupportedSSHAlgorithms returns the SSH algorithm candidate pool with
+// security levels plus the compatible/secure presets, for the connection
+// form's algorithm editor.
+func (a *App) GetSupportedSSHAlgorithms() session.SupportedSSHAlgorithms {
+	return session.GetSupportedSSHAlgorithms()
 }

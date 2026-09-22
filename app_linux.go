@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unsafe"
@@ -132,4 +133,26 @@ func systemPrefersDark() bool {
 		return true
 	}
 	return !strings.Contains(strings.ToLower(string(out)), "light")
+}
+
+// spawnSuccessorProcess starts a fresh, detached copy of the current
+// executable. Called from main() AFTER w3app.Run() has returned and the
+// process is about to exit, so the successor starts with the single-instance
+// lock free and the stores quiesced (see RelaunchApp for why spawn happens
+// after quit).
+func spawnSuccessorProcess() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe)
+	cmd.Dir = filepath.Dir(exe)
+	return cmd.Start()
+}
+
+// trayIconPNG returns the tray icon bytes as-is off Windows: macOS and Linux
+// tray implementations take the PNG directly and size it themselves (see
+// app_windows.go for the Windows exact-size scaling).
+func trayIconPNG() []byte {
+	return appIconTrayPNG
 }

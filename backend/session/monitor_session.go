@@ -12,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/ys-ll/uniterm/backend/log"
+	"golang.org/x/crypto/ssh"
 )
 
 type cpuSample struct{ total, idle uint64 }
@@ -68,8 +67,38 @@ type DiskInfo struct {
 }
 
 type dfEntry struct {
-	Used, Total, Mount string
-	Usage              int
+	Spec, FSType, Total, Used, Mount string
+	Usage                            int
+}
+
+// parseDfOutput parses `df -hT` output (with a fallback to plain `df -h`
+// when the Type column is absent). The mount point is the last field and
+// never contains literal spaces: /etc/mtab escapes them as \040.
+func parseDfOutput(out string) []dfEntry {
+	rows := []dfEntry{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Filesystem") {
+			continue
+		}
+		f := strings.Fields(line)
+		var r dfEntry
+		switch {
+		case len(f) >= 7: // Filesystem Type Size Used Avail Use% Mount
+			r = dfEntry{Spec: f[0], FSType: f[1], Total: f[2], Used: f[3], Usage: atoiTrimPct(f[5]), Mount: f[6]}
+		case len(f) >= 6: // Filesystem Size Used Avail Use% Mount
+			r = dfEntry{Spec: f[0], Total: f[1], Used: f[2], Usage: atoiTrimPct(f[4]), Mount: f[5]}
+		default:
+			continue
+		}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+func atoiTrimPct(s string) int {
+	n, _ := strconv.Atoi(strings.TrimSuffix(s, "%"))
+	return n
 }
 
 type NetCardInfo struct {
@@ -146,12 +175,17 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	cb, trust := NewHostKeyVerifier(addr)
+	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return err
+	}
 	clientConfig := &ssh.ClientConfig{
-		User:            config.User,
-		Auth:            authMethods,
-		Timeout:         30 * time.Second,
-		HostKeyCallback: cb,
-		Config:          sshAlgorithms(),
+		User:              config.User,
+		Auth:              authMethods,
+		Timeout:           30 * time.Second,
+		HostKeyCallback:   cb,
+		Config:            algoSet.config(),
+		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
 	client, err := dialSSHTCP(addr, clientConfig, config.Proxy)
@@ -313,6 +347,11 @@ cpu_system=$(echo "$cpu_line" | awk '{print $4}')
 cpu_idle=$(echo "$cpu_line" | awk '{print $5}')
 cpu_iowait=$(echo "$cpu_line" | awk '{print $6}')
 cpu_total=$(echo "$cpu_line" | awk '{print $2+$3+$4+$5+$6+$7+$8+$9}')
+[ -z "$cpu_user" ] && cpu_user=0
+[ -z "$cpu_system" ] && cpu_system=0
+[ -z "$cpu_idle" ] && cpu_idle=0
+[ -z "$cpu_iowait" ] && cpu_iowait=0
+[ -z "$cpu_total" ] && cpu_total=0
 
 mem_total=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
 mem_avail=$(awk '/MemAvailable:/{print $2}' /proc/meminfo)
@@ -325,10 +364,16 @@ swap_total=$(awk '/SwapTotal:/{print $2}' /proc/meminfo)
 swap_free=$(awk '/SwapFree:/{print $2}' /proc/meminfo)
 [ -z "$swap_total" ] && swap_total=0
 [ -z "$swap_free" ] && swap_free=0
+[ -z "$mem_total" ] && mem_total=0
+[ -z "$mem_avail" ] && mem_avail=0
 
-disk_total=$(df -h / | awk 'NR==2{print $2}')
-disk_used=$(df -h / | awk 'NR==2{print $3}')
-disk_usage=$(df -h / | awk 'NR==2{gsub(/%/,""); print $5}')
+# One df invocation (with a hard timeout so a stale NFS mount cannot wedge
+# the poll loop) instead of three; the fields are split locally.
+df_line=$(timeout 5 df -h / | awk 'NR==2')
+disk_total=$(echo "$df_line" | awk '{print $2}')
+disk_used=$(echo "$df_line" | awk '{print $3}')
+disk_usage=$(echo "$df_line" | awk '{gsub(/%/,""); print $5}')
+[ -z "$disk_usage" ] && disk_usage=0
 
 # Sum all non-lo interfaces
 net_rx=$(awk '/^[ ]*[^ ]+:/ && !/lo:/{rx+=$2; tx+=$10} END{print rx+0}' /proc/net/dev)
@@ -340,9 +385,11 @@ handles=$(awk '{print $1}' /proc/sys/fs/file-nr)
 [ -z "$handles" ] && handles=0
 
 proc_count=$(ps -e | wc -l)
+[ -z "$proc_count" ] && proc_count=0
 proc_count=$((proc_count > 0 ? proc_count - 1 : 0))
 
 cores=$(nproc || echo 1)
+[ -z "$cores" ] && cores=1
 
 loadavg=$(cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}')
 [ -z "$loadavg" ] && loadavg="0 0 0"
@@ -362,6 +409,7 @@ awk 'NR>2{split($1,a,":"); n=a[1]; if(n!="lo") print n,$2,$10}' /proc/net/dev
 
 	out, err := session.Output(script)
 	if err != nil {
+		log.Writef("monitor %s performance poll failed: %v", s.ID(), err)
 		return
 	}
 
@@ -407,6 +455,11 @@ awk 'NR>2{split($1,a,":"); n=a[1]; if(n!="lo") print n,$2,$10}' /proc/net/dev
 
 	var m rawMetrics
 	if err := json.Unmarshal(out, &m); err != nil {
+		// A malformed summary used to be dropped silently, leaving the
+		// performance gauges at zero forever on hosts whose shell mangles
+		// the inline JSON. Log a sample so the remote failure is
+		// diagnosable from the app log.
+		log.Writef("monitor %s performance payload unmarshal failed: %v; output: %.200s", s.ID(), err, out)
 		return
 	}
 
@@ -648,6 +701,8 @@ func (s *MonitorSession) collectProcesses() {
 cpu_line=$(head -1 /proc/stat)
 cpu_total=$(echo "$cpu_line" | awk '{print $2+$3+$4+$5+$6+$7+$8+$9}')
 cpu_idle=$(echo "$cpu_line" | awk '{print $5}')
+[ -z "$cpu_total" ] && cpu_total=0
+[ -z "$cpu_idle" ] && cpu_idle=0
 mem_total=$(awk '/MemTotal:/{print $2}' /proc/meminfo)
 mem_avail=$(awk '/MemAvailable:/{print $2}' /proc/meminfo)
 [ -z "$mem_avail" ] && mem_avail=$(awk '/MemFree:/{print $2}' /proc/meminfo)
@@ -655,12 +710,16 @@ mem_cached=$(awk '/^Cached:/{print $2}' /proc/meminfo)
 [ -z "$mem_cached" ] && mem_cached=0
 mem_buffers=$(awk '/^Buffers:/{print $2}' /proc/meminfo)
 [ -z "$mem_buffers" ] && mem_buffers=0
+[ -z "$mem_total" ] && mem_total=0
+[ -z "$mem_avail" ] && mem_avail=0
 loadavg=$(cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}')
 [ -z "$loadavg" ] && loadavg="0 0 0"
 proc_count=$(ps -e | wc -l)
+[ -z "$proc_count" ] && proc_count=0
 proc_count=$((proc_count > 0 ? proc_count - 1 : 0))
 cores=$(nproc || echo 1)
-ps -eo pid,ppid,user,stat,pcpu,pmem,comm,args --sort=-pcpu | tail -n +2 | head -30 || true
+[ -z "$cores" ] && cores=1
+ps -eo pid,ppid,user,stat,pcpu,pmem,comm,args --sort=-pcpu | tail -n +2 || true
 echo "---SUMMARY---"
 printf '{"cpu_total":%s,"cpu_idle":%s,"cores":%s,"proc_count":%s,"mem_total":%s,"mem_avail":%s,"mem_cached":%s,"mem_buffers":%s,"load1":%s,"load5":%s,"load15":%s}\n' \
   "$cpu_total" "$cpu_idle" "$cores" "$proc_count" \
@@ -732,35 +791,13 @@ printf '{"cpu_total":%s,"cpu_idle":%s,"cores":%s,"proc_count":%s,"mem_total":%s,
 			s.state.lastProcCpuTotal = rawSummary.CpuTotal
 			s.state.lastProcCpuIdle = rawSummary.CpuIdle
 			s.state.hasProcPrev = true
+		} else {
+			log.Writef("monitor %s process summary unmarshal failed: %v; summary: %.200s", s.ID(), err, summaryJSON)
 		}
 	}
 
 	// Parse processes
-	processes := []map[string]interface{}{}
-	for _, line := range strings.Split(procPart, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 8 {
-			continue
-		}
-		pid, _ := strconv.Atoi(parts[0])
-		ppid, _ := strconv.Atoi(parts[1])
-		cpu, _ := strconv.ParseFloat(parts[4], 64)
-		mem, _ := strconv.ParseFloat(parts[5], 64)
-		processes = append(processes, map[string]interface{}{
-			"pid":   pid,
-			"ppid":  ppid,
-			"user":  parts[2],
-			"state": parts[3],
-			"cpu":   cpu,
-			"mem":   mem,
-			"name":  parts[6],
-			"cmd":   strings.Join(parts[7:], " "),
-		})
-	}
+	processes := parseProcessRows(procPart)
 
 	payload := map[string]interface{}{
 		"type":      "processes",
@@ -772,6 +809,38 @@ printf '{"cpu_total":%s,"cpu_idle":%s,"cores":%s,"proc_count":%s,"mem_total":%s,
 
 	jsonData, _ := json.Marshal(payload)
 	s.emitData(jsonData)
+}
+
+// parseProcessRows parses the body of a `ps -eo pid,ppid,user,stat,pcpu,pmem,comm,args`
+// listing (header already stripped) into the map shape used by the processes
+// payload.
+func parseProcessRows(out string) []map[string]interface{} {
+	rows := []map[string]interface{}{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 8 {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[0])
+		ppid, _ := strconv.Atoi(f[1])
+		cpu, _ := strconv.ParseFloat(f[4], 64)
+		mem, _ := strconv.ParseFloat(f[5], 64)
+		rows = append(rows, map[string]interface{}{
+			"pid":   pid,
+			"ppid":  ppid,
+			"user":  f[2],
+			"state": f[3],
+			"cpu":   cpu,
+			"mem":   mem,
+			"name":  f[6],
+			"cmd":   strings.Join(f[7:], " "),
+		})
+	}
+	return rows
 }
 
 func (s *MonitorSession) GetProcessDetail(pid int) (map[string]interface{}, error) {
@@ -1109,10 +1178,7 @@ fi`
 // column (which previously surfaced "QEMU"/"1" as fake mounts for sr0/vda/vdc).
 // Returns nil when the output is not in pairs form (ancient lsblk fell back to
 // plain columns); the caller then retries with column parsing.
-func parseLsblkPairsDisks(out string, mountUsage map[string]struct {
-	Used, Total string
-	Usage       int
-}) []DiskInfo {
+func parseLsblkPairsDisks(out string, mountUsage map[string]dfEntry) []DiskInfo {
 	var disks []DiskInfo
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -1208,15 +1274,16 @@ func parseAddrText(out string) map[string][]string {
 
 func (s *MonitorSession) GetDisks() ([]DiskInfo, error) {
 	// Run lsblk and df in a single shell script to avoid extra SSH round-trips.
-	// df only queries paths that actually have a mountpoint.
+	// Both get a hard timeout so a stale NFS mount (where df blocks forever)
+	// cannot wedge the whole call. df runs without args and therefore reports
+	// every mounted filesystem, which is exactly what the full disk list wants.
 	session, err := s.client.NewSession()
 	if err != nil {
 		return nil, err
 	}
-	script := `lsblk -J -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA,FSTYPE,UUID,VENDOR 2>/dev/null
+	script := `timeout 10 lsblk -J -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA,FSTYPE,UUID,VENDOR 2>/dev/null
 echo "__SPLIT__"
-mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
-[ -n "$mp" ] && df -h $mp 2>/dev/null`
+timeout 10 df -hTP 2>/dev/null || timeout 10 df -hT 2>/dev/null || timeout 10 df -h 2>/dev/null || true`
 	out, err := session.Output(script)
 	session.Close()
 
@@ -1229,35 +1296,16 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 		dfOut = []byte(strings.TrimSpace(parts[1]))
 	}
 
-	mountUsage := map[string]struct {
-		Used, Total string
-		Usage       int
-	}{}
+	dfRows := parseDfOutput(string(dfOut))
+	mountUsage := map[string]dfEntry{}
 	dfByDev := map[string]dfEntry{}
-	for _, line := range strings.Split(string(dfOut), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Filesystem") {
-			continue
+	for _, r := range dfRows {
+		mountUsage[r.Mount] = r
+		devName := r.Spec
+		if idx := strings.LastIndex(devName, "/"); idx >= 0 {
+			devName = devName[idx+1:]
 		}
-		fields := strings.Fields(line)
-		if len(fields) >= 6 {
-			mount := fields[5]
-			usageStr := strings.TrimSuffix(fields[4], "%")
-			usage, _ := strconv.Atoi(usageStr)
-			mountUsage[mount] = struct {
-				Used, Total string
-				Usage       int
-			}{
-				Used:  fields[2],
-				Total: fields[1],
-				Usage: usage,
-			}
-			devName := fields[0]
-			if idx := strings.LastIndex(devName, "/"); idx >= 0 {
-				devName = devName[idx+1:]
-			}
-			dfByDev[devName] = dfEntry{Used: fields[2], Total: fields[1], Usage: usage, Mount: mount}
-		}
+		dfByDev[devName] = r
 	}
 
 	var disks []DiskInfo
@@ -1371,7 +1419,7 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 			}
 		}
 		walk(lsblkJSON.BlockDevices, 0)
-		return disks, nil
+		return appendDfOnlyDisks(disks, dfRows), nil
 	}
 
 	// Fallback to text parsing
@@ -1380,7 +1428,7 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 		return nil, err
 	}
 	defer session2.Close()
-	out2, err := session2.Output(`lsblk -P -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || lsblk -P -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || lsblk -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null`)
+	out2, err := session2.Output(`timeout 10 lsblk -P -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || timeout 10 lsblk -P -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || timeout 10 lsblk -b -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null || timeout 10 lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL,ROTA 2>/dev/null`)
 	if err != nil {
 		return nil, err
 	}
@@ -1388,7 +1436,7 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 	// Old lsblk (<2.30) can't emit JSON, so prefer the stable -P pairs form.
 	// The column loop below is only a last resort for pre-2.22 lsblk without -P.
 	if flat := parseLsblkPairsDisks(string(out2), mountUsage); len(flat) > 0 {
-		return flat, nil
+		return appendDfOnlyDisks(flat, dfRows), nil
 	}
 
 	lines := strings.Split(string(out2), "\n")
@@ -1455,7 +1503,37 @@ mp=$(lsblk -n -o MOUNTPOINT 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')
 		}
 		disks = append(disks, disk)
 	}
-	return disks, nil
+	return appendDfOnlyDisks(disks, dfRows), nil
+}
+
+// appendDfOnlyDisks appends filesystems reported by df that no lsblk device
+// row claimed (overlay roots in containers, NFS/CIFS mounts, tmpfs, bind
+// mounts), so the disk list shows everything df sees. Rows whose mount point
+// is already displayed on an lsblk node are skipped to avoid duplicates.
+func appendDfOnlyDisks(disks []DiskInfo, rows []dfEntry) []DiskInfo {
+	covered := map[string]bool{}
+	for _, d := range disks {
+		if d.MountPoint != "" {
+			covered[d.MountPoint] = true
+		}
+	}
+	for _, r := range rows {
+		if r.Mount == "" || covered[r.Mount] {
+			continue
+		}
+		covered[r.Mount] = true
+		disks = append(disks, DiskInfo{
+			Name:       r.Spec,
+			Type:       r.FSType,
+			Size:       r.Total,
+			Total:      r.Total,
+			Used:       r.Used,
+			Usage:      r.Usage,
+			MountPoint: r.Mount,
+			FSType:     r.FSType,
+		})
+	}
+	return disks
 }
 
 func (s *MonitorSession) GetNetworkCards() ([]NetCardInfo, error) {

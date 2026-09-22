@@ -62,6 +62,16 @@ function stubNavigatorWrite(writeText: ReturnType<typeof vi.fn>) {
   })
 }
 
+// These tests pin the Wails-first write contract, which is the macOS ordering
+// (WKWebView's navigator.clipboard silently fails when unfocused). Stub a Mac
+// user agent so the ordering doesn't depend on the OS running the tests.
+function stubMacUserAgent() {
+  Object.defineProperty(globalThis.navigator, 'userAgent', {
+    configurable: true,
+    value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+  })
+}
+
 describe('useTerminalMenu.writeClipboard', () => {
   let writeText: ReturnType<typeof vi.fn>
 
@@ -70,6 +80,7 @@ describe('useTerminalMenu.writeClipboard', () => {
     mockSettingsStore.settings.terminal.rightClickAction = 'menu'
     writeText = vi.fn().mockResolvedValue(undefined)
     stubNavigatorWrite(writeText)
+    stubMacUserAgent()
   })
 
   it('falls back to navigator.clipboard.writeText when Wails resolves false', async () => {
@@ -163,6 +174,7 @@ describe('useTerminalMenu.copySelection re-reads selection at click time', () =>
     mockSettingsStore.settings.terminal.rightClickAction = 'menu'
     writeText = vi.fn().mockResolvedValue(undefined)
     stubNavigatorWrite(writeText)
+    stubMacUserAgent()
   })
 
   // WKWebView race: right-click mousedown can clear xterm selection between

@@ -64,12 +64,17 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	defer cleanup()
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	cb, trust := NewHostKeyVerifier(addr)
+	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return fmt.Errorf("mosh ssh auth: %w", err)
+	}
 	clientConfig := &ssh.ClientConfig{
-		User:            config.User,
-		Auth:            authMethods,
-		Timeout:         30 * time.Second,
-		HostKeyCallback: cb,
-		Config:          sshAlgorithms(),
+		User:              config.User,
+		Auth:              authMethods,
+		Timeout:           30 * time.Second,
+		HostKeyCallback:   cb,
+		Config:            algoSet.config(),
+		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
 	conn, err := net.DialTimeout("tcp", addr, clientConfig.Timeout)

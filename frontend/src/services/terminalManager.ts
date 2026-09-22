@@ -1,4 +1,5 @@
 import { Terminal } from '@xterm/xterm'
+import { Events } from '@wailsio/runtime'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon } from '@xterm/addon-search'
@@ -11,6 +12,8 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
+import { useSessionStore } from '../stores/sessionStore'
+import { useZmodemStore } from '../stores/zmodemStore'
 import type { CustomTerminalTheme } from '../types/settings'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { installImeCompatibilityPatch } from '../utils/xtermImeCompatibility'
@@ -40,6 +43,12 @@ export interface ManagedTerminal {
   progressAddon: ProgressAddon
   container: HTMLElement | null
   refs: Set<string>
+  /** Component instances (terminalInstanceRef keys) currently mounted AND
+   * visible. A terminal with no active refs is KeepAlive-deactivated: its
+   * xterm buffer is frozen (BaseTerminal gates live session:data writes on
+   * component activity and replays on reactivation), so screen-buffer reads
+   * are only valid while this is non-empty. */
+  activeRefs: Set<string>
   options: TerminalOptions
   disposeTimer: ReturnType<typeof setTimeout> | null
   /** Whether this terminal was newly created (not reused via timer cancellation). */
@@ -72,6 +81,159 @@ export interface ManagedTerminal {
 }
 
 const terminals = new Map<string, ManagedTerminal>()
+
+// ---------------------------------------------------------------------------
+// Headless mirror terminal (AI output path)
+// ---------------------------------------------------------------------------
+// While a panel is deactivated, its visible terminal's buffer freezes (live
+// session:data writes are gated on component activity and replayed on
+// reactivation). The AI executor still needs emulator-faithful output:
+// raw-stream text reconstruction cannot resolve ConPTY cursor-positioning
+// redraws (the issue-624 class), which glues prompt redraws onto output rows
+// and silently drops them. A second, never-rendered Terminal instance per
+// session parses the same stream continuously, so its buffer always matches
+// what the screen would show. Cost: one extra headless parse per session —
+// no DOM, no renderer.
+const MIRROR_SCROLLBACK_CAP = 2000
+
+interface TerminalMirror {
+  terminal: Terminal
+  lineOffset: number
+  trimDispose: { dispose(): void } | null
+  resizeDispose: { dispose(): void } | null
+  unsub: () => void
+}
+
+const mirrors = new Map<string, TerminalMirror>()
+
+function createMirror(sessionId: string, options: TerminalOptions, source: Terminal): TerminalMirror {
+  const terminal = new Terminal({
+    // Unicode11Addon needs the proposed API (unicode.activeVersion), same as
+    // the visible terminal's constructor.
+    allowProposedApi: true,
+    // Bound mirror memory independently of the user's scrollback setting;
+    // absolute rows stay self-consistent within the mirror.
+    scrollback: Math.min(options.scrollback ?? 2500, MIRROR_SCROLLBACK_CAP),
+  })
+  // Match the visible terminal's CJK width behavior (see acquireTerminal):
+  // the addon must be loaded before switching unicode.activeVersion, or xterm
+  // throws "Unicode 11 addon not loaded".
+  terminal.loadAddon(new Unicode11Addon())
+  terminal.unicode.activeVersion = '11'
+  const mirror: TerminalMirror = {
+    terminal,
+    lineOffset: 0,
+    trimDispose: null,
+    resizeDispose: null,
+    unsub: () => {},
+  }
+  // Mirror grid must match the PTY size the visible terminal negotiated:
+  // ConPTY streams are size-dependent (cursor positioning, wrapping), so a
+  // default 80x24 mirror scrambles the layout — the cursor ends up on a blank
+  // row and prompt snapshots come back empty. Follow the source from now on.
+  mirror.resizeDispose = source.onResize(({ cols, rows }) => {
+    terminal.resize(cols, rows)
+  })
+  terminal.resize(source.cols, source.rows)
+  // Track scrollback trimming so absolute rows stay stable — same internal
+  // API and guard as the visible terminal's lineOffset bookkeeping.
+  try {
+    const core = (terminal as any)._core
+    const lines = core?._bufferService?.buffers?.normal?.lines
+    if (typeof lines?.onTrim === 'function') {
+      const m = mirror
+      m.trimDispose = lines.onTrim((amount: number) => {
+        m.lineOffset += amount
+      })
+    }
+  } catch { /* noop */ }
+  mirror.unsub = Events.On('session:data', (ev: any) => {
+    const payload = ev?.data
+    if (!payload || payload.id !== sessionId || typeof payload.data !== 'string') return
+    // Same zmodem cancel-window swallow as sessionStore: residual binary
+    // garbage from an aborted transfer must not reach the mirror buffer.
+    try {
+      if (Date.now() < useZmodemStore().getCancelUntil(payload.id)) return
+    } catch { /* pinia not installed yet */ }
+    mirror.terminal.write(payload.data)
+  })
+  return mirror
+}
+
+function disposeMirror(sessionId: string): void {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror) return
+  mirrors.delete(sessionId)
+  mirror.unsub()
+  mirror.trimDispose?.dispose()
+  mirror.resizeDispose?.dispose()
+  mirror.terminal.dispose()
+}
+
+// Cursor line + absolute row on the mirror buffer — prompt snapshot source
+// for inactive terminals.
+export function getMirrorPromptSnapshot(sessionId: string): { promptLine: string; startRow: number } | null {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror) return null
+  const buf = mirror.terminal.buffer.active
+  const line = buf.getLine(buf.baseY + buf.cursorY)
+  const promptLine = line ? line.translateToString(true).trimEnd() : ''
+  return { promptLine, startRow: mirror.lineOffset + buf.baseY + buf.cursorY }
+}
+
+// Screen text from the mirror buffer starting at an absolute row — the
+// inactive-terminal counterpart of reading the visible terminal's screen.
+// Returns null when no mirror exists for the session.
+export function readMirrorScreenFromRow(sessionId: string, absStartRow: number): string | null {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror || absStartRow < 0) return null
+  const buf = mirror.terminal.buffer.active
+  let first: number
+  let last: number
+  if (buf.type === 'alternate') {
+    first = buf.baseY
+    last = buf.length - 1
+  } else {
+    first = Math.max(0, absStartRow - mirror.lineOffset)
+    last = buf.length - 1
+    while (last >= first && mirrorRowBlank(buf, last)) last--
+    if (last < first) return ''
+  }
+  const lines: string[] = []
+  for (let i = first; i <= last; i++) {
+    const line = buf.getLine(i)
+    if (line) lines.push(line.translateToString(true))
+  }
+  return lines.join('\n')
+}
+
+// Last tailLines non-blank-terminated lines from the mirror buffer — the
+// inactive-terminal counterpart of captureTerminal. Returns null when no
+// mirror exists for the session.
+export function readMirrorTail(sessionId: string, tailLines: number): string | null {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror) return null
+  const buf = mirror.terminal.buffer.active
+  if (buf.length === 0) return ''
+  let last = buf.length - 1
+  while (last >= 0 && mirrorRowBlank(buf, last)) last--
+  if (last < 0) return ''
+  const first = Math.max(0, last - tailLines + 1)
+  const lines: string[] = []
+  for (let i = first; i <= last; i++) {
+    const line = buf.getLine(i)
+    if (line) lines.push(line.translateToString())
+  }
+  return lines.join('\n')
+}
+
+function mirrorRowBlank(
+  buf: { getLine(n: number): { translateToString(): string } | undefined },
+  row: number
+): boolean {
+  const line = buf.getLine(row)
+  return !line || line.translateToString().trim() === ''
+}
 
 // Route a progress state from a session's terminal to the tab that displays
 // it (session → panel → tab, same resolution the notification dots use).
@@ -230,6 +392,7 @@ export function acquireTerminal(
       progressAddon,
       container: null,
       refs: new Set(),
+      activeRefs: new Set(),
       options,
       disposeTimer: null,
       isNew: true,
@@ -240,6 +403,15 @@ export function acquireTerminal(
       resizeDispose: null,
       progressDispose: null,
       imeDispose: null,
+    }
+    // Headless mirror starts parsing the session stream immediately so its
+    // buffer is always current when the panel goes to the background. Never
+    // let a mirror failure break terminal creation — the AI path degrades to
+    // the raw-stream fallback when no mirror exists.
+    try {
+      mirrors.set(sessionId, createMirror(sessionId, options, terminal))
+    } catch (e) {
+      console.warn('[terminalManager] headless mirror creation failed', e)
     }
 
     // Track scrollback trimming so line-numbers / timestamps stay continuous
@@ -301,6 +473,7 @@ export function releaseTerminal(sessionId: string, ref: string): void {
     // Delay disposal to survive drag-and-drop lifecycle race.
     // If acquireTerminal is called within 500ms, the timer is cancelled.
     managed.disposeTimer = setTimeout(() => {
+      disposeMirror(sessionId)
       managed.trimDispose?.dispose()
       managed.trimDispose = null
       managed.resizeDispose?.dispose()
@@ -322,6 +495,7 @@ export function disposeTerminal(sessionId: string): void {
   if (managed.disposeTimer) {
     clearTimeout(managed.disposeTimer)
   }
+  disposeMirror(sessionId)
   managed.trimDispose?.dispose()
   managed.trimDispose = null
   managed.resizeDispose?.dispose()
@@ -340,6 +514,10 @@ export function disposeTerminal(sessionId: string): void {
 export function transferTerminal(oldSessionId: string, newSessionId: string): boolean {
   const managed = terminals.get(oldSessionId)
   if (!managed) return false
+  // Migrate the mirror: its event subscription filters by sessionId and the
+  // new session's history lives in the sessionStore — rebuild for the new id,
+  // seeded with everything buffered so far.
+  disposeMirror(oldSessionId)
   terminals.delete(oldSessionId)
   terminals.set(newSessionId, managed)
   // Re-target the progress subscription: its closure captured oldSessionId,
@@ -350,6 +528,17 @@ export function transferTerminal(oldSessionId: string, newSessionId: string): bo
     setTabProgressForSession(newSessionId, state.state === 0 ? null : state)
   })
   setTabProgressForSession(oldSessionId, null)
+  try {
+    const mirror = createMirror(newSessionId, managed.options, managed.terminal)
+    mirrors.set(newSessionId, mirror)
+    // Seed with the new session's buffered history (reconnect replay reaches
+    // the visible terminal directly, not through session:data events).
+    const sessionStore = useSessionStore()
+    const total = sessionStore.getChunkCount(newSessionId)
+    if (total > 0) mirror.terminal.write(sessionStore.getDataFromChunk(newSessionId, 0))
+  } catch (e) {
+    console.warn('[terminalManager] headless mirror re-creation failed', e)
+  }
   return true
 }
 
@@ -431,6 +620,25 @@ export function detachTerminal(sessionId: string, container: HTMLElement): void 
 
 export function getTerminal(sessionId: string): Terminal | undefined {
   return terminals.get(sessionId)?.terminal
+}
+
+// Mark a component instance as actively displaying the terminal (mounted and
+// KeepAlive-active). Called by BaseTerminal on mount/activate with its unique
+// terminalInstanceRef, and with active=false on deactivate/unmount.
+export function markTerminalActive(sessionId: string, ref: string, active: boolean): void {
+  const managed = terminals.get(sessionId)
+  if (!managed) return
+  if (active) managed.activeRefs.add(ref)
+  else managed.activeRefs.delete(ref)
+}
+
+// True while any visible component drives the terminal. When false the xterm
+// buffer is frozen at the deactivation state — screen-buffer readers (AI
+// output capture, prompt snapshots) must fall back to the buffered PTY stream
+// in sessionStore instead.
+export function isTerminalActive(sessionId: string): boolean {
+  const managed = terminals.get(sessionId)
+  return !!managed && managed.activeRefs.size > 0
 }
 
 export function getManagedTerminal(sessionId: string): ManagedTerminal | undefined {

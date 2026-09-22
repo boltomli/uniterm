@@ -13,6 +13,17 @@ export interface PostLoginExpectStep {
   timeoutSecond?: number
 }
 
+// Per-connection SSH algorithm preferences. mode omitted/'compatible' uses the
+// built-in compatible set; 'custom' relies on the four preference lists (order
+// = negotiation priority, each list non-empty).
+export interface SSHAlgoConfig {
+  mode?: 'compatible' | 'secure' | 'custom'
+  keyExchanges?: string[]
+  ciphers?: string[]
+  macs?: string[]
+  hostKeys?: string[]
+}
+
 export interface ConnectionConfig {
   id: string
   name: string
@@ -23,6 +34,7 @@ export interface ConnectionConfig {
   user: string
   authType: 'password' | 'key' | 'keyText' | 'agent' | 'identity' | 'kerberos' | 'apikey'
   kerberosRealm?: string // realm used for IP targets, e.g. EXAMPLE.COM
+  sshAlgorithms?: SSHAlgoConfig // undefined = compatible default
   password?: string
   keyPath?: string
   keyContent?: string // inline private-key text (authType === 'keyText')

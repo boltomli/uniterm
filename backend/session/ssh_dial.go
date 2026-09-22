@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,10 +20,11 @@ type sshClientConfigFactory func() (*ssh.ClientConfig, func(), error)
 
 // dialSSHWithCipherFallback keeps modern AEAD preference, but retries a
 // handshake EOF once with CTR first for servers that falsely advertise GCM.
-func dialSSHWithCipherFallback(addr string, newConfig sshClientConfigFactory, dial sshConnDialer) (*ssh.Client, error) {
-	algorithms := []ssh.Config{sshAlgorithms(), sshAlgorithmsCTRFirst()}
+// The algorithm sets are resolved per connection (see resolveSSHAlgorithms)
+// and tried in order; only a first-attempt EOF advances to the next set.
+func dialSSHWithCipherFallback(addr string, sets []sshAlgoSet, newConfig sshClientConfigFactory, dial sshConnDialer) (*ssh.Client, error) {
 	var lastErr error
-	for i, algorithms := range algorithms {
+	for i, set := range sets {
 		conn, err := dial()
 		if err != nil {
 			return nil, fmt.Errorf("tcp dial: %w", err)
@@ -37,7 +39,8 @@ func dialSSHWithCipherFallback(addr string, newConfig sshClientConfigFactory, di
 			tcpConn.SetKeepAlivePeriod(sshKeepAliveInterval)
 		}
 		attempt := *config
-		attempt.Config = algorithms
+		attempt.Config = set.config()
+		attempt.HostKeyAlgorithms = set.HostKeys
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &attempt)
 		cleanup()
 		if err == nil {
@@ -53,18 +56,6 @@ func dialSSHWithCipherFallback(addr string, newConfig sshClientConfigFactory, di
 	return nil, fmt.Errorf("ssh handshake: %w", lastErr)
 }
 
-// splitSSHAuthMethods separates the password/key methods from the
-// keyboard-interactive fallback. The dialer tries them in two phases — see
-// dialSSHWithAuthRetry for why keyboard-interactive must not be offered on
-// the first handshake.
-func splitSSHAuthMethods(config ConnectionConfig, kbCallback ssh.KeyboardInteractiveChallenge) ([]ssh.AuthMethod, ssh.AuthMethod) {
-	methods, _ := makeSSHAuthMethods(config, nil)
-	if kbCallback == nil {
-		return methods, nil
-	}
-	return methods, ssh.KeyboardInteractive(kbCallback)
-}
-
 // Markers within x/crypto's error strings. The library returns both as plain
 // fmt.Errorf values with no typed sentinel, so the message is the only
 // stable handle.
@@ -73,33 +64,37 @@ const (
 	kbdIntColdFailMarker = "unexpected message type 51 (expected 60)"
 )
 
-// dialSSHWithAuthRetry dials with the primary auth methods (password/key)
-// first, and retries once with keyboard-interactive added.
+// dialSSHWithAuthRetry offers keyboard-interactive alongside the primary
+// methods (password/key) on the FIRST handshake, and retries once without it.
 //
-// x/crypto aborts the handshake with "ssh: unexpected message type 51
-// (expected 60)" when a server answers the keyboard-interactive initiation
-// with USERAUTH_FAILURE before any info request. RFC 4252 allows that reply
-// and OpenSSH's own client treats it as a plain rejection, but servers that
-// advertise keyboard-interactive yet fail it cold are common (root login
-// restricted to keys, dropbear without PAM), so offering keyboard-interactive
-// unconditionally turned every ordinary password rejection on those hosts
-// into that cryptic protocol error. Trying it only after the primary methods
-// are exhausted keeps prompt-based logins (OTP/2FA, keyboard-interactive-only
-// servers) working while a plain rejection surfaces as the server's own auth
-// error.
-func dialSSHWithAuthRetry(addr string, newConfig, newConfigWithKeyboard sshClientConfigFactory, dial sshConnDialer) (*ssh.Client, error) {
-	client, err := dialSSHWithCipherFallback(addr, newConfig, dial)
-	if newConfigWithKeyboard == nil || err == nil || !strings.Contains(err.Error(), authExhaustedMarker) {
+// Keeping keyboard-interactive in the first handshake means prompt-based
+// logins (OTP/2FA, keyboard-interactive-only servers) and a password rejection
+// followed by an interactive prompt complete in a single TCP handshake — with
+// one handshake per failed attempt, every wrong password paid a full extra
+// dial plus a second server-side fail delay before the user got to retype
+// (issue #949).
+//
+// x/crypto surfaces a server that answers the keyboard-interactive initiation
+// with USERAUTH_FAILURE before any info request as "ssh: unexpected message
+// type 51 (expected 60)". RFC 4252 allows that reply and OpenSSH's own client
+// treats it as a plain rejection, but the library aborts the handshake with
+// that cryptic protocol error. Servers that fail keyboard-interactive cold are
+// common (root login restricted to keys, dropbear without PAM), so the retry
+// drops keyboard-interactive; its plain rejection is the honest auth failure
+// the user should see.
+func dialSSHWithAuthRetry(addr string, sets []sshAlgoSet, authConfig, fallbackConfig sshClientConfigFactory, dial sshConnDialer) (*ssh.Client, error) {
+	if authConfig == nil {
+		authConfig = fallbackConfig
+	}
+	client, err := dialSSHWithCipherFallback(addr, sets, authConfig, dial)
+	if err == nil || !strings.Contains(err.Error(), kbdIntColdFailMarker) {
 		return client, err
 	}
-	client, retryErr := dialSSHWithCipherFallback(addr, newConfigWithKeyboard, dial)
-	if retryErr == nil || !strings.Contains(retryErr.Error(), kbdIntColdFailMarker) {
-		return client, retryErr
+	client, retryErr := dialSSHWithCipherFallback(addr, sets, fallbackConfig, dial)
+	if retryErr == nil {
+		return client, nil
 	}
-	// The server rejects keyboard-interactive outright; report the honest
-	// auth failure from the first handshake instead of x/crypto's protocol
-	// internals.
-	return nil, err
+	return nil, retryErr
 }
 
 // dialSSHTCP dials addr (through the upstream proxy when non-nil), performs the
@@ -119,11 +114,9 @@ func dialSSHTCP(addr string, clientConfig *ssh.ClientConfig, upstream *SocksProx
 }
 
 // DialSSHClient 建立非交互 SSH 连接（容器 runner 用，无 PTY、无键盘交互回显）。
-// 与 ssh_session 的交互式拨号共享认证与密钥交换配置。
+// 与 ssh_session 的交互式拨号共享认证与密钥交换配置。不提供 keyboard-interactive：
+// 此上下文中无法应答 challenge，提供它只会让普通密码拒绝被回调自身的错误掩盖。
 func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
-	kb := func(user, instruction string, questions []string, echos []bool) ([]string, error) {
-		return nil, fmt.Errorf("keyboard-interactive not supported in this context")
-	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	cb, trust := NewHostKeyVerifier(addr)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
@@ -140,11 +133,12 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 			}, cleanup, nil
 		}
 	}
-	var keyboardConfig sshClientConfigFactory
-	if config.AuthType != "kerberos" {
-		keyboardConfig = newConfig(kb)
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		return nil, err
 	}
-	client, err := dialSSHWithAuthRetry(addr, newConfig(nil), keyboardConfig, func() (net.Conn, error) {
+	factory := newConfig(nil)
+	client, err := dialSSHWithAuthRetry(addr, sets, factory, factory, func() (net.Conn, error) {
 		return net.DialTimeout("tcp", addr, 30*time.Second)
 	})
 	if err != nil {
@@ -154,4 +148,28 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
 	}
 	return client, nil
+}
+
+// sshAlgoModeOf reports the effective mode of a connection's algorithm
+// preferences, used for error annotation.
+func sshAlgoModeOf(p *SSHAlgoConfig) string {
+	if p == nil || p.Mode == "" {
+		return SSHAlgoModeCompatible
+	}
+	return p.Mode
+}
+
+// resolveSSHDialAlgorithms returns the algorithm sets tried in order on a
+// dial path: the connection's resolved base set, followed by the EOF-retry
+// set when it differs from the base.
+func resolveSSHDialAlgorithms(p *SSHAlgoConfig) ([]sshAlgoSet, error) {
+	base, retry, err := resolveSSHAlgorithms(p)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Equal(base.Ciphers, retry.Ciphers) && slices.Equal(base.KeyExchanges, retry.KeyExchanges) &&
+		slices.Equal(base.MACs, retry.MACs) && slices.Equal(base.HostKeys, retry.HostKeys) {
+		return []sshAlgoSet{base}, nil
+	}
+	return []sshAlgoSet{base, retry}, nil
 }

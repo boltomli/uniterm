@@ -78,6 +78,8 @@
         {{ t('terminal.searchText') }}
       </MenuItem>
       <MenuItem @click="menu.closeMenu(); exportContent()">{{ t('terminal.export') }}</MenuItem>
+      <MenuItem @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
+      <MenuItem @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
       <MenuItem :shortcut="menuShortcut('toggleLineNumbers')" @click="toggleLineNumbers">
         {{ showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
       </MenuItem>
@@ -150,8 +152,9 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTerminalMenu } from '../composables/useTerminalMenu'
-import { writeClipboard } from '../composables/useClipboardWrite'
+import { writeClipboard, readClipboardText } from '../composables/useClipboardWrite'
 import { filterTerminalInput } from '../utils/terminalInputFilter'
+import { isAuthFailureError } from '../utils/authError'
 import { DcsReassembler } from '../utils/dcsReassembler'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -165,6 +168,7 @@ import {
   getManagedTerminal,
   transferTerminal,
   bumpOnDataGeneration,
+  markTerminalActive,
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
@@ -181,11 +185,11 @@ import { useSuggestions } from '../composables/useSuggestions'
 import TerminalSuggestion from './TerminalSuggestion.vue'
 import TerminalGutter from './TerminalGutter.vue'
 import { startZmodemService } from '../services/zmodemService'
-import { recordWrite, stampCommandLine, currentAbsoluteLine } from '../services/terminalTimestamps'
+import { recordWrite, stampCommandLine, currentAbsoluteLine, clearRegistry } from '../services/terminalTimestamps'
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
-import { Browser, Clipboard, Events } from '@wailsio/runtime'
+import { Browser, Events } from '@wailsio/runtime'
 import type { ISearchOptions } from '@xterm/addon-search'
 import { CaseSensitive, ChevronUp, ChevronDown, Regex, WholeWord, X } from '@lucide/vue'
 
@@ -301,6 +305,8 @@ let onDocumentMouseDown: ((e: MouseEvent) => void) | null = null
 let onTerminalAuxClick: ((e: MouseEvent) => void) | null = null
 let onOpenSearch: ((e: Event) => void) | null = null
 let onExport: ((e: Event) => void) | null = null
+let onResetOutput: ((e: Event) => void) | null = null
+let onClearScrollback: ((e: Event) => void) | null = null
 let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
@@ -788,6 +794,69 @@ async function exportContent() {
   }
 }
 
+// Shell-idle heuristic for the post-reset Enter: only fire when the cursor
+// sits on the last non-blank row of the normal buffer — i.e. it looks like a
+// fresh prompt with nothing running in the foreground. If a program owns the
+// terminal (vim/less → alternate buffer, or a running command mid-output),
+// injecting Enter would land in that program, so we keep MobaXterm's plain
+// behavior instead: wipe and wait for the next real keypress.
+function shellLooksIdle(): boolean {
+  if (!terminal) return false
+  const buf = terminal.buffer.active
+  if (buf.type === 'alternate') return false
+  const cursorLine = buf.getLine(buf.baseY + buf.cursorY)
+  const text = cursorLine ? (cursorLine.translateToString(true) || '').trim() : ''
+  if (!text) return false
+  // The cursor row must be the last row holding content.
+  let lastContent = buf.length - 1
+  while (lastContent > 0) {
+    const line = buf.getLine(lastContent)
+    if (line && (line.translateToString(true) || '').trim()) break
+    lastContent--
+  }
+  return buf.baseY + buf.cursorY >= lastContent
+}
+
+// Reset terminal output (MobaXterm-style, issue #989): wipe the screen AND
+// the scrollback, then home the cursor. The wipe is client-side only — the
+// shell never learns the screen was cleared, so when it looks idle send an
+// Enter for the prompt to redraw immediately (MobaXterm stops here and
+// waits for the next keypress; we only inject the Enter when it is safe).
+function resetTerminalOutput() {
+  if (!terminal) return
+  const idle = shellLooksIdle()
+  const scrollback = terminal.options.scrollback
+  terminal.clear()
+  terminal.options.scrollback = 0
+  terminal.clear()
+  terminal.options.scrollback = scrollback
+  terminal.write('\r\x1b[H\x1b[2J')
+  if (props.sessionId) clearRegistry(props.sessionId)
+  if (props.sessionId && idle && !zmodemStore.getActiveTransfer(props.sessionId)) {
+    queuedSessionWrite(props.sessionId, '\n')
+  }
+}
+
+// Clear scrollback only (issue #989): the visible screen stays; rows above
+// the viewport are dropped.
+function clearScrollback() {
+  if (!terminal) return
+  const buf = terminal.buffer.active
+  const above = buf.baseY
+  if (above > 0) {
+    terminal.scrollLines(-above)
+  }
+  // Same trick as reset: a 0-sized scrollback discards the rows that just
+  // scrolled out of the viewport.
+  const scrollback = terminal.options.scrollback
+  terminal.options.scrollback = 0
+  terminal.clear()
+  terminal.options.scrollback = scrollback
+  // Return the viewport to the (bottom) live screen.
+  terminal.scrollToBottom()
+  if (props.sessionId) clearRegistry(props.sessionId)
+}
+
 function setRetryOnEnter(value: boolean) {
   retryOnEnter = value
 }
@@ -905,9 +974,9 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
   if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V') && e.type === 'keydown') {
     e.preventDefault()
     if (props.mode === 'ssh' || props.mode === 'local') {
-      Clipboard.Text().then(text => {
+      readClipboardText().then(text => {
         if (text) pasteToSession(text)
-      }).catch(() => {})
+      })
     }
     return false
   }
@@ -1097,6 +1166,11 @@ onMounted(() => {
   // Acquire shared terminal from manager (or create if first mount)
   const opts = getTerminalOptions()
   terminal = acquireTerminal(props.sessionId || '', terminalInstanceRef, opts, settingsStore.settings.customTerminalThemes)
+  // Publish component activity to the terminal manager: screen-buffer readers
+  // (AI output capture, prompt snapshots) must only trust the buffer while at
+  // least one visible component drives it — a deactivated panel's buffer is
+  // frozen because the live session:data handler below gates on isActive.
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, true)
   // Keyword highlighting scans the parsed buffer and overlays decorations;
   // the enable switch is re-read on every refresh, so toggling the setting
   // takes effect live. Applies to every terminal type.
@@ -1380,10 +1454,14 @@ onMounted(() => {
     if (settingsStore.settings.terminal.selectionAction !== 'copy') return
     setTimeout(() => {
       const text = terminal?.getSelection()
-      if (text && text !== lastSelectionText) {
+      if (!text) {
+        // Selection cleared: reset the dedup guard, or re-selecting the same
+        // text would never re-copy and a lost write could never be retried.
+        lastSelectionText = ''
+        return
+      }
+      if (text !== lastSelectionText) {
         lastSelectionText = text
-        // Wails clipboard writer: navigator.clipboard silently fails in
-        // WKWebView when the webview isn't first responder (#827).
         writeClipboard(text)
       }
     }, 0)
@@ -1417,16 +1495,16 @@ onMounted(() => {
     if (action !== 'paste') return
     event.preventDefault()
     event.stopPropagation()
-    Clipboard.Text().then(text => {
+    readClipboardText().then(text => {
       if (text && props.sessionId) {
         pasteToSession(text)
       }
-    }).catch(() => {})
+    })
   }
   document.addEventListener('auxclick', onTerminalAuxClick)
 
   // Session data
-  unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data; 
+  unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
     if (!isActive.value) {
       // Mark notification dot on the tab when inactive terminal receives output
       // Only process events for this instance's session (events are global)
@@ -1519,7 +1597,7 @@ onMounted(() => {
   if (props.mode === 'ssh' || props.mode === 'local') {
     retryOnEnter = false
     statusUnsubscribe = Events.On('session:status', (ev) => {
-      const payload = ev.data as { id: string; status: string }
+      const payload = ev.data as { id: string; status: string; errorMessage?: string }
       if (!isActive.value) return
       if (payload.id !== props.sessionId) return
       if (payload.status === 'connected') {
@@ -1536,7 +1614,9 @@ onMounted(() => {
       } else if (payload.status === 'error') {
         retryOnEnter = true
         if (props.onSessionStatus) {
-          props.onSessionStatus(payload.status)
+          // 认证类失败（密码被拒）单独上报，让面板立即弹重新认证对话框，
+          // 而不是让用户按回车再全量重连两次（issue #949）。
+          props.onSessionStatus(isAuthFailureError(payload.errorMessage) ? 'auth_failed' : payload.status)
         }
         terminal?.write('\r\n\x1b[31mConnection failed. Press Enter to retry.\x1b[0m\r\n')
       } else if (payload.status === 'disconnected') {
@@ -1592,6 +1672,22 @@ onMounted(() => {
   }
   window.addEventListener('terminal:export', onExport)
 
+  onResetOutput = (e: Event) => {
+    if (!isActive.value) return
+    const detail = (e as CustomEvent).detail
+    if (!props.panelId || detail?.panelId !== props.panelId) return
+    resetTerminalOutput()
+  }
+  window.addEventListener('terminal:reset-output', onResetOutput)
+
+  onClearScrollback = (e: Event) => {
+    if (!isActive.value) return
+    const detail = (e as CustomEvent).detail
+    if (!props.panelId || detail?.panelId !== props.panelId) return
+    clearScrollback()
+  }
+  window.addEventListener('terminal:clear-scrollback', onClearScrollback)
+
   onSendRz = (e: Event) => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
@@ -1619,9 +1715,9 @@ onMounted(() => {
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
     if (props.mode === 'ssh' || props.mode === 'local') {
-      Clipboard.Text().then(text => {
+      readClipboardText().then(text => {
         if (text) pasteToSession(text)
-      }).catch(() => {})
+      })
     }
   }
   window.addEventListener('terminal:paste', onTerminalPaste)
@@ -1678,6 +1774,7 @@ onActivated(() => {
   // Component restored from KeepAlive cache.
 
   nativeDrop.bind()
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, true)
 
   // Replay session data that arrived while deactivated BEFORE
   // setting isActive = true. The session:data handler gates on
@@ -1752,6 +1849,9 @@ onDeactivated(() => {
   // Mark inactive so session event handlers become no-ops.
   nativeDrop.unbind()
   isActive.value = false
+  // Buffer freezes from here (live session:data handler gates on isActive) —
+  // publish it so buffer readers stop trusting the screen.
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
   // Reset IME composition state so the OS IME doesn't continue feeding
   // characters into the textarea while the terminal is hidden. Without
   // this, the stale composition state causes input duplication when the
@@ -1788,10 +1888,16 @@ watch(() => props.sessionId, (newId, oldId) => {
   if (oldId && oldId !== newId) {
     if (terminalRef.value) detachTerminal(oldId, terminalRef.value)
     disposeZmodemService(oldId)
+    // Publish the active state before/after the terminal object moves between
+    // session ids: transferTerminal relocates the whole ManagedTerminal
+    // (activeRefs travel with it), so the old id must drop the ref first and
+    // the new id re-add it after.
+    markTerminalActive(oldId, terminalInstanceRef, false)
     // Transfer the terminal to the new sessionId so scrollback is
     // preserved across reconnects. releaseTerminal is intentionally
     // skipped — we want to keep the same terminal instance alive.
     if (newId) transferTerminal(oldId, newId)
+    markTerminalActive(newId || '', terminalInstanceRef, true)
   }
   // Reset write tracking when session changes so onActivated replay
   // starts from the correct offset for the new session.
@@ -1991,6 +2097,7 @@ onBeforeUnmount(() => {
   if (props.sessionId && terminalRef.value) {
     detachTerminal(props.sessionId, terminalRef.value)
   }
+  markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
 })
 
 onUnmounted(() => {
@@ -2033,6 +2140,8 @@ onUnmounted(() => {
   unsubNativeResizeEnd = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
+  if (onResetOutput) window.removeEventListener('terminal:reset-output', onResetOutput)
+  if (onClearScrollback) window.removeEventListener('terminal:clear-scrollback', onClearScrollback)
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
   if (onTerminalCopy) window.removeEventListener('terminal:copy', onTerminalCopy)
   if (onTerminalPaste) window.removeEventListener('terminal:paste', onTerminalPaste)
