@@ -547,7 +547,7 @@
                 <el-radio-button value="scp">SCP</el-radio-button>
               </el-radio-group>
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
+            <el-form-item v-if="form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
               <el-input-number v-model="form.sftpMaxConcurrency" :min="0" :max="20" />
             </el-form-item>
             <el-form-item v-if="form.type === 'ssh'" :label="t('conn.shellIntegration')">
