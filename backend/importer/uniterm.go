@@ -26,13 +26,18 @@ type utmFile struct {
 }
 
 // ExportUniterm serializes the full store to .utm JSON. When password is empty,
-// all password fields are cleared and encrypted=false. Otherwise passwords are
-// encrypted with a fresh PBKDF2-derived key and encrypted=true.
+// credential fields (passwords, inline keys) are cleared and encrypted=false.
+// Otherwise every secret — Password, KeyContent, SentinelPassword,
+// TunnelSSHPassword and PostLoginScript — is encrypted with a fresh
+// PBKDF2-derived key and encrypted=true.
 func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, error) {
 	f := utmFile{Format: unitermFormat, Version: 1, ConnectionStoreData: data}
 	if password == "" {
 		for i := range f.Connections {
 			f.Connections[i].Password = ""
+			f.Connections[i].KeyContent = ""
+			f.Connections[i].SentinelPassword = ""
+			f.Connections[i].TunnelSSHPassword = ""
 		}
 		return json.MarshalIndent(f, "", "  ")
 	}
@@ -44,14 +49,16 @@ func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, e
 	f.KDF = &utmKDF{Algo: kdfAlgo, Iterations: kdfIterations, Salt: encodeSalt(salt)}
 	for i := range f.Connections {
 		c := &f.Connections[i]
-		if c.Password == "" || strings.HasPrefix(c.Password, credentials.Prefix) {
-			continue
+		for _, field := range []*string{&c.Password, &c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.PostLoginScript} {
+			if *field == "" || strings.HasPrefix(*field, credentials.Prefix) {
+				continue
+			}
+			enc, err := encryptField(*field, password, salt)
+			if err != nil {
+				return nil, err
+			}
+			*field = enc
 		}
-		enc, err := encryptField(c.Password, password, salt)
-		if err != nil {
-			return nil, err
-		}
-		c.Password = enc
 	}
 	return json.MarshalIndent(f, "", "  ")
 }
@@ -78,14 +85,28 @@ func parseUniterm(data []byte, opts ParseOptions) (*ImportResult, error) {
 		}
 		for i := range f.Connections {
 			c := &f.Connections[i]
-			if c.Password == "" {
-				continue
+			// Password decrypts strictly: a failure here means the wrong
+			// import password (it has always been encrypted when non-empty).
+			if c.Password != "" {
+				plain, err := decryptField(c.Password, opts.Password, salt)
+				if err != nil {
+					return nil, fmt.Errorf("wrong import password")
+				}
+				c.Password = plain
 			}
-			plain, err := decryptField(c.Password, opts.Password, salt)
-			if err != nil {
-				return nil, fmt.Errorf("wrong import password")
+			// Fields the encrypted export protects since the field-encryption
+			// fix: decrypt only what carries the encrypted prefix; a value
+			// without it is a legacy export that stored the field in plaintext.
+			for _, field := range []*string{&c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.PostLoginScript} {
+				if !strings.HasPrefix(*field, credentials.Prefix) {
+					continue
+				}
+				plain, err := decryptField(*field, opts.Password, salt)
+				if err != nil {
+					return nil, fmt.Errorf("wrong import password")
+				}
+				*field = plain
 			}
-			c.Password = plain
 		}
 	}
 
