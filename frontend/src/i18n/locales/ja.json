@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "バー",
   "settings.cursorBlinkDesc": "端末カーソルを点滅させるかどうか",
   "settings.sessionLogDir": "ログ保存先",
-  "settings.zmodemDownloadDir": "ZMODEM ダウンロード先",
+  "settings.zmodemDownloadDir": "Zmodem ダウンロード先",
   "settings.zmodemDownloadDirDesc": "sz で受信したファイルをこのフォルダーに直接保存します。空の場合は転送ごとに選択します。",
   "settings.zmodemDownloadDirPlaceholder": "転送ごとに選択",
   "settings.sessionLogDirDesc": "セッションログの保存場所。空欄でデフォルトを使用: {path}",
