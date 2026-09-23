@@ -42,6 +42,16 @@ var assets embed.FS
 //go:embed build/appicon_tray.png
 var appIconTrayPNG []byte
 
+// appIconTrayTemplatePNG is the macOS variant: the same rounded tile rendered
+// as a template image — black tile, "U" knocked out to transparency. macOS
+// recolours template images itself (black on a light menu bar, white on a
+// dark one), matching the monochrome icons of other apps. Generated from
+// appicon_tray.png by knocking the cyan glyph out and flattening the rest to
+// black.
+//
+//go:embed build/appicon_tray_template.png
+var appIconTrayTemplatePNG []byte
+
 func main() {
 	// Administrator-shell broker mode: an elevated copy of uniTerm launched
 	// via the "runas" verb relays ConPTY I/O for admin local terminals (see
@@ -457,7 +467,7 @@ const (
 // language (from settings.json) used to localize the menu labels.
 func setupTray(w3app *application.App, app *App, window *application.WebviewWindow, lang string) {
 	tray := w3app.SystemTray.New()
-	tray.SetIcon(trayIconPNG())
+	applyTrayIcon(tray)
 	tray.SetTooltip("uniTerm")
 
 	menu := application.NewMenu()
