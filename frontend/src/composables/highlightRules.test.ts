@@ -47,11 +47,27 @@ describe('matchTextSpans — keyword rules', () => {
     expect(noSpanOf('at 12:34:56 sharp\n', 'host')).toBe(true)
   })
 
+  it('does not misread MAC addresses as clock times', () => {
+    // The all-digit clock pattern must stay out of any hex:hex:… run.
+    expect(noSpanOf('ether 52:54:00:1d:87:9f\n', 'datetime')).toBe(true)
+    expect(noSpanOf('mac 00:11:22:33:44:55\n', 'datetime')).toBe(true)
+    // A real time next to a MAC still highlights.
+    expect(find('at 12:34:56 mac 52:54:00:1d:87:9f\n', '12:34:56', 'datetime')).toBe(true)
+  })
+
   it('colors error words as error', () => {
     expect(find('connect: connection refused\n', 'connection refused', 'error')).toBe(true)
     expect(find('ERROR: bad address\n', 'ERROR', 'error')).toBe(true)
     expect(find('ERROR: bad address\n', 'bad address', 'error')).toBe(true)
     expect(find('kernel panic: segmentation fault\n', 'segmentation fault', 'error')).toBe(true)
+  })
+
+  it('colors fatal/critical/exception/panic/abort as error', () => {
+    expect(find('FATAL: unrecoverable state\n', 'FATAL', 'error')).toBe(true)
+    expect(find('critical failure in module\n', 'critical', 'error')).toBe(true)
+    expect(find('java.lang.Exception thrown\n', 'Exception', 'error')).toBe(true)
+    expect(find('panic: runtime error\n', 'panic', 'error')).toBe(true)
+    expect(find('transaction aborted\n', 'aborted', 'error')).toBe(true)
   })
 
   it('colors falsy output values (false/no/ko) as error when punctuation-guarded', () => {
@@ -75,6 +91,12 @@ describe('matchTextSpans — keyword rules', () => {
     expect(find('cannot open device\n', 'cannot', 'warning')).toBe(true)
   })
 
+  it('colors bare warn/warned as warning', () => {
+    expect(find('WARN: falling back to defaults\n', 'WARN', 'warning')).toBe(true)
+    expect(find('user was warned about the risk\n', 'warned', 'warning')).toBe(true)
+    expect(find('caution: legacy mode\n', 'caution', 'warning')).toBe(true)
+  })
+
   it('colors info verbs as info', () => {
     expect(find('starting service…\n', 'starting', 'info')).toBe(true)
     expect(find('(ii) loading module\n', '(ii)', 'info')).toBe(true)
@@ -92,6 +114,8 @@ describe('matchTextSpans — keyword rules', () => {
     expect(spans('terror attack\n')).toEqual([])
     expect(spans('warninglabel\n')).toEqual([])
     expect(spans('noteworthy\n')).toEqual([])
+    expect(spans('exceptionally good\n')).toEqual([])
+    expect(spans('fatality report\n')).toEqual([])
   })
 
   it('is case-insensitive', () => {
