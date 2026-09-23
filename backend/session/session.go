@@ -68,7 +68,8 @@ type ConnectionConfig struct {
 	// AuthType "identity", MaterializeIdentity resolves and injects the
 	// credentials at connect time.
 	IdentityId string `json:"identityId,omitempty"`
-	// Password is stored in plaintext JSON. Will be migrated to OS keychain in a future iteration.
+	// Password is encrypted at rest (enc:v1:) for every authType when a
+	// password store is wired; authType "identity" clears it instead (unused).
 	Password string `json:"password,omitempty"`
 	KeyPath  string `json:"keyPath,omitempty"`
 	// KeyContent holds the inline private-key text (PEM) for authType "keyText".

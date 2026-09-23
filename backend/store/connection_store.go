@@ -82,16 +82,41 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 		// keyText connections carry the inline private-key text in KeyContent —
 		// a secret like passwords — so encrypt it before it lands in
 		// connections.json. "key" references a path on disk and carries no
-		// inline secret here, so it (and everything else) falls through to the
-		// plain continue.
+		// inline secret here.
 		if conn.AuthType == "keyText" {
 			if err := encryptSecretField(&conn.KeyContent, s.passwordStore); err != nil {
 				return err
 			}
-			continue
 		}
-		if conn.AuthType != "password" {
-			continue
+		// Every authType's secrets are encrypted at rest, not just
+		// authType "password": SSH happily authenticates a connection with an
+		// empty/other authType using Password, and Redis Sentinel passwords
+		// and tunnel jump-host passwords are secrets wherever they appear.
+		for _, secret := range []*string{&conn.Password, &conn.SentinelPassword, &conn.TunnelSSHPassword} {
+			if *secret == "" {
+				continue
+			}
+			if credentials.IsEncrypted(*secret) {
+				continue
+			}
+			if s.passwordStore == nil {
+				// Fail closed: never write plaintext when no cipher is available.
+				return errors.New("passwordStore not initialized; refusing to save plaintext password")
+			}
+			enc, err := s.passwordStore.Encrypt(*secret)
+			if err != nil {
+				return err
+			}
+			if secret == &conn.Password && conn.AuthType == "password" {
+				// Cache the plaintext login password for EnsurePassword.
+				s.pwdMu.Lock()
+				if s.pwdCache == nil {
+					s.pwdCache = map[string]string{}
+				}
+				s.pwdCache[conn.ID] = *secret
+				s.pwdMu.Unlock()
+			}
+			*secret = enc
 		}
 		if conn.Password == "" {
 			// Password cleared — drop cached plaintext so EnsurePassword can't
@@ -99,23 +124,7 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 			s.pwdMu.Lock()
 			delete(s.pwdCache, conn.ID)
 			s.pwdMu.Unlock()
-			continue
 		}
-		if s.passwordStore == nil {
-			// Fail closed: never write plaintext when no cipher is available.
-			return errors.New("passwordStore not initialized; refusing to save plaintext password")
-		}
-		enc, err := s.passwordStore.Encrypt(conn.Password)
-		if err != nil {
-			return err
-		}
-		s.pwdMu.Lock()
-		if s.pwdCache == nil {
-			s.pwdCache = map[string]string{}
-		}
-		s.pwdCache[conn.ID] = conn.Password
-		s.pwdMu.Unlock()
-		conn.Password = enc
 	}
 
 	saveData := session.ConnectionStoreData{
@@ -208,24 +217,34 @@ func (s *ConnectionStore) populatePasswords(data *session.ConnectionStoreData) e
 			}
 			conn.KeyContent = dec
 		}
-		if conn.AuthType != "password" {
-			continue
+		// Sentinel and tunnel-jump secrets are encrypted at rest for every
+		// authType; decrypt them in place so consumers see plaintext.
+		for _, secret := range []*string{&conn.SentinelPassword, &conn.TunnelSSHPassword} {
+			if *secret != "" && credentials.IsEncrypted(*secret) && s.passwordStore != nil {
+				dec, err := s.passwordStore.Decrypt(*secret)
+				if err != nil {
+					return err
+				}
+				*secret = dec
+			}
 		}
 		if conn.Password == "" {
-			// No enc:v1 field. Under the pre-enc:v1 scheme the password lived
-			// in the keychain under conn/<id> and the JSON field was omitted;
-			// recover it here so the value stays visible without a manual
-			// re-entry. Falls back to "" when neither source has it.
-			if s.legacy != nil {
-				if pw, err := s.legacy.GetPassword(conn.ID); err == nil && pw != "" {
-					s.pwdMu.Lock()
-					if s.pwdCache == nil {
-						s.pwdCache = map[string]string{}
+			if conn.AuthType == "password" {
+				// No enc:v1 field. Under the pre-enc:v1 scheme the password lived
+				// in the keychain under conn/<id> and the JSON field was omitted;
+				// recover it here so the value stays visible without a manual
+				// re-entry. Falls back to "" when neither source has it.
+				if s.legacy != nil {
+					if pw, err := s.legacy.GetPassword(conn.ID); err == nil && pw != "" {
+						s.pwdMu.Lock()
+						if s.pwdCache == nil {
+							s.pwdCache = map[string]string{}
+						}
+						s.pwdCache[conn.ID] = pw
+						s.pwdMu.Unlock()
+						conn.Password = pw
+						needsSave = true // lazy-migrate into enc:v1 on next save
 					}
-					s.pwdCache[conn.ID] = pw
-					s.pwdMu.Unlock()
-					conn.Password = pw
-					needsSave = true // lazy-migrate into enc:v1 on next save
 				}
 			}
 			continue
@@ -238,16 +257,19 @@ func (s *ConnectionStore) populatePasswords(data *session.ConnectionStoreData) e
 			if err != nil {
 				return err
 			}
-			s.pwdMu.Lock()
-			if s.pwdCache == nil {
-				s.pwdCache = map[string]string{}
+			if conn.AuthType == "password" {
+				s.pwdMu.Lock()
+				if s.pwdCache == nil {
+					s.pwdCache = map[string]string{}
+				}
+				s.pwdCache[conn.ID] = pw
+				s.pwdMu.Unlock()
 			}
-			s.pwdCache[conn.ID] = pw
-			s.pwdMu.Unlock()
 			conn.Password = pw
 		} else {
-			// Legacy plaintext on disk (never migrated to keychain). Keep the
-			// plaintext for the caller but re-save so it lands encrypted.
+			// Legacy plaintext on disk (any authType predating the
+			// encrypt-everything rule). Keep the plaintext for the caller but
+			// re-save so it lands encrypted.
 			needsSave = true
 		}
 	}
@@ -271,17 +293,30 @@ func (s *ConnectionStore) encryptForSaveLocked(data session.ConnectionStoreData)
 	copy(out.Connections, data.Connections)
 	for i := range out.Connections {
 		conn := &out.Connections[i]
-		if conn.AuthType != "password" || conn.Password == "" || credentials.IsEncrypted(conn.Password) {
+		if conn.AuthType == "identity" {
+			// Mirror Save(): identity connections never use these locally
+			// assigned credentials; clearing them keeps stale values (and any
+			// enc:v1: leftovers) out of the rewritten file.
+			conn.Password = ""
+			conn.User = ""
 			continue
 		}
 		if s.passwordStore == nil {
 			continue
 		}
-		enc, err := s.passwordStore.Encrypt(conn.Password)
-		if err != nil {
-			continue // best-effort; the plaintext remains, encrypted on next Save
+		encryptIfPlain := func(field *string) {
+			if *field != "" && !credentials.IsEncrypted(*field) {
+				if enc, err := s.passwordStore.Encrypt(*field); err == nil {
+					*field = enc
+				}
+			}
 		}
-		conn.Password = enc
+		if conn.AuthType == "keyText" {
+			encryptIfPlain(&conn.KeyContent)
+		}
+		encryptIfPlain(&conn.Password)
+		encryptIfPlain(&conn.SentinelPassword)
+		encryptIfPlain(&conn.TunnelSSHPassword)
 	}
 	return out
 }
