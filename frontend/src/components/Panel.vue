@@ -206,6 +206,8 @@ const settingsStore = useSettingsStore()
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 const panelShortcut = computed(() => {
+  // Hidden by the "show shortcut hints" toggle, same as the tab badges.
+  if (!settingsStore.settings.showTabShortcutHints) return ''
   if (!props.shortcutIndex || props.shortcutIndex > 9) return ''
   // Option+N on macOS / Alt+N elsewhere by default, or the user-configured
   // keyboard.panelSwitchModifier combo — hidden while the tab-switch modifier
