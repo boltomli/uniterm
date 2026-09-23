@@ -660,45 +660,6 @@ func (a *App) SessionEndZmodemWithTrailing(sessionID, base64Data string) error {
 	return nil
 }
 
-// SessionInjectCwdHook types an OSC-7 cwd reporting hook into the session's
-// already-running shell (SSH only; other session types error). Used by the
-// file sidebar's "follow terminal path" toggle when the connection lacks
-// startup shell integration. The boolean reports whether the hook was
-// injected NOW (false means it was already installed on this session).
-func (a *App) SessionInjectCwdHook(sessionID string) (bool, error) {
-	if a.sessionManager == nil {
-		return false, fmt.Errorf("session manager not initialized")
-	}
-	s, ok := a.sessionManager.Get(sessionID)
-	if !ok {
-		return false, fmt.Errorf("session not found: %s", sessionID)
-	}
-	injector, ok := s.(interface{ InjectCwdHook() (bool, error) })
-	if !ok {
-		return false, fmt.Errorf("session type does not support runtime cwd hook injection")
-	}
-	return injector.InjectCwdHook()
-}
-
-// SessionIsCwdHookInstalled reports whether the runtime OSC-7 cwd hook has
-// already been typed into the session's shell (SSH only; other session types
-// error). The file sidebar checks it before showing the click-time injection
-// confirmation dialog: an already-injected session never prompts again.
-func (a *App) SessionIsCwdHookInstalled(sessionID string) (bool, error) {
-	if a.sessionManager == nil {
-		return false, fmt.Errorf("session manager not initialized")
-	}
-	s, ok := a.sessionManager.Get(sessionID)
-	if !ok {
-		return false, fmt.Errorf("session not found: %s", sessionID)
-	}
-	probe, ok := s.(interface{ CwdHookInstalled() bool })
-	if !ok {
-		return false, fmt.Errorf("session type does not support runtime cwd hook injection")
-	}
-	return probe.CwdHookInstalled(), nil
-}
-
 func (a *App) SessionWriteBinary(sessionID string, base64Data string) error {
 	if a.sessionManager == nil {
 		return fmt.Errorf("session manager not initialized")

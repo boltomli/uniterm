@@ -86,140 +86,165 @@ func TestOSC7ScannerSTTerminatedBeforeFollowingOSC0(t *testing.T) {
 	}
 }
 
-func TestBashBootstrapPreservesLoginStartupOrder(t *testing.T) {
-	files, args, ok := buildShellBootstrap("/bin/bash")
-	if !ok {
-		t.Fatal("bash must be supported")
+func TestBuildStartupCwdHook(t *testing.T) {
+	tests := []struct {
+		name     string
+		shell    string
+		wantOK   bool
+		mustHave []string
+	}{
+		{
+			name:   "bash",
+			shell:  "/bin/bash",
+			wantOK: true,
+			mustHave: []string{
+				"__uniterm_osc7",
+				`printf '\r\033[2K'`,
+				`printf '\033]7777;uniterm-ok\007'`,
+				"stty echo",
+			},
+		},
+		{
+			name:   "zsh",
+			shell:  "/usr/bin/zsh",
+			wantOK: true,
+			mustHave: []string{
+				"__uniterm_osc7",
+				"precmd_functions",
+				`printf '\r\033[2K'`,
+				`printf '\033]7777;uniterm-ok\007'`,
+				"stty echo",
+			},
+		},
+		{
+			name:   "fish",
+			shell:  "/usr/bin/fish",
+			wantOK: true,
+			mustHave: []string{
+				"__uniterm_osc7",
+				`printf '\r\e[2K'`,
+				`printf '\e]7777;uniterm-ok\a'`,
+				"stty echo",
+			},
+		},
+		{name: "unsupported ksh", shell: "/usr/bin/ksh", wantOK: false},
+		{name: "windows cmd", shell: "cmd", wantOK: false},
+		{name: "windows backslash path", shell: `C:\Program Files\Git\bin\bash.exe`, wantOK: false},
+		{name: "empty", shell: "", wantOK: false},
 	}
-	rc := files["rcfile"]
-	startupFiles := []string{"/etc/profile", "$HOME/.bash_profile", "$HOME/.bash_login", "$HOME/.profile"}
-	last := -1
-	for _, name := range startupFiles {
-		i := strings.Index(rc, name)
-		if i <= last {
-			t.Fatalf("bash login startup order is wrong for %s: %s", name, rc)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := buildStartupCwdHook(tt.shell)
+			if ok != tt.wantOK {
+				t.Fatalf("buildStartupCwdHook(%q) ok = %v, want %v", tt.shell, ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if !strings.HasPrefix(got, " ") || !strings.HasSuffix(got, "\n") {
+				t.Fatalf("snippet must start with a space and end with a newline: %q", got)
+			}
+			if !strings.Contains(got, "__uniterm_osc7") {
+				t.Fatalf("snippet must define the __uniterm_osc7 hook: %q", got)
+			}
+			for _, want := range tt.mustHave {
+				if !strings.Contains(got, want) {
+					t.Fatalf("snippet for %s must contain %q: %q", tt.shell, want, got)
+				}
+			}
+		})
+	}
+}
+
+// Echo must be restored BEFORE the ready marker is printed: a missing stty
+// then leaves the marker unsent, so the blind fallback restores echo instead
+// of a confirmed hook leaving the terminal permanently silent. The line
+// clear (erasing a prompt printed before the injection landed, so the shell's
+// post-hook prompt renders exactly once) must also precede the marker.
+func TestStartupCwdHookRestoresEchoBeforeMarker(t *testing.T) {
+	for _, shell := range []string{"/bin/bash", "/usr/bin/zsh", "/usr/bin/fish"} {
+		hook, ok := buildStartupCwdHook(shell)
+		if !ok {
+			t.Fatalf("shell %q must be supported", shell)
 		}
-		last = i
-	}
-	if strings.Contains(rc, "$HOME/.bashrc") {
-		t.Fatalf("login bootstrap must let the selected profile decide whether to source .bashrc: %s", rc)
-	}
-	if !strings.Contains(rc, "elif [ -r \"$HOME/.bash_login\" ]") ||
-		!strings.Contains(rc, "elif [ -r \"$HOME/.profile\" ]") {
-		t.Fatalf("bootstrap must source only the first readable user login file: %s", rc)
-	}
-	// chain, never overwrite: ours prepends, user's command survives
-	if !strings.Contains(rc, "__uniterm_osc7") || !strings.Contains(rc, "${PROMPT_COMMAND:+") {
-		t.Fatalf("PROMPT_COMMAND must be chained: %s", rc)
-	}
-	// bash 5.1+ array form handled
-	if !strings.Contains(rc, "declare -a") {
-		t.Fatal("must special-case array PROMPT_COMMAND")
-	}
-	if len(args) < 2 || args[0] != "--rcfile" {
-		t.Fatalf("startArgs = %v", args)
+		if strings.Index(hook, "stty echo") > strings.Index(hook, "7777;uniterm-ok") {
+			t.Fatalf("stty echo must run before the ready marker for %s: %q", shell, hook)
+		}
+		if strings.Index(hook, "[2K") > strings.Index(hook, "7777;uniterm-ok") {
+			t.Fatalf("line clear must run before the ready marker for %s: %q", shell, hook)
+		}
 	}
 }
 
-func TestBashIntegrationCommandRunsLogoutFile(t *testing.T) {
-	cmd := bashIntegrationCommand("/tmp/uniterm-Ab12Z9")
-	if !strings.HasPrefix(cmd, "bash --rcfile /tmp/uniterm-Ab12Z9;") {
-		t.Fatalf("unexpected bash command: %s", cmd)
-	}
-	if !strings.Contains(cmd, "$HOME/.bash_logout") {
-		t.Fatalf("bash command must preserve login-shell logout behavior: %s", cmd)
-	}
-	if strings.HasPrefix(cmd, "exec ") {
-		t.Fatalf("bash command must retain an outer shell to run .bash_logout: %s", cmd)
-	}
-}
-
-func TestBashBootstrapPreservesExistingPromptCommand(t *testing.T) {
-	files, _, ok := buildShellBootstrap("/bin/bash")
-	if !ok {
-		t.Fatal("bash must be supported")
-	}
-	rc := files["rcfile"]
-	// The chained assignment keeps any PROMPT_COMMAND the user's rc set.
-	if !strings.Contains(rc, "${PROMPT_COMMAND:+;$PROMPT_COMMAND}") {
-		t.Fatalf("pre-existing PROMPT_COMMAND must be preserved: %s", rc)
-	}
-}
-
-func TestGeneratedBashBootstrapsHaveValidSyntax(t *testing.T) {
+func TestGeneratedStartupCwdHookHasValidBashSyntax(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash is not available for generated-script syntax checks")
 	}
-	sshFiles, _, ok := buildShellBootstrap("/bin/bash")
+	hook, ok := buildStartupCwdHook("/bin/bash")
 	if !ok {
-		t.Fatal("SSH bash must be supported")
+		t.Fatal("bash must be supported")
 	}
-	wslFiles, ok := buildWSLShellBootstrap("/bin/bash")
-	if !ok {
-		t.Fatal("WSL bash must be supported")
-	}
-	runtimeHook, ok := buildRuntimeCwdHook("/bin/bash")
-	if !ok {
-		t.Fatal("runtime bash hook must be supported")
-	}
-	for name, script := range map[string]string{
-		"ssh":     sshFiles["rcfile"],
-		"wsl":     wslFiles["rcfile"],
-		"runtime": runtimeHook,
-	} {
-		cmd := exec.Command(bash, "-n")
-		cmd.Stdin = strings.NewReader(script)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s bash bootstrap has invalid syntax: %v: %s\n%s", name, err, out, script)
-		}
+	cmd := exec.Command(bash, "-n")
+	cmd.Stdin = strings.NewReader(hook)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("startup cwd hook has invalid bash syntax: %v: %s\n%s", err, out, hook)
 	}
 }
 
-func TestZshBootstrapZDOTDIR(t *testing.T) {
-	files, args, ok := buildShellBootstrap("/usr/bin/zsh")
-	if !ok {
-		t.Fatal("zsh must be supported")
-	}
-	for _, name := range []string{".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout"} {
-		if files[name] == "" {
-			t.Fatalf("zsh bootstrap is missing %s: %v", name, files)
-		}
-	}
-	if !strings.Contains(files[".zprofile"], "$HOME/.zprofile") {
-		t.Fatalf("redirected .zprofile must chain the user's ~/.zprofile: %s", files[".zprofile"])
-	}
-	if !strings.Contains(files[".zlogin"], "$HOME/.zlogin") {
-		t.Fatalf("redirected .zlogin must chain the user's ~/.zlogin: %s", files[".zlogin"])
-	}
-	if !strings.Contains(files[".zlogout"], "$HOME/.zlogout") {
-		t.Fatalf("redirected .zlogout must chain the user's ~/.zlogout: %s", files[".zlogout"])
-	}
-	if !strings.Contains(files[".zshrc"], "precmd_functions+=(__uniterm_osc7)") {
-		t.Fatal("zsh must append to precmd_functions, not replace")
-	}
-	// the redirected .zshenv must chain the user's own ~/.zshenv
-	if !strings.Contains(files[".zshenv"], "$HOME/.zshenv") {
-		t.Fatalf("redirected .zshenv must chain the user's ~/.zshenv: %s", files[".zshenv"])
-	}
-	found := false
-	for _, a := range args {
-		if strings.HasPrefix(a, "ZDOTDIR=") {
-			found = true
-		}
-	}
+func TestHookReadyScannerSingleChunk(t *testing.T) {
+	var sc hookReadyScanner
+	in := []byte("prompt stuff" + sshCwdHookReadyMarker + "more")
+	cleaned, found := sc.Feed(in)
 	if !found {
-		t.Fatalf("startArgs must set ZDOTDIR: %v", args)
+		t.Fatal("marker must be detected")
+	}
+	if string(cleaned) != "prompt stuffmore" {
+		t.Fatalf("cleaned = %q, want %q", cleaned, "prompt stuffmore")
 	}
 }
 
-func TestFishBootstrapUsesLoginShell(t *testing.T) {
-	_, args, ok := buildShellBootstrap("/usr/bin/fish")
-	if !ok {
-		t.Fatal("fish must be supported")
+func TestHookReadyScannerSplitAcrossChunks(t *testing.T) {
+	m := []byte(sshCwdHookReadyMarker)
+	var sc hookReadyScanner
+	c1, found1 := sc.Feed(append([]byte("abc"), m[:7]...))
+	if found1 || string(c1) != "abc" {
+		t.Fatalf("first chunk found=%v cleaned=%q", found1, c1)
 	}
-	if len(args) < 3 || args[0] != "-l" || args[1] != "-C" {
-		t.Fatalf("fish startArgs = %v, want login shell with -C bootstrap", args)
+	c2, found2 := sc.Feed(append(append([]byte{}, m[7:]...), []byte("xyz")...))
+	if !found2 {
+		t.Fatal("marker split across chunks must be detected")
+	}
+	if string(c2) != "xyz" {
+		t.Fatalf("second chunk cleaned = %q, want xyz", c2)
+	}
+}
+
+func TestHookReadyScannerNoMarkerPassthrough(t *testing.T) {
+	var sc hookReadyScanner
+	in := []byte("normal terminal output\r\n$ ")
+	cleaned, found := sc.Feed(in)
+	if found {
+		t.Fatal("no marker must report found=false")
+	}
+	if string(cleaned) != string(in) {
+		t.Fatalf("cleaned = %q, want input unchanged", cleaned)
+	}
+}
+
+func TestHookReadyScannerStopsAfterDone(t *testing.T) {
+	var sc hookReadyScanner
+	if _, found := sc.Feed([]byte(sshCwdHookReadyMarker)); !found {
+		t.Fatal("first marker must be detected")
+	}
+	sc.done = true
+	in := []byte("everything passes through now \x1b]7777;uniterm-ok\x07")
+	cleaned, found := sc.Feed(in)
+	if found {
+		t.Fatal("scanner must stop matching after done")
+	}
+	if string(cleaned) != string(in) {
+		t.Fatalf("cleaned = %q, want input unchanged", cleaned)
 	}
 }
 
@@ -304,106 +329,6 @@ func TestSSHRunCommandTimesOutWhileOpeningSession(t *testing.T) {
 		t.Fatal("test SSH server did not stop")
 	}
 	_ = client.Close()
-}
-
-func TestShellIntegrationUnsupportedShell(t *testing.T) {
-	for _, shell := range []string{"/bin/sh", "/bin/tcsh", "/usr/bin/ksh", ""} {
-		if _, _, ok := buildShellBootstrap(shell); ok {
-			t.Fatalf("shell %q must degrade to a plain shell", shell)
-		}
-	}
-}
-
-func TestRuntimeCwdHook(t *testing.T) {
-	tests := []struct {
-		name      string
-		shell     string
-		wantOK    bool
-		mustHave  []string
-	}{
-		{
-			name:     "bash",
-			shell:    "/bin/bash",
-			wantOK:   true,
-			mustHave: []string{"declare -a", "== *__uniterm_osc7*", "${PROMPT_COMMAND:+"},
-		},
-		{
-			name:     "zsh",
-			shell:    "/usr/bin/zsh",
-			wantOK:   true,
-			mustHave: []string{"(I)__uniterm_osc7", "precmd_functions"},
-		},
-		{
-			name:     "fish",
-			shell:    "/usr/bin/fish",
-			wantOK:   true,
-			mustHave: []string{"if not functions -q __uniterm_osc7"},
-		},
-		{
-			name:   "unsupported ksh",
-			shell:  "/usr/bin/ksh",
-			wantOK: false,
-		},
-		{
-			name:   "empty",
-			shell:  "",
-			wantOK: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := buildRuntimeCwdHook(tt.shell)
-			if ok != tt.wantOK {
-				t.Fatalf("buildRuntimeCwdHook(%q) ok = %v, want %v", tt.shell, ok, tt.wantOK)
-			}
-			if !ok {
-				return
-			}
-			if !strings.HasPrefix(got, " ") || !strings.HasSuffix(got, "\n") {
-				t.Fatalf("snippet must start with a space and end with a newline: %q", got)
-			}
-			if !strings.Contains(got, "__uniterm_osc7") {
-				t.Fatalf("snippet must define the __uniterm_osc7 hook: %q", got)
-			}
-			for _, want := range tt.mustHave {
-				if !strings.Contains(got, want) {
-					t.Fatalf("snippet for %s must contain %q: %q", tt.shell, want, got)
-				}
-			}
-		})
-	}
-}
-
-// The installed-flag short-circuit runs before any network access, so it can
-// be exercised on a bare session: a flagged session returns nil even when
-// disconnected, and an un-flagged disconnected session still reports the
-// connection error (so a later toggle retries).
-func TestSSHSessionInjectCwdHookFlagShortCircuit(t *testing.T) {
-	s := NewSSHSession("test-cwd-hook")
-	if injected, err := s.InjectCwdHook(); err == nil || injected {
-		t.Fatalf("un-flagged disconnected session must report an error, got injected=%v err=%v", injected, err)
-	}
-	s.cwdHookInstalled.Store(true)
-	injected, err := s.InjectCwdHook()
-	if err != nil {
-		t.Fatalf("flagged session must short-circuit to nil, got %v", err)
-	}
-	if injected {
-		t.Fatal("flagged session short-circuit must report injected=false")
-	}
-}
-
-// CwdHookInstalled exposes the installed flag so the frontend can skip its
-// confirmation dialog when the runtime hook is already present.
-func TestSSHSessionCwdHookInstalledFlag(t *testing.T) {
-	s := NewSSHSession("test-cwd-hook-flag")
-	if s.CwdHookInstalled() {
-		t.Fatal("fresh session must report cwd hook not installed")
-	}
-	s.cwdHookInstalled.Store(true)
-	if !s.CwdHookInstalled() {
-		t.Fatal("flagged session must report cwd hook installed")
-	}
 }
 
 func TestSSHIntegrationTempPathValidation(t *testing.T) {
