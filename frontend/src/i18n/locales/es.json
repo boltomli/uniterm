@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "Barra",
   "settings.cursorBlinkDesc": "Si el cursor del terminal parpadea",
   "settings.sessionLogDir": "Directorio de logs",
-  "settings.zmodemDownloadDir": "Directorio de descargas ZMODEM",
+  "settings.zmodemDownloadDir": "Directorio de descargas Zmodem",
   "settings.zmodemDownloadDirDesc": "Guarda aquí directamente los archivos recibidos con sz. Déjalo vacío para elegir una carpeta en cada transferencia.",
   "settings.zmodemDownloadDirPlaceholder": "Elegir en cada transferencia",
   "settings.sessionLogDirDesc": "Ubicación donde se guardan los logs de sesión. Dejar vacío para usar el predeterminado: {path}",

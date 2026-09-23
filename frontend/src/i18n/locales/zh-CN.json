@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "竖条",
   "settings.cursorBlinkDesc": "是否启用终端光标闪烁",
   "settings.sessionLogDir": "日志保存目录",
-  "settings.zmodemDownloadDir": "ZMODEM 下载目录",
+  "settings.zmodemDownloadDir": "Zmodem 下载目录",
   "settings.zmodemDownloadDirDesc": "通过 sz 接收的文件直接保存到此目录。留空则每次传输时选择目录。",
   "settings.zmodemDownloadDirPlaceholder": "每次传输时选择",
   "settings.sessionLogDirDesc": "会话日志文件的存放位置。留空使用默认路径：{path}",

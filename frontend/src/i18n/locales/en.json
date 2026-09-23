@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "Bar",
   "settings.cursorBlinkDesc": "Whether the terminal cursor blinks",
   "settings.sessionLogDir": "Log directory",
-  "settings.zmodemDownloadDir": "ZMODEM download directory",
+  "settings.zmodemDownloadDir": "Zmodem download directory",
   "settings.zmodemDownloadDirDesc": "Save files received with sz directly to this directory. Leave empty to choose a directory for each transfer.",
   "settings.zmodemDownloadDirPlaceholder": "Ask for each transfer",
   "settings.sessionLogDirDesc": "Where session logs are saved. Leave empty to use the default: {path}",

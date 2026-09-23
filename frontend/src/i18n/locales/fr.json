@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "Barre",
   "settings.cursorBlinkDesc": "Indique si le curseur du terminal clignote",
   "settings.sessionLogDir": "Dossier des logs",
-  "settings.zmodemDownloadDir": "Dossier de téléchargement ZMODEM",
+  "settings.zmodemDownloadDir": "Dossier de téléchargement Zmodem",
   "settings.zmodemDownloadDirDesc": "Enregistre directement ici les fichiers reçus avec sz. Laissez vide pour choisir un dossier à chaque transfert.",
   "settings.zmodemDownloadDirPlaceholder": "Choisir à chaque transfert",
   "settings.sessionLogDirDesc": "Emplacement des logs de session. Laisser vide pour utiliser le défaut : {path}",

@@ -536,7 +536,7 @@
   "settings.cursorStyleBar": "Полоса",
   "settings.cursorBlinkDesc": "Должен ли мигать курсор терминала",
   "settings.sessionLogDir": "Папка для журналов",
-  "settings.zmodemDownloadDir": "Папка загрузок ZMODEM",
+  "settings.zmodemDownloadDir": "Папка загрузок Zmodem",
   "settings.zmodemDownloadDirDesc": "Сохранять полученные через sz файлы прямо в эту папку. Оставьте пустым для выбора папки при каждой передаче.",
   "settings.zmodemDownloadDirPlaceholder": "Выбирать при каждой передаче",
   "settings.sessionLogDirDesc": "Место сохранения журналов сеансов. Оставьте пустым для использования пути по умолчанию: {path}",
