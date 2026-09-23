@@ -25,10 +25,36 @@ vars:
     sh: 'command -v adb || echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}/platform-tools/adb"'
   EMULATOR:
     sh: 'command -v emulator || echo "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}/emulator/emulator"'
-  # avdmanager lives under cmdline-tools/<version>/bin; used to auto-create an
-  # AVD when none exists (mirrors the iOS `ensure-simulator` auto-create flow).
+  # avdmanager lives under cmdline-tools/<version>/bin (often a `latest` dir);
+  # used to auto-create an AVD when none exists (mirrors the iOS
+  # `ensure-simulator` auto-create flow). Like the globals above this is
+  # evaluated on every `wails3 build`, so it must use shell builtins only:
+  # stock Windows has no `ls`/`tail`, and its System32 `sort.exe` rejects
+  # `-V` (it reads it as a filename) — each printed an error line per build.
+  # Picks `latest` if present, else the highest numeric version.
   AVDMANAGER:
-    sh: 'command -v avdmanager || ls "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}"/cmdline-tools/*/bin/avdmanager 2>/dev/null | sort -V | tail -1 || true'
+    sh: |
+      command -v avdmanager || {
+        root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$([ -d "$HOME/Library/Android/sdk" ] && echo "$HOME/Library/Android/sdk" || echo "$HOME/Android/Sdk")}}"
+        best="" bestv=-1
+        for c in "$root"/cmdline-tools/*/bin/avdmanager; do
+          [ -e "$c" ] || continue
+          # Strip the bin/avdmanager suffix, then everything up to cmdline-tools/.
+          # `?` absorbs either path separator (Windows globs yield backslashes).
+          n=${c%?bin?avdmanager}
+          n=${n##*cmdline-tools?}
+          if [ "$n" = latest ]; then best="$c"; break; fi
+          v=0 rest=$n
+          while :; do
+            seg=${rest%%.*}
+            case $seg in '' | *[!0-9]*) seg=0 ;; esac
+            v=$((v * 10000 + seg))
+            case $rest in *.*) rest=${rest#*.} ;; *) break ;; esac
+          done
+          if [ "$v" -gt "$bestv" ]; then bestv=$v; best=$c; fi
+        done
+        if [ -n "$best" ]; then printf '%s\n' "$best"; fi
+      } || true
 
 tasks:
   install:deps:
