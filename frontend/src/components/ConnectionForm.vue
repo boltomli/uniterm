@@ -1,5 +1,5 @@
 <template>
-  <el-dialog append-to-body v-model="visible" :title="isEdit ? t('conn.editTitle') : t('conn.newTitle')" width="43.75rem" class="conn-dialog" @opened="onDialogOpened">
+  <el-dialog append-to-body v-model="visible" :title="isEdit ? t('conn.editTitle') : t('conn.newTitle')" width="43.75rem" class="conn-dialog" @opened="onDialogOpened" @closed="onDialogClosed">
     <div class="conn-layout">
       <!-- Left sidebar: category icons -->
       <div class="conn-categories">
@@ -934,13 +934,30 @@ const visible = computed({
 // button, X, Esc, overlay click — reports `cancel` so the host can reset the
 // edited config. Reset on every open.
 let handled = false
+// Form reset is deferred to the dialog's @closed event: resetting while the
+// close transition is still fading out would flash default values (port 22,
+// no group) for a frame. Reopening the dialog cancels the pending reset.
+let pendingReset = false
 watch(visible, (v) => {
   if (v) {
     handled = false
+    pendingReset = false
   } else if (!handled) {
     emit('cancel')
   }
 })
+
+// Fires after the close transition finishes, so the reset below can't flash
+// default values (port 22, no group) while the dialog is still fading out.
+function onDialogClosed() {
+  if (!pendingReset) return
+  pendingReset = false
+  resetForm()
+  if (props.defaultGroupId) {
+    selectedGroupId.value = props.defaultGroupId
+    form.groupId = props.defaultGroupId
+  }
+}
 
 const hostInputRef = ref<InstanceType<typeof ElInput> | null>(null)
 
@@ -1312,11 +1329,10 @@ watch(() => props.editConfig, (config) => {
     }
     nextTick(() => { hydrating.value = false })
   } else {
-    resetForm()
-    if (props.defaultGroupId) {
-      selectedGroupId.value = props.defaultGroupId
-      form.groupId = props.defaultGroupId
-    }
+    // Defer the reset to the dialog's @closed event — clearing editConfig
+    // happens right after save while the close transition is still running,
+    // and an immediate reset would flash defaults (port 22, no group).
+    pendingReset = true
   }
 }, { immediate: true })
 
@@ -1768,7 +1784,7 @@ function onSave() {
     emit('save', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。
@@ -1785,7 +1801,7 @@ function onConnectOnly() {
     emit('connectOnly', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。
@@ -1802,7 +1818,7 @@ function onConnect() {
     emit('connect', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。
