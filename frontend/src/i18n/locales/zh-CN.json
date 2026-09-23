@@ -475,6 +475,7 @@
   "settings.languageDesc": "切换界面显示语言",
   "settings.colorSchemeDesc": "终端窗口的配色方案",
   "settings.followAppTheme": "跟随应用主题",
+"settings.terminalTheme": "终端主题",
   "settings.fontDesc": "终端显示的字体",
   "settings.fontPrimary": "主字体",
   "settings.fontFallback": "备选字体",

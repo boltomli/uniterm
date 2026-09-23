@@ -49,8 +49,8 @@
   --error-glow: rgba(248, 113, 113, 0.15);
 
   /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.14);
+  --border-subtle: rgba(255, 255, 255, 0.16);
+  --border-hover: rgba(255, 255, 255, 0.22);
 
   /* Shadows */
   --shadow-sm: 0 1px 0.125rem rgba(0, 0, 0, 0.3);
@@ -155,8 +155,8 @@
   --error-subtle: rgba(248, 113, 113, 0.06);
   --error-glow: rgba(248, 113, 113, 0.15);
 
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.14);
+  --border-subtle: rgba(255, 255, 255, 0.16);
+  --border-hover: rgba(255, 255, 255, 0.22);
 
   --shadow-sm: 0 1px 0.125rem rgba(0, 0, 0, 0.4);
   --shadow-md: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.5);
@@ -227,8 +227,8 @@
   --error-glow: rgba(209, 52, 56, 0.15);
 
   /* Borders - cool light grays */
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border-hover: rgba(0, 0, 0, 0.12);
+  --border-subtle: rgba(0, 0, 0, 0.12);
+  --border-hover: rgba(0, 0, 0, 0.18);
 
   /* Scrim - translucent white so dark loading text stays legible */
   --scrim: rgba(255, 255, 255, 0.6);
@@ -288,6 +288,11 @@ html, body, #app {
 
 body {
   box-sizing: border-box;
+  /* 1px inner inset: WebView2's CSS viewport runs ~1 physical px past the
+     visible window at fractional DPI (125%/150% — wails' frameless
+     WM_NCCALCSIZE workaround), so anything painted at the very edge gets
+     clipped. Insetting the app root keeps its window frame line visible. */
+  padding: 1px;
   font-family: var(--font-ui);
   background: var(--bg-base);
   color: var(--text-primary);

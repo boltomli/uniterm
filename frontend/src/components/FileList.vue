@@ -1259,12 +1259,28 @@ function applyBandSelection() {
   color: var(--text-primary);
 }
 
-/* Remove horizontal borders between data rows (keep header border) */
+/* Remove horizontal borders between data rows (keep header border).
+   ::before is EP's bottom frame line; the --border inner-wrapper ::after is
+   the top frame line — both dropped so the toolbar's border reads as the
+   only separator. */
 .sftp-file-list .el-table__inner-wrapper::before {
   height: 0 !important;
 }
+.sftp-file-list .el-table--border .el-table__inner-wrapper::after {
+  display: none;
+}
 .sftp-file-list .el-table td.el-table__cell {
   border-bottom: none !important;
+}
+
+/* Drop the table's outer left/right frame lines (cleaner in the dual-pane
+   layout); the `border` prop itself stays — column drag-resize needs it.
+   border-left-patch is EP's sticky 1px strip that keeps the left frame line
+   visible while scrolling horizontally. */
+.sftp-file-list .el-table--border::before,
+.sftp-file-list .el-table--border::after,
+.sftp-file-list .el-table__border-left-patch {
+  display: none;
 }
 
 /* Make table fill entire pane with consistent background */

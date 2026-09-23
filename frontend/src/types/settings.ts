@@ -325,7 +325,7 @@ export const SIDEBAR_TAB_ORDER: { key: string; labelKey: string }[] = [
 export const DEFAULT_UI_FONT_SIZE = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 14 : 12
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'dark',
+  theme: 'system',
   language: 'system',
   uiFontSize: DEFAULT_UI_FONT_SIZE,
   terminal: {

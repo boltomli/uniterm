@@ -1667,6 +1667,7 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
 <style scoped>
 .sidebar {
   background: var(--bg-elevated);
+  border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -1675,6 +1676,7 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
 
 .sidebar.collapsed {
   width: 0 !important;
+  border-right: none;
   overflow: hidden;
 }
 
@@ -1691,24 +1693,6 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
   cursor: col-resize;
   z-index: 10;
   background: transparent;
-}
-
-/* Decorative line stays at the sidebar right edge */
-.resize-handle::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 1px;
-  background: linear-gradient(
-    180deg,
-    transparent 0%,
-    var(--accent-subtle) 20%,
-    var(--accent-glow) 50%,
-    var(--accent-subtle) 80%,
-    transparent 100%
-  );
 }
 
 /* Hover: 0.1875rem accent bar extending into sidebar */
