@@ -32,7 +32,7 @@ export const HIGHLIGHT_RULES: HighlightRule[] = [
     // "<adjective> <noun>" phrases: bad address, invalid argument, …
     /(^|[^a-z_&-])((?:bad|wrong|incorrect|improper|invalid|unsupported)(?: file| memory)? (?:descriptor|alloc(?:ation)?|addr(?:ess)?|owner(?:ship)?|arg(?:ument)?|param(?:eter)?|setting|length|filename))(?![a-z_-])/gi,
     // denied, failed, segfault, no X found, …
-    /(^|[^a-z_&-])((?:operation |connection |authentication |access |permission )?(?:denied|disallowed|not allowed|refused|problem|failed|failure|not permitted)|not properly|improperly|no [a-z]+(?: [a-z]+)? found|invalid|unsupported|not supported|seg(?:mentation )?fault|corrupt(?:ion|ed)?|overflow|underrun|not ok|unimplemented|unsuccessfull?|not implemented|permerrors?|errors?|crash(?:ed)?|core dump|\(ee\)|\(ni\))(?![a-z_-])/gi,
+    /(^|[^a-z_&-])((?:operation |connection |authentication |access |permission )?(?:denied|disallowed|not allowed|refused|problem|failed|failure|not permitted)|not properly|improperly|no [a-z]+(?: [a-z]+)? found|invalid|unsupported|not supported|seg(?:mentation )?fault|corrupt(?:ion|ed)?|overflow|underrun|not ok|unimplemented|unsuccessfull?|not implemented|permerrors?|fatal|critical|exceptions?|panic(?:ked|s)?|abort(?:ed|s|ing)?|errors?|crash(?:ed)?|core dump|\(ee\)|\(ni\))(?![a-z_-])/gi,
     // falsy output values ("=> no", "status: false")
     /([=>"':.,;({\[] *)(?:false|no|ko)(?=[\]=>"':.,;)} ]|$)/gi,
   ]},
@@ -40,7 +40,7 @@ export const HIGHLIGHT_RULES: HighlightRule[] = [
     /(^|[^a-z_&-])(accepted|allowed|enabled|connected|successfully|successful|succeeded|success)(?![a-z_-])/gi,
   ]},
   { category: 'warning', regexes: [
-    /(^|[^a-z_&-])(\[-w[a-z-]+\]|caught signal [0-9]+|cannot|not responding|(?:connection (?:to (?:remote host|[a-z0-9.]+) )?)?(?:closed|terminated|stopped)|exited|no more [a-z]+ available|unexpected|(?:command |binary |file )?not found|o{2,}ps|out of (?:space|memory)|low (?:memory|disk)|unknown|disabled|disconnect(?:ed|ion)?|deprecated|refused|warnings?|\(ww\)|\(\?\?\)|could not|unable to)(?![a-z_-])/gi,
+    /(^|[^a-z_&-])(\[-w[a-z-]+\]|caught signal [0-9]+|cannot|not responding|(?:connection (?:to (?:remote host|[a-z0-9.]+) )?)?(?:closed|terminated|stopped)|exited|no more [a-z]+ available|unexpected|(?:command |binary |file )?not found|o{2,}ps|out of (?:space|memory)|low (?:memory|disk)|unknown|disabled|disconnect(?:ed|ion)?|deprecated|refused|cautions?|warns?(?:ed|ings?)?|\(ww\)|\(\?\?\)|could not|unable to)(?![a-z_-])/gi,
   ]},
   { category: 'info',    regexes: [
     /(^|[^a-z_&-])(last (?:failed )?login:|launching|checking|loading|creating|building|important|booting|starting|informational|informations?|info|notice|note|\(ii\)|\(\!\!\))(?![a-z_-])/gi,
@@ -52,7 +52,10 @@ export const HIGHLIGHT_RULES: HighlightRule[] = [
     /\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?Z?\b/g,
     /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\b/g,
     /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\b/g,
-    /\b\d{2}:\d{2}:\d{2}\b/g,
+    // Left guard + lookahead keep MAC addresses (six colon-separated hex
+    // pairs) out: an all-digit clock time must not sit inside a longer
+    // hex:hex:… run. The guard group is trimmed as usual (see file header).
+    /(^|[^0-9a-f:])\d{2}:\d{2}:\d{2}\b(?!(?::[0-9a-f]{2}){1,3})/gi,
   ]},
   { category: 'string',  regexes: [/"(?:[^"\\]|\\.){2,}"|'(?:[^'\\]|\\.){2,}'/g] },
   // Consecutive identical symbols (`****`, `=====`, `>>>`) match once as a
