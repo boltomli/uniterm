@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.9.5-alpha
+## v1.9.5
 
 ### What's Changed
 
@@ -25,11 +25,15 @@
 - Native file pickers now open at a useful directory: the private-key picker starts at ~/.ssh, kubeconfig at ~/.kube, SFTP upload / "download to" at the local pane's directory — and hidden files are shown so dot-directories are reachable. (@surenwuyuwuqiu)
 - Settings: the settings category sidebar is collapsible (auto-collapses on narrow windows) and setting cards stack vertically below phone widths, so settings are usable on small screens.
 - New settings for the host list menu style (button or right-click only) and tab shortcut hints; the tab tooltip always shows the shortcut.
+- Themes: a terminal theme submenu in the main menu (follow-app, built-in themes grouped dark/light, custom themes) applied live on click. The app theme now defaults to "system" (follows the OS color scheme) instead of dark, and theme / language / terminal-theme picks no longer close the menu, so options can be flipped through and previewed in place.
 - Element-plus scrollbars stay visible and are styled like the native ones (no pointer cursor, instant hover highlight).
+- UI: the app window gained a 1px outer frame with divider lines under the title bar and along both sidebar edges, staying visible on fractional-DPI displays; decorative gradient lines were removed from the title bar and sidebar, and the keyboard-settings table columns are unified.
 
 **Bug Fixes**
+- Terminal: pressing Enter in local sessions no longer resets mouse tracking, fixing wheel scrolling in fullscreen TUIs like vim. (@sonnartliao)
 - Terminal: device query responses (cursor position, device status, window ops) are now passed through to the PTY. Apps that query the terminal and block on the answer — any `docker compose` confirmation prompt built on the survey library — previously froze the terminal completely, with no echo and a dead Ctrl-C.
 - Terminal: select-copy and right-click paste are self-healing — clipboard writes pick the best path per platform with a timeout and fall back to the other path, reads retry once to ride out transient clipboard locks, and re-selecting the same text copies again after a failed copy.
+- Terminal: MAC addresses no longer highlight as clock times (the HH:MM:SS rule now requires time-like boundaries), and the keyword rules gained fatal / critical / exception / panic / abort (error) and bare warn / caution (warning).
 - SSH: wrong-password failures surface faster — a rejected password reaches the interactive prompt in a single handshake, each re-challenge prints a denial line (matching the OpenSSH client), and auth-type failures open the credential dialog immediately instead of after two more reconnects.
 - AI: command output from background panels is read correctly. Keep-alive-frozen panels previously returned stale or empty output and timed out; a headless mirror terminal now parses the session stream continuously and serves as the read source while the panel is inactive.
 - AI: a command confirmed by the user is replayed on the panel the model targeted — in multi-panel mode it could previously run on the wrong terminal — and the confirmation card shows the target panel. (@surenwuyuwuqiu)
@@ -37,17 +41,18 @@
 - UI: AI lock is signalled by turning the tab and panel icons warning-coloured instead of tinting the whole tab surface, which read muddy on dark themes.
 - Tabs: dragging to reorder no longer steals the selection to the neighbouring tab, and the tab merge drop-zone indicator matches the workspace split style.
 - WSL: sessions start in the distro user's home directory instead of a /mnt/c path under the app's own working directory.
+- Windows: the WebView2 autofill-wallet feature is disabled — WebView2 152/153 runtimes call LogonUser with an invalid password once per environment creation at startup (a Chromium regression), producing a 4625 failed-logon event per launch that can trip account lockout policies.
 - Settings: tab shortcut hints and host list menu style persist across restarts (they silently reset before), and the system title bar choice survives a relaunch.
 - Linux: the .desktop launcher path matches the packaged binary, so launching from the application menu works after installing the deb/rpm package. (@surenwuyuwuqiu)
 - SFTP: the max concurrent transfers setting is shown for standalone SFTP connections (the backend applied it, but the form hid the field).
+- UI: the connection form resets only after the dialog's close transition finishes, so default values no longer flash while the dialog fades out.
 - UI: batch fixes — custom window controls stay drawn until the native title bar setting takes effect after a relaunch, the chmod octal input is a plain text field again, multi-file SFTP drags show a drag ghost, and the tab strip end-drop indicator no longer pushes the add button to the far right.
 - SSH: `~` in private key paths is expanded at import and connect time.
 
 **Notes**
-- This is an alpha pre-release for testing; features may change before the stable release.
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
 
-Thanks to @surenwuyuwuqiu and @zhangsir1211 for their contributions to this release.
+Thanks to @surenwuyuwuqiu, @zhangsir1211 and @sonnartliao for their contributions to this release.
 
 ### 更新内容
 
@@ -72,11 +77,15 @@ Thanks to @surenwuyuwuqiu and @zhangsir1211 for their contributions to this rele
 - 原生文件选择器从有用的目录打开：私钥选择器从 ~/.ssh、kubeconfig 从 ~/.kube、SFTP 上传 /「下载到」从本地面板当前目录开始，并显示隐藏文件，点目录可达。（@surenwuyuwuqiu）
 - 设置：设置分类侧栏可折叠（窄窗口自动折叠），窄屏下设置卡片改为纵向堆叠，小屏幕上设置页也可正常使用。
 - 新增 主机列表菜单样式（按钮或仅右键）与 标签快捷键提示 两个设置；标签 tooltip 始终显示快捷键。
+- 主题：主菜单新增终端主题子菜单（跟随应用、内置主题按深浅色分组、自定义主题），点击即时生效。应用默认主题改为「跟随系统」（跟随操作系统配色，原为深色）；主题 / 语言 / 终端主题选择后不再关闭菜单，可连续切换预览。
 - Element-plus 滚动条常驻显示，样式与原生滚动条一致（无 pointer 光标、悬停即时高亮）。
+- 界面：应用窗口新增 1px 外边框，标题栏下方与两侧边栏带分隔线，分数缩放（高 DPI）下边框保持可见；移除标题栏与侧栏的装饰性渐变线，键盘设置表格列样式统一。
 
 **Bug 修复**
+- 终端：本地会话中按 Enter 不再重置鼠标追踪，修复 vim 等全屏 TUI 中滚轮退化为方向键的问题。（@sonnartliao）
 - 终端：设备查询应答（光标位置、设备状态、窗口操作）现在会透传给 PTY。此前凡是查询终端并阻塞等待应答的程序——所有基于 survey 库的 `docker compose` 确认提示——都会把终端彻底卡死：无回显、Ctrl-C 失效。
 - 终端：选中即复制与右键粘贴可自愈——剪贴板写入按平台选择最优路径并带超时，失败回退另一条路径；读取在空结果/出错后重试一次以渡过其他进程的瞬时剪贴板锁；复制失败后重新选中同一段文本也能再次复制。
+- 终端：MAC 地址不再被当作时间高亮（HH:MM:SS 规则增加时间样式边界判定），关键词新增 fatal / critical / exception / panic / abort（错误级）与 warn / caution（警告级）。
 - SSH：错误密码更快得到反馈——被拒绝的密码一次握手即到达交互提示；每次重新质询前先打印一条拒绝提示（与 OpenSSH 客户端一致）；认证方式类失败立即弹出凭据对话框，而不是再重连两次后才出现。
 - AI：后台面板的命令输出读取正确。此前被 KeepAlive 冻结的面板会返回过期或空输出并超时；现在每个会话有一个持续解析会话流的无头镜像终端，面板不活跃时以它为读取来源。
 - AI：用户确认的命令会回放到模型指定的面板——多面板模式下此前可能在错误的终端上执行——确认卡片上显示目标面板。（@surenwuyuwuqiu）
@@ -84,17 +93,18 @@ Thanks to @surenwuyuwuqiu and @zhangsir1211 for their contributions to this rele
 - 界面：AI 锁定改为将标签与面板图标染成警示色，取代原先将整个标签表面着色的方式（深色主题下显得浑浊）。
 - 标签：拖拽排序不再把选中抢到相邻标签；标签合并的落区指示样式与工作区分屏保持一致。
 - WSL：会话从发行版用户的主目录启动，而不是落到应用自身工作目录对应的 /mnt/c 路径。
+- Windows：禁用 WebView2 自动填充钱包特性——WebView2 152/153 运行时在启动创建环境时会用当前账户和错误密码调用一次 LogonUser（Chromium 回归），每次启动产生一条 4625 失败登录事件，可能触发账户锁定策略。
 - 设置：标签快捷键提示与主机列表菜单样式在重启后保留（此前每次重启静默重置）；系统标题栏选择在重启后生效。
 - Linux：.desktop 启动器路径与安装的二进制一致，安装 deb/rpm 包后可从应用菜单正常启动。（@surenwuyuwuqiu）
 - SFTP：独立 SFTP 连接显示最大并发传输数设置（后端已生效，但表单未显示该字段）。
+- 界面：连接表单在对话框关闭过渡动画结束后才重置，淡出过程中不再闪烁默认值。
 - 界面：批量修复——重启后原生标题栏设置生效前保留自绘窗口控件；chmod 八进制输入恢复为纯文本框；SFTP 多文件拖拽显示拖拽幻影；标签栏末尾落区指示不再把新增按钮挤到最右侧。
 - SSH：私钥路径中的 `~` 在导入与连接时展开。
 
 **说明**
-- 本版本为 alpha 预发布，供测试使用；功能在正式版前可能调整。
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报。这是 Go/Wails 应用的已知问题（见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请仅从官方开源渠道 GitHub 与 Gitee 下载。如仍有顾虑，可下载源码自行构建运行。
 
-感谢 @surenwuyuwuqiu、@zhangsir1211 在本版本的贡献。
+感谢 @surenwuyuwuqiu、@zhangsir1211、@sonnartliao 在本版本的贡献。
 
 ## v1.9.4
 
