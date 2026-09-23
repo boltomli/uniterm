@@ -17,7 +17,7 @@
 - Import: SPICE/VNC `.vv` connection files used by Virt-Viewer (the one-shot desktop-session files downloaded from hypervisor VM console pages) can be imported, mapping type, host, port, username and password.
 
 **Improvements**
-- SSH: shell integration (the silent OSC-7 cwd-reporting hook) is now injected by default on new SSH sessions; the per-connection toggle is restored in the SSH form, and enabling "follow terminal path" on a connection without the hook asks for confirmation before typing the command into the running shell.
+- SSH: the silent cwd-reporting hook is now always injected invisibly after the shell starts, sessions start as plain shells again (sshd prints its own MOTD), and the per-connection toggle is removed — "follow terminal path" is a display-side switch.
 - SFTP / SCP transfers are now pipelined — concurrent offset-addressed requests overlap round trips instead of stop-and-wait. A 4 MiB transfer over an 80 ms link drops from ~10.7 s to ~0.6 s (upload) and ~6.1 s to ~1.2 s (download); progress, pause and cancel semantics are unchanged.
 - SFTP / SCP: standalone SFTP and SCP tabs gain an "open terminal" tab-context action, and SSH-derived file tabs gain it too — a file tab can now reach a shell on the same host and vice versa. (@surenwuyuwuqiu)
 - Monitor: the process list now includes every process (previously the top 30 by CPU) with progressive loading as you scroll, so search finds all of them.
@@ -69,7 +69,7 @@ Thanks to @surenwuyuwuqiu, @zhangsir1211 and @sonnartliao for their contribution
 - 导入：支持导入 Virt-Viewer 的 SPICE/VNC `.vv` 连接文件（从虚拟化管理台控制台页下载的一次性桌面会话文件），映射类型、主机、端口、用户名与密码。
 
 **改进**
-- SSH：Shell 集成（静默注入 OSC-7 cwd 上报钩子）改为默认开启；SSH 表单恢复按连接开关；对未注入钩子的连接，在文件边栏开启「跟随终端路径」时会先确认，再向运行中的 shell 键入命令。
+- SSH：静默的 cwd 上报钩子改为 shell 启动后始终无感注入，会话恢复为普通 shell 启动（sshd 自行打印 MOTD 欢迎信息）；移除按连接开关，「跟随终端路径」变为纯显示侧开关。
 - SFTP / SCP 传输改为流水线式——并发的按偏移寻址请求重叠往返，替代停止等待。80ms 时延链路上传输 4 MiB：上传从约 10.7s 降到约 0.6s，下载从约 6.1s 降到约 1.2s；进度、暂停与取消语义不变。
 - SFTP / SCP：独立的 SFTP 与 SCP 标签页新增「打开终端」标签右键菜单项，SSH 衍生的文件标签页同样支持——文件页签与同一主机的 shell 互通。（@surenwuyuwuqiu）
 - 监控：进程列表改为全量进程（原先只有 CPU 前 30），随滚动渐进加载，搜索可找到全部进程。
