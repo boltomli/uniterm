@@ -95,7 +95,7 @@
         @row-contextmenu="onRowContextMenu"
         @header-contextmenu="onHeaderContextMenu"
       >
-      <el-table-column prop="name" :label="t('sftp.name')" :min-width="uiPx(220)" sortable="custom" show-overflow-tooltip>
+      <el-table-column prop="name" :label="t('sftp.name')" :min-width="uiPx(nameColMinWidth)" sortable="custom" show-overflow-tooltip>
         <template #default="{ row }">
           <div class="name-cell" :draggable="true" @dragstart="onDragStart($event, row)">
             <el-icon v-if="isSymlink(row)" class="name-icon link"><Link :size="'0.875rem'" /></el-icon>
@@ -173,6 +173,8 @@
           <MenuItem @click="doRename">{{ t('sftp.rename') }}</MenuItem>
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doChmod">{{ t('sftp.changePermission') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'dir'">
           <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
@@ -192,6 +194,8 @@
           <MenuItem @click="doRename">{{ t('sftp.rename') }}</MenuItem>
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doChmod">{{ t('sftp.changePermission') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'batch'">
           <MenuItem @click="doCopyToClipboard">{{ t('sftp.copy') }}</MenuItem>
@@ -208,6 +212,8 @@
           <MenuItem v-if="mode === 'local'" @click="doRename">{{ t('sftp.rename') }}</MenuItem>
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" class="disabled">{{ t('sftp.chmodDisabled') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'empty'">
           <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
@@ -216,6 +222,8 @@
           <MenuDivider />
           <MenuItem :class="{ disabled: !clipboardCount }" @click="clipboardCount && doPaste()">{{ t('sftp.paste') }}</MenuItem>
           <MenuItem @click="doSelectAll">{{ t('sftp.selectAll') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
     </Menu>
 
@@ -362,6 +370,9 @@ const tableRef = ref<any>(null)
 
 const sendToKey = computed(() => props.mode === 'local' ? 'sftp.sendToRemote' : 'sftp.sendToLocal')
 const flatToolbar = computed(() => props.toolbarLayout === 'flat')
+// Name column default width: the narrow sidebar (compact layout) uses 2/3 of
+// the dual-pane default so one column doesn't dominate the little space.
+const nameColMinWidth = computed(() => (flatToolbar.value ? 220 : 147))
 
 // Footer stats for the current multi-selection. The '..' parent row is not a
 // real entry, so it never counts toward the item total or the size sum.
@@ -815,6 +826,7 @@ function doCutToClipboard() {
   ctxMenuVisible.value = false
 }
 function doPaste() { emit('paste'); ctxMenuVisible.value = false }
+function doRefresh() { emit('refresh'); ctxMenuVisible.value = false }
 
 // Select every listed entry except '..' (navigation, never selectable).
 // Respects the name filter and the hidden-files toggle: only what is
