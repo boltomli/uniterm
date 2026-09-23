@@ -970,7 +970,7 @@
               <tr>
                 <th>{{ t('shortcut.colFunction') }}</th>
                 <th>{{ t('shortcut.colBinding') }}</th>
-                <th style="width:11.875rem;">{{ t('shortcut.colActions') }}</th>
+                <th>{{ t('shortcut.colActions') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -1090,7 +1090,7 @@
             <tr>
               <th>{{ t('shortcut.colFunction') }}</th>
               <th>{{ t('shortcut.colBinding') }}</th>
-              <th style="width:11.875rem;">{{ t('shortcut.colActions') }}</th>
+              <th>{{ t('shortcut.colActions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -2968,8 +2968,24 @@ async function onToggleSystemTitleBar(v: boolean) {
 
 .kb-table {
   width: 100%;
+  /* min-width keeps the columns (and the action buttons row) from being
+     squeezed on narrow panes; percentages keep the five tables aligned. */
+  min-width: 22rem;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8125rem;
+}
+
+.kb-table th:first-child {
+  width: 30%;
+}
+
+.kb-table th:nth-child(2) {
+  width: 38%;
+}
+
+.kb-table th:nth-child(3) {
+  width: 25%;
 }
 
 .kb-table th, .kb-table td {
@@ -2999,9 +3015,19 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin: 0 0 0.625rem;
 }
 
+/* Must stay a table-cell: display:flex on the <td> removes it from the row's
+   shared-height layout and the column drifts out of line when buttons wrap. */
 .kb-actions {
-  display: flex;
-  gap: 0.375rem;
+  vertical-align: middle;
+  white-space: normal;
+}
+
+.kb-actions .el-button {
+  margin: 0 0.375rem 0.375rem 0;
+}
+
+.kb-actions .el-button + .el-button {
+  margin-left: 0;
 }
 
 .bg-image-row { display: flex; align-items: center; gap: 0.5rem; }

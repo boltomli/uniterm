@@ -194,10 +194,10 @@
         </div>
         <div class="input-actions">
           <div class="input-actions-left">
-            <button class="ghost-btn hash-btn" title="引用终端" @click="onHashButtonClick">
+            <button class="ghost-btn hash-btn" title="引用终端" :disabled="lockedPanels.length === 0 && !currentIsTerminal" @click="onHashButtonClick">
               <span class="hash-btn-icon">#</span>
             </button>
-            <button class="ghost-btn hash-btn" title="Skill / 命令" @click="onSlashButtonClick">
+            <button class="ghost-btn hash-btn" title="Skill / 命令" :disabled="lockedPanels.length === 0 && !currentIsTerminal" @click="onSlashButtonClick">
               <span class="hash-btn-icon">/</span>
             </button>
             <template v-if="settingsStore.settings.ai.models.length > 0">
@@ -1491,6 +1491,7 @@ defineExpose({ focusInput })
 <style scoped>
 .ai-sidebar {
   background: var(--bg-elevated);
+  border-left: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -1498,6 +1499,7 @@ defineExpose({ focusInput })
 }
 .ai-sidebar.collapsed {
   width: 0 !important;
+  border-left: none;
   overflow: hidden;
 }
 .ai-sidebar.maximized {
@@ -1507,6 +1509,7 @@ defineExpose({ focusInput })
   right: 0;
   bottom: 0;
   width: 100% !important;
+  border-left: none;
   z-index: 100;
 }
 .ai-sidebar.resizing {
@@ -1522,24 +1525,6 @@ defineExpose({ focusInput })
   z-index: 10;
   background: transparent;
   transition: background 0.15s ease;
-}
-
-.resize-handle::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 1px;
-  background: linear-gradient(
-    180deg,
-    transparent 0%,
-    var(--accent-subtle) 20%,
-    var(--accent-glow) 50%,
-    var(--accent-subtle) 80%,
-    transparent 100%
-  );
-  transition: opacity 0.15s;
 }
 
 .resize-handle:hover::after {
@@ -1715,7 +1700,6 @@ defineExpose({ focusInput })
 }
 .input-container {
   border: 1px solid var(--border-subtle);
-  border-top-color: transparent;
   border-radius: 0 0 var(--radius-md) var(--radius-md);
   background: var(--bg-elevated);
   transition: border-color 0.15s ease;
@@ -1808,6 +1792,10 @@ defineExpose({ focusInput })
 .ghost-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.ghost-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 .model-btn {
   max-width: 6rem;

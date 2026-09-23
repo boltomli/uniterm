@@ -403,27 +403,11 @@ onUnmounted(() => {
   padding: 0 0.5rem;
   gap: 0.125rem;
   background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
   position: relative;
   z-index: 10;
   --wails-draggable: drag;
-}
-
-.app-header::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--accent-subtle) 20%,
-    var(--accent-glow) 50%,
-    var(--accent-subtle) 80%,
-    transparent 100%
-  );
 }
 
 .header-tabs {
@@ -477,17 +461,6 @@ onUnmounted(() => {
 
 .header-btn .el-icon {
   font-size: 0.875rem;
-}
-
-[data-theme="light"] .app-header::after {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--accent-subtle) 20%,
-    var(--accent-glow) 50%,
-    var(--accent-subtle) 80%,
-    transparent 100%
-  );
 }
 
 .app-header :deep(.window-controls) {
