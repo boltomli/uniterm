@@ -48,9 +48,12 @@ jobs:
 
       - name: Set version
         shell: bash
+        env:
+          # ref_name is attacker-influenceable; pass via env, never inline.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+            echo "VERSION=$REF_NAME" >> $GITHUB_ENV
           else
             SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
             echo "VERSION=dev-${SHORT}" >> $GITHUB_ENV

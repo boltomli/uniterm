@@ -36,8 +36,12 @@ jobs:
             git binutils
           # UPX (optional compression) — linux release is .tar.xz
           UPX_VER="4.2.4"
+          # Pinned digest: a tampered release asset fails the build instead
+          # of packing the shipped Linux binary.
+          UPX_SHA256="75cab4e57ab72fb4585ee45ff36388d280c7afd72aa03e8d4b9c3cbddb474193"
           curl -sSfL -o /tmp/upx.tar.xz \
             "https://github.com/upx/upx/releases/download/v${UPX_VER}/upx-${UPX_VER}-amd64_linux.tar.xz"
+          echo "${UPX_SHA256}  /tmp/upx.tar.xz" | sha256sum -c -
           tar -xJf /tmp/upx.tar.xz -C /tmp
           install -m 755 /tmp/upx-*/upx /usr/local/bin/upx
           upx --version
@@ -101,8 +105,13 @@ jobs:
           cd ..
 
           NFPM_VER="2.46.3"
+          # Pinned digest: nfpm builds the shipped .deb/.rpm, so a tampered
+          # release asset must fail the build instead of injecting into the
+          # distributed packages.
+          NFPM_SHA256="9170d25ea056d7329def38134b2bcad98d02d221f8331610dcd619e84d28c565"
           curl -sSfL -o /tmp/nfpm.tar.gz \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_${NFPM_ARCH}.tar.gz"
+          echo "${NFPM_SHA256}  /tmp/nfpm.tar.gz" | sha256sum -c -
           tar xf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
           chmod +x /usr/local/bin/nfpm
 

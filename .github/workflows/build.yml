@@ -68,8 +68,11 @@ jobs:
           echo "makensis: $NSIS_BIN/makensis.exe"
 
           UPX_VER="5.2.0"
+          # Pinned digest: a tampered GitHub release asset fails the build
+          # instead of silently packing the shipped Windows binary.
+          UPX_SHA256="b471ebf1b7f20f4a89150264ed9a008a2a5bfd247f3c6d1184a75bb59ca08f5d"
           curl -sSfL -o /tmp/upx.zip "https://github.com/upx/upx/releases/download/v${UPX_VER}/upx-${UPX_VER}-win64.zip"
-          sha256sum /tmp/upx.zip
+          echo "${UPX_SHA256}  /tmp/upx.zip" | sha256sum -c -
           unzip -o /tmp/upx.zip -d /tmp/upx > /dev/null
           mv -f /tmp/upx/upx-*/upx.exe "$NSIS_BIN/upx.exe"
           upx --version
@@ -92,9 +95,13 @@ jobs:
 
       - name: Set version
         shell: bash
+        env:
+          # ref_name is attacker-influenceable (anyone who can create tags);
+          # pass it via env instead of interpolating it into the script.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+            echo "VERSION=$REF_NAME" >> $GITHUB_ENV
           else
             SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
             echo "VERSION=dev-${SHORT}" >> $GITHUB_ENV
@@ -201,6 +208,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path $VCXSRV_DIR | Out-Null
           $zip = Join-Path $env:TEMP 'vcxsrv.zip'
           Invoke-WebRequest -Uri "https://github.com/ys-ll/uniterm-vcxsrv/releases/download/$env:VCXSRV_VERSION/vcxsrv.zip" -OutFile $zip
+          # Pinned digest: the zip is bundled into the NSIS installer and
+          # portable zip, so a tampered asset must fail the build.
+          $expected = '871a8c054cf5fa10cea77cc6a09f6abbf989c3bb28441c2e7b6cbc4d4eed9302'
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          if ($actual -ne $expected) { throw "vcxsrv.zip sha256 mismatch: got $actual want $expected" }
           Expand-Archive -Path $zip -DestinationPath $VCXSRV_DIR -Force
           Get-ChildItem $VCXSRV_DIR
 
@@ -256,8 +268,17 @@ jobs:
           cd ..
 
           NFPM_VER="2.46.3"
+          # Pinned digests per arch: nfpm builds the shipped .deb/.rpm, so a
+          # tampered release asset must fail the build instead of injecting
+          # into the distributed packages.
+          case "$NFPM_ARCH" in
+            x86_64) NFPM_SHA256="9170d25ea056d7329def38134b2bcad98d02d221f8331610dcd619e84d28c565" ;;
+            arm64)  NFPM_SHA256="7871d72bb1035924eab56031f962ae3f004b1f7695151789ef018bdbc507a2fa" ;;
+            *) echo "no pinned sha256 for NFPM_ARCH=$NFPM_ARCH"; exit 1 ;;
+          esac
           curl -sSfL -o /tmp/nfpm.tar.gz \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_${NFPM_ARCH}.tar.gz"
+          echo "${NFPM_SHA256}  /tmp/nfpm.tar.gz" | sha256sum -c -
           tar xf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
           chmod +x /usr/local/bin/nfpm
 
@@ -336,6 +357,10 @@ jobs:
           fi
 
       - name: Extract changelog
+        shell: bash
+        env:
+          # ref_name is attacker-influenceable; pass via env, never inline.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "$PRERELEASE" = "true" ]; then
             SHA="${{ github.sha }}"
@@ -349,18 +374,20 @@ jobs:
           本次为**预览构建，非正式发布版本**，请勿对外分发。
 
           - Commit: \`${SHORT}\`
-          - Branch: \`${{ github.ref_name }}\`
+          - Branch: \`${REF_NAME}\`
           - Built: ${NOW}
           - Run: ${RUN_URL}
           EOF
           else
-            sed -n "/^## ${{ github.ref_name }}$/,/^## v/p" CHANGELOG.md | sed '$d' > release_body.md
+            sed -n "/^## $REF_NAME$/,/^## v/p" CHANGELOG.md | sed '$d' > release_body.md
           fi
 
       - name: Detect prerelease
         if: github.event_name != 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if echo "${{ github.ref_name }}" | grep -qiE '\-(rc|beta|alpha|pre|dev)'; then
+          if echo "$REF_NAME" | grep -qiE '\-(rc|beta|alpha|pre|dev)'; then
             echo "PRERELEASE=true" >> $GITHUB_ENV
           else
             echo "PRERELEASE=false" >> $GITHUB_ENV

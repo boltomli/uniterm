@@ -20,8 +20,13 @@ jobs:
           token: ${{ secrets.PAT }}
 
       - name: Get version
+        env:
+          # Passed through env so a crafted tag name is never interpolated
+          # into the shell script (GitHub expression injection; this job
+          # holds secrets.PAT).
+          TAG_INPUT: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          TAG="$TAG_INPUT"
           VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "TAG=$TAG" >> $GITHUB_ENV
