@@ -659,30 +659,6 @@
           <!-- Local dirs are not user-selectable under mobile scoped storage -->
           <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
-              <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
-              <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
-            </div>
-            <div class="setting-control">
-              <el-input
-                v-model="settingsStore.settings.terminal.sessionLogDir"
-                :placeholder="defaultLogDir"
-                class="dir-input"
-                @change="settingsStore.save()"
-                clearable
-              >
-                <template #append>
-                  <el-tooltip :content="t('settings.browse')" placement="top">
-                    <el-button :aria-label="t('settings.browse')" @click="pickLogDir">
-                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
-                    </el-button>
-                  </el-tooltip>
-                </template>
-              </el-input>
-            </div>
-          </div>
-
-          <div v-if="!isMobile" class="setting-card">
-            <div class="setting-info">
               <div class="setting-title">{{ t('settings.zmodemDownloadDir') }}</div>
               <div class="setting-desc">{{ t('settings.zmodemDownloadDirDesc') }}</div>
             </div>
@@ -697,6 +673,30 @@
                 <template #append>
                   <el-tooltip :content="t('settings.browse')" placement="top">
                     <el-button :aria-label="t('settings.browse')" @click="pickZmodemDownloadDir">
+                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </template>
+              </el-input>
+            </div>
+          </div>
+
+          <div v-if="!isMobile" class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
+              <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
+            </div>
+            <div class="setting-control">
+              <el-input
+                v-model="settingsStore.settings.terminal.sessionLogDir"
+                :placeholder="defaultLogDir"
+                class="dir-input"
+                @change="settingsStore.save()"
+                clearable
+              >
+                <template #append>
+                  <el-tooltip :content="t('settings.browse')" placement="top">
+                    <el-button :aria-label="t('settings.browse')" @click="pickLogDir">
                       <el-icon><FolderOpen :size="'1rem'" /></el-icon>
                     </el-button>
                   </el-tooltip>
