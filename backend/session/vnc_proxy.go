@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 type VNCProxy struct {
 	listener net.Listener
 	target   string
+	token    string // per-listen secret carried in the returned URL; rejects anyone who finds the port
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -39,12 +42,26 @@ func (p *VNCProxy) Start() (string, error) {
 	}
 	p.listener = ln
 
+	// Gate the bridge with a random per-listen token: CheckOrigin cannot
+	// distinguish the app's webview from another local process or a web
+	// page, and the first connector wins the single slot.
+	var tok [16]byte
+	if _, err := rand.Read(tok[:]); err != nil {
+		ln.Close()
+		return "", fmt.Errorf("vnc proxy token: %w", err)
+	}
+	p.token = hex.EncodeToString(tok[:])
+
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != p.token {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Writef("[VNCProxy] WebSocket upgrade failed: %v", err)
@@ -61,7 +78,7 @@ func (p *VNCProxy) Start() (string, error) {
 
 	addr := ln.Addr().(*net.TCPAddr)
 	log.Writef("[VNCProxy] Listening on ws://127.0.0.1:%d, target: %s", addr.Port, p.target)
-	return fmt.Sprintf("ws://127.0.0.1:%d", addr.Port), nil
+	return fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.token), nil
 }
 
 func (p *VNCProxy) handleWebSocket(ws *websocket.Conn) {
