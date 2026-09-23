@@ -60,7 +60,7 @@ func TestSyncBoundaryNormalizesEncryptedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read repo connections: %v", err)
 	}
-	repoPlain, err := decryptBytes(string(repoData), key)
+	repoPlain, err := decryptBytes(string(repoData), key, "connections.json")
 	if err != nil {
 		t.Fatalf("decrypt repo connections: %v", err)
 	}

@@ -75,22 +75,40 @@ func TestIsEncryptedField(t *testing.T) {
 	}
 }
 
-// TestEncryptBytes_NilAADStillWorks ensures backward compat: existing
-// callers using encryptBytes (which pass nil AAD internally) continue to
-// round-trip unchanged.
-func TestEncryptBytes_NilAADStillWorks(t *testing.T) {
+// TestEncryptBytes_AADBinding ensures sync ciphertexts are bound to their
+// file name: a swap across files must fail, while legacy nil-AAD ciphertexts
+// (written before SYNC-P1-1 was wired up) still decrypt as a fallback.
+func TestEncryptBytes_AADBinding(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	plaintext := []byte(`{"theme":"dark"}`)
 
-	encoded, err := encryptBytes(plaintext, key)
+	encoded, err := encryptBytes(plaintext, key, "settings.json")
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	got, err := decryptBytes(encoded, key)
+	got, err := decryptBytes(encoded, key, "settings.json")
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
 	if !bytes.Equal(got, plaintext) {
 		t.Fatalf("round-trip mismatch:\n got %q\nwant %q", got, plaintext)
+	}
+
+	// The same ciphertext under a different file name must fail the AAD check.
+	if _, err := decryptBytes(encoded, key, "connections.json"); err == nil {
+		t.Fatal("ciphertext decrypted under the wrong file name — AAD not enforced")
+	}
+
+	// Legacy nil-AAD ciphertexts stay readable via the fallback path.
+	legacy, err := encryptBytesWithAAD(plaintext, key, nil)
+	if err != nil {
+		t.Fatalf("legacy encrypt: %v", err)
+	}
+	got, err = decryptBytes(legacy, key, "settings.json")
+	if err != nil {
+		t.Fatalf("legacy decrypt: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatalf("legacy round-trip mismatch:\n got %q\nwant %q", got, plaintext)
 	}
 }

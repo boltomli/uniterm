@@ -134,7 +134,7 @@ func TestChangePassword_RewritesSaltAndReencryptsFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if _, err := decryptBytes(string(ct), oldKey); err == nil {
+		if _, err := decryptBytes(string(ct), oldKey, name); err == nil {
 			t.Errorf("%s still decryptable with oldKey — ChangePassword did not re-encrypt", name)
 		}
 	}

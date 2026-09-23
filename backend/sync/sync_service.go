@@ -941,7 +941,7 @@ func (s *SyncService) VerifySyncPassword(password, username, token string) error
 		}
 	}
 
-	if _, err := decryptBytes(string(encrypted), key); err != nil {
+	if _, err := decryptBytes(string(encrypted), key, "connections.json"); err != nil {
 		return ErrWrongSyncPassword
 	}
 	return nil
@@ -1001,11 +1001,11 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 			}
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		plaintext, err := decryptBytes(string(ciphertext), oldKey)
+		plaintext, err := decryptBytes(string(ciphertext), oldKey, name)
 		if err != nil {
 			return fmt.Errorf("decrypt %s: %w", name, err)
 		}
-		encoded, err := encryptBytes(plaintext, newKey)
+		encoded, err := encryptBytes(plaintext, newKey, name)
 		if err != nil {
 			return fmt.Errorf("encrypt %s: %w", name, err)
 		}

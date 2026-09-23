@@ -46,7 +46,7 @@ func TestSyncBoundaryNormalizesKeyText(t *testing.T) {
 		// The repo copy is the whole file encrypted with the sync key; the dst
 		// copy is plaintext JSON (only secret fields re-encrypted as enc:v1:).
 		if decrypt {
-			pt, err := decryptBytes(string(raw), key)
+			pt, err := decryptBytes(string(raw), key, filepath.Base(file))
 			if err != nil {
 				t.Fatalf("decrypt %s: %v", file, err)
 			}

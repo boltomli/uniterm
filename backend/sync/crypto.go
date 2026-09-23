@@ -83,37 +83,35 @@ func encryptConnectionsFile(src, dest string, key []byte, kc *Keychain, ps Passw
 		if err := json.Unmarshal(data, &wrapper); err != nil {
 			return fmt.Errorf("parse connections: %w", err)
 		}
-		for _, cm := range wrapper.Connections {
-			switch cm["authType"] {
-			case "password":
-				pw, _ := cm["password"].(string)
-				if pw == "" {
-					// Legacy: password stored in keychain, not in JSON.
-					if id, ok := cm["id"].(string); ok && kc != nil {
-						if kcPw, err := kc.GetPassword(id); err == nil && kcPw != "" {
-							cm["password"] = kcPw
-						}
-					}
-				} else if isEncryptedField(pw) && ps != nil {
-					// Normalize in-place encrypted field to plaintext for upload.
-					if pt, err := ps.Decrypt(pw); err == nil {
-						cm["password"] = pt
-					}
+		normalize := func(m map[string]interface{}, field string) {
+			if v, _ := m[field].(string); isEncryptedField(v) && ps != nil {
+				if pt, err := ps.Decrypt(v); err == nil {
+					m[field] = pt
 				}
-			case "keyText":
-				// Normalize the inline private-key text to plaintext for upload,
-				// mirroring the password path so enc:v1: never escapes the file.
-				if kc, _ := cm["keyContent"].(string); kc != "" && isEncryptedField(kc) && ps != nil {
-					if pt, err := ps.Decrypt(kc); err == nil {
-						cm["keyContent"] = pt
+			}
+		}
+		for _, cm := range wrapper.Connections {
+			if pw, _ := cm["password"].(string); cm["authType"] == "password" && pw == "" {
+				// Legacy: password stored in keychain, not in JSON.
+				if id, ok := cm["id"].(string); ok && kc != nil {
+					if kcPw, err := kc.GetPassword(id); err == nil && kcPw != "" {
+						cm["password"] = kcPw
 					}
 				}
 			}
+			// Normalize every in-place encrypted secret — whatever the authType —
+			// to plaintext for upload, so the whole file is protected solely by
+			// the sync key (enc:v1: is bound to the per-device credential store
+			// and must never escape into the repo).
+			normalize(cm, "password")
+			normalize(cm, "keyContent")
+			normalize(cm, "sentinelPassword")
+			normalize(cm, "tunnelSSHPassword")
 		}
 		data, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	encoded, err := encryptBytes(data, key)
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
 	if err != nil {
 		return err
 	}
@@ -156,7 +154,7 @@ func encryptAIConfigFile(src, dest string, key []byte, kc *Keychain, ps Password
 		}
 	}
 
-	encoded, err := encryptBytes(data, key)
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
 	if err != nil {
 		return err
 	}
@@ -193,7 +191,7 @@ func encryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error
 		data, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	encoded, err := encryptBytes(data, key)
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
 	if err != nil {
 		return err
 	}
@@ -225,7 +223,7 @@ func encryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
 		data, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	encoded, err := encryptBytes(data, key)
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
 	if err != nil {
 		return err
 	}
@@ -274,7 +272,7 @@ func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) erro
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key)
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
 	if err != nil {
 		return fmt.Errorf("decrypt connections: %w", err)
 	}
@@ -288,24 +286,22 @@ func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) erro
 			return fmt.Errorf("parse connections: %w", err)
 		}
 		for _, cm := range wrapper.Connections {
-			switch cm["authType"] {
-			case "password":
-				if pw, ok := cm["password"].(string); ok && pw != "" && !isEncryptedField(pw) {
-					// Re-encrypt plaintext under the local credential key.
-					if enc, err := ps.Encrypt(pw); err == nil {
-						cm["password"] = enc
+			// Re-encrypt plaintext secrets under the local credential key.
+			// Every authType is covered: the local store encrypts password,
+			// keyContent, sentinelPassword and tunnelSSHPassword at rest
+			// regardless of authType, so pull must mirror that here (the old
+			// keyText carve-out would now leave plaintext passphrases on disk).
+			reenc := func(field string) {
+				if v, ok := cm[field].(string); ok && v != "" && !isEncryptedField(v) {
+					if enc, err := ps.Encrypt(v); err == nil {
+						cm[field] = enc
 					}
 				}
-			case "keyText":
-				if kc, ok := cm["keyContent"].(string); ok && kc != "" && !isEncryptedField(kc) {
-					if enc, err := ps.Encrypt(kc); err == nil {
-						cm["keyContent"] = enc
-					}
-				}
-				// The keyText passphrase (password field) is never in-place
-				// encrypted locally, so sync carries it through as-is — re-encrypting
-				// it here would corrupt real passphrases on the receiving side.
 			}
+			reenc("password")
+			reenc("keyContent")
+			reenc("sentinelPassword")
+			reenc("tunnelSSHPassword")
 		}
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
@@ -322,7 +318,7 @@ func decryptAIConfigFile(src, dest string, key []byte, ps PasswordStore) error {
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key)
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
 	if err != nil {
 		return fmt.Errorf("decrypt ai config: %w", err)
 	}
@@ -360,7 +356,7 @@ func decryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key)
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
 	if err != nil {
 		return fmt.Errorf("decrypt identities: %w", err)
 	}
@@ -401,7 +397,7 @@ func decryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key)
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
 	if err != nil {
 		return fmt.Errorf("decrypt proxies: %w", err)
 	}
@@ -432,7 +428,7 @@ func encryptGenericFile(src, dest string, key []byte) error {
 	if err != nil {
 		return err
 	}
-	encoded, err := encryptBytes(data, key)
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
 	if err != nil {
 		return err
 	}
@@ -448,7 +444,7 @@ func decryptGenericFile(src, dest string, key []byte) error {
 		}
 		return err
 	}
-	plaintext, err := decryptBytes(string(data), key)
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
 	if err != nil {
 		return fmt.Errorf("decrypt: %w", err)
 	}
@@ -465,9 +461,11 @@ func decryptFieldsInPlace(obj map[string]interface{}, ps PasswordStore) {
 	if conns, ok := obj["connections"].([]interface{}); ok {
 		for _, c := range conns {
 			if cm, ok := c.(map[string]interface{}); ok {
-				if pw, ok := cm["password"].(string); ok && isEncryptedField(pw) {
-					if pt, err := ps.Decrypt(pw); err == nil {
-						cm["password"] = pt
+				for _, field := range []string{"password", "keyContent", "sentinelPassword", "tunnelSSHPassword"} {
+					if v, ok := cm[field].(string); ok && isEncryptedField(v) {
+						if pt, err := ps.Decrypt(v); err == nil {
+							cm[field] = pt
+						}
 					}
 				}
 			}
@@ -510,12 +508,12 @@ func decryptFieldsInPlace(obj map[string]interface{}, ps PasswordStore) {
 	}
 }
 
-// encryptBytes encrypts plaintext under key, binding the ciphertext to a
-// logical "file" identifier via additional data so an attacker who can
-// swap ciphertexts across files (e.g. paste connections.json.enc over
+// encryptBytes encrypts plaintext under key, binding the ciphertext to the
+// synced file's name via additional data so an attacker who can swap
+// ciphertexts across files (e.g. paste connections.json.enc over
 // settings.json.enc) fails the AAD check (SYNC-P1-1).
-func encryptBytes(plaintext []byte, key []byte) (string, error) {
-	return encryptBytesWithAAD(plaintext, key, nil)
+func encryptBytes(plaintext []byte, key []byte, file string) (string, error) {
+	return encryptBytesWithAAD(plaintext, key, []byte(file))
 }
 
 func encryptBytesWithAAD(plaintext []byte, key []byte, aad []byte) (string, error) {
@@ -535,7 +533,14 @@ func encryptBytesWithAAD(plaintext []byte, key []byte, aad []byte) (string, erro
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-func decryptBytes(encoded string, key []byte) ([]byte, error) {
+// decryptBytes decrypts a synced file ciphertext bound to file via AAD.
+// Ciphertexts written before SYNC-P1-1 was wired up carry a nil AAD; they
+// are accepted as a legacy fallback and upgraded to the name-bound form on
+// the next push or password rotation.
+func decryptBytes(encoded string, key []byte, file string) ([]byte, error) {
+	if pt, err := decryptBytesWithAAD(encoded, key, []byte(file)); err == nil {
+		return pt, nil
+	}
 	return decryptBytesWithAAD(encoded, key, nil)
 }
 

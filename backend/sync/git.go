@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -29,8 +30,31 @@ const (
 	SyncConflict
 )
 
+// validateRepoURL rejects remotes that would transmit the sync token in
+// cleartext. The sync transport is HTTP basic auth (token as password): over
+// http:// or git:// the token would travel unencrypted, so only encrypted
+// transports are accepted. Local paths / file:// remotes carry no token and
+// stay allowed (they are also what the tests use).
+func validateRepoURL(repoURL string) error {
+	scheme := strings.ToLower(schemeOf(repoURL))
+	if scheme == "http" || scheme == "git" {
+		return fmt.Errorf("sync repo URL must not use cleartext %s:// (token would be sent unencrypted; use https://)", scheme)
+	}
+	return nil
+}
+
+func schemeOf(repoURL string) string {
+	if i := strings.Index(repoURL, "://"); i > 0 {
+		return repoURL[:i]
+	}
+	return ""
+}
+
 // CloneOrOpen opens the repo at repoPath, or clones it from the given URL.
 func CloneOrOpen(repoPath, repoURL, branch, username, token string) (*GitRepo, error) {
+	if err := validateRepoURL(repoURL); err != nil {
+		return nil, err
+	}
 	repo, err := git.PlainOpen(repoPath)
 	if err == nil {
 		return &GitRepo{repo: repo, repoPath: repoPath}, nil
@@ -314,6 +338,9 @@ func (g *GitRepo) ResetToRemote(branch string) error {
 
 // TestConnection verifies the repo URL is reachable.
 func TestConnection(repoURL, username, token string) error {
+	if err := validateRepoURL(repoURL); err != nil {
+		return err
+	}
 	remote := git.NewRemote(nil, &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{repoURL},
