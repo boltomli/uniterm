@@ -148,9 +148,6 @@ export interface ConnectionConfig {
   // missing $DISPLAY / xauth — see backend x11_forward.go.
   x11Forwarding?: boolean
   agentForwarding?: boolean
-  // Inject OSC-7 cwd reporting by changing supported SSH shell startup.
-  // Disabled by default.
-  shellIntegration?: boolean
   // Enable session output log automatically on first connect. Applies
   // to terminal-stream types (ssh/telnet/serial/mosh/local).
   logOnConnect?: boolean
