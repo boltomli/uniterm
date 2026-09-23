@@ -8,7 +8,7 @@
     <!-- Custom search/replace bar: the built-in CodeMirror panel's look
          doesn't match the app, so search state/highlighting is managed here
          and the cursor work goes through RegExpCursor. -->
-    <div v-if="searchOpen" class="search-bar">
+    <div v-if="searchOpen" class="search-bar" @keydown="onSearchBarKeydown">
       <div class="search-row">
         <button class="search-icon-btn" :class="{ active: caseSensitive }" :title="t('sftp.edit.matchCase')" @click="caseSensitive = !caseSensitive">
           <el-icon><CaseSensitive :size="'0.875rem'" /></el-icon>
@@ -360,6 +360,24 @@ function toggleSearch(): boolean {
   if (searchOpen.value) closeSearch()
   else void openSearch()
   return searchOpen.value
+}
+
+// Ctrl+F / Ctrl+H while the search bar has focus: the CodeMirror keymap can't
+// see these events (they target the search/replace <input>, not the editor),
+// so mirror them here. Ctrl+F lands back on the search input; Ctrl+H expands
+// the bar into its replace form.
+function onSearchBarKeydown(e: KeyboardEvent) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+  if (e.code === 'KeyF') {
+    e.preventDefault()
+    void openSearch()
+    // openSearch focuses the replace input when the row is open; Ctrl+F
+    // should always land on the search input.
+    nextTick(() => searchInputRef.value?.focus())
+  } else if (e.code === 'KeyH') {
+    e.preventDefault()
+    void openSearch(true)
+  }
 }
 
 // Clipboard ops, Wails-first (same paths the terminal uses: writeClipboard
