@@ -249,6 +249,13 @@ func (s *LocalSession) readLoop() {
 				return
 			default:
 			}
+			// If a terminal application enabled mouse tracking and then exited
+			// without disabling it, reset tracking now that the process is gone
+			// — this restores native text selection.
+			if s.mouseTrackingEnabled.Load() {
+				s.emitData(mouseTrackingReset)
+				s.mouseTrackingEnabled.Store(false)
+			}
 			if err != io.EOF {
 				s.emitData([]byte(fmt.Sprintf("\r\n[read error: %v]\r\n", err)))
 			}
@@ -263,18 +270,6 @@ func (s *LocalSession) Write(data []byte) error {
 		return fmt.Errorf("not connected")
 	}
 	_, err := s.pty.Write(s.encodeInput(data))
-	// If a terminal application enabled mouse tracking and then exited
-	// without disabling it, automatically reset tracking when the user
-	// presses Enter — this restores native text selection.
-	if err == nil && s.mouseTrackingEnabled.Load() {
-		for _, b := range data {
-			if b == '\r' || b == '\n' {
-				s.emitData(mouseTrackingReset)
-				s.mouseTrackingEnabled.Store(false)
-				break
-			}
-		}
-	}
 	return err
 }
 
