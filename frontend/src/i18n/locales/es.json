@@ -475,6 +475,7 @@
   "settings.languageDesc": "Cambiar el idioma de la interfaz",
   "settings.colorSchemeDesc": "Esquema de colores de la terminal",
   "settings.followAppTheme": "Seguir tema de la aplicación",
+"settings.terminalTheme": "Tema del terminal",
   "settings.fontDesc": "Familia tipográfica de la terminal",
   "settings.fontPrimary": "Fuente principal",
   "settings.fontFallback": "Fuente alternativa",

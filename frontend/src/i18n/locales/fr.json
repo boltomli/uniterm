@@ -475,6 +475,7 @@
   "settings.languageDesc": "Changer la langue d'affichage",
   "settings.colorSchemeDesc": "Palette de couleurs du terminal",
   "settings.followAppTheme": "Suivre le thème de l'application",
+"settings.terminalTheme": "Thème du terminal",
   "settings.fontDesc": "Police du terminal",
   "settings.fontPrimary": "Police principale",
   "settings.fontFallback": "Police de secours",

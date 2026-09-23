@@ -475,6 +475,7 @@
   "settings.languageDesc": "Переключить язык интерфейса",
   "settings.colorSchemeDesc": "Цветовая схема терминала",
   "settings.followAppTheme": "Следовать теме приложения",
+"settings.terminalTheme": "Тема терминала",
   "settings.fontDesc": "Шрифт терминала",
   "settings.fontPrimary": "Основной шрифт",
   "settings.fontFallback": "Резервный шрифт",

@@ -475,6 +475,7 @@
   "settings.languageDesc": "表示言語を切り替え",
   "settings.colorSchemeDesc": "ターミナルのカラースキーム",
   "settings.followAppTheme": "アプリのテーマに従う",
+"settings.terminalTheme": "ターミナルテーマ",
   "settings.fontDesc": "ターミナルのフォント",
   "settings.fontPrimary": "主要フォント",
   "settings.fontFallback": "代替フォント",

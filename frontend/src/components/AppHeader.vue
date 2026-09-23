@@ -53,18 +53,49 @@
           >{{ opt.label }}</MenuItem>
         </MenuSubmenu>
 
+        <!-- 终端主题 -->
+        <MenuSubmenu :label="t('settings.terminalTheme')" class="terminal-theme-submenu">
+          <MenuItem
+            :class="{ active: settingsStore.settings.terminal.theme === FOLLOW_APP_THEME }"
+            @click="applyTerminalTheme(FOLLOW_APP_THEME)"
+          >{{ t('settings.followAppTheme') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem
+            v-for="entry in darkTerminalThemes"
+            :key="entry.value"
+            :class="{ active: settingsStore.settings.terminal.theme === entry.value }"
+            @click="applyTerminalTheme(entry.value)"
+          >{{ entry.label }}</MenuItem>
+          <MenuDivider />
+          <MenuItem
+            v-for="entry in lightTerminalThemes"
+            :key="entry.value"
+            :class="{ active: settingsStore.settings.terminal.theme === entry.value }"
+            @click="applyTerminalTheme(entry.value)"
+          >{{ entry.label }}</MenuItem>
+          <template v-if="settingsStore.settings.customTerminalThemes.length > 0">
+            <MenuDivider />
+            <MenuItem
+              v-for="custom in settingsStore.settings.customTerminalThemes"
+              :key="custom.id"
+              :class="{ active: settingsStore.settings.terminal.theme === custom.id }"
+              @click="applyTerminalTheme(custom.id)"
+            >{{ custom.name }}</MenuItem>
+          </template>
+        </MenuSubmenu>
+
         <!-- 语言 -->
         <MenuSubmenu :label="t('settings.language')">
+          <MenuItem
+            :class="{ active: settingsStore.settings.language === 'system' }"
+            @click="applyLanguage('system')"
+          >{{ t('settings.langSystem') }}</MenuItem>
           <MenuItem
             v-for="lang in LANGUAGE_OPTIONS"
             :key="lang.value"
             :class="{ active: settingsStore.settings.language === lang.value }"
             @click="applyLanguage(lang.value)"
           >{{ lang.native }}</MenuItem>
-          <MenuItem
-            :class="{ active: settingsStore.settings.language === 'system' }"
-            @click="applyLanguage('system')"
-          >{{ t('settings.langSystem') }}</MenuItem>
         </MenuSubmenu>
 
         <MenuDivider />
@@ -117,7 +148,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
-import { LANGUAGE_OPTIONS } from '../types/settings'
+import { LANGUAGE_OPTIONS, TERMINAL_THEMES, FOLLOW_APP_THEME } from '../types/settings'
 import type { AppSettings, ShortcutAction } from '../types/settings'
 import { detectPlatformSync, isMobilePlatform } from '../utils/platform'
 import WindowControls from './WindowControls.vue'
@@ -161,11 +192,15 @@ const settingsBtnRef = ref<HTMLElement | null>(null)
 const settingsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 
 const themeOptions = computed(() => [
+  { value: 'system' as const, label: t('settings.themeSystem') },
   { value: 'dark' as const, label: t('settings.themeDark') },
   { value: 'deep-blue' as const, label: t('settings.themeDeepBlue') },
   { value: 'light' as const, label: t('settings.themeLight') },
-  { value: 'system' as const, label: t('settings.themeSystem') },
 ])
+
+// Terminal theme submenu: built-ins split into dark / light sections.
+const darkTerminalThemes = TERMINAL_THEMES.filter(t => t.type === 'dark')
+const lightTerminalThemes = TERMINAL_THEMES.filter(t => t.type === 'light')
 
 function toggleSettingsMenu() {
   settingsMenuRef.value?.toggle(settingsBtnRef.value!)
@@ -189,14 +224,21 @@ function openExport() {
   showExportDialog.value = true
 }
 
+// Theme / language / terminal-theme picks stay open on click so the user can
+// flip through options and preview live; the menu closes on outside click or
+// Escape (standard Menu behavior).
+
 function applyTheme(value: AppSettings['theme']) {
   settingsStore.updateTheme(value)
-  closeSettingsMenu()
 }
 
 function applyLanguage(value: AppSettings['language']) {
   settingsStore.updateLanguage(value)
-  closeSettingsMenu()
+}
+
+function applyTerminalTheme(value: string) {
+  settingsStore.settings.terminal.theme = value
+  settingsStore.save()
 }
 
 function openCategory(category?: string) {
@@ -465,6 +507,13 @@ onUnmounted(() => {
 
 .app-header :deep(.window-controls) {
   --wails-draggable: no-drag;
+}
+
+/* Terminal theme flyout lists ~35 built-in themes plus custom ones — cap the
+   flyout height so it scrolls instead of overflowing the window. */
+.terminal-theme-submenu :deep(.menu-submenu) {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 /* ── Settings dropdown menu ── */

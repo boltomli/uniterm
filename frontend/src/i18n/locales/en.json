@@ -475,6 +475,7 @@
   "settings.languageDesc": "Switch the display language",
   "settings.colorSchemeDesc": "Terminal color scheme",
   "settings.followAppTheme": "Follow app theme",
+"settings.terminalTheme": "Terminal theme",
   "settings.fontDesc": "Terminal font family",
   "settings.fontPrimary": "Primary font",
   "settings.fontFallback": "Fallback Font",

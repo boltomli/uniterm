@@ -475,6 +475,7 @@
   "settings.languageDesc": "Anzeigesprache wechseln",
   "settings.colorSchemeDesc": "Farbschema des Terminals",
   "settings.followAppTheme": "App-Theme folgen",
+"settings.terminalTheme": "Terminal-Design",
   "settings.fontDesc": "Schriftart des Terminals",
   "settings.fontPrimary": "Primärschrift",
   "settings.fontFallback": "Ausweichschrift",
