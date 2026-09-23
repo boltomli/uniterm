@@ -26,7 +26,7 @@ var Version = "dev"
 
 // devBuild is true for `wails dev` (Version == "dev"); false for production
 // builds where `-ldflags '-X main.Version=...'` sets a real version string.
-// Used to gate the pprof HTTP listener so production binaries don't open it.
+// Gates the in-app update download (DownloadUpdate refuses dev builds).
 var devBuild = Version == "dev"
 
 //go:embed all:frontend/dist
@@ -72,11 +72,11 @@ func main() {
 	}
 	defer log.Close()
 
-	// F-201: expose net/http/pprof on localhost:6060 for dev builds only.
-	// Production builds (wails build) leave Version unchanged from "dev"
-	// unless ldflags set it; gate behind a build flag so production does
-	// not open a listener.
-	startPprofIfDev()
+	// F-201: expose net/http/pprof on localhost:6060, opt-in only
+	// (UNITERM_PPROF=1). The env gate — not the Version string — guarantees a
+	// production binary never opens the debug listener by accident, even when
+	// a build forgets to inject the ldflags version.
+	startPprofIfEnabled()
 
 	webviewDataPath := filepath.Join(os.TempDir(), fmt.Sprintf("uniTerm-webview2-%d", os.Getpid()))
 	os.MkdirAll(webviewDataPath, 0700)
@@ -242,7 +242,7 @@ func main() {
 		MinWidth:        700,
 		MinHeight:       450,
 		// Headless local update e2e runs must not flash a window.
-		Hidden:           os.Getenv("UNITERM_UPDATE_AUTOTEST") == "1",
+		Hidden:           autotestEnabled(),
 		Frameless:        !systemTitleBar,
 		BackgroundColour: windowBackgroundColour(savedTheme),
 		EnableFileDrop:   true,
@@ -313,9 +313,9 @@ func main() {
 	// changed or disabled in Settings → Shortcuts.
 	applyGlobalShowHideHotkey(w3app, window, trayHotkeyBinding(&savedSettings))
 
-	// Local end-to-end update test hook — inert unless the env var is set
-	// (see autotest_update.go).
-	if os.Getenv("UNITERM_UPDATE_AUTOTEST") == "1" {
+	// Local end-to-end update test hook — inert unless the env switch AND a
+	// loopback release-server API base are set (see autotest_update.go).
+	if autotestEnabled() {
 		go app.autotestUpdate()
 	}
 
@@ -329,7 +329,7 @@ func main() {
 	// dark window instead of white. Finish-navigation still runs its own
 	// Show(), which is idempotent.
 	window.OnWindowEvent(events.Mac.WebViewDidCommitNavigation, func(*application.WindowEvent) {
-		if os.Getenv("UNITERM_UPDATE_AUTOTEST") != "1" {
+		if !autotestEnabled() {
 			window.Show()
 		}
 	})
@@ -401,22 +401,20 @@ func windowBackgroundColour(theme string) application.RGBA {
 	}
 }
 
-// startPprofIfDev spawns a goroutine that serves net/http/pprof on
-// localhost:6060 — only when running a dev build. Production builds
-// (Version != "dev") deliberately skip this so end-users never have
-// the debug listener open.
-//
-// The listener stays up for the lifetime of the process; its only job
-// is to let `go tool pprof http://localhost:6060/debug/pprof/profile`
-// connect and capture CPU/heap/block/goroutine profiles during
-// reproduction of perf issues (see F-201 / audit §8.2).
-func startPprofIfDev() {
+// startPprofIfEnabled spawns a goroutine that serves net/http/pprof on
+// localhost:6060 — only when UNITERM_PPROF=1. The explicit env opt-in (not
+// the Version string) means a production binary can never expose the debug
+// listener end-users' heap/goroutine profiles could leak credentials from;
+// a build that forgets the ldflags version stays closed too. For perf-issue
+// reproduction (see F-201 / audit §8.2): run with UNITERM_PPROF=1 and
+// `go tool pprof http://localhost:6060/debug/pprof/profile`.
+func startPprofIfEnabled() {
 	// Android: other apps on-device share this process's network namespace and
 	// can reach 127.0.0.1:6060, so never open the listener there (H4).
 	if runtime.GOOS == "android" {
 		return
 	}
-	if !devBuild {
+	if os.Getenv("UNITERM_PPROF") != "1" {
 		return
 	}
 	go func() {

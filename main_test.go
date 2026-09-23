@@ -7,32 +7,32 @@ import (
 	"time"
 )
 
-// TestStartPprofIfDev_ProductionSkip verifies that startPprofIfDev is a no-op
-// when devBuild is false (i.e. when a production build sets Version != "dev"
-// via -ldflags '-X main.Version=...'). The function must not bind any TCP
-// socket on localhost:6060.
+// TestStartPprofIfEnabled_EnvDisabled verifies that startPprofIfEnabled is a
+// no-op unless UNITERM_PPROF=1 (the default for every build, dev or
+// production). The function must not bind any TCP socket on localhost:6060.
 //
 // F-201 audit §8.2: production binaries must never expose the debug listener
-// to end users.
-func TestStartPprofIfDev_ProductionSkip(t *testing.T) {
-	// Snapshot and restore the package-level devBuild flag. Tests in this
-	// package run sequentially by default, so mutating the package var is
-	// safe — but restore in defer to avoid leaking state across the suite.
-	origDev := devBuild
-	defer func() { devBuild = origDev }()
+// to end users — the env gate makes that independent of the ldflags version.
+func TestStartPprofIfEnabled_EnvDisabled(t *testing.T) {
+	// A dev instance running on this machine may already hold 6060; the test
+	// can only prove "no NEW listener" on a free port.
+	if conn, err := net.DialTimeout("tcp", "127.0.0.1:6060", 200*time.Millisecond); err == nil {
+		conn.Close()
+		t.Skip("port 6060 already in use by another process")
+	}
+	t.Setenv("UNITERM_PPROF", "")
 
-	devBuild = false
-	startPprofIfDev()
+	startPprofIfEnabled()
 
 	// Give any background goroutine a chance to race into ListenAndServe.
-	// If startPprofIfDev really did spawn one, it would attempt to bind
+	// If startPprofIfEnabled really did spawn one, it would attempt to bind
 	// 6060 immediately. Poll for a short window to be sure.
 	time.Sleep(100 * time.Millisecond)
 
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6060", 200*time.Millisecond)
 	if err == nil {
 		conn.Close()
-		t.Fatalf("pprof listener bound 6060 in production build; want no listener")
+		t.Fatalf("pprof listener bound 6060 without UNITERM_PPROF=1; want no listener")
 	}
 	if !strings.Contains(err.Error(), "refused") && !strings.Contains(err.Error(), "timeout") {
 		// Some platforms return "connection refused", others "i/o timeout"
@@ -43,24 +43,18 @@ func TestStartPprofIfDev_ProductionSkip(t *testing.T) {
 	}
 }
 
-// TestStartPprofIfDev_DevOpensListener verifies that when devBuild is true
-// (i.e. wails dev with Version == "dev"), startPprofIfDev actually serves
-// net/http/pprof on localhost:6060 and answers the canonical /debug/pprof/
-// index. We hit the index and check for the pprof marker text instead of
-// dialing raw TCP so the test fails loudly if the import side-effect is
-// somehow missing.
+// TestStartPprofIfEnabled_EnvOpensListener verifies that the explicit
+// UNITERM_PPROF=1 opt-in actually serves net/http/pprof on localhost:6060.
+// We poll for the TCP listener instead of hitting /debug/pprof/ so the test
+// stays independent of the net/http/pprof import side-effect.
 //
-// F-201: ensures the dev ergonomics endpoint is wired up.
-func TestStartPprofIfDev_DevOpensListener(t *testing.T) {
-	origDev := devBuild
-	defer func() { devBuild = origDev }()
+// F-201: ensures the perf-reproduction endpoint is wired up on demand.
+func TestStartPprofIfEnabled_EnvOpensListener(t *testing.T) {
+	t.Setenv("UNITERM_PPROF", "1")
 
-	devBuild = true
-	startPprofIfDev()
+	startPprofIfEnabled()
 
-	// Poll for the listener to come up. devBuild=true spawns a goroutine
-	// that calls http.ListenAndServe synchronously inside the goroutine,
-	// so the bind happens concurrently with our test.
+	// Poll for the listener to come up: the goroutine binds concurrently.
 	deadline := time.Now().Add(2 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -74,6 +68,6 @@ func TestStartPprofIfDev_DevOpensListener(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if lastErr != nil {
-		t.Fatalf("pprof listener never came up on 6060 (devBuild=true): %v", lastErr)
+		t.Fatalf("pprof listener never came up on 6060 (UNITERM_PPROF=1): %v", lastErr)
 	}
 }

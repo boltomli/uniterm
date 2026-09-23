@@ -8,10 +8,21 @@ import (
 	"github.com/ys-ll/uniterm/backend/update"
 )
 
+// autotestEnabled reports whether the local update e2e hook may run. Both the
+// switch and a loopback release-server API base are required: a partially
+// crafted environment can neither hide the window nor silently drive the
+// download/apply pipeline (a non-loopback API base would be ignored by the
+// updater anyway — see update.IsLoopbackAPIBase).
+func autotestEnabled() bool {
+	return os.Getenv("UNITERM_UPDATE_AUTOTEST") == "1" &&
+		update.IsLoopbackAPIBase(os.Getenv("UNITERM_UPDATE_API_BASE"))
+}
+
 // autotestUpdate drives the full update pipeline (check → download → verify →
-// apply → restart) unattended. It is inert unless UNITERM_UPDATE_AUTOTEST=1;
-// combine with UNITERM_UPDATE_API_BASE pointing at a local release server to
-// end-to-end test a locally built old/new version pair:
+// apply → restart) unattended. It runs only when autotestEnabled() holds:
+// UNITERM_UPDATE_AUTOTEST=1 plus UNITERM_UPDATE_API_BASE pointing at a
+// loopback release server, used to end-to-end test a locally built
+// old/new version pair:
 //
 //	run 1 (old binary): check → download → apply → relaunch itself with the
 //	                    same env, then quit

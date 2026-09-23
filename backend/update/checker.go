@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -201,17 +202,37 @@ func saveCache(source string, entry *cacheEntry) {
 
 // sourceAPIURL returns the latest-release API endpoint for a source.
 // UNITERM_UPDATE_API_BASE overrides the API base for both sources — used by
-// the local end-to-end autotest (autotest_update.go) and by self-hosted
-// mirror setups; production builds leave it unset. The base must serve a
-// GitHub-style GET <base>/releases/latest payload.
+// the local end-to-end autotest (autotest_update.go). Only loopback bases are
+// honoured so a crafted environment cannot silently redirect the update
+// check/apply to an attacker-controlled host (remote mirrors use the built-in
+// github/gitee sources instead). The base must serve a GitHub-style
+// GET <base>/releases/latest payload.
 func sourceAPIURL(source string) string {
 	if base := os.Getenv("UNITERM_UPDATE_API_BASE"); base != "" {
-		return strings.TrimRight(base, "/") + "/releases/latest"
+		if IsLoopbackAPIBase(base) {
+			return strings.TrimRight(base, "/") + "/releases/latest"
+		}
+		log.Writef("[update] ignoring non-loopback UNITERM_UPDATE_API_BASE (%q)", base)
 	}
 	if source == "gitee" {
 		return "https://gitee.com/api/v5/repos/ys-l/uniterm/releases/latest"
 	}
 	return "https://api.github.com/repos/ys-ll/uniterm/releases/latest"
+}
+
+// IsLoopbackAPIBase reports whether base is an http(s) URL whose host is
+// loopback (localhost, 127.0.0.0/8 or ::1). Empty or malformed input is
+// never loopback.
+func IsLoopbackAPIBase(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.")
 }
 
 // sourceReleaseURL returns the human-facing release page for a source.
