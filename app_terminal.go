@@ -715,6 +715,9 @@ func (a *App) SessionWriteBinary(sessionID string, base64Data string) error {
 }
 
 func (a *App) ReadFileBase64(path string) (string, error) {
+	if err := requireFileGrant(path); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
@@ -723,6 +726,9 @@ func (a *App) ReadFileBase64(path string) (string, error) {
 }
 
 func (a *App) FileSize(path string) (int64, error) {
+	if err := requireFileGrant(path); err != nil {
+		return 0, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, fmt.Errorf("stat file: %w", err)
@@ -734,6 +740,9 @@ func (a *App) FileSize(path string) (int64, error) {
 }
 
 func (a *App) ReadFileChunkBase64(path string, offset int64, length int64) (string, error) {
+	if err := requireFileGrant(path); err != nil {
+		return "", err
+	}
 	if offset < 0 {
 		return "", fmt.Errorf("offset must be non-negative")
 	}
@@ -770,6 +779,9 @@ func (a *App) ReadFileChunkBase64(path string, offset int64, length int64) (stri
 }
 
 func (a *App) WriteFileBase64(path string, base64Data string) error {
+	if err := requireFileGrant(path); err != nil {
+		return err
+	}
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("decode base64: %w", err)
@@ -778,6 +790,9 @@ func (a *App) WriteFileBase64(path string, base64Data string) error {
 }
 
 func (a *App) AppendFileBase64(path string, base64Data string, offset int64) error {
+	if err := requireFileGrant(path); err != nil {
+		return err
+	}
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("decode base64: %w", err)

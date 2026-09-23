@@ -279,6 +279,9 @@ func main() {
 		if len(filenames) == 0 {
 			return
 		}
+		// The OS drop is a trusted path source (user physically dropped the
+		// files): grant the raw file bindings access to these paths.
+		fileGrants.addFile(filenames...)
 		x, y, elementID := 0, 0, ""
 		if details := event.Context().DropTargetDetails(); details != nil {
 			x, y = details.X, details.Y

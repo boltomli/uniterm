@@ -267,6 +267,11 @@ func (a *App) SftpLocalMove(sessionID, oldPath, newPath string) error {
 }
 
 func (a *App) SftpGet(sessionID, remotePath, localPath string, recursive bool) (string, error) {
+	// localPath embeds a remote-controlled filename; it must not walk out of
+	// the destination directory with ".." segments.
+	if err := rejectDotDotPath(localPath); err != nil {
+		return "", err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return "", err
@@ -299,6 +304,9 @@ func (a *App) SftpResumeTransfer(sessionID, taskID string) error {
 }
 
 func (a *App) SftpPut(sessionID, localPath, remotePath string, recursive bool) (string, error) {
+	if err := rejectDotDotPath(localPath); err != nil {
+		return "", err
+	}
 	// Auto-detect directories so drag-dropping a folder works even when
 	// the caller passes recursive=false (single-file upload API).
 	if !recursive {

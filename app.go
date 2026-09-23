@@ -807,6 +807,9 @@ func (a *App) SaveProxies(data session.ProxyStoreData) error {
 // ExportConnections writes the full store to destPath as a .utm file. When
 // password is non-empty, password fields are encrypted; otherwise cleared.
 func (a *App) ExportConnections(destPath, password string) error {
+	if err := requireFileGrant(destPath); err != nil {
+		return err
+	}
 	if a.connectionStore == nil {
 		return fmt.Errorf("connection store not initialized")
 	}
@@ -822,8 +825,14 @@ func (a *App) ExportConnections(destPath, password string) error {
 }
 
 // ParseImportFile parses a third-party or own-format file into an ImportResult
-// with regenerated ids. It does not write to the store.
+// with regenerated ids. It does not write to the store. An empty srcPath means
+// "auto-detect" for formats that support it and skips the grant check.
 func (a *App) ParseImportFile(format, srcPath, password string) (*importer.ImportResult, error) {
+	if srcPath != "" {
+		if err := requireFileGrant(srcPath); err != nil {
+			return nil, err
+		}
+	}
 	return importer.Parse(format, srcPath, importer.ParseOptions{Password: password})
 }
 
@@ -1201,6 +1210,9 @@ var allowedBgExt = map[string]string{
 // directory as a single fixed file (overwriting any previous one) and
 // returns the stored file name. It does NOT touch local_state.json.
 func (a *App) SetBackgroundImage(srcPath string) (string, error) {
+	if err := requireFileGrant(srcPath); err != nil {
+		return "", err
+	}
 	ext := strings.ToLower(filepath.Ext(srcPath))
 	if _, ok := allowedBgExt[ext]; !ok {
 		return "", fmt.Errorf("unsupported image type: %s", ext)
@@ -1485,6 +1497,9 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 	if a.settingsStore == nil {
 		return fmt.Errorf("settings store not initialized")
 	}
+	// The configured zmodem download directory is a trusted path source for
+	// the receive path (no per-transfer dialog when set).
+	fileGrants.addDir(settings.Terminal.ZmodemDownloadDir)
 	err := a.settingsStore.Save(settings)
 	if err == nil {
 		a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
@@ -1501,7 +1516,13 @@ func (a *App) LoadSettings() (store.AppSettings, error) {
 	if a.settingsStore == nil {
 		return store.AppSettings{}, fmt.Errorf("settings store not initialized")
 	}
-	return a.settingsStore.Load()
+	settings, err := a.settingsStore.Load()
+	if err == nil {
+		// The configured zmodem download directory is a trusted path source
+		// for the receive path (no per-transfer dialog when set).
+		fileGrants.addDir(settings.Terminal.ZmodemDownloadDir)
+	}
+	return settings, err
 }
 
 // AIConfigStore methods
@@ -1663,7 +1684,11 @@ func hasHiddenSegment(dir string) bool {
 // OpenFileDialog opens a single-file picker. startDir is optional and accepts
 // "~"-prefixed paths; it defaults to the home directory.
 func (a *App) OpenFileDialog(startDir ...string) (string, error) {
-	return a.openFileDialog("Select File", firstArg(startDir)).PromptForSingleSelection()
+	path, err := a.openFileDialog("Select File", firstArg(startDir)).PromptForSingleSelection()
+	if err == nil {
+		fileGrants.addFile(path)
+	}
+	return path, err
 }
 
 // firstArg unwraps the optional trailing argument the dialog bindings take, so
@@ -1764,39 +1789,55 @@ func (a *App) OpenKubeconfigFile() (string, error) {
 // OpenFileDialogFiltered is like OpenFileDialog but restricts the picker to
 // a single extension filter (e.g. for importing a specific file format).
 func (a *App) OpenFileDialogFiltered(title, filterDisplayName, filterPattern string, startDir ...string) (string, error) {
-	return a.app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+	path, err := a.app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
 		Title:     title,
 		Directory: resolveDialogDir(firstArg(startDir)),
 		Filters: []application.FileFilter{
 			{DisplayName: filterDisplayName, Pattern: filterPattern},
 		},
 	}).PromptForSingleSelection()
+	if err == nil {
+		fileGrants.addFile(path)
+	}
+	return path, err
 }
 
 func (a *App) OpenMultipleFilesDialog(startDir ...string) ([]string, error) {
-	return a.openFileDialog("Select Files", firstArg(startDir)).
+	paths, err := a.openFileDialog("Select Files", firstArg(startDir)).
 		PromptForMultipleSelection()
+	if err == nil {
+		fileGrants.addFile(paths...)
+	}
+	return paths, err
 }
 
 func (a *App) OpenDirectoryDialog(startDir ...string) (string, error) {
-	return a.openFileDialog("Select Directory", firstArg(startDir)).
+	dir, err := a.openFileDialog("Select Directory", firstArg(startDir)).
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
 		PromptForSingleSelection()
+	if err == nil {
+		fileGrants.addDir(dir)
+	}
+	return dir, err
 }
 
 func (a *App) SaveFileDialog(defaultName string, startDir ...string) (string, error) {
-	return a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
+	path, err := a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
 		Title:     "Save File",
 		Filename:  defaultName,
 		Directory: resolveDialogDir(firstArg(startDir)),
 	}).PromptForSingleSelection()
+	if err == nil {
+		fileGrants.addFile(path)
+	}
+	return path, err
 }
 
 // SaveFileDialogFiltered is like SaveFileDialog but restricts the picker to
 // a single extension filter (e.g. for exporting a specific file format).
 func (a *App) SaveFileDialogFiltered(title, defaultName, filterDisplayName, filterPattern string, startDir ...string) (string, error) {
-	return a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
+	path, err := a.app.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
 		Title:     title,
 		Filename:  defaultName,
 		Directory: resolveDialogDir(firstArg(startDir)),
@@ -1804,6 +1845,10 @@ func (a *App) SaveFileDialogFiltered(title, defaultName, filterDisplayName, filt
 			{DisplayName: filterDisplayName, Pattern: filterPattern},
 		},
 	}).PromptForSingleSelection()
+	if err == nil {
+		fileGrants.addFile(path)
+	}
+	return path, err
 }
 
 func (a *App) GetDesktopPath() (string, error) {
