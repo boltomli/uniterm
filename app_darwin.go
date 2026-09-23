@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func (a *App) findMainWindow() uintptr { return 0 }
@@ -189,6 +190,15 @@ func spawnSuccessorProcess() error {
 		return exec.Command("open", "-n", bundle).Start()
 	}
 	return exec.Command(exe).Start()
+}
+
+// applyTrayIcon installs the tray icon. macOS expects a template image — a
+// monochrome black shape with transparency that the system recolours per menu
+// bar appearance — so it gets the dedicated template PNG (see
+// appIconTrayTemplatePNG in main.go) via SetTemplateIcon, which maps to
+// NSImage.setTemplate:YES.
+func applyTrayIcon(tray *application.SystemTray) {
+	tray.SetTemplateIcon(appIconTrayTemplatePNG)
 }
 
 // trayIconPNG returns the tray icon bytes as-is off Windows: macOS and Linux

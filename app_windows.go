@@ -18,6 +18,7 @@ import (
 
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -615,6 +616,13 @@ func spawnSuccessorProcess() error {
 	cmd := exec.Command(exe)
 	cmd.Dir = filepath.Dir(exe)
 	return cmd.Start()
+}
+
+// applyTrayIcon installs the tray icon: the colored glyph PNG pre-scaled to
+// the exact OS small-icon size. Windows tray icons keep their own colors —
+// no template-image treatment like macOS (see app_darwin.go).
+func applyTrayIcon(tray *application.SystemTray) {
+	tray.SetIcon(trayIconPNG())
 }
 
 // trayIconPNG returns the tray icon bytes, pre-scaled to the exact OS
