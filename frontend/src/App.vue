@@ -663,7 +663,7 @@ async function ensureCredentials(config: ConnectionConfig): Promise<ConnectionCo
 
   const result = await showCredentialDialog(
     t('credential.title'),
-    '',
+    [config.name, config.host].filter(Boolean).join(' · '),
     ['user', 'password'],
     config.user,
     config.password
