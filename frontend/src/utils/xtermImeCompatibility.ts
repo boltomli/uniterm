@@ -27,6 +27,7 @@ interface XtermCompositionHelperInternals {
   _isComposing?: unknown
   _isSendingComposition?: unknown
   isComposing?: unknown
+  _compositionPosition?: { start?: number }
 }
 
 interface XtermCoreInternals {
@@ -75,11 +76,65 @@ function isSameCharacter(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase()
 }
 
-export function installImeCompatibilityPatch(terminal: Terminal): Disposable {
-  if (!isMacPlatform()) {
+// Windows/WebView2: xterm delivers a committed IME word through two paths —
+// the deferred textarea read queued on compositionend, and the direct
+// insertText send in _inputEvent (reached when the commit's keyup beat its
+// input event, or the commit came from an IME candidate click with no keydown
+// at all). After a native window drag (WM_ENTERSIZEMOVE's modal loop reorders
+// key events) both paths fire and the word reaches the PTY twice; the stale
+// state only clears when the user switches windows or toggles the IME.
+// While a commit is in flight the composition path owns the text: skip the
+// direct send when the event's data is already covered by the textarea region
+// the pending compositionend read will deliver.
+function installWindowsCommitGuard(terminal: Terminal): Disposable {
+  const core = (terminal as TerminalWithCore)._core
+  const helper = core?._compositionHelper
+  if (!core || !helper || typeof core._inputEvent !== 'function' || !core.textarea) {
     return noopDisposable
   }
 
+  const originalInputEvent = core._inputEvent
+  const patchedInputEvent = function patchedInputEvent(
+    this: XtermCoreInternals,
+    ev: InputEvent,
+  ): boolean {
+    if (
+      (helper._isSendingComposition === true || helper._isComposing === true) &&
+      ev.inputType === 'insertText' &&
+      typeof ev.data === 'string' &&
+      ev.data.length > 0
+    ) {
+      const textarea = this.textarea
+      const start = helper._compositionPosition?.start ?? 0
+      if (textarea && textarea.value.substring(start).includes(ev.data)) {
+        // The pending compositionend read delivers the same text.
+        return true
+      }
+    }
+    return originalInputEvent!.call(this, ev)
+  }
+  core._inputEvent = patchedInputEvent
+
+  return {
+    dispose() {
+      if (core._inputEvent === patchedInputEvent) {
+        core._inputEvent = originalInputEvent
+      }
+    },
+  }
+}
+
+export function installImeCompatibilityPatch(terminal: Terminal): Disposable {
+  if (isMacPlatform()) {
+    return installMacImePatch(terminal)
+  }
+  if (/Windows/i.test(navigator.userAgent)) {
+    return installWindowsCommitGuard(terminal)
+  }
+  return noopDisposable
+}
+
+function installMacImePatch(terminal: Terminal): Disposable {
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
   if (

@@ -90,8 +90,8 @@ afterEach(() => {
 })
 
 describe('installImeCompatibilityPatch', () => {
-  it('is a no-op on non-mac platforms', () => {
-    vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0' })
+  it('is a no-op on platforms without a dedicated patch', () => {
+    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
     const { core, calls } = makeFakeCore()
     const disposable = installImeCompatibilityPatch(fakeTerminal(core))
     expect(core._inputEvent).toBe(core._inputEvent)
@@ -478,5 +478,72 @@ describe('installImeCompatibilityPatch', () => {
     disposable.dispose()
     expect(core._inputEvent).toBe(original)
     expect(core.textarea.listeners.size).toBe(0)
+  })
+})
+
+describe('windows duplicate-commit guard', () => {
+  beforeEach(() => {
+    vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0; Win64; x64' })
+  })
+
+  it('suppresses the direct input path while a composition commit is pending', () => {
+    const { core, calls } = makeFakeCore()
+    core._compositionHelper._isSendingComposition = true
+    core._compositionHelper._compositionPosition = { start: 0 }
+    // The browser inserts the committed text before dispatching input.
+    core.textarea.value = '词'
+    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
+
+    // keyup already reset _keyDownSeen — vanilla xterm would send directly
+    // and the pending compositionend read would send the word a second time.
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    expect(calls).toHaveLength(0)
+
+    disposable.dispose()
+  })
+
+  it('suppresses the direct input path mid-composition', () => {
+    const { core, calls } = makeFakeCore()
+    core._compositionHelper._isComposing = true
+    core._compositionHelper._compositionPosition = { start: 0 }
+    core.textarea.value = '词'
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('passes input through when the composition region does not cover it', () => {
+    const { core, calls } = makeFakeCore()
+    core._compositionHelper._isSendingComposition = true
+    core._compositionHelper._compositionPosition = { start: 0 }
+    // Blur cleared the textarea: the pending read will deliver nothing, so
+    // the input event must not be swallowed or the keystroke would be lost.
+    core.textarea.value = ''
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    core._inputEvent.call(core, insertText('词'))
+    expect(calls).toHaveLength(1)
+  })
+
+  it('passes input through when no composition is in flight', () => {
+    const { core, calls } = makeFakeCore()
+    core.textarea.value = ''
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    core._inputEvent.call(core, insertText('a'))
+    expect(calls).toHaveLength(1)
+  })
+
+  it('dispose restores the original handler', () => {
+    const { core } = makeFakeCore()
+    const original = core._inputEvent
+    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
+    expect(core._inputEvent).not.toBe(original)
+
+    disposable.dispose()
+    expect(core._inputEvent).toBe(original)
   })
 })

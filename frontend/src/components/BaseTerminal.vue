@@ -334,13 +334,14 @@ function resetIMEState(): boolean {
   return true
 }
 
-function resetIMEComposition() {
-  if (!resetIMEState()) return
+function resetIMEComposition(): boolean {
+  if (!resetIMEState()) return false
   // Clear the textarea and end the OS-level composition via blur.
   if (terminal.textarea) {
     terminal.textarea.value = ''
     terminal.textarea.blur()
   }
+  return true
 }
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
@@ -886,6 +887,15 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
+  // WM_EXITSIZEMOVE: WebView2 can drop the compositionend of a composition
+  // interrupted by the native drag's modal loop, leaving xterm's IME state
+  // stuck — the next committed word then goes out twice (stale state only
+  // cleared when the user switched windows or toggled the IME). Cancel the
+  // composition the same way those actions do, and hand focus straight back
+  // so typing can continue without a click.
+  const textarea = terminal?.textarea
+  const hadFocus = !!textarea && document.activeElement === textarea
+  if (resetIMEComposition() && hadFocus && textarea) textarea.focus()
   resizeTimer = setTimeout(() => resize(), 100)
 }
 
