@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func (a *App) findMainWindow() uintptr { return 0 }
@@ -148,6 +150,13 @@ func spawnSuccessorProcess() error {
 	cmd := exec.Command(exe)
 	cmd.Dir = filepath.Dir(exe)
 	return cmd.Start()
+}
+
+// applyTrayIcon installs the tray icon as-is: Linux tray implementations take
+// the PNG directly and size it themselves (see app_windows.go for the Windows
+// exact-size scaling).
+func applyTrayIcon(tray *application.SystemTray) {
+	tray.SetIcon(trayIconPNG())
 }
 
 // trayIconPNG returns the tray icon bytes as-is off Windows: macOS and Linux

@@ -75,6 +75,15 @@ func startChannelTestServer(t *testing.T) (addr string, tcpConns *int32, channel
 								if req.WantReply {
 									req.Reply(true, nil)
 								}
+								// One-shot exec (cwd-hook shell detection): report
+								// success and close the channel so the client's
+								// Output returns immediately (Output waits for
+								// the channel to close, not just exit-status)
+								// instead of stalling until the client's
+								// command timeout.
+								_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
+								ch.CloseWrite()
+								ch.Close()
 							default:
 								if req.WantReply {
 									req.Reply(false, nil)
@@ -120,12 +129,11 @@ func dialTestSSHClient(t *testing.T, addr string) *ssh.Client {
 	return client
 }
 
-// noIntegration returns a config with shell integration explicitly off, so
-// attach opens exactly one session channel (integration's exec-channel shell
-// detection would otherwise inflate the channel count).
-func noIntegration() ConnectionConfig {
-	off := false
-	return ConnectionConfig{User: "tester", Host: "testhost", AuthType: "password", Password: "pw", ShellIntegration: &off}
+// plainConfig returns a minimal connection config for attach. Each attach
+// opens TWO session channels on the test server: the one-shot exec channel
+// used to detect the shell for cwd-hook injection, and the shell itself.
+func plainConfig() ConnectionConfig {
+	return ConnectionConfig{User: "tester", Host: "testhost", AuthType: "password", Password: "pw"}
 }
 
 // connectTestSSHSession builds an SSHSession wired to a fresh client on the
@@ -138,7 +146,7 @@ func connectTestSSHSession(t *testing.T, addr string) *SSHSession {
 	s.mu.Lock()
 	s.clientRef = newSSHClientRef(client)
 	s.mu.Unlock()
-	if err := s.attach(client, noIntegration()); err != nil {
+	if err := s.attach(client, plainConfig()); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	return s
@@ -159,7 +167,7 @@ func TestSSHChannelCloneSharesConnection(t *testing.T) {
 	if clone.RemoteOS() != parent.RemoteOS() {
 		t.Fatalf("clone remoteOS %q != parent %q", clone.RemoteOS(), parent.RemoteOS())
 	}
-	if err := clone.Connect(noIntegration()); err != nil {
+	if err := clone.Connect(plainConfig()); err != nil {
 		t.Fatalf("clone connect: %v", err)
 	}
 	defer clone.Disconnect()
@@ -168,12 +176,14 @@ func TestSSHChannelCloneSharesConnection(t *testing.T) {
 		t.Fatalf("clone status = %s, want connected", clone.Status())
 	}
 
-	// Core assertion (issue #983): one TCP connection, two session channels.
+	// Core assertion (issue #983): one TCP connection, no re-auth. Each
+	// attach opens two session channels (cwd-hook shell detection exec +
+	// the shell itself), so parent and clone make four in total.
 	if got := *tcpConns; got != 1 {
 		t.Fatalf("server accepted %d TCP connections, want 1 (clone must not re-dial)", got)
 	}
-	if got := *channels; got != 2 {
-		t.Fatalf("server opened %d channels, want 2 (parent + clone)", got)
+	if got := *channels; got != 4 {
+		t.Fatalf("server opened %d channels, want 4 (detection exec + shell per attach)", got)
 	}
 }
 
@@ -183,7 +193,7 @@ func TestSSHChannelCloneEcho(t *testing.T) {
 	defer parent.Disconnect()
 
 	clone := NewSSHChannelSession("clone-2", parent)
-	if err := clone.Connect(noIntegration()); err != nil {
+	if err := clone.Connect(plainConfig()); err != nil {
 		t.Fatalf("clone connect: %v", err)
 	}
 
@@ -208,7 +218,7 @@ func TestSSHChannelCloneOutlivesParent(t *testing.T) {
 	parent := connectTestSSHSession(t, addr)
 
 	clone := NewSSHChannelSession("clone-3", parent)
-	if err := clone.Connect(noIntegration()); err != nil {
+	if err := clone.Connect(plainConfig()); err != nil {
 		t.Fatalf("clone connect: %v", err)
 	}
 
@@ -244,7 +254,7 @@ func TestSSHChannelCloneOutlivesParent(t *testing.T) {
 func TestSSHChannelCloneWithoutSourceClient(t *testing.T) {
 	parent := NewSSHSession("orphan-parent")
 	clone := NewSSHChannelSession("clone-4", parent)
-	err := clone.Connect(noIntegration())
+	err := clone.Connect(plainConfig())
 	if err == nil {
 		clone.Disconnect()
 		t.Fatal("expected error when source session never connected")

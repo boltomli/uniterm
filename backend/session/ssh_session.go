@@ -59,11 +59,14 @@ type SSHSession struct {
 	authAnswerCh        chan []byte
 	expectOutput        *postLoginOutputBuffer
 	x11Forwarder        *x11Forwarder
-	integrationTempPath string
 
 	// osc7 extracts OSC-7 cwd reports emitted by the remote shell or tools.
 	// Only used from the readLoop goroutine.
 	osc7 osc7Scanner
+
+	// hookReady strips the cwd hook's ready marker from the display stream.
+	// Only used from the readLoop goroutine.
+	hookReady hookReadyScanner
 
 	enc            encoding.Encoding     // input(write) codec; nil = utf-8 passthrough
 	encoder        transform.Transformer // cached encoder; nil = utf-8 passthrough (F-003)
@@ -81,10 +84,10 @@ type SSHSession struct {
 	// Connect from the server identification string.
 	remoteOS string
 
-	// cwdHookInstalled records that the runtime OSC-7 cwd hook has already
-	// been written to this session's shell, so re-toggling follow does not
-	// re-send the snippet. Session objects are recreated on reconnect, so the
-	// flag resets naturally and the reconnect re-injection still fires.
+	// cwdHookInstalled records that the injected startup cwd hook confirmed
+	// itself via its ready marker (read loop). Session objects are recreated
+	// on reconnect, so the flag resets naturally and the reconnect
+	// re-injection still fires.
 	cwdHookInstalled atomic.Bool
 
 	// clientRef wraps the shared *ssh.Client with reference counting so a
@@ -401,10 +404,18 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		}
 	}
 
+	// Terminal modes: ECHO is only disabled when we are about to inject the
+	// cwd hook, which restores it itself once installed. A server that
+	// ignores pty modes would echo the hook line once — cosmetic only.
+	injectHook, injectShell := startupCwdHook(client)
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 38400,
 		ssh.TTY_OP_OSPEED: 38400,
+	}
+	if injectHook != "" {
+		modes[ssh.ECHO] = 0
+	} else {
+		modes[ssh.ECHO] = 1
 	}
 
 	cols, rows := s.getInitialSize(80, 24)
@@ -464,31 +475,32 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	// Shell integration changes normal shell startup, so it can be disabled.
-	startCmd, integrationTempPath := "", ""
-	if config.shellIntegrationEnabled() {
-		startCmd, integrationTempPath = injectShellIntegration(client)
-	}
-	if startCmd != "" {
-		if err := session.Start(startCmd); err != nil {
-			sshRemoveRemoteTemp(client, integrationTempPath)
-			integrationTempPath = ""
-			log.Writef("ssh: integration start failed, falling back to plain shell: %v", err)
-			if err := session.Shell(); err != nil {
-				session.Close()
-				s.setStatus(StatusError)
-				return fmt.Errorf("shell: %w", err)
-			}
-		}
-	} else if err := session.Shell(); err != nil {
+	// The shell ALWAYS starts as sshd's native login shell: no exec, no
+	// rc-file replacement, no ZDOTDIR switch. The server prints its own
+	// Last login/MOTD banner and every startup file runs exactly as an
+	// interactive login would. For supported shells the cwd hook is typed in
+	// right after the shell starts: with ECHO off the line never renders, the
+	// shell executes it before/at the first prompt, and the hook itself
+	// clears the prompt line, restores echo and prints the ready marker the
+	// read loop confirms.
+	if err := session.Shell(); err != nil {
 		session.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("shell: %w", err)
 	}
 
+	if injectHook != "" {
+		if _, err := stdinPipe.Write(s.encodeInput([]byte(injectHook))); err != nil {
+			log.Writef("ssh: cwd hook write failed (shell=%s): %v", injectShell, err)
+			_, _ = stdinPipe.Write([]byte(" stty echo\n"))
+		} else {
+			log.Writef("ssh: cwd hook injected (shell=%s)", injectShell)
+			go s.watchCwdHookConfirm()
+		}
+	}
+
 	s.client = client
 	s.session = session
-	s.integrationTempPath = integrationTempPath
 	s.stdin = stdinPipe
 	s.stdout = stdoutPipe
 	s.stderr = stderrPipe
@@ -570,6 +582,14 @@ func (s *SSHSession) readLoop() {
 			cwd, cleaned, found := s.osc7.Feed(data)
 			if found && TerminalCwdSink != nil {
 				TerminalCwdSink(s.id, cwd)
+			}
+			if !s.cwdHookInstalled.Load() {
+				var confirmed bool
+				cleaned, confirmed = s.hookReady.Feed(cleaned)
+				if confirmed {
+					s.cwdHookInstalled.Store(true)
+					log.Writef("ssh: cwd hook confirmed via ready marker")
+				}
 			}
 			s.offerExpectOutput(cleaned)
 			s.outputRouteMu.Lock()
@@ -749,12 +769,6 @@ func (s *SSHSession) Disconnect() error {
 		ref := s.clientRef
 		s.mu.RUnlock()
 		if ref != nil {
-			// Remote temp cleanup needs a live connection; run it before the
-			// ref drops (which may close the client).
-			if s.integrationTempPath != "" {
-				sshCleanupRemoteTemp(ref.client, s.integrationTempPath)
-				s.integrationTempPath = ""
-			}
 			ref.release()
 		}
 		s.setStatus(StatusDisconnected)
@@ -762,39 +776,50 @@ func (s *SSHSession) Disconnect() error {
 	return nil
 }
 
-// InjectCwdHook installs the OSC-7 cwd reporting hook into the shell that is
-// already running on this session's pty (typed in via stdin). The shell is
-// detected over a separate exec channel, exactly like startup injection. The
-// hook is installed only once per session; a failed attempt stays un-flagged
-// so a later retry re-runs detection. It reports whether the hook was
-// injected NOW (false means it was already installed from an earlier call).
-func (s *SSHSession) InjectCwdHook() (bool, error) {
-	if s.cwdHookInstalled.Load() {
-		return false, nil
+// startupCwdHook detects the remote login shell over a separate exec channel
+// and returns the hook line to type into it after it starts. An empty snippet
+// means no injection (detection failed or the shell is unsupported).
+func startupCwdHook(client *ssh.Client) (snippet, shell string) {
+	if client == nil {
+		return "", ""
 	}
-	if s.client == nil {
-		return false, fmt.Errorf("ssh session not connected")
-	}
-	shell, err := sshRunCommand(s.client, "echo $SHELL", "", sshIntegrationTimeout)
+	detected, err := sshRunCommand(client, "echo $SHELL", "", sshIntegrationTimeout)
 	if err != nil {
-		return false, fmt.Errorf("detect shell: %w", err)
+		log.Writef("ssh: cwd hook skipped (detect shell: %v)", err)
+		return "", ""
 	}
-	snippet, ok := buildRuntimeCwdHook(strings.TrimSpace(shell))
+	shell = strings.TrimSpace(detected)
+	snippet, ok := buildStartupCwdHook(shell)
 	if !ok {
-		return false, fmt.Errorf("unsupported shell for cwd hook: %s", strings.TrimSpace(shell))
+		log.Writef("ssh: cwd hook skipped (unsupported shell %q)", shell)
+		return "", ""
 	}
-	if err := s.Write([]byte(snippet)); err != nil {
-		return false, err
-	}
-	s.cwdHookInstalled.Store(true)
-	return true, nil
+	return snippet, shellBasename(shell)
 }
 
-// CwdHookInstalled reports whether the runtime OSC-7 cwd hook has already
-// been typed into this session's shell. The frontend checks it before its
-// confirmation dialog: an already-injected session never prompts again.
-func (s *SSHSession) CwdHookInstalled() bool {
-	return s.cwdHookInstalled.Load()
+// cwdHookConfirmTimeout bounds how long the session waits for the injected
+// hook's ready marker before restoring terminal echo blindly. It only fires
+// when the hook never confirmed; a confirmed hook already restored echo
+// itself, so a confirmed session is never touched.
+const cwdHookConfirmTimeout = 3 * time.Second
+
+func (s *SSHSession) watchCwdHookConfirm() {
+	select {
+	case <-time.After(cwdHookConfirmTimeout):
+	case <-s.quit:
+		return
+	}
+	if s.cwdHookInstalled.Load() || s.Status() != StatusConnected {
+		return
+	}
+	log.Writef("ssh: cwd hook not confirmed after %s, restoring echo blindly", cwdHookConfirmTimeout)
+	s.mu.RLock()
+	stdin := s.stdin
+	s.mu.RUnlock()
+	if stdin != nil {
+		// Leading space keeps it out of bash history (HISTCONTROL=ignorespace).
+		_, _ = stdin.Write([]byte(" stty echo\n"))
+	}
 }
 
 func (s *SSHSession) Resize(cols, rows int) error {

@@ -659,30 +659,6 @@
           <!-- Local dirs are not user-selectable under mobile scoped storage -->
           <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
-              <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
-              <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
-            </div>
-            <div class="setting-control">
-              <el-input
-                v-model="settingsStore.settings.terminal.sessionLogDir"
-                :placeholder="defaultLogDir"
-                class="dir-input"
-                @change="settingsStore.save()"
-                clearable
-              >
-                <template #append>
-                  <el-tooltip :content="t('settings.browse')" placement="top">
-                    <el-button :aria-label="t('settings.browse')" @click="pickLogDir">
-                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
-                    </el-button>
-                  </el-tooltip>
-                </template>
-              </el-input>
-            </div>
-          </div>
-
-          <div v-if="!isMobile" class="setting-card">
-            <div class="setting-info">
               <div class="setting-title">{{ t('settings.zmodemDownloadDir') }}</div>
               <div class="setting-desc">{{ t('settings.zmodemDownloadDirDesc') }}</div>
             </div>
@@ -697,6 +673,30 @@
                 <template #append>
                   <el-tooltip :content="t('settings.browse')" placement="top">
                     <el-button :aria-label="t('settings.browse')" @click="pickZmodemDownloadDir">
+                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </template>
+              </el-input>
+            </div>
+          </div>
+
+          <div v-if="!isMobile" class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
+              <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
+            </div>
+            <div class="setting-control">
+              <el-input
+                v-model="settingsStore.settings.terminal.sessionLogDir"
+                :placeholder="defaultLogDir"
+                class="dir-input"
+                @change="settingsStore.save()"
+                clearable
+              >
+                <template #append>
+                  <el-tooltip :content="t('settings.browse')" placement="top">
+                    <el-button :aria-label="t('settings.browse')" @click="pickLogDir">
                       <el-icon><FolderOpen :size="'1rem'" /></el-icon>
                     </el-button>
                   </el-tooltip>
@@ -970,7 +970,7 @@
               <tr>
                 <th>{{ t('shortcut.colFunction') }}</th>
                 <th>{{ t('shortcut.colBinding') }}</th>
-                <th style="width:11.875rem;">{{ t('shortcut.colActions') }}</th>
+                <th>{{ t('shortcut.colActions') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -1090,7 +1090,7 @@
             <tr>
               <th>{{ t('shortcut.colFunction') }}</th>
               <th>{{ t('shortcut.colBinding') }}</th>
-              <th style="width:11.875rem;">{{ t('shortcut.colActions') }}</th>
+              <th>{{ t('shortcut.colActions') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -2968,8 +2968,24 @@ async function onToggleSystemTitleBar(v: boolean) {
 
 .kb-table {
   width: 100%;
+  /* min-width keeps the columns (and the action buttons row) from being
+     squeezed on narrow panes; percentages keep the five tables aligned. */
+  min-width: 22rem;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8125rem;
+}
+
+.kb-table th:first-child {
+  width: 30%;
+}
+
+.kb-table th:nth-child(2) {
+  width: 38%;
+}
+
+.kb-table th:nth-child(3) {
+  width: 25%;
 }
 
 .kb-table th, .kb-table td {
@@ -2999,9 +3015,19 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin: 0 0 0.625rem;
 }
 
+/* Must stay a table-cell: display:flex on the <td> removes it from the row's
+   shared-height layout and the column drifts out of line when buttons wrap. */
 .kb-actions {
-  display: flex;
-  gap: 0.375rem;
+  vertical-align: middle;
+  white-space: normal;
+}
+
+.kb-actions .el-button {
+  margin: 0 0.375rem 0.375rem 0;
+}
+
+.kb-actions .el-button + .el-button {
+  margin-left: 0;
 }
 
 .bg-image-row { display: flex; align-items: center; gap: 0.5rem; }

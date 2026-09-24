@@ -290,6 +290,7 @@ uniTerm/
 - [@Sunshow](https://github.com/Sunshow)
 - [@feuvan](https://github.com/feuvan)
 - [@zhangsir1211](https://github.com/zhangsir1211)
+- [@sonnartliao](https://github.com/sonnartliao)
 
 ## 开源协议
 

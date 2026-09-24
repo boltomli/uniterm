@@ -200,13 +200,6 @@ type ConnectionConfig struct {
 	// (the equivalent of OpenSSH's -A option). The private keys remain in the
 	// local agent; only signing requests are forwarded.
 	AgentForwarding bool `json:"agentForwarding,omitempty"`
-	// ShellIntegration injects OSC-7 cwd reporting into supported remote SSH
-	// shells at startup. It changes how the remote shell starts, so it can be
-	// turned off — but it defaults to ON: a nil field (historical configs and
-	// fresh JSON) means enabled; only an explicit false opts out. When off,
-	// enabling "follow terminal path" in the file sidebar injects the hook at
-	// click time instead (with a confirmation dialog, see InjectCwdHook).
-	ShellIntegration *bool `json:"shellIntegration,omitempty"`
 	// Backspace key byte sequence for terminal-stream types (ssh/telnet/serial).
 	// The translation happens on the frontend in applyBackspaceKey before the
 	// byte hits SessionWrite, so the backend does not read this field — it is
@@ -290,13 +283,6 @@ type SavedWorkspaceLayoutNode struct {
 }
 
 // ConnectionStoreData is the top-level structure persisted to connections.json.
-// shellIntegrationEnabled reports whether startup shell integration (the
-// silent bootstrap that changes how the remote shell starts) should run.
-// nil = enabled: the default-on toggle and historical configs.
-func (c ConnectionConfig) shellIntegrationEnabled() bool {
-	return c.ShellIntegration == nil || *c.ShellIntegration
-}
-
 type ConnectionStoreData struct {
 	Groups      []ConnectionGroup  `json:"groups"`
 	Connections []ConnectionConfig `json:"connections"`

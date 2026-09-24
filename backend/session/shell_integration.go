@@ -22,7 +22,6 @@ const (
 	osc7BEL               = "\x07"
 	osc7ST                = "\x1b\\"
 	sshIntegrationTimeout = 5 * time.Second
-	sshCleanupGracePeriod = 500 * time.Millisecond
 
 	// maxOSCPending caps how long an unterminated OSC-7 payload may buffer
 	// display output before it is dropped as garbage. Without this a program
@@ -30,6 +29,11 @@ const (
 	// rest of the terminal stream.
 	maxOSCPending = 4096
 )
+
+// sshCwdHookReadyMarker is printed by the injected cwd hook once it is fully
+// installed and terminal echo has been restored. The read loop strips it from
+// the display stream and uses it to confirm the hook came up.
+const sshCwdHookReadyMarker = "\x1b]7777;uniterm-ok\x07"
 
 // osc7Scanner extracts OSC-7 cwd reports from a terminal byte stream,
 // tolerating sequences split across read chunks, and removes them from the
@@ -131,59 +135,6 @@ func decodeOSC7Payload(raw string) string {
 	return raw
 }
 
-// buildShellBootstrap returns the temporary files and arguments used to start
-// an SSH shell with integration injected. The user's
-// own rc files are sourced FIRST; our hook is chained (prepended/appended),
-// never overwriting user hooks. ok=false for unsupported/unknown shells.
-//
-// The <rcfile>/<dir> placeholders in startArgs are replaced by real temporary
-// paths when starting SSH shell integration.
-func buildShellBootstrap(shell string) (files map[string]string, startArgs []string, ok bool) {
-	base := shellBasename(shell)
-	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
-	switch {
-	case base == "bash":
-		// Bash ignores --rcfile in login mode and login_shell is immutable, so
-		// the injected shell cannot be a literal login shell. Reproduce its
-		// startup-file order instead. User profiles commonly source ~/.bashrc
-		// themselves; sourcing it here too would execute it twice.
-		rc := "[ -r /etc/profile ] && . /etc/profile\n" +
-			"if [ -r \"$HOME/.bash_profile\" ]; then\n" +
-			"  . \"$HOME/.bash_profile\"\n" +
-			"elif [ -r \"$HOME/.bash_login\" ]; then\n" +
-			"  . \"$HOME/.bash_login\"\n" +
-			"elif [ -r \"$HOME/.profile\" ]; then\n" +
-			"  . \"$HOME/.profile\"\n" +
-			"fi\n" +
-			oscFn + "\n" +
-			"case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in\n" +
-			"  \"declare -a\"*) PROMPT_COMMAND=(\"__uniterm_osc7\" \"${PROMPT_COMMAND[@]}\") ;;\n" +
-			"  *) PROMPT_COMMAND=\"__uniterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\" ;;\n" +
-			"esac\n"
-		return map[string]string{"rcfile": rc}, []string{"--rcfile", "<rcfile>"}, true
-	case base == "zsh":
-		rc := "[ -f \"$HOME/.zshrc\" ] && . \"$HOME/.zshrc\"\n" +
-			oscFn + "\n" +
-			"precmd_functions+=(__uniterm_osc7)\n"
-		// zsh always sources $ZDOTDIR/.zshenv; ours chains the user's own
-		// ~/.zshenv so nothing the user relies on is lost.
-		env := "[ -f \"$HOME/.zshenv\" ] && . \"$HOME/.zshenv\"\n"
-		profile := "[ -f \"$HOME/.zprofile\" ] && . \"$HOME/.zprofile\"\n"
-		login := "[ -f \"$HOME/.zlogin\" ] && . \"$HOME/.zlogin\"\n"
-		logout := "[ -f \"$HOME/.zlogout\" ] && . \"$HOME/.zlogout\"\n"
-		return map[string]string{
-			".zshrc": rc, ".zshenv": env, ".zprofile": profile,
-			".zlogin": login, ".zlogout": logout,
-		}, []string{"ZDOTDIR=<dir>"}, true
-	case base == "fish":
-		cmd := "functions -c fish_prompt __uniterm_orig_prompt; " +
-			"function fish_prompt; __uniterm_osc7; __uniterm_orig_prompt; end; " +
-			"function __uniterm_osc7; printf '\\e]7;file://%s\\e\\\\' $PWD; end"
-		return nil, []string{"-l", "-C", cmd}, true
-	}
-	return nil, nil, false
-}
-
 // buildWSLShellBootstrap preserves the existing WSL startup behavior. SSH and
 // WSL use different launch mechanisms, so changes made to approximate SSH
 // login-shell semantics must not silently alter WSL initialization.
@@ -209,14 +160,17 @@ func buildWSLShellBootstrap(shell string) (files map[string]string, ok bool) {
 	return nil, false
 }
 
-// buildRuntimeCwdHook returns a one-line snippet that installs the OSC-7 cwd
-// hook into an ALREADY-RUNNING interactive shell (the startup injection in
-// buildShellBootstrap can only change how the shell starts). The snippet is
-// written to the session's stdin like a typed command: leading space keeps it
-// out of bash history (HISTCONTROL=ignorespace), the trailing newline executes
-// it. Re-injection is guarded so hooks are never chained twice. ok=false for
-// unsupported shells.
-func buildRuntimeCwdHook(shell string) (string, bool) {
+// buildStartupCwdHook returns the one-line hook typed into a freshly started
+// SSH login shell (typed, never executed as a remote command, so sshd's
+// native login flow and banner are untouched). The pty is requested with ECHO
+// off so the line never renders; the hook ends by restoring echo, clearing
+// the current line (so a prompt printed before the injection landed is
+// overwritten by the one the shell prints after the hook — the prompt renders
+// exactly once), and then printing the ready marker last — a missing stty
+// must leave the marker unsent so the session's blind echo-restore fallback
+// fires. ok=false for unsupported shells, which get a plain ECHO-on shell and
+// no injection.
+func buildStartupCwdHook(shell string) (string, bool) {
 	base := shellBasename(shell)
 	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
 	switch base {
@@ -227,18 +181,71 @@ func buildRuntimeCwdHook(shell string) (string, bool) {
 			// ${PROMPT_COMMAND-} keeps the guard from erroring under set -u
 			// when the variable is unset.
 			`*) [[ "${PROMPT_COMMAND-}" == *__uniterm_osc7* ]] || PROMPT_COMMAND="__uniterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;` + " " +
-			"esac\n", true
+			"esac" + `; stty echo; printf '\r\033[2K'; printf '\033]7777;uniterm-ok\007'` + "\n", true
 	case "zsh":
+		// -0 default guards against set -u when precmd_functions is unset.
 		return " " + oscFn + "; " +
-			// -0 default guards against set -u when precmd_functions is unset.
-			`(( ${precmd_functions[(I)__uniterm_osc7]-0} )) || precmd_functions+=(__uniterm_osc7)` + "\n", true
+			`(( ${precmd_functions[(I)__uniterm_osc7]-0} )) || precmd_functions+=(__uniterm_osc7)` +
+			`; stty echo; printf '\r\033[2K'; printf '\033]7777;uniterm-ok\007'` + "\n", true
 	case "fish":
 		return " if not functions -q __uniterm_osc7; " +
 			"functions -c fish_prompt __uniterm_orig_prompt; " +
 			"function fish_prompt; __uniterm_osc7; __uniterm_orig_prompt; end; " +
-			`function __uniterm_osc7; printf '\e]7;file://%s\e\\' $PWD; end; end` + "\n", true
+			`function __uniterm_osc7; printf '\e]7;file://%s\e\\' $PWD; end; end` +
+			`; stty echo; printf '\r\e[2K'; printf '\e]7777;uniterm-ok\a'` + "\n", true
 	}
 	return "", false
+}
+
+// hookReadyScanner strips the cwd hook's ready marker from the terminal byte
+// stream (it is pure control output, never meant to render) and reports each
+// completed marker so the session can confirm the hook came up. It tolerates
+// markers split across read chunks by holding back a trailing partial-prefix
+// tail, exactly like osc7Scanner. Once a marker is confirmed the caller sets
+// done and the scanner becomes a passthrough, so the hold-back never delays
+// steady-state output.
+type hookReadyScanner struct {
+	leftover []byte
+	done     bool
+}
+
+// Feed consumes the next chunk of the terminal byte stream. It returns the
+// bytes to display (markers removed) and whether a marker completed in this
+// chunk. cleaned must always be used in place of the input: a partially
+// arrived marker is withheld and flushed on a later Feed.
+func (sc *hookReadyScanner) Feed(data []byte) (cleaned []byte, found bool) {
+	if sc.done {
+		return data, false
+	}
+	buf := append(append([]byte{}, sc.leftover...), data...)
+	sc.leftover = nil
+	for {
+		i := bytes.Index(buf, []byte(sshCwdHookReadyMarker))
+		if i < 0 {
+			keep := partialMarkerLen(buf)
+			cleaned = append(cleaned, buf[:len(buf)-keep]...)
+			sc.leftover = append(sc.leftover, buf[len(buf)-keep:]...)
+			return cleaned, found
+		}
+		cleaned = append(cleaned, buf[:i]...)
+		buf = buf[i+len(sshCwdHookReadyMarker):]
+		found = true
+	}
+}
+
+// partialMarkerLen returns the length of the longest suffix of buf that is a
+// proper prefix of the ready marker.
+func partialMarkerLen(buf []byte) int {
+	max := len(sshCwdHookReadyMarker) - 1
+	if len(buf) < max {
+		max = len(buf)
+	}
+	for k := max; k > 0; k-- {
+		if bytes.HasPrefix([]byte(sshCwdHookReadyMarker), buf[len(buf)-k:]) {
+			return k
+		}
+	}
+	return 0
 }
 
 // shellBasename returns the basename of a shell path ("/usr/bin/zsh" →
@@ -248,43 +255,6 @@ func shellBasename(shell string) string {
 		return shell[i+1:]
 	}
 	return shell
-}
-
-func injectShellIntegration(client *ssh.Client) (command, tempPath string) {
-	if client == nil {
-		return "", ""
-	}
-	shell, err := sshRunCommand(client, "echo $SHELL", "", sshIntegrationTimeout)
-	if err != nil {
-		log.Writef("ssh: shell integration skipped (detect shell: %v)", err)
-		return "", ""
-	}
-	shell = strings.TrimSpace(shell)
-	files, args, ok := buildShellBootstrap(shell)
-	if !ok {
-		return "", ""
-	}
-	switch shellBasename(shell) {
-	case "bash":
-		path, err := sshWriteRemoteFile(client, files["rcfile"])
-		if err != nil {
-			log.Writef("ssh: shell integration skipped (write rcfile: %v)", err)
-			return "", ""
-		}
-		return bashIntegrationCommand(path), path
-	case "zsh":
-		dir, err := sshWriteRemoteFiles(client, files, []string{".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout"})
-		if err != nil {
-			log.Writef("ssh: shell integration skipped (write zsh dir: %v)", err)
-			return "", ""
-		}
-		return "exec env ZDOTDIR=" + dir + " zsh -l", dir
-	case "fish":
-		if len(args) >= 3 {
-			return "exec fish -l -C " + fishSingleQuote(args[2]), ""
-		}
-	}
-	return "", ""
 }
 
 func sshRunCommand(client *ssh.Client, cmd, stdin string, timeout time.Duration) (string, error) {
@@ -352,64 +322,6 @@ func closeSSHSessionAsync(sess *ssh.Session) {
 	}
 }
 
-// bashIntegrationCommand runs the injected interactive shell and then mirrors
-// login bash's logout behavior. Keeping logout outside the child avoids
-// replacing an EXIT trap installed by the user's profile.
-func bashIntegrationCommand(rcfile string) string {
-	return "bash --rcfile " + rcfile +
-		"; __uniterm_status=$?; bash -c '[ -r \"$HOME/.bash_logout\" ] && . \"$HOME/.bash_logout\"'; exit $__uniterm_status"
-}
-
-func sshWriteRemoteFile(client *ssh.Client, content string) (string, error) {
-	out, err := sshRunCommand(client,
-		`f=$(mktemp /tmp/uniterm-XXXXXX) || exit; printf '%s\n' "$f"; cat > "$f"`,
-		content, sshIntegrationTimeout)
-	if err != nil {
-		if path, pathErr := cleanRemoteTempPath(out); pathErr == nil {
-			sshRemoveRemoteTemp(client, path)
-		}
-		return "", err
-	}
-	return cleanRemoteTempPath(out)
-}
-
-func sshWriteRemoteFiles(client *ssh.Client, files map[string]string, names []string) (string, error) {
-	out, err := sshRunCommand(client,
-		`d=$(mktemp -d /tmp/uniterm-XXXXXX) || exit; printf '%s\n' "$d"`,
-		"", sshIntegrationTimeout)
-	if err != nil {
-		if dir, pathErr := cleanRemoteTempPath(out); pathErr == nil {
-			sshRemoveRemoteTemp(client, dir)
-		}
-		return "", err
-	}
-	dir, err := cleanRemoteTempPath(out)
-	if err != nil {
-		return "", err
-	}
-	for _, name := range names {
-		content, ok := files[name]
-		if !ok {
-			sshRemoveRemoteTemp(client, dir)
-			return "", fmt.Errorf("missing bootstrap file %q", name)
-		}
-		if _, err := sshRunCommand(client, "cat > '"+dir+"/"+name+"'", content, sshIntegrationTimeout); err != nil {
-			sshRemoveRemoteTemp(client, dir)
-			return "", err
-		}
-	}
-	return dir, nil
-}
-
-func sshRemoveRemoteTemp(client *ssh.Client, path string) {
-	if client == nil || !isSSHIntegrationTempPath(path) {
-		return
-	}
-	if _, err := sshRunCommand(client, "rm -rf -- '"+path+"'", "", sshIntegrationTimeout); err != nil {
-		log.Writef("ssh: shell integration temp cleanup failed for %s: %v", path, err)
-	}
-}
-
 func isSSHIntegrationTempPath(path string) bool {
 	const prefix = "/tmp/uniterm-"
 	if !strings.HasPrefix(path, prefix) || len(path) != len(prefix)+6 {
@@ -423,28 +335,10 @@ func isSSHIntegrationTempPath(path string) bool {
 	return true
 }
 
-// sshCleanupRemoteTemp waits briefly for best-effort cleanup. If opening a new
-// SSH channel stalls on a broken transport, the caller can close the client
-// after this bounded grace period instead of blocking Disconnect indefinitely.
-func sshCleanupRemoteTemp(client *ssh.Client, path string) {
-	if client == nil || !isSSHIntegrationTempPath(path) {
-		return
-	}
-	done := make(chan struct{})
-	go func() {
-		sshRemoveRemoteTemp(client, path)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(sshCleanupGracePeriod):
-		log.Writef("ssh: shell integration temp cleanup timed out for %s", path)
-	}
-}
-
 // cleanRemoteTempPath extracts exactly one standalone, strictly validated
 // mktemp path. Login banners or shell startup messages may surround the path,
 // but zero or multiple candidates are rejected so cleanup is never ambiguous.
+// Shared by the SSH and WSL bootstrap temp-file paths.
 func cleanRemoteTempPath(out string) (string, error) {
 	var path string
 	for _, line := range strings.Split(out, "\n") {
@@ -461,10 +355,4 @@ func cleanRemoteTempPath(out string) (string, error) {
 		return "", fmt.Errorf("remote temp path not found in output %q", out)
 	}
 	return path, nil
-}
-
-func fishSingleQuote(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	return `'` + s + `'`
 }

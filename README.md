@@ -290,6 +290,7 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@Sunshow](https://github.com/Sunshow)
 - [@feuvan](https://github.com/feuvan)
 - [@zhangsir1211](https://github.com/zhangsir1211)
+- [@sonnartliao](https://github.com/sonnartliao)
 
 ## License
 

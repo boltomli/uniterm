@@ -1,5 +1,5 @@
 <template>
-  <el-dialog append-to-body v-model="visible" :title="isEdit ? t('conn.editTitle') : t('conn.newTitle')" width="43.75rem" class="conn-dialog" @opened="onDialogOpened">
+  <el-dialog append-to-body v-model="visible" :title="isEdit ? t('conn.editTitle') : t('conn.newTitle')" width="43.75rem" class="conn-dialog" @opened="onDialogOpened" @closed="onDialogClosed">
     <div class="conn-layout">
       <!-- Left sidebar: category icons -->
       <div class="conn-categories">
@@ -550,10 +550,6 @@
             <el-form-item v-if="form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
               <el-input-number v-model="form.sftpMaxConcurrency" :min="0" :max="20" />
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.shellIntegration')">
-              <el-switch v-model="form.shellIntegration" />
-              <span class="field-hint" style="margin-left: 0.75rem; flex: 1; min-width: 0;">{{ t('conn.shellIntegrationDesc') }}</span>
-            </el-form-item>
             <el-form-item v-if="form.type === 'ssh'" :label="t('conn.agentForwarding')">
               <el-switch v-model="form.agentForwarding" />
               <span class="field-hint" style="margin-left: 0.75rem;">{{ t('conn.agentForwardingDesc') }}</span>
@@ -934,13 +930,30 @@ const visible = computed({
 // button, X, Esc, overlay click — reports `cancel` so the host can reset the
 // edited config. Reset on every open.
 let handled = false
+// Form reset is deferred to the dialog's @closed event: resetting while the
+// close transition is still fading out would flash default values (port 22,
+// no group) for a frame. Reopening the dialog cancels the pending reset.
+let pendingReset = false
 watch(visible, (v) => {
   if (v) {
     handled = false
+    pendingReset = false
   } else if (!handled) {
     emit('cancel')
   }
 })
+
+// Fires after the close transition finishes, so the reset below can't flash
+// default values (port 22, no group) while the dialog is still fading out.
+function onDialogClosed() {
+  if (!pendingReset) return
+  pendingReset = false
+  resetForm()
+  if (props.defaultGroupId) {
+    selectedGroupId.value = props.defaultGroupId
+    form.groupId = props.defaultGroupId
+  }
+}
 
 const hostInputRef = ref<InstanceType<typeof ElInput> | null>(null)
 
@@ -1047,7 +1060,6 @@ const form = reactive<ConnectionConfig>({
   fileTransferProto: 'sftp' as 'sftp' | 'scp',
   x11Forwarding: false,
   agentForwarding: false,
-  shellIntegration: true,
   ftpEncryption: 'none',
   ftpPassive: true,
   ftpEncoding: 'utf-8',
@@ -1274,9 +1286,6 @@ watch(() => props.editConfig, (config) => {
     form.rdpAdminSession = config.rdpAdminSession ?? false
     form.x11Forwarding = config.x11Forwarding ?? false
     form.agentForwarding = config.agentForwarding ?? false
-    // Startup shell integration defaults to ON: absent field (historical
-    // configs) means enabled, matching the backend's nil semantics.
-    form.shellIntegration = config.shellIntegration ?? true
     // Existing SSH connections without the field default to SFTP (old behavior).
     form.fileTransferProto = config.fileTransferProto ?? 'sftp'
     // Redis key separator defaults to ":" (empty from old connections = ":").
@@ -1312,11 +1321,10 @@ watch(() => props.editConfig, (config) => {
     }
     nextTick(() => { hydrating.value = false })
   } else {
-    resetForm()
-    if (props.defaultGroupId) {
-      selectedGroupId.value = props.defaultGroupId
-      form.groupId = props.defaultGroupId
-    }
+    // Defer the reset to the dialog's @closed event — clearing editConfig
+    // happens right after save while the close transition is still running,
+    // and an immediate reset would flash defaults (port 22, no group).
+    pendingReset = true
   }
 }, { immediate: true })
 
@@ -1427,7 +1435,6 @@ function resetForm() {
   form.fileTransferProto = 'sftp'
   form.x11Forwarding = false
   form.agentForwarding = false
-  form.shellIntegration = true
   form.ftpEncryption = 'none'
   form.ftpPassive = true
   form.ftpEncoding = 'utf-8'
@@ -1768,7 +1775,7 @@ function onSave() {
     emit('save', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。
@@ -1785,7 +1792,7 @@ function onConnectOnly() {
     emit('connectOnly', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。
@@ -1802,7 +1809,7 @@ function onConnect() {
     emit('connect', config)
     visible.value = false
     if (!props.editConfig) {
-      resetForm()
+      pendingReset = true
     }
   } catch (e: any) {
     // 表单校验失败（如必填字段为空）；提示错误并保持对话框打开。

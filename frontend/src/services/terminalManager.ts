@@ -107,6 +107,12 @@ interface TerminalMirror {
 const mirrors = new Map<string, TerminalMirror>()
 
 function createMirror(sessionId: string, options: TerminalOptions, source: Terminal): TerminalMirror {
+  // SINGLE-RESPONDER RULE: this mirror must never bind an onData handler (or
+  // otherwise feed back into SessionWrite). It parses the same output stream
+  // as the visible terminal, so any device query (DA, CPR/ESC[6n, DSR…) would
+  // make xterm generate a SECOND reply — the "stray CSI response" class that
+  // corrupts remote apps. The visible terminal's reply is the only one the
+  // remote should ever receive.
   const terminal = new Terminal({
     // Unicode11Addon needs the proposed API (unicode.activeVersion), same as
     // the visible terminal's constructor.

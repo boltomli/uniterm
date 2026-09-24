@@ -42,6 +42,16 @@ var assets embed.FS
 //go:embed build/appicon_tray.png
 var appIconTrayPNG []byte
 
+// appIconTrayTemplatePNG is the macOS variant: the same rounded tile rendered
+// as a template image — black tile, "U" knocked out to transparency. macOS
+// recolours template images itself (black on a light menu bar, white on a
+// dark one), matching the monochrome icons of other apps. Generated from
+// appicon_tray.png by knocking the cyan glyph out and flattening the rest to
+// black.
+//
+//go:embed build/appicon_tray_template.png
+var appIconTrayTemplatePNG []byte
+
 func main() {
 	// Administrator-shell broker mode: an elevated copy of uniTerm launched
 	// via the "runas" verb relays ConPTY I/O for admin local terminals (see
@@ -183,21 +193,18 @@ func main() {
 		// harmless (ignored) on other platforms.
 		Windows: application.WindowsOptions{
 			WebviewUserDataPath: webviewDataPath,
-			// Disable HTTP integrated-auth SSO. When WebView2 hits an
-			// NTLM/Negotiate challenge (most commonly a system proxy
-			// answering 407) it otherwise silently attempts to log on with
-			// the current Windows identity; with stale credentials this
-			// produces repeated 4625 failed-logon events that accumulate
-			// into an account lockout. uniTerm's frontend is served
-			// locally and never needs Windows integrated auth, so switch
-			// the schemes off entirely (plus empty allowlists for WebView2
-			// runtimes that predate --auth-schemes; unknown switches are
-			// ignored harmlessly).
-			AdditionalBrowserArgs: []string{
-				"--auth-schemes=basic,digest",
-				"--auth-server-allowlist=",
-				"--auth-negotiate-delegate-allowlist=",
-			},
+			// WebView2 runtimes 152.x/153.x call LogonUser(current local
+			// account, invalid password) once per environment creation at
+			// startup — a Chromium regression in the autofill-AI-wallet
+			// feature that emits a 4625 failed-logon event per launch and,
+			// on machines with an account lockout policy, can lock the
+			// user out of Windows entirely. Disabling that feature stops
+			// the logon attempt. Must go through DisabledFeatures so it
+			// merges into Wails' single --disable-features switch:
+			// Chromium honours only the LAST occurrence, so a second
+			// switch in AdditionalBrowserArgs would silently re-enable
+			// Wails' disabled SmartScreen protection.
+			DisabledFeatures: []string{"AutofillAiWalletPrivatePasses"},
 		},
 		// Fixed program name so the window's WM_CLASS stays "uniterm" — the
 		// installed package's .desktop file sets StartupWMClass to the same
@@ -466,7 +473,7 @@ const (
 // language (from settings.json) used to localize the menu labels.
 func setupTray(w3app *application.App, app *App, window *application.WebviewWindow, lang string) {
 	tray := w3app.SystemTray.New()
-	tray.SetIcon(trayIconPNG())
+	applyTrayIcon(tray)
 	tray.SetTooltip("uniTerm")
 
 	menu := application.NewMenu()
