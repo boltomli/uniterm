@@ -220,7 +220,7 @@ type ConnectionConfig struct {
 	NewlineMode string `json:"newlineMode,omitempty"`
 	// K8s-specific fields
 	K8sConfigPath   string `json:"k8sConfigPath,omitempty"`   // File 模式：kubeconfig 文件路径
-	K8sConfigInline string `json:"k8sConfigInline,omitempty"` // Inline 模式：kubeconfig YAML 全文（明文存储，同其他连接密码策略）
+	K8sConfigInline string `json:"k8sConfigInline,omitempty"` // Inline 模式：kubeconfig YAML 全文（同连接密码策略：落盘以 enc:v1: 加密，密码保护的导出中同样加密）
 	K8sContext      string `json:"k8sContext,omitempty"`      // 选中的 context 名，为空则用 current-context
 	K8sNamespace    string `json:"k8sNamespace,omitempty"`    // 默认 namespace，"" = all
 	K8sInsecureTls  bool   `json:"k8sInsecureTls,omitempty"`  // 覆盖 kubeconfig 中的 insecure-skip-tls-verify

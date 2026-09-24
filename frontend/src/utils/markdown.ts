@@ -38,6 +38,17 @@ export function sanitizeRenderedHtml(html: string): string {
       return /^(javascript|data|vbscript):/i.test(normalized) ? '' : match
     },
   )
+  // F4: anchors that open a new browsing context must carry rel="noopener".
+  // Regular markdown links get it at render time, but the auto-link path
+  // emits raw <a ... target="_blank"> without rel, letting the opened page
+  // drive window.opener back at this document (reverse tabnabbing). Every
+  // renderer's output flows through here, so enforce it centrally: anchors
+  // that already declare a rel — or that open no new context — stay
+  // byte-identical.
+  html = html.replace(/<a\s[^>]*>/gi, (tag: string) => {
+    if (/\brel\s*=/i.test(tag) || !/\btarget\s*=\s*["']?_blank\b/i.test(tag)) return tag
+    return tag.replace(/\s*>$/, ' rel="noopener">')
+  })
   return html
 }
 

@@ -150,3 +150,52 @@ func TestConnectionStore_LoadDecryptsKeyText(t *testing.T) {
 		t.Fatalf("Load KeyContent = %q, want PEM-KEY", data.Connections[0].KeyContent)
 	}
 }
+
+// TestConnectionStore_SaveEncryptsK8sConfigInline and
+// TestConnectionStore_LoadDecryptsK8sConfigInline lock in that an inline
+// kubeconfig (K8sConfigInline), which carries cluster credentials, is
+// encrypted at rest in connections.json like a password and decrypted back on
+// load.
+func TestConnectionStore_SaveEncryptsK8sConfigInline(t *testing.T) {
+	dir := t.TempDir()
+	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}
+
+	const kubeconfig = "apiVersion: v1\nusers:\n- name: admin\n  user:\n    token: kube-token-xyz"
+	data := session.ConnectionStoreData{
+		Groups:      []session.ConnectionGroup{},
+		Connections: []session.ConnectionConfig{{ID: "c1", Type: "k8s", AuthType: "password", Password: "pp", K8sConfigInline: kubeconfig}},
+	}
+	if err := s.Save(data); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, storeFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if contains(string(raw), "kube-token-xyz") {
+		t.Fatalf("plaintext K8sConfigInline leaked: %s", raw)
+	}
+	if !contains(string(raw), "enc:v1:") {
+		t.Fatalf("expected encrypted K8sConfigInline on disk: %s", raw)
+	}
+}
+
+func TestConnectionStore_LoadDecryptsK8sConfigInline(t *testing.T) {
+	dir := t.TempDir()
+	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}
+
+	seed := session.ConnectionStoreData{
+		Groups:      []session.ConnectionGroup{},
+		Connections: []session.ConnectionConfig{{ID: "c1", Type: "k8s", AuthType: "password", Password: enc("pp"), K8sConfigInline: enc("kube-yaml")}},
+	}
+	if err := s.writeJSONLocked(seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if data.Connections[0].K8sConfigInline != "kube-yaml" {
+		t.Fatalf("Load K8sConfigInline = %q, want kube-yaml", data.Connections[0].K8sConfigInline)
+	}
+}

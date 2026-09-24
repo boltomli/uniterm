@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -221,7 +222,9 @@ func sourceAPIURL(source string) string {
 }
 
 // IsLoopbackAPIBase reports whether base is an http(s) URL whose host is
-// loopback (localhost, 127.0.0.0/8 or ::1). Empty or malformed input is
+// loopback: a loopback IP literal (127.0.0.0/8 or ::1) or the exact name
+// "localhost". Every other DNS name is non-loopback, so a crafted
+// 127.0.0.1.evil.tld-style host cannot qualify. Empty or malformed input is
 // never loopback.
 func IsLoopbackAPIBase(base string) bool {
 	u, err := url.Parse(base)
@@ -232,7 +235,10 @@ func IsLoopbackAPIBase(base string) bool {
 		return false
 	}
 	host := u.Hostname()
-	return host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return host == "localhost" || host == "::1"
 }
 
 // sourceReleaseURL returns the human-facing release page for a source.

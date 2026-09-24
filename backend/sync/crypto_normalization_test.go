@@ -46,9 +46,10 @@ func TestSyncBoundaryNormalizesEncryptedFields(t *testing.T) {
 		}
 	}
 
-	write(srcDir, "connections.json", `{"connections":[{"id":"c1","authType":"password","password":"enc:v1:fake-secret"}]}`)
+	write(srcDir, "connections.json", `{"connections":[{"id":"c1","authType":"password","password":"enc:v1:fake-secret","k8sConfigInline":"enc:v1:fake-kube"}]}`)
 	write(srcDir, "identities.json", `{"identities":[{"id":"i1","password":"enc:v1:fake-idpass"}]}`)
 	write(srcDir, "proxies.json", `{"proxies":[{"id":"p1","pass":"enc:v1:fake-proxypass"}]}`)
+	write(srcDir, "tunnels.json", `{"version":1,"groups":[],"tunnels":[{"id":"t1","name":"jump","upstream":{"kind":"socks5","host":"h","port":1080,"pass":"enc:v1:fake-tunnelpass"}}]}`)
 	write(srcDir, "settings.json", `{"ai":{"models":[{"id":"m1","apiKey":"enc:v1:fake-apikey"}]}}`)
 
 	if err := EncryptConfigFiles(srcDir, repoDir, key, nil, fakePS{}); err != nil {
@@ -73,6 +74,35 @@ func TestSyncBoundaryNormalizesEncryptedFields(t *testing.T) {
 	if got := repoConn.Connections[0]["password"]; got != "secret" {
 		t.Fatalf("repo password = %q, want plaintext %q", got, "secret")
 	}
+	if got := repoConn.Connections[0]["k8sConfigInline"]; got != "kube" {
+		t.Fatalf("repo k8sConfigInline = %q, want plaintext %q", got, "kube")
+	}
+
+	// Device-bound enc:v1: must not escape into the repo copy of tunnels.json
+	// either, and the version/groups wrapper must survive normalization.
+	repoTunData, err := os.ReadFile(filepath.Join(repoDir, "tunnels.json"))
+	if err != nil {
+		t.Fatalf("read repo tunnels: %v", err)
+	}
+	repoTunPlain, err := decryptBytes(string(repoTunData), key, "tunnels.json")
+	if err != nil {
+		t.Fatalf("decrypt repo tunnels: %v", err)
+	}
+	var repoTun struct {
+		Version int `json:"version"`
+		Tunnels []struct {
+			Upstream map[string]interface{} `json:"upstream"`
+		} `json:"tunnels"`
+	}
+	if err := json.Unmarshal(repoTunPlain, &repoTun); err != nil {
+		t.Fatalf("parse repo tunnels: %v", err)
+	}
+	if repoTun.Version != 1 {
+		t.Fatalf("repo tunnels version = %d, want 1 (wrapper keys dropped?)", repoTun.Version)
+	}
+	if got := repoTun.Tunnels[0].Upstream["pass"]; got != "tunnelpass" {
+		t.Fatalf("repo tunnel pass = %q, want plaintext %q", got, "tunnelpass")
+	}
 
 	// Pull must re-encrypt back to enc:v1: under the local credential key.
 	if err := DecryptConfigFiles(repoDir, dstDir, key, fakePS{}); err != nil {
@@ -90,6 +120,60 @@ func TestSyncBoundaryNormalizesEncryptedFields(t *testing.T) {
 	}
 	if got := dstConn.Connections[0]["password"]; got != "enc:v1:fake-secret" {
 		t.Fatalf("dst password = %q, want %q", got, "enc:v1:fake-secret")
+	}
+	if got := dstConn.Connections[0]["k8sConfigInline"]; got != "enc:v1:fake-kube" {
+		t.Fatalf("dst k8sConfigInline = %q, want %q", got, "enc:v1:fake-kube")
+	}
+
+	dstTunData, err := os.ReadFile(filepath.Join(dstDir, "tunnels.json"))
+	if err != nil {
+		t.Fatalf("read dst tunnels: %v", err)
+	}
+	var dstTun struct {
+		Version int `json:"version"`
+		Tunnels []struct {
+			Upstream map[string]interface{} `json:"upstream"`
+		} `json:"tunnels"`
+	}
+	if err := json.Unmarshal(dstTunData, &dstTun); err != nil {
+		t.Fatalf("parse dst tunnels: %v", err)
+	}
+	if dstTun.Version != 1 {
+		t.Fatalf("dst tunnels version = %d, want 1", dstTun.Version)
+	}
+	if got := dstTun.Tunnels[0].Upstream["pass"]; got != "enc:v1:fake-tunnelpass" {
+		t.Fatalf("dst tunnel pass = %q, want %q", got, "enc:v1:fake-tunnelpass")
+	}
+}
+
+// TestCompareTunnelsNormalizesUpstreamPass: the local file carries a
+// device-bound enc:v1: pass while the decrypted remote copy is plaintext —
+// the comparison must normalize so the difference does not read as a conflict.
+func TestCompareTunnelsNormalizesUpstreamPass(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local")
+	remote := filepath.Join(dir, "remote")
+	if err := os.MkdirAll(local, 0755); err != nil {
+		t.Fatalf("mkdir local: %v", err)
+	}
+	if err := os.MkdirAll(remote, 0755); err != nil {
+		t.Fatalf("mkdir remote: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "tunnels.json"),
+		[]byte(`{"version":1,"tunnels":[{"id":"t1","upstream":{"kind":"socks5","host":"h","port":1080,"pass":"enc:v1:fake-pw"}}]}`), 0600); err != nil {
+		t.Fatalf("write local: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "tunnels.json"),
+		[]byte(`{"version":1,"tunnels":[{"id":"t1","upstream":{"kind":"socks5","host":"h","port":1080,"pass":"pw"}}]}`), 0600); err != nil {
+		t.Fatalf("write remote: %v", err)
+	}
+
+	same, err := compareConfigFiles(filepath.Join(local, "tunnels.json"), filepath.Join(remote, "tunnels.json"), nil, fakePS{})
+	if err != nil {
+		t.Fatalf("compare: %v", err)
+	}
+	if !same {
+		t.Fatalf("compareConfigFiles reported a difference when local enc:v1: decrypts to the same plaintext")
 	}
 }
 

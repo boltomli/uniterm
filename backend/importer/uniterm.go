@@ -26,10 +26,11 @@ type utmFile struct {
 }
 
 // ExportUniterm serializes the full store to .utm JSON. When password is empty,
-// credential fields (passwords, inline keys) are cleared and encrypted=false.
+// credential fields (passwords, inline keys, inline kubeconfig, post-login
+// scripts) are cleared and encrypted=false.
 // Otherwise every secret — Password, KeyContent, SentinelPassword,
-// TunnelSSHPassword and PostLoginScript — is encrypted with a fresh
-// PBKDF2-derived key and encrypted=true.
+// TunnelSSHPassword, K8sConfigInline and PostLoginScript — is encrypted with a
+// fresh PBKDF2-derived key and encrypted=true.
 func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, error) {
 	f := utmFile{Format: unitermFormat, Version: 1, ConnectionStoreData: data}
 	if password == "" {
@@ -38,6 +39,8 @@ func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, e
 			f.Connections[i].KeyContent = ""
 			f.Connections[i].SentinelPassword = ""
 			f.Connections[i].TunnelSSHPassword = ""
+			f.Connections[i].K8sConfigInline = ""
+			f.Connections[i].PostLoginScript = ""
 		}
 		return json.MarshalIndent(f, "", "  ")
 	}
@@ -49,7 +52,7 @@ func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, e
 	f.KDF = &utmKDF{Algo: kdfAlgo, Iterations: kdfIterations, Salt: encodeSalt(salt)}
 	for i := range f.Connections {
 		c := &f.Connections[i]
-		for _, field := range []*string{&c.Password, &c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.PostLoginScript} {
+		for _, field := range []*string{&c.Password, &c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.K8sConfigInline, &c.PostLoginScript} {
 			if *field == "" || strings.HasPrefix(*field, credentials.Prefix) {
 				continue
 			}
@@ -97,7 +100,7 @@ func parseUniterm(data []byte, opts ParseOptions) (*ImportResult, error) {
 			// Fields the encrypted export protects since the field-encryption
 			// fix: decrypt only what carries the encrypted prefix; a value
 			// without it is a legacy export that stored the field in plaintext.
-			for _, field := range []*string{&c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.PostLoginScript} {
+			for _, field := range []*string{&c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.K8sConfigInline, &c.PostLoginScript} {
 				if !strings.HasPrefix(*field, credentials.Prefix) {
 					continue
 				}

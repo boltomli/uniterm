@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -90,6 +91,144 @@ func TestIsAllowedElevatedShell(t *testing.T) {
 		if got := isAllowedElevatedShell(tc.base); got != tc.want {
 			t.Errorf("isAllowedElevatedShell(%q) = %v, want %v", tc.base, got, tc.want)
 		}
+	}
+}
+
+// TestElevatedSpawnRefusal pins the full spawn validation behind the
+// elevated broker (F3): the executable must be an allowlisted shell
+// basename whose canonical path sits under a trusted Windows root, and the
+// argument tail must match a shape local_session_windows.go generates.
+// Everything is checked against the validation function directly — no
+// elevation, no ConPTY, no process is ever spawned.
+func TestElevatedSpawnRefusal(t *testing.T) {
+	sysroot := os.Getenv("SystemRoot")
+	if sysroot == "" {
+		t.Skip("SystemRoot not set")
+	}
+	cmdExe := filepath.Join(sysroot, "System32", "cmd.exe")
+	psExe := filepath.Join(sysroot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	wslExe := filepath.Join(sysroot, "System32", "wsl.exe")
+	t.Setenv("ComSpec", cmdExe)
+
+	// A copy of cmd.exe in the temp dir: same allowlisted basename, wrong
+	// location — the F3 privilege-escalation case.
+	tmpDir := t.TempDir()
+	tmpCmd := filepath.Join(tmpDir, "cmd.exe")
+	src, err := os.ReadFile(cmdExe)
+	if err != nil {
+		t.Fatalf("read %s: %v", cmdExe, err)
+	}
+	if err := os.WriteFile(tmpCmd, src, 0o755); err != nil {
+		t.Fatalf("write copy: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		cmdline string
+		refused bool
+	}{
+		{"canonical system32 cmd accepted", `"` + cmdExe + `" /k`, false},
+		{"canonical powershell accepted", `"` + psExe + `"`, false},
+		{"bare name resolves through PATH", `cmd.exe /k`, false},
+		{"wsl launch shape accepted", `"` + wslExe + `" -d Ubuntu --cd ~`, false},
+		{"wsl integration shape accepted", `"` + wslExe + `" -d Ubuntu --cd ~ -e bash --rcfile /tmp/uniterm-x`, false},
+		{"temp-dir copy of cmd.exe refused", `"` + tmpCmd + `" /k`, true},
+		{"cmd foreign subcommand refused", `"` + cmdExe + `" /c calc`, true},
+		{"cmd /k operand outside clink shape refused", `"` + cmdExe + `" /k & calc`, true},
+		{"wsl --exec refused", `"` + wslExe + `" -d Ubuntu --exec calc.exe`, true},
+		{"wsl unknown flag refused", `"` + wslExe + `" -d Ubuntu --cd C:\\Users`, true},
+		{"disallowed basename refused", `"` + filepath.Join(tmpDir, "bad.exe") + `"`, true},
+		{"empty refused", "", true},
+		{"unclosed quote refused", `"` + cmdExe, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := elevatedSpawnRefusal(tc.cmdline)
+			if (got != "") != tc.refused {
+				t.Fatalf("elevatedSpawnRefusal(%q) = %q, want refused=%v", tc.cmdline, got, tc.refused)
+			}
+		})
+	}
+
+	// The clink composition goes through buildClinkCommandLine so the test
+	// pins the launcher↔broker contract: the exact line the launcher
+	// generates for a trusted clink path passes, the same line pointing at
+	// an untrusted clink.exe does not.
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		t.Skip("ProgramFiles not set")
+	}
+	clinkGood := buildClinkCommandLine(filepath.Join(programFiles, "clink", "clink.exe"), filepath.Join(tmpDir, "profile"))
+	if got := elevatedSpawnRefusal(clinkGood); got != "" {
+		t.Errorf("trusted clink line refused: %s\nline: %s", got, clinkGood)
+	}
+	clinkBad := buildClinkCommandLine(filepath.Join(tmpDir, "clink.exe"), "")
+	if got := elevatedSpawnRefusal(clinkBad); got == "" {
+		t.Errorf("untrusted clink line accepted\nline: %s", clinkBad)
+	}
+}
+
+// TestAdminPtyBrokerRefusesUntrustedShellCopy drives a full spawn frame
+// whose CommandLine points at a copy of cmd.exe in the test temp dir — the
+// F3 case — through the real broker protocol, without elevation: the
+// broker must refuse it before any ConPTY capability check, deliver the
+// reason as PTY output, and exit with code 1.
+func TestAdminPtyBrokerRefusesUntrustedShellCopy(t *testing.T) {
+	sysroot := os.Getenv("SystemRoot")
+	if sysroot == "" {
+		t.Skip("SystemRoot not set")
+	}
+	tmpCmd := filepath.Join(t.TempDir(), "cmd.exe")
+	src, err := os.ReadFile(filepath.Join(sysroot, "System32", "cmd.exe"))
+	if err != nil {
+		t.Fatalf("read cmd.exe: %v", err)
+	}
+	if err := os.WriteFile(tmpCmd, src, 0o755); err != nil {
+		t.Fatalf("write copy: %v", err)
+	}
+
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	pipeName := `\\.\pipe\uniterm-pty-test-` + hex.EncodeToString(suffix)
+
+	handle, err := createPtyPipeServer(pipeName)
+	if err != nil {
+		t.Fatalf("pipe server: %v", err)
+	}
+	brokerDone := make(chan int, 1)
+
+	p := &adminPty{f: os.NewFile(uintptr(handle), pipeName)}
+	defer p.Close()
+
+	go func() { brokerDone <- serveLocalPtyBroker(pipeName) }()
+
+	brokerGone := make(chan struct{})
+	if err := p.waitBrokerHello(brokerGone, 10*time.Second); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	specBytes, err := json.Marshal(localPtySpawn{
+		CommandLine: `"` + tmpCmd + `" /k`,
+		Cols:        80,
+		Rows:        25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ptyFrameWriteTo(p.f, ptyFrameSpawn, specBytes); err != nil {
+		t.Fatalf("send spawn: %v", err)
+	}
+
+	waitForMarker(t, p, "refused", 10*time.Second)
+
+	select {
+	case code := <-brokerDone:
+		if code != 1 {
+			t.Fatalf("broker exit code = %d, want 1", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("broker did not exit after refusing the spawn")
 	}
 }
 

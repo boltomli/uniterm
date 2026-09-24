@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Free disk space (macOS)
         if: matrix.slug == 'darwin'
@@ -48,12 +48,12 @@ jobs:
           df -h /
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
 
@@ -99,8 +99,9 @@ jobs:
           # ref_name is attacker-influenceable (anyone who can create tags);
           # pass it via env instead of interpolating it into the script.
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$REF_TYPE" = "tag" ]; then
             echo "VERSION=$REF_NAME" >> $GITHUB_ENV
           else
             SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
@@ -219,9 +220,13 @@ jobs:
       - name: Package (Windows, v2 NSIS installer)
         if: startsWith(matrix.slug, 'windows')
         shell: pwsh
+        env:
+          # VERSION derives from the (attacker-influenceable) tag name; pass it
+          # through env instead of interpolating it into the script.
+          VERSION: ${{ env.VERSION }}
         run: |
           $env:Path = "C:\Program Files (x86)\NSIS\Bin;$env:Path"
-          $VERSION = "${{ env.VERSION }}"
+          $VERSION = $env:VERSION
           $ROOT = $env:GITHUB_WORKSPACE
           $AMD64_BIN = Join-Path $ROOT 'bin\uniTerm-amd64.exe'
           $ARM64_BIN = Join-Path $ROOT 'bin\uniTerm-arm64.exe'
@@ -314,7 +319,7 @@ jobs:
             --target "uniterm-linux-${ARCH}-${VERSION}.rpm"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: uniTerm-${{ matrix.slug }}
           path: |
@@ -334,10 +339,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
@@ -402,7 +407,7 @@ jobs:
           git push -f origin main-snapshot
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b # v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && 'main-snapshot' || github.ref_name }}
           name: ${{ github.event_name == 'workflow_dispatch' && 'Main Snapshot' || github.ref_name }}

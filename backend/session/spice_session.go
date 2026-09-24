@@ -2,11 +2,14 @@ package session
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 )
 
 type SPICESession struct {
 	baseSession
-	wsURL string // direct WebSocket URL passed to frontend spice-client
+	proxy *SPICEProxy
+	wsURL string // tokenized local WebSocket URL of the proxy, passed to frontend spice-client
 }
 
 func NewSPICESession(id string) *SPICESession {
@@ -32,13 +35,32 @@ func (s *SPICESession) Connect(config ConnectionConfig) error {
 	}
 
 	s.title = fmt.Sprintf("%s (SPICE)", config.Host)
-	s.wsURL = fmt.Sprintf("ws://%s:%d/", host, port)
 
+	// Same wiring as VNCSession: a local WebSocket↔TCP proxy gives the
+	// frontend a 127.0.0.1 URL gated by a per-listen token instead of a
+	// direct browser→server socket.
+	proxy := NewSPICEProxy(net.JoinHostPort(host, strconv.Itoa(port)))
+	addr, err := proxy.Start()
+	if err != nil {
+		s.setStatus(StatusError)
+		return fmt.Errorf("spice proxy start: %w", err)
+	}
+
+	s.proxy = proxy
+	s.wsURL = addr
+
+	// Set connected immediately so frontend gets proxyAddr. The actual
+	// SPICE handshake happens between spice-html5 and the SPICE server
+	// through the proxy; we don't wait for it here.
 	s.setStatus(StatusConnected)
 	return nil
 }
 
 func (s *SPICESession) Disconnect() error {
+	if s.proxy != nil {
+		s.proxy.Stop()
+		s.proxy = nil
+	}
 	s.setStatus(StatusDisconnected)
 	return nil
 }

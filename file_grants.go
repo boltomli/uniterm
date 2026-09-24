@@ -8,12 +8,18 @@ import (
 )
 
 // pathGrantSet records filesystem paths the user explicitly chose: through a
-// native file dialog, an OS file drop, or the saved zmodem download
-// directory. The raw file bindings (ReadFileBase64 and friends) refuse
-// anything else, so a compromised webview cannot read or write arbitrary
-// files — the dialogs and drops are the trust boundary. Containment under a
-// granted directory is lexical, so a remote-controlled transfer filename
-// containing "../" cannot escape the chosen folder.
+// native file dialog, an OS file drop, or the persisted zmodem download
+// directory loaded from disk. The raw file bindings (ReadFileBase64 and
+// friends) refuse anything else, so those bindings cannot read or write
+// files the user never selected — the dialogs, drops, and persisted settings
+// are the trust boundary. Containment under a granted directory is lexical,
+// so a remote-controlled transfer filename containing "../" cannot escape
+// the chosen folder.
+//
+// Scope: this model covers only the raw dialog/drop-driven bindings. The
+// SFTP local pane (the two-pane file manager: browse, edit, transfer) is a
+// separate session-scoped feature whose paths come from the pane's own
+// navigation; it operates outside the grant set by design.
 type pathGrantSet struct {
 	mu    sync.Mutex
 	files map[string]struct{}

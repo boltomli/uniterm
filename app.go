@@ -460,6 +460,9 @@ func (a *App) initCredentials(dataDir string, upgrade bool) {
 	if a.proxyStore != nil {
 		a.proxyStore.SetPasswordStore(cred)
 	}
+	if a.tunnelStore != nil {
+		a.tunnelStore.SetPasswordStore(cred)
+	}
 }
 
 // sendStartupErr records a non-fatal init failure so the frontend can see
@@ -1497,9 +1500,11 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 	if a.settingsStore == nil {
 		return fmt.Errorf("settings store not initialized")
 	}
-	// The configured zmodem download directory is a trusted path source for
-	// the receive path (no per-transfer dialog when set).
-	fileGrants.addDir(settings.Terminal.ZmodemDownloadDir)
+	// Deliberately no fileGrants.addDir here: SaveSettings is a raw webview
+	// binding, so its argument is untrusted — granting it would hand a
+	// compromised webview any directory in one call. The zmodem download
+	// directory is granted when picked through OpenDirectoryDialog, and on
+	// startup from the on-disk value in LoadSettings.
 	err := a.settingsStore.Save(settings)
 	if err == nil {
 		a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)

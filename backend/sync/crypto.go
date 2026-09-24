@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 const encFieldPrefix = "enc:v1:"
@@ -54,6 +56,8 @@ func EncryptConfigFiles(srcDir, destDir string, key []byte, kc *Keychain, ps Pas
 			err = encryptConnectionsFile(src, dest, key, kc, ps)
 		case "ai.json":
 			err = encryptAIConfigFile(src, dest, key, kc, ps)
+		case "tunnels.json":
+			err = encryptTunnelsFile(src, dest, key, ps)
 		case "identities.json":
 			err = encryptIdentitiesFile(src, dest, key, ps)
 		case "proxies.json":
@@ -107,6 +111,7 @@ func encryptConnectionsFile(src, dest string, key []byte, kc *Keychain, ps Passw
 			normalize(cm, "keyContent")
 			normalize(cm, "sentinelPassword")
 			normalize(cm, "tunnelSSHPassword")
+			normalize(cm, "k8sConfigInline")
 		}
 		data, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
@@ -230,6 +235,45 @@ func encryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
 	return os.WriteFile(dest, []byte(encoded), 0600)
 }
 
+// encryptTunnelsFile encrypts tunnels.json, normalizing any enc:v1: upstream
+// pass field to plaintext for upload (the local enc:v1: is bound to this
+// device's credential store and must never escape into the repo).
+func encryptTunnelsFile(src, dest string, key []byte, ps PasswordStore) error {
+	data, err := readJSONFile(src)
+	if err != nil {
+		return err
+	}
+
+	if ps != nil {
+		// The whole object is decoded (not a partial wrapper) so version and
+		// groups survive the round trip.
+		var obj map[string]interface{}
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return fmt.Errorf("parse tunnels: %w", err)
+		}
+		if tunnels, ok := obj["tunnels"].([]interface{}); ok {
+			for _, t := range tunnels {
+				if tm, ok := t.(map[string]interface{}); ok {
+					if up, ok := tm["upstream"].(map[string]interface{}); ok {
+						if pass, ok := up["pass"].(string); ok && isEncryptedField(pass) {
+							if pt, err := ps.Decrypt(pass); err == nil {
+								up["pass"] = pt
+							}
+						}
+					}
+				}
+			}
+		}
+		data, _ = json.MarshalIndent(obj, "", "  ")
+	}
+
+	encoded, err := encryptBytes(data, key, filepath.Base(dest))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dest, []byte(encoded), 0600)
+}
+
 // DecryptConfigFiles decrypts config files from srcDir into destDir.
 // ps is used to re-encrypt plaintext secret fields back to enc:v1: under the
 // local credential key after download. Pass nil for ps to keep fields as
@@ -248,6 +292,8 @@ func DecryptConfigFiles(srcDir, destDir string, key []byte, ps PasswordStore) er
 			err = decryptConnectionsFile(src, dest, key, ps)
 		case "ai.json":
 			err = decryptAIConfigFile(src, dest, key, ps)
+		case "tunnels.json":
+			err = decryptTunnelsFile(src, dest, key, ps)
 		case "identities.json":
 			err = decryptIdentitiesFile(src, dest, key, ps)
 		case "proxies.json":
@@ -302,6 +348,7 @@ func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) erro
 			reenc("keyContent")
 			reenc("sentinelPassword")
 			reenc("tunnelSSHPassword")
+			reenc("k8sConfigInline")
 		}
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
@@ -422,6 +469,48 @@ func decryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
 	return os.WriteFile(dest, plaintext, 0600)
 }
 
+// decryptTunnelsFile decrypts tunnels.json, re-encrypting any plaintext
+// upstream pass field back to enc:v1: under the local credential key.
+func decryptTunnelsFile(src, dest string, key []byte, ps PasswordStore) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.WriteFile(dest, []byte("{}"), 0600)
+		}
+		return err
+	}
+
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	if err != nil {
+		return fmt.Errorf("decrypt tunnels: %w", err)
+	}
+
+	if ps != nil {
+		// The whole object is decoded (not a partial wrapper) so version and
+		// groups survive the round trip.
+		var obj map[string]interface{}
+		if err := json.Unmarshal(plaintext, &obj); err != nil {
+			return fmt.Errorf("parse tunnels: %w", err)
+		}
+		if tunnels, ok := obj["tunnels"].([]interface{}); ok {
+			for _, t := range tunnels {
+				if tm, ok := t.(map[string]interface{}); ok {
+					if up, ok := tm["upstream"].(map[string]interface{}); ok {
+						if pass, ok := up["pass"].(string); ok && pass != "" && !isEncryptedField(pass) {
+							if enc, err := ps.Encrypt(pass); err == nil {
+								up["pass"] = enc
+							}
+						}
+					}
+				}
+			}
+		}
+		plaintext, _ = json.MarshalIndent(obj, "", "  ")
+	}
+
+	return os.WriteFile(dest, plaintext, 0600)
+}
+
 // encryptGenericFile encrypts a config file that has no sensitive keychain-managed fields.
 func encryptGenericFile(src, dest string, key []byte) error {
 	data, err := readJSONFile(src)
@@ -461,7 +550,7 @@ func decryptFieldsInPlace(obj map[string]interface{}, ps PasswordStore) {
 	if conns, ok := obj["connections"].([]interface{}); ok {
 		for _, c := range conns {
 			if cm, ok := c.(map[string]interface{}); ok {
-				for _, field := range []string{"password", "keyContent", "sentinelPassword", "tunnelSSHPassword"} {
+				for _, field := range []string{"password", "keyContent", "sentinelPassword", "tunnelSSHPassword", "k8sConfigInline"} {
 					if v, ok := cm[field].(string); ok && isEncryptedField(v) {
 						if pt, err := ps.Decrypt(v); err == nil {
 							cm[field] = pt
@@ -506,6 +595,19 @@ func decryptFieldsInPlace(obj map[string]interface{}, ps PasswordStore) {
 			}
 		}
 	}
+	if tunnels, ok := obj["tunnels"].([]interface{}); ok {
+		for _, t := range tunnels {
+			if tm, ok := t.(map[string]interface{}); ok {
+				if up, ok := tm["upstream"].(map[string]interface{}); ok {
+					if pass, ok := up["pass"].(string); ok && isEncryptedField(pass) {
+						if pt, err := ps.Decrypt(pass); err == nil {
+							up["pass"] = pt
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // encryptBytes encrypts plaintext under key, binding the ciphertext to the
@@ -536,12 +638,21 @@ func encryptBytesWithAAD(plaintext []byte, key []byte, aad []byte) (string, erro
 // decryptBytes decrypts a synced file ciphertext bound to file via AAD.
 // Ciphertexts written before SYNC-P1-1 was wired up carry a nil AAD; they
 // are accepted as a legacy fallback and upgraded to the name-bound form on
-// the next push or password rotation.
+// the next push or password rotation. A successful fallback is logged so
+// use of the weaker legacy form stays observable.
 func decryptBytes(encoded string, key []byte, file string) ([]byte, error) {
 	if pt, err := decryptBytesWithAAD(encoded, key, []byte(file)); err == nil {
 		return pt, nil
 	}
-	return decryptBytesWithAAD(encoded, key, nil)
+	// Migration path for pre-SYNC-P1-1 ciphertexts: retry without the AAD so
+	// existing repos keep syncing. Do not remove until those ciphertexts have
+	// been re-pushed with the name-bound form (next push or password rotation).
+	pt, err := decryptBytesWithAAD(encoded, key, nil)
+	if err != nil {
+		return nil, err
+	}
+	log.Writef("[sync] %s decrypted via legacy nil-AAD fallback (pre-SYNC-P1-1 ciphertext)", file)
+	return pt, nil
 }
 
 func decryptBytesWithAAD(encoded string, key []byte, aad []byte) ([]byte, error) {

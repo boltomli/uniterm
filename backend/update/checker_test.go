@@ -28,6 +28,29 @@ func TestVersionGreater(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackAPIBase(t *testing.T) {
+	cases := []struct {
+		base string
+		want bool
+	}{
+		{"http://127.0.0.1:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://localhost:8080", true},
+		{"https://localhost", true},
+		{"http://127.0.0.1.evil.tld", false}, // DNS name, not an IP literal
+		{"http://127.1/", false},              // shorthand rejected by net.ParseIP
+		{"http://localhost.evil.tld", false},
+		{"http://192.168.1.1", false}, // loopback check, not private ranges
+		{"ftp://localhost", false},     // http(s) only
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsLoopbackAPIBase(c.base); got != c.want {
+			t.Errorf("IsLoopbackAPIBase(%q) = %v, want %v", c.base, got, c.want)
+		}
+	}
+}
+
 func TestShouldUpdate(t *testing.T) {
 	if !shouldUpdate("dev", "v1.9.2") {
 		t.Error("dev builds should always report an update")

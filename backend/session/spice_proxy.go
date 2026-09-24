@@ -2,6 +2,7 @@ package session
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -58,7 +59,7 @@ func (p *SPICEProxy) Start() (string, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != p.token {
+		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(p.token)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

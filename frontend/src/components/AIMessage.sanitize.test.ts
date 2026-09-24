@@ -120,7 +120,9 @@ describe('sanitizeRenderedHtml (whitespace-obfuscated URL schemes)', () => {
   })
 
   it('leaves safe quoted hrefs byte-identical (positive control)', () => {
-    const safe = '<a href="https://x/a?b=1" target="_blank">x</a>'
+    // Canonical renderer output now includes rel="noopener" on _blank
+    // anchors (F4 enforcement below), so the safe control carries it too.
+    const safe = '<a href="https://x/a?b=1" target="_blank" rel="noopener">x</a>'
     expect(sanitizeRenderedHtml(safe)).toBe(safe)
     const path = '<a href="/online=1">x</a>'
     expect(sanitizeRenderedHtml(path)).toBe(path)
@@ -130,5 +132,95 @@ describe('sanitizeRenderedHtml (whitespace-obfuscated URL schemes)', () => {
     const out = sanitizeRenderedHtml('<a href=javascript:alert(1)>x</a>')
     expect(out).not.toMatch(/href/i)
     expect(out).not.toMatch(/javascript:/i)
+  })
+})
+
+describe('sanitizeRenderedHtml (F4 auto-link rel enforcement)', () => {
+  // The auto-link path (autoLinkUrls in AIMessage.vue) emits raw
+  // <a ... target="_blank"> anchors without rel, unlike regular markdown
+  // links which carry rel="noopener" at render time. The sanitizer is the
+  // shared choke point every renderer output passes through, so it
+  // enforces the attribute.
+
+  it('adds rel="noopener" to auto-linked anchors missing it', () => {
+    // Exact shape autoLinkUrls produces for a bare URL in message text.
+    const out = sanitizeRenderedHtml(
+      '<a href="https://example.com/x" target="_blank">https://example.com/x</a>',
+    )
+    expect(out).toContain('target="_blank" rel="noopener"')
+    expect(out.match(/rel=/g)).toHaveLength(1)
+  })
+
+  it('does not double up rel on anchors that already carry one', () => {
+    // Regular markdown-link output — must stay byte-identical so the
+    // enforcement cannot churn renderer output it already agrees with.
+    const md = '<a href="https://example.com" target="_blank" rel="noopener">docs</a>'
+    expect(sanitizeRenderedHtml(md)).toBe(md)
+  })
+})
+
+describe('sanitizeRenderedHtml (F6 SVG/MathML namespace vectors)', () => {
+  // Namespace-confusion / mXSS probes: the browser's HTML parser reparents
+  // svg/math foreign content differently than a naive reader expects, so a
+  // payload hidden in one namespace can mutate into live HTML. The
+  // sanitizer already drops <svg>/<math>/<style> subtrees wholesale; these
+  // pin that behavior so a refactor of the strip list cannot regress it.
+  // Both closed forms (subtree removable) and unclosed forms (only the
+  // opening tag is droppable) are pinned — the unclosed residue is where a
+  // regression would hide.
+
+  it('drops svg subtree containing a javascript: anchor', () => {
+    const out = sanitizeRenderedHtml('<svg><a href="javascript:alert(1)">click</a></svg>')
+    expect(out).toBe('')
+  })
+
+  it('neutralizes javascript: in svg href/xlink:href', () => {
+    const out = sanitizeRenderedHtml(
+      '<svg><image href="javascript:alert(1)"/><image xlink:href="javascript:alert(1)"/></svg>',
+    )
+    expect(out).toBe('')
+  })
+
+  it('neutralizes javascript: xlink:href when the svg tag leaks open', () => {
+    // Unclosed <svg> can only drop its opening tag; the inner anchor must
+    // still lose its href before anything reaches v-html.
+    const out = sanitizeRenderedHtml('<svg><a xlink:href="javascript:alert(1)">x</a>')
+    expect(out).not.toMatch(/javascript:/i)
+    expect(out).not.toMatch(/href/i)
+    expect(out).not.toMatch(/<svg/i)
+  })
+
+  it('drops closed math/mtext/table/mglyph/style mXSS probe entirely', () => {
+    const out = sanitizeRenderedHtml(
+      '<math><mtext><table><mglyph><style><!--</style><img title="--&gt;&lt;img src=1 onerror=alert(1)&gt;"></math>',
+    )
+    expect(out).toBe('')
+  })
+
+  it('strips math mXSS probe residue down to inert markup when unclosed', () => {
+    const out = sanitizeRenderedHtml(
+      '<math><mtext><table><mglyph><style><!--</style><img title="--&gt;&lt;img src=1 onerror=alert(1)&gt;">',
+    )
+    expect(out).not.toMatch(/<math/i)
+    expect(out).not.toMatch(/<style/i)
+    expect(out).not.toMatch(/onerror/i)
+    expect(out).not.toMatch(/alert\(/)
+  })
+
+  it('drops closed svg/desc/p/style nested-content mXSS probe entirely', () => {
+    const out = sanitizeRenderedHtml(
+      '<svg><desc><p><style><!--</style><img title="--&gt;&lt;img src=1 onerror=alert(1)&gt;"></p></desc></svg>',
+    )
+    expect(out).toBe('')
+  })
+
+  it('strips svg/desc mXSS probe residue down to inert markup when unclosed', () => {
+    const out = sanitizeRenderedHtml(
+      '<svg><desc><p><style><!--</style><img title="--&gt;&lt;img src=1 onerror=alert(1)&gt;">',
+    )
+    expect(out).not.toMatch(/<svg/i)
+    expect(out).not.toMatch(/<style/i)
+    expect(out).not.toMatch(/onerror/i)
+    expect(out).not.toMatch(/alert\(/)
   })
 })

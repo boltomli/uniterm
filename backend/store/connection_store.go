@@ -90,9 +90,10 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 		}
 		// Every authType's secrets are encrypted at rest, not just
 		// authType "password": SSH happily authenticates a connection with an
-		// empty/other authType using Password, and Redis Sentinel passwords
-		// and tunnel jump-host passwords are secrets wherever they appear.
-		for _, secret := range []*string{&conn.Password, &conn.SentinelPassword, &conn.TunnelSSHPassword} {
+		// empty/other authType using Password, Redis Sentinel passwords and
+		// tunnel jump-host passwords are secrets wherever they appear, and an
+		// inline kubeconfig (K8sConfigInline) carries cluster credentials.
+		for _, secret := range []*string{&conn.Password, &conn.SentinelPassword, &conn.TunnelSSHPassword, &conn.K8sConfigInline} {
 			if *secret == "" {
 				continue
 			}
@@ -217,9 +218,10 @@ func (s *ConnectionStore) populatePasswords(data *session.ConnectionStoreData) e
 			}
 			conn.KeyContent = dec
 		}
-		// Sentinel and tunnel-jump secrets are encrypted at rest for every
-		// authType; decrypt them in place so consumers see plaintext.
-		for _, secret := range []*string{&conn.SentinelPassword, &conn.TunnelSSHPassword} {
+		// Sentinel, tunnel-jump and inline-kubeconfig secrets are encrypted at
+		// rest for every authType; decrypt them in place so consumers see
+		// plaintext.
+		for _, secret := range []*string{&conn.SentinelPassword, &conn.TunnelSSHPassword, &conn.K8sConfigInline} {
 			if *secret != "" && credentials.IsEncrypted(*secret) && s.passwordStore != nil {
 				dec, err := s.passwordStore.Decrypt(*secret)
 				if err != nil {
@@ -317,6 +319,7 @@ func (s *ConnectionStore) encryptForSaveLocked(data session.ConnectionStoreData)
 		encryptIfPlain(&conn.Password)
 		encryptIfPlain(&conn.SentinelPassword)
 		encryptIfPlain(&conn.TunnelSSHPassword)
+		encryptIfPlain(&conn.K8sConfigInline)
 	}
 	return out
 }

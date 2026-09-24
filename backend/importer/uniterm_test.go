@@ -98,3 +98,85 @@ func TestUnitermWrongPasswordFails(t *testing.T) {
 		t.Fatal("expected error for missing password")
 	}
 }
+
+// TestExportUnitermWithoutPasswordClearsK8sAndPostLoginScript: an unencrypted
+// export must not carry the inline kubeconfig (cluster credentials) or the
+// post-login script — both are cleared alongside the passwords.
+func TestExportUnitermWithoutPasswordClearsK8sAndPostLoginScript(t *testing.T) {
+	data := session.ConnectionStoreData{
+		Connections: []session.ConnectionConfig{{
+			ID: "c1", Name: "cluster", Type: "k8s", Host: "10.0.0.5", Port: 6443,
+			AuthType: "password", Password: "hunter2",
+			K8sConfigInline: "apiVersion: v1\nusers: [{name: admin, user: {token: kube-token-xyz}}]",
+			PostLoginScript: "kubectl config use-context prod",
+		}},
+	}
+	b, err := ExportUniterm(data, "")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	var f utmFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if f.Encrypted {
+		t.Fatal("expected encrypted=false")
+	}
+	c := f.Connections[0]
+	if c.Password != "" {
+		t.Fatalf("password not cleared: %q", c.Password)
+	}
+	if c.K8sConfigInline != "" {
+		t.Fatalf("K8sConfigInline not cleared: %q", c.K8sConfigInline)
+	}
+	if c.PostLoginScript != "" {
+		t.Fatalf("PostLoginScript not cleared: %q", c.PostLoginScript)
+	}
+	if strings.Contains(string(b), "kube-token-xyz") || strings.Contains(string(b), "kubectl config use-context") {
+		t.Fatalf("cleared secret still present in export:\n%s", b)
+	}
+}
+
+// TestExportUnitermEncryptsK8sAndPostLoginScript: with a password both fields
+// are encrypted in the export and restored by the import round trip.
+func TestExportUnitermEncryptsK8sAndPostLoginScript(t *testing.T) {
+	const kubeconfig = "apiVersion: v1\nusers: [{name: admin, user: {token: kube-token-xyz}}]"
+	const script = "kubectl config use-context prod"
+	data := session.ConnectionStoreData{
+		Connections: []session.ConnectionConfig{{
+			ID: "c1", Name: "cluster", Type: "k8s", Host: "10.0.0.5", Port: 6443,
+			AuthType: "password", Password: "hunter2",
+			K8sConfigInline: kubeconfig,
+			PostLoginScript: script,
+		}},
+	}
+	b, err := ExportUniterm(data, "pass123")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if strings.Contains(string(b), "kube-token-xyz") || strings.Contains(string(b), script) {
+		t.Fatalf("plaintext secret in encrypted export:\n%s", b)
+	}
+	var f utmFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c := f.Connections[0]
+	if !strings.HasPrefix(c.K8sConfigInline, "enc:v1:") || c.K8sConfigInline == kubeconfig {
+		t.Fatalf("K8sConfigInline not encrypted: %q", c.K8sConfigInline)
+	}
+	if !strings.HasPrefix(c.PostLoginScript, "enc:v1:") || c.PostLoginScript == script {
+		t.Fatalf("PostLoginScript not encrypted: %q", c.PostLoginScript)
+	}
+
+	res, err := parseUniterm(b, ParseOptions{Password: "pass123"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if res.Connections[0].K8sConfigInline != kubeconfig {
+		t.Fatalf("K8sConfigInline not restored: %q", res.Connections[0].K8sConfigInline)
+	}
+	if res.Connections[0].PostLoginScript != script {
+		t.Fatalf("PostLoginScript not restored: %q", res.Connections[0].PostLoginScript)
+	}
+}

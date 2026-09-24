@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ys-ll/uniterm/backend/store"
 )
 
 func TestAppendFileBase64RejectsSymlink(t *testing.T) {
@@ -92,6 +94,36 @@ func TestRawFileBindingsRequireGrant(t *testing.T) {
 	if _, err := app.ParseImportFile("uniterm", outside, ""); err == nil ||
 		!strings.Contains(err.Error(), "not selected by a file dialog") {
 		t.Fatalf("ParseImportFile ungranted error = %v", err)
+	}
+}
+
+// TestSaveSettingsDoesNotGrantWebviewDir pins the SaveSettings grant bypass:
+// the zmodem download directory arrives through a raw webview binding, so
+// saving settings must not add it to the grant set — otherwise a compromised
+// webview obtains any directory in one call. Only the dialog picker and
+// LoadSettings (value read back from disk) grant it.
+func TestSaveSettingsDoesNotGrantWebviewDir(t *testing.T) {
+	ss, err := store.NewSettingsStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{settingsStore: ss}
+
+	dir := filepath.Join(t.TempDir(), "zmodem")
+	settings := store.AppSettings{}
+	settings.Terminal.ZmodemDownloadDir = dir
+	if err := app.SaveSettings(settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	if err := requireFileGrant(filepath.Join(dir, "file")); err == nil {
+		t.Fatal("SaveSettings granted a webview-supplied directory")
+	}
+
+	if _, err := app.LoadSettings(); err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if err := requireFileGrant(filepath.Join(dir, "file")); err != nil {
+		t.Fatalf("LoadSettings did not grant the persisted dir: %v", err)
 	}
 }
 
