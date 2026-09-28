@@ -40,12 +40,12 @@
       :title="t('startTab.defaultName') + shortcutSuffix('newConnection')"
       @click="onAddStartTab"
     >
-      <Plus :size="'0.875rem'" />
+      <Plus :size="lucideSize('0.875rem')" />
     </button>
   </div>
   <div class="tab-more" v-if="showMore">
-    <span class="tab-more-btn" :title="t('tab.more')" @click.stop="tabMoreRef?.toggle($event.currentTarget)">
-      <el-icon class="tab-more-icon"><MoreHorizontal :size="'0.875rem'" /></el-icon>
+    <span class="tab-more-btn" :title="t('tab.more')" @click.stop="onTabMoreToggle">
+      <el-icon class="tab-more-icon"><MoreHorizontal :size="lucideSize('0.875rem')" /></el-icon>
     </span>
     <Menu ref="tabMoreRef" v-model:visible="tabMoreVisible" align="end">
       <MenuItem
@@ -62,12 +62,13 @@
       :title="t('startTab.defaultName') + shortcutSuffix('newConnection')"
       @click="onAddStartTab"
     >
-      <Plus :size="'0.875rem'" />
+      <Plus :size="lucideSize('0.875rem')" />
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { MoreHorizontal, Plus } from '@lucide/vue'
 import { useTabStore } from '../stores/tabStore'
@@ -156,6 +157,10 @@ watch(tabMoreVisible, (v) => {
   if (v) window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
   else window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
 })
+
+function onTabMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) tabMoreRef.value?.toggle(e.currentTarget)
+}
 
 function onTabMoreSelect(id: string) {
   tabMoreVisible.value = false

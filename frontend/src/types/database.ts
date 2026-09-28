@@ -43,6 +43,16 @@ export interface ExecResult {
   lastInsertId: number
 }
 
+// Outcome of a multi-statement SQL script run (Go: backend/database/executor.go
+// ScriptResult; fields mirror its JSON tags).
+export interface ScriptResult {
+  executed: number       // statements that ran successfully
+  failedLine: number     // 1-based line of the failing statement; 0 if all ok
+  failedSql: string      // the failing statement (truncated for display)
+  error: string          // failure message
+  affectedTotal: number  // sum of rows affected across statements
+}
+
 export interface HistoryEntry {
   id: string
   sql: string

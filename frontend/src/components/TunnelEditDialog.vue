@@ -17,7 +17,7 @@
           :class="{ active: form.mode === m.value }"
           @click="form.mode = m.value"
         >
-          <component :is="m.icon" :size="'1.125rem'" />
+          <component :is="m.icon" :size="lucideSize('1.125rem')" />
           <span>{{ m.label }}</span>
         </button>
       </div>
@@ -116,6 +116,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, computed, watch } from 'vue'
 import { ArrowRightToLine, ArrowLeftToLine, Waypoints } from '@lucide/vue'
 import { useTunnelStore, type TunnelMode } from '../stores/tunnelStore'
@@ -252,12 +253,16 @@ function handleSave() {
   if (!form.name.trim()) { errorMsg.value = t('tunnels.errName'); return }
   const invalid = validate()
   if (invalid) { errorMsg.value = invalid; return }
-  const payload = formPayload()
-  delete payload.id
+  // validate() already rejected an empty port above — narrow it so the
+  // payload satisfies Tunnel, whose listenPort is required.
+  const listenPort = form.listenPort
+  if (!listenPort) return
+  // The id is only meaningful to TestTunnel; the store assigns its own.
+  const { id, ...payload } = formPayload()
   if (props.editingId) {
-    store.updateTunnel(props.editingId, payload)
+    store.updateTunnel(props.editingId, { ...payload, listenPort })
   } else {
-    store.addTunnel(payload)
+    store.addTunnel({ ...payload, listenPort })
   }
   visible.value = false
 }

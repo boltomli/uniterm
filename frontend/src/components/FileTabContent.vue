@@ -151,7 +151,7 @@
     <FileEditorDialog
       ref="fileEditorRef"
       v-model:visible="editorVisible"
-      :session-id="panel?.sessionId"
+      :session-id="panel?.sessionId ?? undefined"
       :mode="editorMode"
       @saved="onEditorSaved"
     />
@@ -272,7 +272,9 @@ const localListing = useFileListing({
     if (!sid || !/^[A-Za-z]:\\$/.test(dir)) return
     try {
       const drives = await SftpListLocalDrives(sid)
-      localDrives.value = drives.map(d => d.name)
+      // SftpListLocalDrives comes from the untyped Wails bindings, so the element
+      // shape is annotated at the callback.
+      localDrives.value = drives.map((d: FileItem) => d.name)
     } catch {}
   },
 })
@@ -302,7 +304,9 @@ async function onRemoteListError(err: string): Promise<boolean> {
   let connected = false
   try {
     const sessions = await ListSessions()
-    connected = sessions.find(s => s.id === panel.sessionId)?.status === 'connected'
+    // ListSessions comes from the untyped Wails bindings, so the element
+    // shape is annotated at the callback.
+    connected = sessions.find((s: { id: string; status: string }) => s.id === panel.sessionId)?.status === 'connected'
   } catch { /* status unknown — treat as disconnected */ }
   if (connected && !isConnectionLostError(err)) return false
   if (!isPanelReconnecting(props.panelId)) {
@@ -319,7 +323,7 @@ async function onRemoteListError(err: string): Promise<boolean> {
 }
 
 const remotePanel = useFilePanel({
-  sid: () => panel.value?.sessionId,
+  sid: () => panel.value?.sessionId ?? undefined,
   cwd: remoteListing.cwd,
   files: remoteListing.files,
   refresh: () => onRefreshRemote(),
@@ -336,7 +340,7 @@ const remotePanel = useFilePanel({
   localCwd: () => localListing.cwd.value,
 })
 const localPanel = useFilePanel({
-  sid: () => panel.value?.sessionId,
+  sid: () => panel.value?.sessionId ?? undefined,
   cwd: localListing.cwd,
   files: localListing.files,
   refresh: () => onRefreshLocal(),
@@ -475,7 +479,9 @@ async function probeConnectAndLoad() {
   if (!sid) return
   try {
     const sessions = await ListSessions()
-    const sess = sessions.find(s => s.id === sid)
+    // ListSessions comes from the untyped Wails bindings, so the element
+    // shape is annotated at the callback.
+    const sess = sessions.find((s: { id: string; status: string }) => s.id === sid)
     if (sess && sess.status === 'connected') {
       probeRan = true
       onRefreshLocal()
@@ -516,7 +522,9 @@ async function fetchLocalDrives() {
   if (!sid) return
   try {
     const drives = await SftpListLocalDrives(sid)
-    localDrives.value = drives.map(d => d.name)
+    // SftpListLocalDrives comes from the untyped Wails bindings, so the element
+    // shape is annotated at the callback.
+    localDrives.value = drives.map((d: FileItem) => d.name)
   } catch {}
 }
 

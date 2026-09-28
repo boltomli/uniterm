@@ -78,7 +78,7 @@
               :title="editLabel"
               @click.stop.prevent="emit('edit-row', row)"
             >
-              <Pencil :size="'0.875rem'" />
+              <Pencil :size="lucideSize('0.875rem')" />
             </button>
             <button
               type="button"
@@ -86,7 +86,7 @@
               :title="deleteLabel"
               @click.stop.prevent="emit('delete-row', row)"
             >
-              <Trash2 :size="'0.875rem'" />
+              <Trash2 :size="lucideSize('0.875rem')" />
             </button>
           </div>
         </template>
@@ -96,6 +96,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Pencil, Trash2 } from '@lucide/vue'
 import type { QueryResultColumn, ColumnInfo } from '../types/database'

@@ -11,7 +11,7 @@
         <template #prefix><el-icon :size="'0.875rem'"><Search /></el-icon></template>
       </el-input>
       <el-button size="small" @click="showCreate = true">
-        <Plus :size="'0.875rem'" /> {{ t('settings.skillsCreate') }}
+        <Plus :size="lucideSize('0.875rem')" /> {{ t('settings.skillsCreate') }}
       </el-button>
     </div>
 
@@ -25,14 +25,14 @@
       class="skill-card"
       @click="openEdit(skill)"
     >
-      <BookOpen :size="'1.125rem'" class="skill-card-icon" />
+      <BookOpen :size="lucideSize('1.125rem')" class="skill-card-icon" />
       <div class="skill-card-info">
         <div class="skill-card-title">
           <span class="skill-card-name">{{ skill.name }}</span>
         </div>
         <div class="skill-card-desc">{{ skill.description }}</div>
         <div v-if="skill.path" class="skill-card-path" @click.stop="openFolder(skill)" :title="t('settings.skillsOpenFolder')">
-          <FolderOpen :size="'0.75rem'" class="skill-card-path-icon" />
+          <FolderOpen :size="lucideSize('0.75rem')" class="skill-card-path-icon" />
           <span class="skill-card-path-text">{{ skill.path }}</span>
         </div>
       </div>
@@ -117,6 +117,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted } from 'vue'
 import { Plus, Lock, LockOpen, Settings2, Search, BookOpen, FolderOpen } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'

@@ -65,7 +65,7 @@
             <DBTabContent
               v-else-if="activeTab.type === 'database'"
               :key="activeTab.id"
-              :session-id="getPanelSessionId(activeTab.panelId)"
+              :session-id="getPanelSessionId(activeTab.panelId) || ''"
               :host-name="getPanelConfig(activeTab.panelId)?.host || ''"
               :default-db-name="getPanelConfig(activeTab.panelId)?.dbName"
               :db-type="getPanelConfig(activeTab.panelId)?.dbType || ''"
@@ -123,7 +123,7 @@
       </div>
       <AISidebar ref="aiSidebarRef" @open-settings="openSettings" />
     </div>
-    <ConnectionForm v-model="showConnectionForm" :edit-config="editConfig" :default-group-id="pendingGroupId" @save="onSaveOnly" @connect="(c: ConnectionConfig, ko?: boolean) => { const wasEdit = !!editConfig?.id; editConfig = null; onConnect(c, ko, wasEdit) }" @connect-only="onConnectOnly" @cancel="editConfig = null" />
+    <ConnectionForm v-model="showConnectionForm" :edit-config="editConfig ?? undefined" :default-group-id="pendingGroupId" @save="onSaveOnly" @connect="(c: ConnectionConfig, ko?: boolean) => { const wasEdit = !!editConfig?.id; editConfig = null; onConnect(c, ko, wasEdit) }" @connect-only="onConnectOnly" @cancel="editConfig = null" />
 
     <CredentialPrompt
       v-model:visible="credentialVisible"
@@ -207,6 +207,8 @@ import type { MCPApprovalRequest } from './types/mcp'
 import Menu from './components/Menu.vue'
 import MenuItem from './components/MenuItem.vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
+// element-plus emit payload type: ElCheckbox's modelValue is string | number | boolean.
+import type { CheckboxValueType } from 'element-plus'
 import { useConnectionStore } from './stores/connectionStore'
 import { useTabStore } from './stores/tabStore'
 import { usePanelStore } from './stores/panelStore'
@@ -1172,7 +1174,7 @@ const actionHandlers: Record<ShortcutAction, () => void> = {
       // one and keeps the duplicate beside it in the same workspace.
       const pid = tabStore.getActivePanelId()
       const panel = pid ? panelStore.getPanel(pid) : undefined
-      if (panel) {
+      if (pid && panel) {
         duplicateSession(
           { type: 'terminal', panelId: pid, title: panel.title },
           { workspaceId: tab.id, targetPanelId: pid },
@@ -1272,7 +1274,7 @@ async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {
             h('div', { style: 'display:flex;flex-direction:column;gap:0.625rem' }, [
               h('span', t('tab.closeConnectedConfirm')),
               h(ElCheckbox, {
-                'onUpdate:modelValue': (v: boolean) => { dontShowAgain.value = v }
+                'onUpdate:modelValue': (v: CheckboxValueType) => { dontShowAgain.value = v === true }
               }, () => t('tab.dontShowAgain'))
             ]),
             t('tab.closeConfirmTitle'),
@@ -1410,7 +1412,7 @@ async function closeTabBatch(tabIds: string[]) {
         h('div', { style: 'display:flex;flex-direction:column;gap:0.625rem' }, [
           h('span', t('tab.closeConnectedBatchConfirm', { count: connectedCount })),
           h(ElCheckbox, {
-            'onUpdate:modelValue': (v: boolean) => { dontShowAgain.value = v }
+            'onUpdate:modelValue': (v: CheckboxValueType) => { dontShowAgain.value = v === true }
           }, () => t('tab.dontShowAgain'))
         ]),
         t('tab.closeConfirmTitle'),
@@ -1532,11 +1534,27 @@ interface WorkspacePlacement {
   direction: 'horizontal' | 'vertical'
   insertBefore: boolean
 }
+// The generic terminal path only ever receives the terminal connection kinds:
+// the launcher routes every spec'd type to its runSpec, onConnect handles
+// 'workspace' itself, and the workspace entry points (sidebar drag-in,
+// create-from-selection, saved-workspace members) all filter with
+// isWorkspaceHostType — exactly ssh/telnet/mosh/local/wsl/serial/tcp, every
+// one of which is also a panel kind.
+const GENERIC_TERMINAL_TYPES = ['ssh', 'telnet', 'mosh', 'local', 'wsl', 'serial', 'tcp'] as const
+function isGenericTerminalType(t: ConnectionConfig['type']): t is typeof GENERIC_TERMINAL_TYPES[number] {
+  return GENERIC_TERMINAL_TYPES.some(k => k === t)
+}
+
 async function connectTerminalSession(config: ConnectionConfig, persist: boolean, prev: any, targetWorkspaceId?: string, placement?: WorkspacePlacement): Promise<{ status: 'ok' | 'cancelled' | 'failed'; panelId?: string }> {
   // Credential check
   const resolved = await ensureCredentials(config)
   if (!resolved) return { status: 'cancelled' }
   config = resolved
+  // Enforce the dispatch contract above (after the ensureCredentials
+  // reassignment, which would otherwise drop the narrowing) so config.type
+  // narrows to the terminal panel kinds createPanel expects. Unreachable for
+  // every real caller.
+  if (!isGenericTerminalType(config.type)) return { status: 'failed' }
 
   // Create session BEFORE panel so the terminal has a sessionId when it first
   // fires SessionResize. Otherwise the resize is silently dropped because the
@@ -1562,7 +1580,7 @@ async function connectTerminalSession(config: ConnectionConfig, persist: boolean
 
   const panel = panelStore.createPanel(config, config.type)
   const displayTitle = config.name || (config.type === 'local' || config.type === 'wsl'
-    ? getShellLabel(config.shellPath)
+    ? getShellLabel(config.shellPath || '')
     : config.type === 'serial'
     ? `${config.serialPort || 'Serial'} (${config.serialBaudRate || 115200})`
     : config.type === 'telnet'
@@ -1780,7 +1798,7 @@ function onTabDragStart(_e: DragEvent, _tabId: string) {
 
 async function createLocalTerminal(shellPath?: string, keepOpen?: boolean) {
   const panel = panelStore.createPanel(null, 'local')
-  const shellName = getShellLabel(shellPath)
+  const shellName = getShellLabel(shellPath || '')
   panelStore.updateTitle(panel.id, shellName)
 
   try {

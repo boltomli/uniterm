@@ -7,14 +7,14 @@
   >
     <div class="resize-handle" @mousedown="onResizeStart" />
     <div class="sidebar-header" @contextmenu.prevent="onTabStripContextMenu">
-      <button class="sidebar-tab" :class="{ active: activeView === 'connections' }" @click="activeView = 'connections'" :title="t('header.connections')"><el-icon><Network :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('files')" class="sidebar-tab" :class="{ active: activeView === 'files' }" @click="onFilesTabClick" :title="t('header.files')"><el-icon><FolderTree :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('monitor')" class="sidebar-tab" :class="{ active: activeView === 'monitor' }" @click="onMonitorTabClick" :title="t('header.monitor')"><el-icon><Activity :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('tunnels')" class="sidebar-tab" :class="{ active: activeView === 'tunnels' }" @click="activeView = 'tunnels'" :title="t('tunnels.tunnelsTab')"><el-icon><ArrowRightLeft :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('quickCommands')" class="sidebar-tab" :class="{ active: activeView === 'quickCommands' }" @click="activeView = 'quickCommands'" :title="quickCommandsTitle"><el-icon><Zap :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('history')" class="sidebar-tab" :class="{ active: activeView === 'history' }" @click="activeView = 'history'" :title="t('quickCommands.historyTab')"><el-icon><Clock :size="'0.875rem'" /></el-icon></button>
-      <button v-if="tabVisible('personalization')" class="sidebar-tab" :class="{ active: activeView === 'personalization' }" @click="activeView = 'personalization'" :title="t('sidebar.personalization')"><el-icon><Palette :size="'0.875rem'" /></el-icon></button>
-      <button class="icon-btn" @click="emit('toggle')" :title="t('sidebar.collapse')"><el-icon><X :size="'0.875rem'" /></el-icon></button>
+      <button class="sidebar-tab" :class="{ active: activeView === 'connections' }" @click="activeView = 'connections'" :title="t('header.connections')"><el-icon><Network :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('files')" class="sidebar-tab" :class="{ active: activeView === 'files' }" @click="onFilesTabClick" :title="t('header.files')"><el-icon><FolderTree :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('monitor')" class="sidebar-tab" :class="{ active: activeView === 'monitor' }" @click="onMonitorTabClick" :title="t('header.monitor')"><el-icon><Activity :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('tunnels')" class="sidebar-tab" :class="{ active: activeView === 'tunnels' }" @click="activeView = 'tunnels'" :title="t('tunnels.tunnelsTab')"><el-icon><ArrowRightLeft :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('quickCommands')" class="sidebar-tab" :class="{ active: activeView === 'quickCommands' }" @click="activeView = 'quickCommands'" :title="quickCommandsTitle"><el-icon><Zap :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('history')" class="sidebar-tab" :class="{ active: activeView === 'history' }" @click="activeView = 'history'" :title="t('quickCommands.historyTab')"><el-icon><Clock :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button v-if="tabVisible('personalization')" class="sidebar-tab" :class="{ active: activeView === 'personalization' }" @click="activeView = 'personalization'" :title="t('sidebar.personalization')"><el-icon><Palette :size="lucideSize('0.875rem')" /></el-icon></button>
+      <button class="icon-btn" @click="emit('toggle')" :title="t('sidebar.collapse')"><el-icon><X :size="lucideSize('0.875rem')" /></el-icon></button>
     </div>
 
     <template v-if="activeView === 'connections'">
@@ -28,13 +28,13 @@
         >
           <template #suffix>
             <span class="filter-trigger" :class="{ active: selectedTypeFilter !== 'all' }" @click.stop="filterMenuRef?.toggle($event.currentTarget)">
-              <el-icon><Filter :size="'0.875rem'" /></el-icon>
+              <el-icon><Filter :size="lucideSize('0.875rem')" /></el-icon>
             </span>
             <TypeFilterMenu ref="filterMenuRef" align="end" v-model="selectedTypeFilter" />
           </template>
         </el-input>
-        <button class="sb-icon-btn" :title="t('header.newConnection')" @click.stop="newConnMenuRef?.toggle($event.currentTarget)">
-          <Plus :size="'0.9375rem'" />
+        <button class="sb-icon-btn" :title="t('header.newConnection')" @click.stop="toggleMenu(newConnMenuRef, $event)">
+          <Plus :size="lucideSize('0.9375rem')" />
         </button>
         <!-- New-connection menu — Menu.vue, teleported + anchored right-edge (align=end). -->
         <Menu ref="newConnMenuRef" align="end" v-model:visible="showNewConnMenu">
@@ -51,8 +51,8 @@
       <template v-if="favoriteConns.length > 0">
         <div class="group-header" @click="favoritesExpanded = !favoritesExpanded" @contextmenu.prevent>
           <span class="group-arrow">
-            <el-icon v-if="favoritesExpanded"><ChevronDown :size="'0.875rem'" /></el-icon>
-            <el-icon v-else><ChevronRight :size="'0.875rem'" /></el-icon>
+            <el-icon v-if="favoritesExpanded"><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
+            <el-icon v-else><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
           </span>
           <span class="group-name">{{ t('sidebar.favorites') }}</span>
           <span class="group-count">{{ favoriteConns.length }}</span>
@@ -87,8 +87,8 @@
             </div>
             <!-- Inside the favorites group the star is hover-only (everything
                  here is favorited; a lit star would be redundant noise) -->
-            <button v-if="showHostRowButtons" class="conn-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
-            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="lucideSize('0.75rem')" /></button>
+            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
           </div>
         </template>
       </template>
@@ -113,8 +113,8 @@
           @drop.prevent="onGroupDrop('__ungrouped__', $event)"
         >
           <span class="group-arrow">
-            <el-icon v-if="expandedGroups.has('__ungrouped__')"><ChevronDown :size="'0.875rem'" /></el-icon>
-            <el-icon v-else><ChevronRight :size="'0.875rem'" /></el-icon>
+            <el-icon v-if="expandedGroups.has('__ungrouped__')"><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
+            <el-icon v-else><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
           </span>
           <span class="group-name">{{ t('conn.noGroup') }}</span>
           <span v-if="filteredGrouped.ungrouped.length > 0" class="group-count">{{ filteredGrouped.ungrouped.length }}</span>
@@ -147,8 +147,8 @@
                 <span class="host">{{ getSubtitle(conn) }}</span>
               </span>
             </div>
-            <button v-if="showHostRowButtons" class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="'0.75rem'" /></button>
-            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+            <button v-if="showHostRowButtons" class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="lucideSize('0.75rem')" /></button>
+            <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
           </div>
         </template>
       </template>
@@ -182,7 +182,7 @@
               <span class="host">{{ getSubtitle(conn) }}</span>
             </span>
           </div>
-          <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="'0.875rem'" /></button>
+          <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
         </div>
       </template>
 
@@ -255,7 +255,7 @@
               </el-option-group>
             </el-select>
             <button class="btn btn-ghost btn-icon btn-sm" :title="t('theme.newTitle')" @click="openThemeEditor()">
-              <Plus :size="'0.875rem'" />
+              <Plus :size="lucideSize('0.875rem')" />
             </button>
             <button
               v-if="isCustomTheme(settingsStore.settings.terminal.theme)"
@@ -263,7 +263,7 @@
               :title="t('theme.editTitle')"
               @click="openThemeEditor(settingsStore.settings.terminal.theme)"
             >
-              <Pencil :size="'0.875rem'" />
+              <Pencil :size="lucideSize('0.875rem')" />
             </button>
           </div>
         </div>
@@ -404,6 +404,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, onMounted, onUnmounted, computed, watch, nextTick, provide } from 'vue'
 import { X, ChevronRight, ChevronDown, Filter, Check, Network, Zap, Clock, Plus, Palette, SquareTerminal, Activity, Pencil, MoreHorizontal, FolderTree, ArrowRightLeft, Star } from '@lucide/vue'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -1513,6 +1514,12 @@ async function confirmDeleteGroup(connAction: 'delete-connections' | 'move-out')
 // ── New-connection dropdown ──
 const showNewConnMenu = ref(false)
 const newConnMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+
+// Menu.toggle() anchors below an HTMLElement; template click handlers expose
+// EventTarget | null, so narrow it here (same guard as Panel.vue / TabBar.vue).
+function toggleMenu(menu: InstanceType<typeof Menu> | null, e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) menu?.toggle(e.currentTarget)
+}
 
 function closeNewConnMenu() {
   showNewConnMenu.value = false

@@ -11,13 +11,13 @@
     <div v-if="searchOpen" class="search-bar" @keydown="onSearchBarKeydown">
       <div class="search-row">
         <button class="search-icon-btn" :class="{ active: caseSensitive }" :title="t('sftp.edit.matchCase')" @click="caseSensitive = !caseSensitive">
-          <el-icon><CaseSensitive :size="'0.875rem'" /></el-icon>
+          <el-icon><CaseSensitive :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="search-icon-btn" :class="{ active: regexpMode }" :title="t('sftp.edit.regexp')" @click="regexpMode = !regexpMode">
-          <el-icon><Regex :size="'0.875rem'" /></el-icon>
+          <el-icon><Regex :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="search-icon-btn" :class="{ active: wholeWord }" :title="t('sftp.edit.wholeWord')" @click="wholeWord = !wholeWord">
-          <el-icon><WholeWord :size="'0.875rem'" /></el-icon>
+          <el-icon><WholeWord :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <el-input
           ref="searchInputRef"
@@ -35,10 +35,10 @@
           </template>
         </el-input>
         <button class="search-icon-btn" :disabled="!matchCount" :title="t('sftp.edit.search')" @click="findPrev">
-          <el-icon><ChevronUp :size="'0.875rem'" /></el-icon>
+          <el-icon><ChevronUp :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="search-icon-btn" :disabled="!matchCount" :title="t('sftp.edit.search')" @click="findNext">
-          <el-icon><ChevronDown :size="'0.875rem'" /></el-icon>
+          <el-icon><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button
           class="search-icon-btn"
@@ -46,10 +46,10 @@
           :title="t('sftp.edit.replace')"
           @click="replaceRowOpen = !replaceRowOpen; nextTick(() => (replaceRowOpen ? replaceInputRef?.focus() : searchInputRef?.focus()))"
         >
-          <el-icon><ChevronsDownUp :size="'0.875rem'" /></el-icon>
+          <el-icon><ChevronsDownUp :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="search-icon-btn" title="Esc" @click="closeSearch">
-          <el-icon><X :size="'0.875rem'" /></el-icon>
+          <el-icon><X :size="lucideSize('0.875rem')" /></el-icon>
         </button>
       </div>
       <div v-if="replaceRowOpen" class="search-row">
@@ -64,10 +64,10 @@
           @keydown.esc.stop.prevent="closeSearch"
         />
         <button class="search-icon-btn" :disabled="!matchCount" :title="t('sftp.edit.replace')" @click="replaceCurrent">
-          <el-icon><Replace :size="'0.875rem'" /></el-icon>
+          <el-icon><Replace :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="search-icon-btn" :disabled="!matchCount" :title="t('sftp.edit.replaceAll')" @click="replaceAllMatches">
-          <el-icon><ReplaceAll :size="'0.875rem'" /></el-icon>
+          <el-icon><ReplaceAll :size="lucideSize('0.875rem')" /></el-icon>
         </button>
       </div>
     </div>
@@ -75,6 +75,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { EditorState, StateEffect, StateField } from '@codemirror/state'
 import type { Text } from '@codemirror/state'

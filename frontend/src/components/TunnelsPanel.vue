@@ -9,7 +9,7 @@
         class="tn-search-input"
       />
       <button class="tn-icon-btn" :title="t('tunnels.addTunnel')" @click="addTunnel">
-        <Plus :size="'0.9375rem'" />
+        <Plus :size="lucideSize('0.9375rem')" />
       </button>
     </div>
 
@@ -37,8 +37,8 @@
           :title="statusOf(tn) === 'running' ? t('tunnels.stop') : t('tunnels.start')"
           @click.stop="toggleRun(tn)"
         >
-          <Square v-if="statusOf(tn) === 'running'" :size="'0.8125rem'" />
-          <Play v-else :size="'0.8125rem'" />
+          <Square v-if="statusOf(tn) === 'running'" :size="lucideSize('0.8125rem')" />
+          <Play v-else :size="lucideSize('0.8125rem')" />
         </button>
       </div>
 
@@ -67,6 +67,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted } from 'vue'
 import { Plus, Play, Square } from '@lucide/vue'
 import { useTunnelStore, type Tunnel } from '../stores/tunnelStore'

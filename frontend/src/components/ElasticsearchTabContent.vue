@@ -6,10 +6,10 @@
         <div class="search-wrap">
           <input v-model="treeSearchQuery" class="search-input" :placeholder="t('es.searchIndices')" />
           <button class="btn btn-ghost btn-icon btn-sm" :title="t('es.refresh')" @click="loadIndices">
-            <RefreshCw :size="'0.875rem'" />
+            <RefreshCw :size="lucideSize('0.875rem')" />
           </button>
-          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
-            <MoreHorizontal :size="'0.875rem'" />
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="onMoreToggle">
+            <MoreHorizontal :size="lucideSize('0.875rem')" />
           </button>
           <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
             <MenuItem @click="onMoreToggleSystem">{{ (hideSystemIndices ? '✓ ' : '') + t('es.hideSystem') }}</MenuItem>
@@ -28,7 +28,7 @@
               @contextmenu.prevent="onClusterContextMenu"
             >
               <span class="db-arrow" @click.stop="clusterExpanded = !clusterExpanded">
-                <component :is="clusterExpanded ? ChevronDown : ChevronRight" :size="'0.75rem'" />
+                <component :is="clusterExpanded ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
               </span>
               <span class="health-dot" :class="healthStatus" />
               <span class="cluster-root-name" :title="clusterTooltip">{{ clusterName }}</span>
@@ -75,7 +75,7 @@
                 @dragend="clearTabDragState"
                 @drop.prevent="onTabDrop($event, index)"
               >
-                <component :is="tab.kind === 'cluster' ? Database : Layers" :size="'0.75rem'" class="tab-icon" />
+                <component :is="tab.kind === 'cluster' ? Database : Layers" :size="lucideSize('0.75rem')" class="tab-icon" />
                 <span class="tab-title">{{ tabTitle(tab) }}</span>
                 <button class="tab-close" :title="t('tab.close')" @click.stop="closeTab(tab.id)">×</button>
               </div>
@@ -86,9 +86,9 @@
             v-if="tabShowMore"
             class="es-tab-more"
             :title="t('tab.more')"
-            @click.stop="moreTabsMenuRef?.toggle($event.currentTarget)"
+            @click.stop="onMoreTabsToggle"
           >
-            <MoreHorizontal :size="'0.875rem'" />
+            <MoreHorizontal :size="lucideSize('0.875rem')" />
           </button>
           <Menu ref="moreTabsMenuRef" v-model:visible="moreTabsMenuVisible" align="end">
             <MenuItem
@@ -177,7 +177,7 @@
                   @click="hideSystemIndices = !hideSystemIndices"
                 >{{ (hideSystemIndices ? '✓ ' : '') + t('es.hideSystem') }}</button>
                 <button class="btn btn-default btn-sm" @click="onClusterNewIndex">
-                  <Plus :size="'0.875rem'" /> {{ t('es.newIndex') }}
+                  <Plus :size="lucideSize('0.875rem')" /> {{ t('es.newIndex') }}
                 </button>
               </div>
               <el-table
@@ -191,7 +191,7 @@
                 <el-table-column prop="name" :label="t('es.indexName')" :min-width="uiPx(180)" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span class="object-name" @click="openIndexTab(row.name)">
-                      <Layers :size="'0.875rem'" class="object-icon" />
+                      <Layers :size="lucideSize('0.875rem')" class="object-icon" />
                       {{ row.name }}
                     </span>
                   </template>
@@ -212,7 +212,7 @@
                       :title="t('es.deleteIndex')"
                       @click.stop="ctxDeleteIndex(row)"
                     >
-                      <Trash2 :size="'0.875rem'" />
+                      <Trash2 :size="lucideSize('0.875rem')" />
                     </button>
                   </template>
                 </el-table-column>
@@ -292,6 +292,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { RefreshCw, Layers, MoreHorizontal, ChevronRight, ChevronDown, Database, Plus, Trash2 } from '@lucide/vue'
 import { useI18n } from '../i18n'
@@ -342,6 +343,10 @@ const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 // ── Toolbar (search box) refresh + more menu ──
 const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreMenuVisible = ref(false)
+
+function onMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) moreMenuRef.value?.toggle(e.currentTarget)
+}
 
 function onMoreToggleSystem() {
   hideSystemIndices.value = !hideSystemIndices.value
@@ -504,6 +509,10 @@ const tabScrollRef = ref<HTMLElement | null>(null)
 const tabShowMore = ref(false)
 const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreTabsMenuVisible = ref(false)
+
+function onMoreTabsToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) moreTabsMenuRef.value?.toggle(e.currentTarget)
+}
 
 function updateTabOverflow() {
   const el = tabScrollRef.value

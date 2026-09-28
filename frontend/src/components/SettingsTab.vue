@@ -360,7 +360,7 @@
                   </el-option-group>
                 </el-select>
                 <button class="btn btn-ghost btn-icon btn-sm" :title="t('theme.newTitle')" @click="openThemeEditor()">
-                  <Plus :size="'0.875rem'" />
+                  <Plus :size="lucideSize('0.875rem')" />
                 </button>
                 <button
                   v-if="isCustomTheme(settingsStore.settings.terminal.theme)"
@@ -368,7 +368,7 @@
                   :title="t('theme.editTitle')"
                   @click="openThemeEditor(settingsStore.settings.terminal.theme)"
                 >
-                  <Pencil :size="'0.875rem'" />
+                  <Pencil :size="lucideSize('0.875rem')" />
                 </button>
               </div>
             </div>
@@ -673,7 +673,7 @@
                 <template #append>
                   <el-tooltip :content="t('settings.browse')" placement="top">
                     <el-button :aria-label="t('settings.browse')" @click="pickZmodemDownloadDir">
-                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                      <el-icon><FolderOpen :size="lucideSize('1rem')" /></el-icon>
                     </el-button>
                   </el-tooltip>
                 </template>
@@ -697,7 +697,7 @@
                 <template #append>
                   <el-tooltip :content="t('settings.browse')" placement="top">
                     <el-button :aria-label="t('settings.browse')" @click="pickLogDir">
-                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                      <el-icon><FolderOpen :size="lucideSize('1rem')" /></el-icon>
                     </el-button>
                   </el-tooltip>
                 </template>
@@ -911,11 +911,11 @@
           </div>
           <div class="about-links">
             <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://uniterm.net')">
-              <Globe :size="'0.875rem'" class="about-link-icon" />
+              <Globe :size="lucideSize('0.875rem')" class="about-link-icon" />
               {{ t('settings.homepage') }}
             </a>
             <a href="#" class="about-link" @click.prevent="Browser.OpenURL(locale === 'zh-CN' ? 'https://uniterm.net/guide/zh/introduction' : 'https://uniterm.net/guide/en/introduction')">
-              <BookOpen :size="'0.875rem'" class="about-link-icon" />
+              <BookOpen :size="lucideSize('0.875rem')" class="about-link-icon" />
               {{ t('settings.userManual') }}
             </a>
             <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://github.com/ys-ll/uniterm')">
@@ -1156,7 +1156,7 @@
               <div class="setting-desc">{{ t('settings.modelListDesc') }}</div>
             </div>
             <div class="setting-control">
-              <el-button @click="openNewModelForm"><Plus :size="'0.875rem'" /> {{ t('settings.addModel') }}</el-button>
+              <el-button @click="openNewModelForm"><Plus :size="lucideSize('0.875rem')" /> {{ t('settings.addModel') }}</el-button>
             </div>
           </div>
 
@@ -1178,10 +1178,10 @@
             </div>
             <div class="model-actions">
               <el-button link @click="editModel(model)">
-                <el-icon><Pencil :size="'0.875rem'" /></el-icon>
+                <el-icon><Pencil :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
               <el-button link type="danger" @click="removeModelConfirm(model)">
-                <el-icon><Trash2 :size="'0.875rem'" /></el-icon>
+                <el-icon><Trash2 :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
             </div>
           </div>
@@ -1256,15 +1256,15 @@
             class="model-card"
           >
             <div class="model-main">
-              <el-icon class="mcp-token-icon"><Key :size="'0.875rem'" /></el-icon>
+              <el-icon class="mcp-token-icon"><Key :size="lucideSize('0.875rem')" /></el-icon>
               <span class="model-name">{{ name }}</span>
             </div>
             <div class="model-actions">
               <el-button link @click="reopenSetup(name)">
-                <el-icon><Copy :size="'0.875rem'" /></el-icon>
+                <el-icon><Copy :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
               <el-button link type="danger" @click="revokeToken(name)">
-                <el-icon><Trash2 :size="'0.875rem'" /></el-icon>
+                <el-icon><Trash2 :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
             </div>
           </div>
@@ -1322,7 +1322,7 @@
               />
             </el-select>
             <el-button class="inline-add-btn" :title="t('conn.newProxy')" @click="modelProxyDialogVisible = true">
-              <Plus :size="'0.875rem'" />
+              <Plus :size="lucideSize('0.875rem')" />
             </el-button>
           </div>
         </el-form-item>
@@ -1433,6 +1433,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, onMounted, onUnmounted } from 'vue'
 import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Copy } from '@lucide/vue'
 import { msg } from '../services/message'
@@ -1443,7 +1444,7 @@ import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { useI18n, locale } from '../i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, DEFAULT_SETTINGS, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
+import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
 import { backendErrorText } from '../utils/backendError'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -1799,7 +1800,7 @@ onMounted(async () => {
   // this host; fall back to the curated presets if detection returns nothing.
   try {
     const editors = await ListExternalEditors()
-    detectedEditors.value = (editors || []).map(e => ({ label: e.label, value: e.value }))
+    detectedEditors.value = (editors || []).map((e: { label: string; value: string }) => ({ label: e.label, value: e.value }))
   } catch {
     detectedEditors.value = []
   }
@@ -2491,7 +2492,7 @@ async function fetchModelList() {
   modelSuggestions.value = []
   try {
     const models = await FetchModels(modelForm.apiKey, modelForm.baseURL, modelForm.protocol, modelForm.proxyId || '')
-    modelSuggestions.value = (models || []).map(m => ({
+    modelSuggestions.value = (models || []).map((m: { id: string; display_name: string }) => ({
       value: m.id,
       label: m.display_name || m.id
     }))

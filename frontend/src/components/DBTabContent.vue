@@ -41,10 +41,10 @@
                   @dragend="clearDragState"
                   @drop.prevent="onDocDrop($event, index)"
                 >
-                  <Table2 v-if="doc.kind === 'table' && !doc.isView" :size="'0.75rem'" class="doc-tab-icon" />
-                  <Eye v-else-if="doc.kind === 'table'" :size="'0.75rem'" class="doc-tab-icon" />
-                  <Database v-else-if="doc.kind === 'db-objects'" :size="'0.75rem'" class="doc-tab-icon" />
-                  <Code2 v-else :size="'0.75rem'" class="doc-tab-icon" />
+                  <Table2 v-if="doc.kind === 'table' && !doc.isView" :size="lucideSize('0.75rem')" class="doc-tab-icon" />
+                  <Eye v-else-if="doc.kind === 'table'" :size="lucideSize('0.75rem')" class="doc-tab-icon" />
+                  <Database v-else-if="doc.kind === 'db-objects'" :size="lucideSize('0.75rem')" class="doc-tab-icon" />
+                  <Code2 v-else :size="lucideSize('0.75rem')" class="doc-tab-icon" />
                   <span class="doc-tab-title" :title="docTitle(doc)">{{ docTitle(doc) }}</span>
                   <span class="doc-tab-close" @click.stop="closeDoc(doc.id)">×</span>
                 </button>
@@ -55,9 +55,9 @@
               v-if="docTabsShowMore"
               class="doc-tab-more"
               :title="t('tab.more')"
-              @click.stop="docMoreMenuRef?.toggle($event.currentTarget)"
+              @click.stop="onDocMoreToggle"
             >
-              <MoreHorizontal :size="'0.875rem'" />
+              <MoreHorizontal :size="lucideSize('0.875rem')" />
             </button>
             <Menu ref="docMoreMenuRef" v-model:visible="docMoreMenuVisible" align="end">
               <MenuItem
@@ -71,9 +71,9 @@
           </div>
 
           <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible" v-slot="{ current }">
-            <template v-if="current">
+            <template v-if="typeof current === 'string'">
               <MenuItem @click="onCtxClose(current)">{{ t('tab.close') }}</MenuItem>
-              <MenuItem :class="{ disabled: !canCloseOthersOf(current) }" @click="onCtxCloseOthers(current)">{{ t('tab.closeOther') }}</MenuItem>
+              <MenuItem :class="{ disabled: !canCloseOthersOf() }" @click="onCtxCloseOthers(current)">{{ t('tab.closeOther') }}</MenuItem>
               <MenuItem :class="{ disabled: !canCloseLeftOf(current) }" @click="onCtxCloseLeft(current)">{{ t('tab.closeLeft') }}</MenuItem>
               <MenuItem :class="{ disabled: !canCloseRightOf(current) }" @click="onCtxCloseRight(current)">{{ t('tab.closeRight') }}</MenuItem>
               <MenuDivider />
@@ -187,6 +187,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Table2, Eye, Code2, Database, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
@@ -382,6 +383,10 @@ const docTabsShowMore = ref(false)
 const docMoreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const docMoreMenuVisible = ref(false)
 
+function onDocMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) docMoreMenuRef.value?.toggle(e.currentTarget)
+}
+
 function updateDocTabsOverflow() {
   const el = docTabsScrollRef.value
   if (!el) return
@@ -432,7 +437,7 @@ async function loadSchema(doc: DocTab) {
   try {
     const schema = await GetTableSchema(props.sessionId, doc.dbName, doc.tableName)
     doc.tableColumns = schema.columns
-    doc.primaryKeys = schema.columns.filter(c => c.isPrimary).map(c => c.name)
+    doc.primaryKeys = schema.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
   } catch { /* ignore */ }
 }
 

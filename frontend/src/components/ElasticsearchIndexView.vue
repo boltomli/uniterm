@@ -60,7 +60,7 @@
             :placeholder="t('db.filterResults')"
           />
           <button class="btn btn-default btn-sm result-toolbar-add" @click="openNewDocument">
-            <Plus :size="'0.875rem'" /> {{ t('es.newDocument') }}
+            <Plus :size="lucideSize('0.875rem')" /> {{ t('es.newDocument') }}
           </button>
         </div>
 
@@ -94,10 +94,10 @@
               <el-table-column :width="uiPx(80)" fixed="right">
                 <template #default="{ row }">
                   <button class="btn btn-ghost btn-icon btn-sm" @click.stop="onRowDblClick(row)">
-                    <Pencil :size="'0.875rem'" />
+                    <Pencil :size="lucideSize('0.875rem')" />
                   </button>
                   <button class="btn btn-ghost btn-icon btn-sm danger" @click.stop="deleteDocument(row)">
-                    <Trash2 :size="'0.875rem'" />
+                    <Trash2 :size="lucideSize('0.875rem')" />
                   </button>
                 </template>
               </el-table-column>
@@ -161,6 +161,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted } from 'vue'
 import { Pencil, Trash2, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'

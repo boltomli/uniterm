@@ -134,7 +134,7 @@ export function useDuplicateSession() {
           config.initialCols = size.cols
           config.initialRows = size.rows
         }
-        await SessionStart(info.id, config).catch((e) => {
+        await SessionStart(info.id, config).catch((e: unknown) => {
           console.error('Failed to start duplicated session:', e)
           CloseSession(info.id).catch(() => {})
         })

@@ -33,7 +33,7 @@
       <span v-else-if="!isActive && hasNotification && !tab.locked" class="tab-notification-dot" />
     </span>
     <span v-if="!editing" class="tab-name" :class="{ 'tab-disconnected': isDisconnected }" :title="tab.name + (tabShortcut ? ` (${tabShortcut})` : '')" @dblclick.stop="startEdit">
-      <ArrowDownUp v-if="hasActiveTransfers" class="transfer-indicator" :size="'0.875rem'" title="Transferring..." />
+      <ArrowDownUp v-if="hasActiveTransfers" class="transfer-indicator" :size="lucideSize('0.875rem')" title="Transferring..." />
       <span class="tab-name-text">{{ tab.name }}</span>
     </span>
     <input
@@ -59,7 +59,7 @@
     <Radio
       v-if="showBroadcastIcon"
       class="tab-broadcast-icon"
-      :size="'0.875rem'"
+      :size="lucideSize('0.875rem')"
       :title="t('tab.unbroadcast')"
     />
     <button
@@ -134,6 +134,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
@@ -155,7 +156,7 @@ import {
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
 import { saveWorkspaceToConnections } from '../composables/savedWorkspace'
-import type { TerminalTab, SettingsTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
+import type { Tab, TerminalTab, SFTPTab, RDPTab, WorkspaceTab } from '../types/workspace'
 import { connectFileMenuKey, fileTransferProto, canOpenSshTerminal, asSshTerminalConfig } from '../utils/fileTransferUtils'
 import { connectionTypeIconOfKind } from '../utils/connectionTypes'
 import { useDuplicateSession } from '../composables/useDuplicateSession'
@@ -166,7 +167,7 @@ import { Clipboard } from '@wailsio/runtime'
 import { SquareTerminal, FolderUp, X, ArrowDownUp, Lock, Radio } from '@lucide/vue'
 
 const props = defineProps<{
-  tab: TerminalTab | SettingsTab | SFTPTab | RDPTab | VNCTab | SPICETab | DBTab | MonitorTab | WorkspaceTab
+  tab: Tab
   shortcutIndex?: number
   isActive: boolean
   hasNotification?: boolean
@@ -290,7 +291,8 @@ const showBroadcastIcon = computed(() =>
 
 const hasActiveTransfers = computed(() => {
   if (props.tab.type === 'workspace') return false
-  const keys = [props.tab.panelId]
+  // Start tabs have no panel; every other tab kind carries one.
+  const keys = 'panelId' in props.tab ? [props.tab.panelId] : []
   // Terminal tabs also surface their companion file panel's transfers.
   if (props.tab.type === 'terminal') {
     const companionKey = companionStore.sftpTransferKeyOf(props.tab.panelId)
@@ -547,7 +549,7 @@ async function copyHostAddress() {
   // Wails clipboard, falling back to the browser API when the runtime is
   // absent (plain dev in a browser) or the call fails.
   let ok = false
-  try { ok = await Clipboard.SetText(host) } catch { ok = false }
+  try { ok = Boolean(await Clipboard.SetText(host)) } catch { ok = false }
   if (!ok) {
     try { await navigator.clipboard.writeText(host) } catch { /* no clipboard */ }
   }

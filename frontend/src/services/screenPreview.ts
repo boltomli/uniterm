@@ -34,6 +34,12 @@ export interface PreviewBufferCell {
   getWidth(): number
   getChars(): string
   getFgColor(): number
+  /**
+   * v6 color-mode flag mask (not 0/1/2 — see the note above). Real xterm cells
+   * always expose it; lineToRuns deliberately classifies via the predicates
+   * instead, and the regression test pins that it is ignored.
+   */
+  getFgColorMode(): number
   getBgColor(): number
   isFgRGB(): boolean
   isFgPalette(): boolean
@@ -61,13 +67,22 @@ const FALLBACK_ANSI16 = [
 
 const CUBE_STEPS = [0, 95, 135, 175, 215, 255]
 
+// The 16 base ANSI theme keys — a narrowed keyof ITheme so value lookups stay
+// `string | undefined` (ITheme also has non-string entries like extendedAnsi).
+type Ansi16Key =
+  | 'black' | 'red' | 'green' | 'yellow'
+  | 'blue' | 'magenta' | 'cyan' | 'white'
+  | 'brightBlack' | 'brightRed' | 'brightGreen' | 'brightYellow'
+  | 'brightBlue' | 'brightMagenta' | 'brightCyan' | 'brightWhite'
+
 export function buildPalette(theme?: Partial<ITheme>): PreviewPalette {
-  const ansi16 = [
+  const ansi16Keys: Ansi16Key[] = [
     'black', 'red', 'green', 'yellow',
     'blue', 'magenta', 'cyan', 'white',
     'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
     'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
-  ].map((key, i) => theme?.[key] || FALLBACK_ANSI16[i] || '#888888') as string[]
+  ]
+  const ansi16 = ansi16Keys.map((key, i) => theme?.[key] || FALLBACK_ANSI16[i] || '#888888')
   return {
     defaultFg: theme?.foreground || '#ffffff',
     defaultBg: theme?.background || '#000000',

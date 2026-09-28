@@ -11,8 +11,8 @@
         class="qc-search-input"
         @keydown="onListKeydown"
       />
-      <button class="qc-icon-btn" :title="t('quickCommands.addCommand')" @click.stop="addMenuRef?.toggle($event.currentTarget)">
-        <Plus :size="'0.9375rem'" />
+      <button class="qc-icon-btn" :title="t('quickCommands.addCommand')" @click.stop="onAddMenuToggle($event)">
+        <Plus :size="lucideSize('0.9375rem')" />
       </button>
       <Menu ref="addMenuRef" v-model:visible="addMenuVisible" align="end">
         <MenuItem @click="onAddCommand()">{{ t('quickCommands.addCommand') }}</MenuItem>
@@ -33,8 +33,8 @@
           @drop.prevent="onGroupDrop(group.id, $event)"
         >
           <span class="qc-group-arrow">
-            <el-icon v-if="expandedGroups.has(group.id)"><ChevronDown :size="'0.875rem'" /></el-icon>
-            <el-icon v-else><ChevronRight :size="'0.875rem'" /></el-icon>
+            <el-icon v-if="expandedGroups.has(group.id)"><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
+            <el-icon v-else><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
           </span>
           <span class="qc-group-name">{{ group.name }}</span>
 
@@ -60,13 +60,13 @@
             </div>
             <div v-if="selectedId === cmd.id || hoveredId === cmd.id" class="qc-item-actions">
               <button class="btn btn-ghost btn-icon qc-action-btn run" @click.stop="runCommand(cmd)" :title="t('quickCommands.run')">
-                <Play :size="'1rem'" />
+                <Play :size="lucideSize('1rem')" />
               </button>
               <button class="btn btn-ghost btn-icon qc-action-btn paste" @click.stop="pasteCommand(cmd)" :title="t('quickCommands.paste')">
-                <Clipboard :size="'1rem'" />
+                <Clipboard :size="lucideSize('1rem')" />
               </button>
               <button class="btn btn-ghost btn-icon qc-action-btn" @click.stop="copyCommand(cmd)" :title="t('quickCommands.copy')">
-                <Copy :size="'1rem'" />
+                <Copy :size="lucideSize('1rem')" />
               </button>
             </div>
           </div>
@@ -94,13 +94,13 @@
           </div>
           <div v-if="selectedId === cmd.id || hoveredId === cmd.id" class="qc-item-actions">
             <button class="btn btn-ghost btn-icon qc-action-btn run" @click.stop="runCommand(cmd)" :title="t('quickCommands.run')">
-              <Play :size="'1rem'" />
+              <Play :size="lucideSize('1rem')" />
             </button>
             <button class="btn btn-ghost btn-icon qc-action-btn paste" @click.stop="pasteCommand(cmd)" :title="t('quickCommands.paste')">
-              <Clipboard :size="'1rem'" />
+              <Clipboard :size="lucideSize('1rem')" />
             </button>
             <button class="btn btn-ghost btn-icon qc-action-btn" @click.stop="copyCommand(cmd)" :title="t('quickCommands.copy')">
-              <Copy :size="'1rem'" />
+              <Copy :size="lucideSize('1rem')" />
             </button>
           </div>
         </div>
@@ -117,8 +117,8 @@
           @drop.prevent="onGroupDrop('__ungrouped__', $event)"
         >
           <span class="qc-group-arrow">
-            <el-icon v-if="expandedGroups.has('__ungrouped__')"><ChevronDown :size="'0.875rem'" /></el-icon>
-            <el-icon v-else><ChevronRight :size="'0.875rem'" /></el-icon>
+            <el-icon v-if="expandedGroups.has('__ungrouped__')"><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
+            <el-icon v-else><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
           </span>
           <span class="qc-group-name">{{ t('quickCommands.noGroup') }}</span>
         </div>
@@ -142,13 +142,13 @@
             </div>
             <div v-if="selectedId === cmd.id || hoveredId === cmd.id" class="qc-item-actions">
               <button class="btn btn-ghost btn-icon qc-action-btn run" @click.stop="runCommand(cmd)" :title="t('quickCommands.run')">
-                <Play :size="'1rem'" />
+                <Play :size="lucideSize('1rem')" />
               </button>
               <button class="btn btn-ghost btn-icon qc-action-btn paste" @click.stop="pasteCommand(cmd)" :title="t('quickCommands.paste')">
-                <Clipboard :size="'1rem'" />
+                <Clipboard :size="lucideSize('1rem')" />
               </button>
               <button class="btn btn-ghost btn-icon qc-action-btn" @click.stop="copyCommand(cmd)" :title="t('quickCommands.copy')">
-                <Copy :size="'1rem'" />
+                <Copy :size="lucideSize('1rem')" />
               </button>
             </div>
           </div>
@@ -163,19 +163,19 @@
 
     <!-- Context menu (right-click on commands / groups) -->
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible" v-slot="{ current }">
-      <template v-if="current && (current as CtxPayload).kind === 'command'">
-        <MenuItem @click="runCommand((current as CtxPayload).cmd); ctxMenuVisible = false">{{ t('quickCommands.run') }}</MenuItem>
-        <MenuItem @click="pasteCommand((current as CtxPayload).cmd); ctxMenuVisible = false">{{ t('quickCommands.paste') }}</MenuItem>
-        <MenuItem @click="copyCommand((current as CtxPayload).cmd); ctxMenuVisible = false">{{ t('quickCommands.copy') }}</MenuItem>
+      <template v-if="isCommandCtx(current)">
+        <MenuItem @click="runCommand(current.cmd); ctxMenuVisible = false">{{ t('quickCommands.run') }}</MenuItem>
+        <MenuItem @click="pasteCommand(current.cmd); ctxMenuVisible = false">{{ t('quickCommands.paste') }}</MenuItem>
+        <MenuItem @click="copyCommand(current.cmd); ctxMenuVisible = false">{{ t('quickCommands.copy') }}</MenuItem>
         <MenuDivider />
-        <MenuItem @click="editCommand((current as CtxPayload).cmd)">{{ t('quickCommands.editCommand') }}</MenuItem>
-        <MenuItem class="danger" @click="deleteCommand((current as CtxPayload).cmd)">{{ t('quickCommands.deleteCommand') }}</MenuItem>
+        <MenuItem @click="editCommand(current.cmd)">{{ t('quickCommands.editCommand') }}</MenuItem>
+        <MenuItem class="danger" @click="deleteCommand(current.cmd)">{{ t('quickCommands.deleteCommand') }}</MenuItem>
       </template>
 
-      <template v-else-if="current && (current as CtxPayload).kind === 'group'">
-        <MenuItem @click="addCommand((current as CtxPayload).group.id)">{{ t('quickCommands.addCommand') }}</MenuItem>
-        <MenuItem @click="renameGroup((current as CtxPayload).group)">{{ t('quickCommands.renameGroup') }}</MenuItem>
-        <MenuItem class="danger" @click="deleteGroupDialog((current as CtxPayload).group)">{{ t('quickCommands.deleteGroup') }}</MenuItem>
+      <template v-else-if="isGroupCtx(current)">
+        <MenuItem @click="addCommand(current.group.id)">{{ t('quickCommands.addCommand') }}</MenuItem>
+        <MenuItem @click="renameGroup(current.group)">{{ t('quickCommands.renameGroup') }}</MenuItem>
+        <MenuItem class="danger" @click="deleteGroupDialog(current.group)">{{ t('quickCommands.deleteGroup') }}</MenuItem>
       </template>
     </Menu>
 
@@ -222,6 +222,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, onMounted, watch } from 'vue'
 import {
   Plus, Play, Clipboard, Copy,
@@ -288,6 +289,15 @@ const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 type CtxPayload =
   | { kind: 'command'; cmd: QuickCommand }
   | { kind: 'group'; group: QuickCommandGroup }
+
+// Menu exposes its slot payload as `unknown`; narrow the discriminated union
+// on `kind` before touching `cmd` / `group`.
+function isCommandCtx(v: unknown): v is Extract<CtxPayload, { kind: 'command' }> {
+  return typeof v === 'object' && v !== null && 'kind' in v && v.kind === 'command'
+}
+function isGroupCtx(v: unknown): v is Extract<CtxPayload, { kind: 'group' }> {
+  return typeof v === 'object' && v !== null && 'kind' in v && v.kind === 'group'
+}
 
 const deleteGroupDialogVisible = ref(false)
 const deletingGroup = ref<QuickCommandGroup | null>(null)
@@ -490,6 +500,9 @@ function addGroup() {
 }
 
 const addMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+function onAddMenuToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) addMenuRef.value?.toggle(e.currentTarget)
+}
 const addMenuVisible = ref(false)
 function onAddCommand() {
   addMenuVisible.value = false

@@ -17,7 +17,6 @@ beforeAll(() => {
 // clearRegistry works through a managed terminal's live registry; mock the
 // manager so the test owns the registry object it mutates.
 const { managedRegistry } = vi.hoisted(() => {
-  const { createLineRegistry } = {} as Record<string, never>
   return { managedRegistry: { nextNumber: 7, entries: new Map() } }
 })
 

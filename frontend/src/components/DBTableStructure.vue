@@ -13,7 +13,7 @@
         <div class="section-header">
           <div class="section-title">{{ t('db.columns') }}</div>
           <button class="btn btn-default btn-sm" @click="startAddColumn">
-            <Plus :size="'0.875rem'" /> {{ t('db.addColumn') }}
+            <Plus :size="lucideSize('0.875rem')" /> {{ t('db.addColumn') }}
           </button>
         </div>
         <el-table :data="schema?.columns || []" border size="small" style="width:100%">
@@ -44,8 +44,8 @@
           />
           <el-table-column :label="t('db.actions')" :width="uiPx(80)">
             <template #default="{ row }">
-              <button v-if="caps?.['supportsModifyColumn']" class="btn btn-ghost btn-icon btn-sm" :title="t('common.edit')" @click="startEditColumn(row)"><Pencil :size="'0.875rem'" /></button>
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('common.delete')" @click="onDropColumn(row.name)"><Trash2 :size="'0.875rem'" /></button>
+              <button v-if="caps?.['supportsModifyColumn']" class="btn btn-ghost btn-icon btn-sm" :title="t('common.edit')" @click="startEditColumn(row)"><Pencil :size="lucideSize('0.875rem')" /></button>
+              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('common.delete')" @click="onDropColumn(row.name)"><Trash2 :size="lucideSize('0.875rem')" /></button>
             </template>
           </el-table-column>
         </el-table>
@@ -55,7 +55,7 @@
         <div class="section-header">
           <div class="section-title">{{ t('db.indexes') }}</div>
           <button class="btn btn-default btn-sm" @click="startAddIndex">
-            <Plus :size="'0.875rem'" /> {{ t('db.addIndex') }}
+            <Plus :size="lucideSize('0.875rem')" /> {{ t('db.addIndex') }}
           </button>
         </div>
         <el-table :data="schema?.indexes || []" border size="small" style="width:100%">
@@ -74,7 +74,7 @@
           </el-table-column>
           <el-table-column :label="t('db.actions')" :width="uiPx(80)">
             <template #default="{ row }">
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('common.delete')" @click="onDropIndex(row)"><Trash2 :size="'0.875rem'" /></button>
+              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('common.delete')" @click="onDropIndex(row)"><Trash2 :size="lucideSize('0.875rem')" /></button>
             </template>
           </el-table-column>
         </el-table>
@@ -213,6 +213,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, watch, computed } from 'vue'
 import { Pencil, Trash2, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
@@ -260,7 +261,7 @@ async function loadSchema() {
     const result = await GetTableSchema(props.sessionId, props.dbName, props.tableName)
     if (!cancelled) {
       schema.value = result
-      const pks = result.columns.filter(c => c.isPrimary).map(c => c.name)
+      const pks = result.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
       emit('schemaLoaded', pks)
     }
   } catch (e) {

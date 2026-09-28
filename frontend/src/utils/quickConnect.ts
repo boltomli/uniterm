@@ -99,7 +99,10 @@ function getDefaultPort(type: string, dbType?: string): number | undefined {
 }
 
 export function formatConnSubtitle(config: ConnectionConfig, getShellLabel?: (path: string) => string): string {
-  let typeLabel = config.type
+  // A display label, not a connection type: the database/container branches
+  // substitute discriminator values (dbType / containerRuntime) that are
+  // outside ConnectionConfig['type'].
+  let typeLabel: string = config.type
   if (config.type === 'database') typeLabel = config.dbType || config.type
   else if (config.type === 'container') typeLabel = config.containerRuntime || config.type
   let detail: string

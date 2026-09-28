@@ -13,30 +13,30 @@
     <div class="editor-toolbar">
       <!-- Clipboard ops: cut/copy/paste through the editor (Wails clipboard). -->
       <button class="toolbar-icon-btn" :title="t('sftp.cut')" @click="editorRef?.cut()">
-        <el-icon><Scissors :size="'0.875rem'" /></el-icon>
+        <el-icon><Scissors :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <button class="toolbar-icon-btn" :title="t('sftp.copy')" @click="editorRef?.copy()">
-        <el-icon><Copy :size="'0.875rem'" /></el-icon>
+        <el-icon><Copy :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <button class="toolbar-icon-btn" :title="t('sftp.paste')" @click="editorRef?.paste()">
-        <el-icon><ClipboardPaste :size="'0.875rem'" /></el-icon>
+        <el-icon><ClipboardPaste :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <span class="toolbar-divider" />
       <!-- Edit ops: undo/redo wired to CodeMirror history. -->
       <button class="toolbar-icon-btn" @click="editorRef?.undo()" :title="t('sftp.edit.undo')">
-        <el-icon><Undo2 :size="'0.875rem'" /></el-icon>
+        <el-icon><Undo2 :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <button class="toolbar-icon-btn" @click="editorRef?.redo()" :title="t('sftp.edit.redo')">
-        <el-icon><Redo2 :size="'0.875rem'" /></el-icon>
+        <el-icon><Redo2 :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <span class="toolbar-divider" />
       <!-- View: font size. -->
       <button class="toolbar-icon-btn" @click="fontSizeDown" :title="t('sftp.edit.fontSize')">
-        <el-icon><ZoomOut :size="'0.875rem'" /></el-icon>
+        <el-icon><ZoomOut :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <span class="font-size-label">{{ fontSize }}px</span>
       <button class="toolbar-icon-btn" @click="fontSizeUp" :title="t('sftp.edit.fontSize')">
-        <el-icon><ZoomIn :size="'0.875rem'" /></el-icon>
+        <el-icon><ZoomIn :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <span class="toolbar-divider" />
       <!-- Search toggle (the editor owns the search bar; Ctrl+F also opens it). -->
@@ -46,7 +46,7 @@
         :title="t('sftp.edit.search')"
         @click="searchOpen = editorRef?.toggleSearch() ?? false"
       >
-        <el-icon><Search :size="'0.875rem'" /></el-icon>
+        <el-icon><Search :size="lucideSize('0.875rem')" /></el-icon>
       </button>
       <!-- View: wrap toggle. Language / encoding / line-ending stay in the
            footer's options row. -->
@@ -57,7 +57,7 @@
         @click="editorWrapEnabled = !editorWrapEnabled"
         :title="t('sftp.edit.wrap')"
       >
-        <el-icon><WrapText :size="'0.875rem'" /></el-icon>
+        <el-icon><WrapText :size="lucideSize('0.875rem')" /></el-icon>
       </button>
     </div>
     <div class="editor-host">
@@ -84,7 +84,7 @@
             @click.stop="encodingMenu?.toggle(encodingBtn as HTMLElement)"
           >
             {{ encodingLabel(editorEncoding) }}
-            <ChevronDown :size="'0.875rem'" />
+            <ChevronDown :size="lucideSize('0.875rem')" />
           </button>
           <Menu ref="encodingMenu" v-model:visible="encodingMenuVisible">
             <MenuSubmenu :label="t('sftp.edit.reopenWith')">
@@ -123,6 +123,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch, nextTick } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'

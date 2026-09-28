@@ -46,6 +46,7 @@ const panelState = reactive<{
   transferTasks: Map<string, TransferTaskUI[]>
   proxyAddrs: Map<string, string>
   vncCaches: Map<string, VNCCache>
+  spiceCaches: Map<string, SPICECache>
 }>({
   panels: new Map(),
   transferTasks: new Map(),

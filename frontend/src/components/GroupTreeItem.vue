@@ -17,8 +17,8 @@
     @drop.prevent="onGrpDrop"
   >
     <span class="group-arrow">
-      <el-icon v-if="expanded.has(node.group.id)"><ChevronDown :size="'0.875rem'" /></el-icon>
-      <el-icon v-else><ChevronRight :size="'0.875rem'" /></el-icon>
+      <el-icon v-if="expanded.has(node.group.id)"><ChevronDown :size="lucideSize('0.875rem')" /></el-icon>
+      <el-icon v-else><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
     </span>
     <span class="group-name">{{ node.group.name }}</span>
     <span v-if="totalCount > 0" class="group-count">{{ totalCount }}</span>
@@ -70,19 +70,20 @@
         :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')"
         @click.stop="favoriteStore.toggle(conn.id)"
       >
-        <Star :size="'0.75rem'" />
+        <Star :size="lucideSize('0.75rem')" />
       </button>
       <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onMoreClick($event, conn)" :title="t('terminal.more')">
-        <MoreHorizontal :size="'0.875rem'" />
+        <MoreHorizontal :size="lucideSize('0.875rem')" />
       </button>
     </div>
   </template>
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { inject, computed } from 'vue'
 import { ChevronDown, ChevronRight, MoreHorizontal, Star } from '@lucide/vue'
-import type { ConnectionConfig, ConnectionGroup } from '../types/session'
+import type { ConnectionConfig } from '../types/session'
 import type { GroupTreeNode } from '../stores/connectionStore'
 import { useFavoriteStore } from '../stores/favoriteStore'
 import { useSettingsStore } from '../stores/settingsStore'

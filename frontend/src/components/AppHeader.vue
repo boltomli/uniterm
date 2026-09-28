@@ -16,7 +16,7 @@
 
     <!-- Connections button (icon only, leftmost) -->
     <button class="header-btn" @click="emit('toggle-sidebar')" :title="t('header.connections') + shortcutSuffix('toggleSidebar')">
-      <el-icon><PanelLeft :size="'0.875rem'" /></el-icon>
+      <el-icon><PanelLeft :size="lucideSize('0.875rem')" /></el-icon>
     </button>
 
 
@@ -32,13 +32,13 @@
 
     <!-- AI button -->
     <button class="header-btn" @click="emit('toggle-ai')" :title="t('header.ai') + shortcutSuffix('focusAI')">
-      <el-icon><Bot :size="'0.875rem'" /></el-icon>
+      <el-icon><Bot :size="lucideSize('0.875rem')" /></el-icon>
     </button>
 
     <!-- Settings button opens a dropdown menu with common settings items -->
     <div class="settings-wrap">
       <button ref="settingsBtnRef" class="header-btn" @click.stop="toggleSettingsMenu" :title="t('header.menu')">
-        <el-icon><MenuIcon :size="'0.875rem'" /></el-icon>
+        <el-icon><MenuIcon :size="lucideSize('0.875rem')" /></el-icon>
       </button>
 
       <!-- Settings dropdown (theme / language / ai / identities / proxies / settings / check update) -->
@@ -118,7 +118,7 @@
         <MenuItem :shortcut="menuShortcut('openSettings')" @click="openCategory('basic')">{{ t('settings.title') }}</MenuItem>
         <MenuItem @click="openCategory('about')">{{ t('settings.about') }}</MenuItem>
         <!-- In-app update download is desktop-only -->
-        <MenuItem v-if="!isMobilePlatform(platform.value)" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
+        <MenuItem v-if="!isMobilePlatform(platform)" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
       </Menu>
 
       <ImportDialog v-model:visible="showImportDialog" />
@@ -137,9 +137,11 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { Menu as MenuIcon, PanelLeft, Bot } from '@lucide/vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
+import type { CheckboxValueType } from 'element-plus'
 import { useI18n } from '../i18n'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
@@ -340,8 +342,9 @@ async function linuxMaximise() {
     // Before native maximise, set max size to current screen dimensions
     // to prevent GTK from clamping to the wrong monitor's size.
     try {
-      const screens = await Screens.GetAll()
-      const current = screens.find((s: { isCurrent: boolean }) => s.isCurrent) || screens[0]
+      // v3 has no per-screen "is current" flag like v2's ScreenGetAll did —
+      // GetCurrent() is the window's own screen, which is what we need here.
+      const current = await Screens.GetCurrent()
       if (current) {
         Window.SetMaxSize(current.Size.Width, current.Size.Height)
       }
@@ -382,7 +385,7 @@ async function onClose() {
           h('div', { style: 'display:flex;flex-direction:column;gap:0.625rem' }, [
             h('span', t('app.closeConfirm')),
             h(ElCheckbox, {
-              'onUpdate:modelValue': (v: boolean) => { dontShowAgain.value = v }
+              'onUpdate:modelValue': (v: CheckboxValueType) => { dontShowAgain.value = v === true }
             }, () => t('app.dontShowAgain'))
           ]),
           t('app.closeTitle'),

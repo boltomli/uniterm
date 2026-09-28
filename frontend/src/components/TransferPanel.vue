@@ -14,7 +14,7 @@
           class="filter-icon-btn"
           :title="collapsed ? t('sftp.transferPanel.show') : t('sftp.transferPanel.hide')"
           @click="emit('update:collapsed', !collapsed)"
-        ><el-icon><ChevronDown v-if="!collapsed" :size="'0.875rem'" /><ChevronUp v-else :size="'0.875rem'" /></el-icon></button>
+        ><el-icon><ChevronDown v-if="!collapsed" :size="lucideSize('0.875rem')" /><ChevronUp v-else :size="lucideSize('0.875rem')" /></el-icon></button>
         <span v-if="title" class="transfer-panel-title">{{ title }}</span>
       </div>
       <div class="transfer-panel-actions">
@@ -24,7 +24,7 @@
           :disabled="!hasFinished"
           :title="t('companion.clearTransfers')"
           @click="emit('clearCompleted')"
-        ><el-icon><BrushCleaning :size="'0.875rem'" /></el-icon></button>
+        ><el-icon><BrushCleaning :size="lucideSize('0.875rem')" /></el-icon></button>
         <slot name="actions-end" />
       </div>
     </div>
@@ -32,7 +32,7 @@
     <div v-else-if="!collapsed" class="transfer-progress-bar">
       <div v-for="task in tasks" :key="task.id" class="transfer-task-wrap">
         <div class="transfer-task">
-          <span class="task-type"><ArrowUp v-if="task.type === 'upload'" :size="'0.75rem'" /><ArrowDown v-else :size="'0.75rem'" /></span>
+          <span class="task-type"><ArrowUp v-if="task.type === 'upload'" :size="lucideSize('0.75rem')" /><ArrowDown v-else :size="lucideSize('0.75rem')" /></span>
           <span
             class="task-name"
             :class="{ clickable: task.files.length > 0 }"
@@ -53,27 +53,27 @@
               class="btn btn-ghost btn-icon btn-sm"
               :title="t('sftp.pauseTransfer')"
               @click="emit('pause', task.id)"
-            ><Pause :size="'0.875rem'" /></button>
+            ><Pause :size="lucideSize('0.875rem')" /></button>
             <button
               v-else-if="task.status === 'paused'"
               class="btn btn-ghost btn-icon btn-sm"
               :title="t('sftp.resumeTransfer')"
               @click="emit('resume', task.id)"
-            ><Play :size="'0.875rem'" /></button>
+            ><Play :size="lucideSize('0.875rem')" /></button>
             <button
               v-if="task.status === 'running' || task.status === 'paused'"
               class="btn btn-ghost btn-icon btn-sm danger"
               :title="t('sftp.cancelTransfer')"
               @click="emit('cancel', task.id)"
-            ><X :size="'0.875rem'" /></button>
+            ><X :size="lucideSize('0.875rem')" /></button>
             <button
               v-if="task.status === 'error'"
               class="btn btn-ghost btn-icon btn-sm"
               :title="t('sftp.retryTransfer')"
               @click="emit('retry', task)"
-            ><RotateCcw :size="'0.875rem'" /></button>
+            ><RotateCcw :size="lucideSize('0.875rem')" /></button>
             <span v-else-if="task.status === 'cancelled'" class="status-text">{{ t('sftp.cancelled') }}</span>
-            <span v-else-if="task.status === 'done'" class="status-text done" :title="t('sftp.done')"><Check :size="'0.875rem'" /></span>
+            <span v-else-if="task.status === 'done'" class="status-text done" :title="t('sftp.done')"><Check :size="lucideSize('0.875rem')" /></span>
             <span v-if="task.status === 'error'" class="status-text error">{{ t('sftp.error') }}</span>
           </div>
         </div>
@@ -99,6 +99,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, computed } from 'vue'
 import { X, Pause, Play, ArrowUp, ArrowDown, Check, RotateCcw, BrushCleaning, ChevronUp, ChevronDown } from '@lucide/vue'
 import { useI18n } from '../i18n'

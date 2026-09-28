@@ -8,9 +8,9 @@
           @click="toggle(group.key)"
         >
           <span class="db-arrow">
-            <component :is="expanded.has(group.key) ? ChevronDown : ChevronRight" :size="'0.75rem'" />
+            <component :is="expanded.has(group.key) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
           </span>
-          <component :is="groupIcon(group.key)" class="db-icon" :size="'0.875rem'" />
+          <component :is="groupIcon(group.key)" class="db-icon" :size="lucideSize('0.875rem')" />
           <span class="db-name">{{ group.label }}</span>
         </div>
         <template v-if="expanded.has(group.key)">
@@ -35,6 +35,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref } from 'vue'
 import {
   ChevronDown, ChevronRight,

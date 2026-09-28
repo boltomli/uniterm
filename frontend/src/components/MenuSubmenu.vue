@@ -1,7 +1,7 @@
 <template>
   <MenuItem iconic class="submenu-wrap" @mouseenter="submenu.active = name">
     {{ label }}
-    <el-icon class="menu-icon-trailing"><ChevronRight :size="'0.8125rem'" /></el-icon>
+    <el-icon class="menu-icon-trailing"><ChevronRight :size="lucideSize('0.8125rem')" /></el-icon>
     <div v-show="submenu.active === name" class="menu-submenu" @mouseleave="submenu.active = ''">
       <slot />
     </div>
@@ -16,6 +16,7 @@ let submenuSeq = 0
 </script>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { inject } from 'vue'
 import { ChevronRight } from '@lucide/vue'
 import MenuItem from './MenuItem.vue'

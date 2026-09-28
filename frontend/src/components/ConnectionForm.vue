@@ -47,7 +47,7 @@
                   class="group-select"
                 />
                 <el-button class="new-group-btn" @click="onGroupSelect('__new__')" :title="t('conn.newGroup')">
-                  <Plus :size="'0.875rem'" />
+                  <Plus :size="lucideSize('0.875rem')" />
                 </el-button>
               </div>
             </el-form-item>
@@ -100,7 +100,7 @@
                   <el-option v-for="id in identityStore.identities" :key="id.id" :label="`${id.name} (${id.username})`" :value="id.id" />
                 </el-select>
                 <el-button class="inline-add-btn" :title="t('conn.newIdentity')" @click="openNewIdentityDialog">
-                  <Plus :size="'0.875rem'" />
+                  <Plus :size="lucideSize('0.875rem')" />
                 </el-button>
               </div>
             </el-form-item>
@@ -150,13 +150,13 @@
                   <div class="key-path-actions">
                     <el-tooltip :content="t('conn.selectKeyFile')" placement="top">
                       <el-button :aria-label="t('conn.selectKeyFile')" @click="selectKeyFile">
-                        <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                        <el-icon><FolderOpen :size="lucideSize('1rem')" /></el-icon>
                       </el-button>
                     </el-tooltip>
                     <span class="key-path-divider" aria-hidden="true"></span>
                     <el-tooltip :content="t('conn.useDefaultKey')" placement="top">
                       <el-button :aria-label="t('conn.useDefaultKey')" @click="useDefaultKeyPath">
-                        <el-icon><KeyRound :size="'1rem'" /></el-icon>
+                        <el-icon><KeyRound :size="lucideSize('1rem')" /></el-icon>
                       </el-button>
                     </el-tooltip>
                   </div>
@@ -166,7 +166,7 @@
             <el-form-item v-if="form.authType === 'keyText' && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyContent')">
               <template v-if="!keyContentRevealed">
                 <el-button size="small" @click="keyContentRevealed = true">
-                  <el-icon><Eye :size="'0.875rem'" /></el-icon>
+                  <el-icon><Eye :size="lucideSize('0.875rem')" /></el-icon>
                   <span style="margin-left: 0.25rem">{{ t('conn.keyTextReveal') }}</span>
                 </el-button>
               </template>
@@ -181,11 +181,11 @@
                 />
                 <div class="key-content-actions">
                   <el-button size="small" @click="keyContentRevealed = false">
-                    <el-icon><EyeOff :size="'0.875rem'" /></el-icon>
+                    <el-icon><EyeOff :size="lucideSize('0.875rem')" /></el-icon>
                     <span style="margin-left: 0.25rem">{{ t('conn.keyTextHide') }}</span>
                   </el-button>
                   <el-button size="small" @click="importKeyText">
-                    <el-icon><FolderOpen :size="'0.875rem'" /></el-icon>
+                    <el-icon><FolderOpen :size="lucideSize('0.875rem')" /></el-icon>
                     <span style="margin-left: 0.25rem">{{ t('conn.importFromFile') }}</span>
                   </el-button>
                 </div>
@@ -285,7 +285,7 @@
                 <el-input v-model="form.k8sConfigPath" placeholder="~/.kube/config">
                   <template #append>
                     <el-button @click="pickKubeconfigFile">
-                      <el-icon><FolderOpen :size="'1rem'" /></el-icon>
+                      <el-icon><FolderOpen :size="lucideSize('1rem')" /></el-icon>
                     </el-button>
                   </template>
                 </el-input>
@@ -294,7 +294,7 @@
               <el-form-item v-else :label="t('conn.k8sConfigInline')">
                 <template v-if="!k8sConfigRevealed">
                   <el-button size="small" @click="k8sConfigRevealed = true">
-                    <el-icon><Eye :size="'0.875rem'" /></el-icon>
+                    <el-icon><Eye :size="lucideSize('0.875rem')" /></el-icon>
                     <span style="margin-left: 0.25rem">{{ t('conn.k8sConfigReveal') }}</span>
                   </el-button>
                 </template>
@@ -307,11 +307,11 @@
                   />
                   <div class="key-content-actions">
                     <el-button size="small" @click="k8sConfigRevealed = false">
-                      <el-icon><EyeOff :size="'0.875rem'" /></el-icon>
+                      <el-icon><EyeOff :size="lucideSize('0.875rem')" /></el-icon>
                       <span style="margin-left: 0.25rem">{{ t('conn.k8sConfigHide') }}</span>
                     </el-button>
                     <el-button size="small" @click="importKubeconfigText">
-                      <el-icon><FolderOpen :size="'0.875rem'" /></el-icon>
+                      <el-icon><FolderOpen :size="lucideSize('0.875rem')" /></el-icon>
                       <span style="margin-left: 0.25rem">{{ t('conn.importFromFile') }}</span>
                     </el-button>
                   </div>
@@ -324,7 +324,7 @@
                     <el-option v-for="c in k8sContexts" :key="c.name" :value="c.name" :label="c.current ? c.name + ' (current)' : c.name" />
                   </el-select>
                   <el-button @click="reloadK8sContexts" :loading="k8sContextsLoading" :title="t('conn.k8sReloadContexts')">
-                    <el-icon><RefreshCw :size="'1rem'" /></el-icon>
+                    <el-icon><RefreshCw :size="lucideSize('1rem')" /></el-icon>
                   </el-button>
                 </div>
               </el-form-item>
@@ -415,7 +415,7 @@
               <el-input v-model="form.remark" type="textarea" :rows="3" />
             </el-form-item>
             <div v-if="showAdvancedToggle" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-              <el-icon class="advanced-arrow" :class="{ expanded: showAdvanced }"><ChevronRight :size="'0.875rem'" /></el-icon>
+              <el-icon class="advanced-arrow" :class="{ expanded: showAdvanced }"><ChevronRight :size="lucideSize('0.875rem')" /></el-icon>
               <span>{{ t('conn.advanced') }}</span>
             </div>
             <template v-if="showAdvanced">
@@ -479,12 +479,12 @@
                         :title="t('conn.expectRemoveStep')"
                         @click="removeExpectStep(idx)"
                       >
-                        <Trash2 :size="'0.875rem'" />
+                        <Trash2 :size="lucideSize('0.875rem')" />
                       </el-button>
                     </div>
                   </div>
                   <el-button class="add-step-btn" @click="addExpectStep">
-                    <Plus :size="'0.875rem'" />
+                    <Plus :size="lucideSize('0.875rem')" />
                     {{ t('conn.expectAddStep') }}
                   </el-button>
                   <div class="expect-help">{{ t('conn.expectVariableHint') }}</div>
@@ -624,7 +624,7 @@
                   />
                 </el-select>
                 <el-button class="inline-add-btn" :title="t('conn.newProxy')" @click="openNewProxyDialog">
-                  <Plus :size="'0.875rem'" />
+                  <Plus :size="lucideSize('0.875rem')" />
                 </el-button>
               </div>
             </el-form-item>
@@ -710,6 +710,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { reactive, computed, watch, ref, nextTick, onMounted } from 'vue'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -760,7 +761,7 @@ onMounted(() => {
 const isWindows = ref(/windows/i.test(navigator.userAgent) || /win32/i.test(navigator.platform))
 const isMac = ref(/mac/i.test(navigator.platform))
 const platform = ref<string>('')
-GetPlatform().then(p => {
+GetPlatform().then((p: string) => {
   platform.value = p
   isWindows.value = p === 'windows'
   isMac.value = p === 'darwin'
@@ -768,11 +769,20 @@ GetPlatform().then(p => {
 
 // ── Categories & sub-types ──
 interface SubTypeInfo {
-  type: string
+  type: ConnectionConfig['type']
   dbType?: string
   containerRuntime?: string
   label: string
   icon: any
+}
+
+// Registry kinds that are NOT ConnectionConfig types (runtime exec panels and
+// pure UI tab kinds). Every other connectionTypes registry entry is a real
+// connection type, so a sub-type card's kind can be narrowed to
+// ConnectionConfig['type'].
+const NON_CONNECTION_KINDS = ['k8s-exec', 'container-exec', 'settings', 'start'] as const
+function isConnectionKind(t: string): t is ConnectionConfig['type'] {
+  return CONNECTION_TYPES.some(info => info.type === t) && !NON_CONNECTION_KINDS.some(k => k === t)
 }
 
 // Category sidebar and subtype cards derive from the connectionTypes registry.
@@ -788,6 +798,10 @@ const allSubTypes = computed((): Record<string, SubTypeInfo[]> => {
   for (const info of CONNECTION_TYPES) {
     if (info.formHidden) continue
     if (info.windowsOnly && !isWindows.value) continue
+    // The registry-only non-connection kinds above are all form-hidden, so a
+    // form-visible entry always carries a ConnectionConfig type; the check
+    // narrows info.type for the card.
+    if (!isConnectionKind(info.type)) continue
     groups[info.category].push({
       type: info.type,
       dbType: info.dbType,
@@ -1539,7 +1553,7 @@ async function useDefaultKeyPath() {
   try {
     const paths = await GetDefaultSSHKeyPaths()
     if (!paths?.length) return
-    const current = form.keyPath.trim()
+    const current = (form.keyPath || '').trim()
     const idx = paths.indexOf(current)
     form.keyPath = idx >= 0 ? paths[(idx + 1) % paths.length] : paths[0]
   } catch (e) {

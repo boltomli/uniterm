@@ -69,26 +69,27 @@
           </el-table-column>
           <el-table-column :label="t('container.colActions')" :width="uiPx(172)" fixed="right" class-name="k8s-action-cell">
             <template #default="{ row }">
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.exec')" @click.stop="openExec(row)">
-                <SquareTerminal :size="'0.875rem'" />
+              <!-- `row` is element-plus el-table's DefaultRow slot payload; cast at this third-party boundary. -->
+              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.exec')" @click.stop="openExec(row as ContainerInfo)">
+                <SquareTerminal :size="lucideSize('0.875rem')" />
               </button>
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.logs')" @click.stop="openLogs(row)">
-                <ScrollText :size="'0.875rem'" />
+              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.logs')" @click.stop="openLogs(row as ContainerInfo)">
+                <ScrollText :size="lucideSize('0.875rem')" />
               </button>
-              <button v-if="row.state !== 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.start')" @click.stop="runAction(row, 'start')">
-                <Play :size="'0.875rem'" />
+              <button v-if="row.state !== 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.start')" @click.stop="runAction(row as ContainerInfo, 'start')">
+                <Play :size="lucideSize('0.875rem')" />
               </button>
-              <button v-if="row.state === 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.stop')" @click.stop="runAction(row, 'stop')">
-                <Square :size="'0.875rem'" />
+              <button v-if="row.state === 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.stop')" @click.stop="runAction(row as ContainerInfo, 'stop')">
+                <Square :size="lucideSize('0.875rem')" />
               </button>
-              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.restart')" @click.stop="runAction(row, 'restart')">
-                <Power :size="'0.875rem'" />
+              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.restart')" @click.stop="runAction(row as ContainerInfo, 'restart')">
+                <Power :size="lucideSize('0.875rem')" />
               </button>
-              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.rename')" @click.stop="onRename(row)">
-                <Pencil :size="'0.875rem'" />
+              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.rename')" @click.stop="onRename(row as ContainerInfo)">
+                <Pencil :size="lucideSize('0.875rem')" />
               </button>
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.remove')" @click.stop="onRemove(row)">
-                <Trash2 :size="'0.875rem'" />
+              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.remove')" @click.stop="onRemove(row as ContainerInfo)">
+                <Trash2 :size="lucideSize('0.875rem')" />
               </button>
             </template>
           </el-table-column>
@@ -120,8 +121,9 @@
           </el-table-column>
           <el-table-column :label="t('container.colActions')" :width="uiPx(38)" fixed="right" class-name="k8s-action-cell">
             <template #default="{ row }">
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.removeImage')" @click.stop="onRemoveImage(row)">
-                <Trash2 :size="'0.875rem'" />
+              <!-- `row` is element-plus el-table's DefaultRow slot payload; cast at this third-party boundary. -->
+              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.removeImage')" @click.stop="onRemoveImage(row as ContainerImage)">
+                <Trash2 :size="lucideSize('0.875rem')" />
               </button>
             </template>
           </el-table-column>
@@ -147,6 +149,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
 import { RefreshCw, SquareTerminal, ScrollText, Play, Square, Power, Pencil, Trash2 } from '@lucide/vue'

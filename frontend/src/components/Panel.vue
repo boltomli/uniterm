@@ -43,8 +43,8 @@
           @click.stop="toggleMaximize"
           :title="maximizeTitle"
         >
-          <Minimize2 v-if="isMaximized" :size="'0.875rem'" />
-          <Maximize2 v-else :size="'0.875rem'" />
+          <Minimize2 v-if="isMaximized" :size="lucideSize('0.875rem')" />
+          <Maximize2 v-else :size="lucideSize('0.875rem')" />
         </button>
         <button
           v-if="(panel.type === 'ssh' || panel.type === 'local' || panel.type === 'wsl') && workspaceId"
@@ -53,7 +53,7 @@
           @click.stop="onBroadcastClick"
           :title="broadcastTitle"
         >
-          <Radio :size="'0.875rem'" />
+          <Radio :size="lucideSize('0.875rem')" />
         </button>
         <button
           class="panel-ai-lock"
@@ -61,7 +61,7 @@
           @click.stop="emit('toggleAiLock', panel.id)"
           :title="isAILocked ? t('terminal.aiLockedToPanel') : t('terminal.lockAIToPanel')"
         >
-          <Sparkles :size="'0.875rem'" />
+          <Sparkles :size="lucideSize('0.875rem')" />
         </button>
         <div class="panel-more-wrapper">
           <button
@@ -69,7 +69,7 @@
             @click.stop="toggleMoreMenu($event)"
             :title="t('terminal.more')"
           >
-            <MoreHorizontal :size="'0.875rem'" />
+            <MoreHorizontal :size="lucideSize('0.875rem')" />
           </button>
           <Menu ref="moreMenuRef" align="end" v-model:visible="moreMenuVisible">
             <!-- ① 面板操作 -->
@@ -121,7 +121,7 @@
             </MenuItem>
           </Menu>
         </div>
-        <button class="panel-close" @click.stop="emit('close', panel.id)"><X :size="'0.875rem'" /></button>
+        <button class="panel-close" @click.stop="emit('close', panel.id)"><X :size="lucideSize('0.875rem')" /></button>
       </div>
     </div>
     <BaseTerminal
@@ -137,6 +137,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, watch, computed, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import { Radio, Sparkles, MoreHorizontal, X, SquareTerminal, Laptop, LaptopMinimal, Cable, Terminal, Zap, Maximize2, Minimize2 } from '@lucide/vue'
 import BaseTerminal from './BaseTerminal.vue'
@@ -163,7 +164,7 @@ import {
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
 import { useI18n } from '../i18n'
-import type { Panel } from '../types/workspace'
+import type { Panel, WorkspaceTab } from '../types/workspace'
 import { waitForTerminalSize } from '../services/terminalManager'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
 import type { ConnectionConfig } from '../types/session'
@@ -219,7 +220,9 @@ const panelShortcut = computed(() => {
   return formatDigitShortcut(prefix, props.shortcutIndex, isMac)
 })
 const workspaceTab = computed(() =>
-  props.workspaceId ? tabStore.tabs.find(tab => tab.id === props.workspaceId && tab.type === 'workspace') : undefined
+  props.workspaceId
+    ? tabStore.tabs.find((tab): tab is WorkspaceTab => tab.id === props.workspaceId && tab.type === 'workspace')
+    : undefined
 )
 const isMaximized = computed(() => workspaceTab.value?.maximizedPanelId === props.panel.id)
 const maximizeTitle = computed(() => {
@@ -294,7 +297,7 @@ const panelIcon = computed(() => {
 
 function toggleMoreMenu(e: MouseEvent) {
   const opening = !moreMenuVisible.value
-  moreMenuRef.value?.toggle(e.currentTarget)
+  if (e.currentTarget instanceof HTMLElement) moreMenuRef.value?.toggle(e.currentTarget)
   if (opening) refreshOutputLogState()
 }
 
@@ -333,7 +336,7 @@ async function copyHostAddress() {
   // Wails clipboard, falling back to the browser API when the runtime is
   // absent (plain dev in a browser) or the call fails.
   let ok = false
-  try { ok = await Clipboard.SetText(host) } catch { ok = false }
+  try { ok = Boolean(await Clipboard.SetText(host)) } catch { ok = false }
   if (!ok) {
     try { await navigator.clipboard.writeText(host) } catch { /* no clipboard */ }
   }
@@ -495,11 +498,15 @@ async function repromptCredentials() {
 async function retryConnection() {
   retryAttempt++
   if (props.panel.type === 'local') {
+    // A local panel always gets its config attached at creation (see
+    // createLocalTerminal); without one there is no shell to restart.
+    const cfg = props.panel.config
+    if (!cfg) return
     baseTerminalRef.value?.write(RESET_MOUSE_MODES + '\r\n\x1b[33mRestarting local shell...\x1b[0m\r\n')
     try {
-      const shellPath = props.panel.config?.shellPath || ''
+      const shellPath = cfg.shellPath || ''
       const config: ConnectionConfig = {
-        ...props.panel.config,
+        ...cfg,
         type: 'local',
         shellPath,
         initialCols: 0,
@@ -513,7 +520,7 @@ async function retryConnection() {
         config.initialCols = size.cols
         config.initialRows = size.rows
       }
-      await SessionStart(info.id, config).catch((e) => {
+      await SessionStart(info.id, config).catch((e: any) => {
         baseTerminalRef.value?.write(`\r\n\x1b[31mFailed to start local shell: ${e}\x1b[0m\r\n`)
         CloseSession(info.id).catch(() => {})
       })
@@ -591,7 +598,7 @@ async function retryConnection() {
       config.initialCols = size.cols
       config.initialRows = size.rows
     }
-    await SessionStart(info.id, config).catch((e) => {
+    await SessionStart(info.id, config).catch((e: any) => {
       baseTerminalRef.value?.write(`\r\n\x1b[31mReconnect failed: ${e}\x1b[0m\r\n`)
       CloseSession(info.id).catch(() => {})
     })

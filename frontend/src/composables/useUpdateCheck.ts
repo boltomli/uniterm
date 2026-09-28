@@ -206,7 +206,8 @@ function initAutoCheck() {
   settingsWatchStop = null
 
   // Fetch current version immediately so About page shows it
-  GetAppInfo().then(info => {
+  // Bindings resolve to `any` (ambient module); AppInfo is the Go struct in app.go.
+  GetAppInfo().then((info: { name: string; version: string }) => {
     if (!updateInfo.value) {
       updateInfo.value = { hasUpdate: false, current: info.version, latest: '', releaseUrl: '', changelog: '', assets: [] }
     }

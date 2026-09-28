@@ -26,13 +26,13 @@
         <span class="history-command">{{ entry.command }}</span>
         <div v-if="selectedIds.size <= 1 && (selectedIds.has(entry.id) || hoveredId === entry.id)" class="qc-item-actions">
           <button class="btn btn-ghost btn-icon btn-sm run" @click.stop="runCommand(entry)" :title="t('quickCommands.run')">
-            <Play :size="'0.875rem'" />
+            <Play :size="lucideSize('0.875rem')" />
           </button>
           <button class="btn btn-ghost btn-icon btn-sm paste" @click.stop="pasteCommand(entry)" :title="t('quickCommands.paste')">
-            <Clipboard :size="'0.875rem'" />
+            <Clipboard :size="lucideSize('0.875rem')" />
           </button>
           <button class="btn btn-ghost btn-icon btn-sm" @click.stop="copyCommand(entry)" :title="t('quickCommands.copy')">
-            <Copy :size="'0.875rem'" />
+            <Copy :size="lucideSize('0.875rem')" />
           </button>
         </div>
       </div>
@@ -43,11 +43,11 @@
     </div>
 
     <!-- Context menu -->
-    <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible" v-slot="{ current }">
-      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && runCommand(current)">{{ t('quickCommands.run') }}</MenuItem>
-      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && pasteCommand(current)">{{ t('quickCommands.paste') }}</MenuItem>
-      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && copyCommand(current); ctxMenuVisible = false">{{ t('quickCommands.copy') }}</MenuItem>
-      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && saveAsQuickCommand(current)">{{ t('quickCommands.saveAs') }}</MenuItem>
+    <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible">
+      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && ctxEntry && runCommand(ctxEntry)">{{ t('quickCommands.run') }}</MenuItem>
+      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && ctxEntry && pasteCommand(ctxEntry)">{{ t('quickCommands.paste') }}</MenuItem>
+      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && ctxEntry && copyCommand(ctxEntry); ctxMenuVisible = false">{{ t('quickCommands.copy') }}</MenuItem>
+      <MenuItem :class="{ disabled: selectedIds.size > 1 }" @click="selectedIds.size <= 1 && ctxEntry && saveAsQuickCommand(ctxEntry)">{{ t('quickCommands.saveAs') }}</MenuItem>
       <MenuDivider />
       <MenuItem class="danger" @click="deleteSelected(); ctxMenuVisible = false">{{ t('sidebar.delete') }}</MenuItem>
     </Menu>
@@ -64,6 +64,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted, watch } from 'vue'
 import { Play, Clipboard, Copy } from '@lucide/vue'
 import { useSuggestions, type HistoryEntry } from '../composables/useSuggestions'
@@ -92,6 +93,9 @@ const lastClickId = ref<string | null>(null)
 
 const ctxMenuVisible = ref(false)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+// Entry the context menu was opened for. Menu's slot payload is `unknown`, so
+// the typed source lives here (set in onContextMenu) instead of the slot.
+const ctxEntry = ref<HistoryEntry | null>(null)
 
 const editDialogVisible = ref(false)
 const editingCmdCommand = ref('')
@@ -253,6 +257,7 @@ function onContextMenu(e: MouseEvent, entry: HistoryEntry) {
     selectedIds.value = new Set([entry.id])
     focusedId.value = entry.id
   }
+  ctxEntry.value = entry
   ctxMenuRef.value?.openAt(e.clientX, e.clientY, entry)
 }
 

@@ -26,13 +26,13 @@
     <!-- Search bar -->
     <div v-show="searchVisible" class="terminal-search-bar">
       <button class="search-btn" :class="{ active: searchCaseSensitive }" :title="t('terminal.searchMatchCase')" @click="toggleSearchOption('caseSensitive')">
-        <CaseSensitive :size="'0.875rem'" />
+        <CaseSensitive :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" :class="{ active: searchRegex }" :title="t('terminal.searchRegexp')" @click="toggleSearchOption('regex')">
-        <Regex :size="'0.875rem'" />
+        <Regex :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" :class="{ active: searchWholeWord }" :title="t('terminal.searchWholeWord')" @click="toggleSearchOption('wholeWord')">
-        <WholeWord :size="'0.875rem'" />
+        <WholeWord :size="lucideSize('0.875rem')" />
       </button>
       <input
         ref="searchInputRef"
@@ -46,13 +46,13 @@
       />
       <span class="search-count" v-if="searchText">{{ searchResultIndex + 1 }}/{{ searchResultCount || 0 }}</span>
       <button class="search-btn" @click="onSearchPrev" :title="`${t('terminal.searchPrev')} (Enter)`">
-        <ChevronUp :size="'0.875rem'" />
+        <ChevronUp :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" @click="onSearchNext" :title="`${t('terminal.searchNext')} (Shift+Enter)`">
-        <ChevronDown :size="'0.875rem'" />
+        <ChevronDown :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" @click="closeSearch" :title="t('terminal.searchClose')">
-        <X :size="'0.875rem'" />
+        <X :size="lucideSize('0.875rem')" />
       </button>
     </div>
 
@@ -131,6 +131,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -284,7 +285,6 @@ const suggestions = useSuggestions()
 let terminalInput: ReturnType<typeof useTerminalInput> | null = null
 let terminal: Terminal | null = null
 let onDataDispose: { dispose(): void } | null = null
-let keyHandlerDispose: { dispose(): void } | null = null
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
 // Track how many sessionStore chunks have been written to the terminal
@@ -337,7 +337,7 @@ function resetIMEState(): boolean {
 function resetIMEComposition(): boolean {
   if (!resetIMEState()) return false
   // Clear the textarea and end the OS-level composition via blur.
-  if (terminal.textarea) {
+  if (terminal?.textarea) {
     terminal.textarea.value = ''
     terminal.textarea.blur()
   }
@@ -1293,13 +1293,15 @@ onMounted(() => {
   }
 
   // Bind per-component listeners (onData, keyHandler).
-  // Called from onMounted and onActivated; disposed in onDeactivated.
+  // Called from onMounted and onActivated; onData is disposed in onDeactivated.
+  // xterm keeps a single custom key handler per terminal, so re-attaching it
+  // in bindListeners replaces any previous one — there is nothing to dispose.
   bindListeners = () => {
     // Dispose previous listeners before re-registering
     onDataDispose?.dispose()
     onDataDispose = null
-    keyHandlerDispose?.dispose()
-    keyHandlerDispose = null
+
+    if (!terminal) return
 
     // Bump the TERMINAL-SHARED generation counter so that ALL
     // components sharing this terminal can detect stale callbacks.
@@ -1308,7 +1310,7 @@ onMounted(() => {
     const sidNow = props.sessionId
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
-    keyHandlerDispose = terminal.attachCustomKeyEventHandler(handleTerminalKey)
+    terminal.attachCustomKeyEventHandler(handleTerminalKey)
 
     // Input handling
     onDataDispose = terminal.onData((data) => {
@@ -1351,16 +1353,18 @@ onMounted(() => {
         if (/^(?:sudo\s+)?rz\b/.test(line)) {
           zmodemDirection = 'upload'
           // Recreate the zmodem service so on_detect sees the new direction.
-          if (props.sessionId) {
-            disposeZmodemService(props.sessionId, false).then(() => {
-              initZmodemService(props.sessionId)
+          const rzSid = props.sessionId
+          if (rzSid) {
+            disposeZmodemService(rzSid, false).then(() => {
+              initZmodemService(rzSid)
             })
           }
         } else if (/^(?:sudo\s+)?sz\b/.test(line)) {
           zmodemDirection = 'download'
-          if (props.sessionId) {
-            disposeZmodemService(props.sessionId, false).then(() => {
-              initZmodemService(props.sessionId)
+          const szSid = props.sessionId
+          if (szSid) {
+            disposeZmodemService(szSid, false).then(() => {
+              initZmodemService(szSid)
             })
           }
         }
@@ -1881,8 +1885,6 @@ onDeactivated(() => {
   // BaseTerminal mounts with the same shared terminal instance.
   onDataDispose?.dispose()
   onDataDispose = null
-  keyHandlerDispose?.dispose()
-  keyHandlerDispose = null
 
   // If a transfer is still active, keep the service running so the background
   // transfer continues. Otherwise dispose and restore backend state.
@@ -2125,8 +2127,6 @@ onUnmounted(() => {
   // component still holds a reference.
   onDataDispose?.dispose()
   onDataDispose = null
-  keyHandlerDispose?.dispose()
-  keyHandlerDispose = null
 
   // Release reference (delayed dispose: terminal survives 500ms)
   if (props.sessionId) {
@@ -2191,13 +2191,14 @@ async function pasteToSession(text: string) {
           const p = panelStore.getPanel(pid)
           const managed = p?.sessionId ? getManagedTerminal(p.sessionId) : undefined
           if (p?.sessionId && (p.type === 'ssh' || p.type === 'local' || p.type === 'wsl') && managed) {
+            const sid = p.sessionId
             // Bracket per target session — each has its own paste mode.
             // Scroll each target's viewport to the bottom too, so broadcast
             // paste behaves like keyboard input everywhere (issue 629).
             pasteWithScroll(
               {
                 bracketedPasteMode: managed.terminal.modes.bracketedPasteMode,
-                write: (payload) => queuedSessionWrite(p.sessionId, payload),
+                write: (payload) => queuedSessionWrite(sid, payload),
                 scrollToBottom: () => managed.terminal.scrollToBottom(),
               },
               normalized,

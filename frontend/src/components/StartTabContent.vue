@@ -7,7 +7,7 @@
       <!-- Search row -->
     <div class="start-search-row">
       <span class="start-filter-btn" :class="{ active: selectedTypeFilter !== 'all' }" @click.stop="filterMenuRef?.toggle($event.currentTarget)">
-        <el-icon><Filter :size="'0.875rem'" /></el-icon>
+        <el-icon><Filter :size="lucideSize('0.875rem')" /></el-icon>
         <span>{{ filterDisplay }}</span>
       </span>
       <TypeFilterMenu ref="filterMenuRef" align="start" v-model="selectedTypeFilter" />
@@ -24,20 +24,20 @@
     <!-- Action buttons -->
     <div class="start-action-btns">
       <button class="start-action-btn primary" @click="emit('new-connection', { groupId: tab.viewMode === 'group' ? tab.groupId : undefined, host: (searchQuery || '').trim() || undefined })">
-        <el-icon><Plus :size="'0.875rem'" /></el-icon>
+        <el-icon><Plus :size="lucideSize('0.875rem')" /></el-icon>
         {{ t('header.newConnection') }}
       </button>
       <button class="start-action-btn" @click="emit('new-workspace')">
-        <el-icon><LayoutDashboard :size="'0.875rem'" /></el-icon>
+        <el-icon><LayoutDashboard :size="lucideSize('0.875rem')" /></el-icon>
         {{ t('workspace.newWorkspace') }}
       </button>
       <div v-if="!isMobile" class="start-action-btn-group">
         <button class="start-action-btn" @click="handleDefaultLocalTerminal">
-          <el-icon><Laptop :size="'0.875rem'" /></el-icon>
+          <el-icon><Laptop :size="lucideSize('0.875rem')" /></el-icon>
           {{ t('conn.startLocalTerminal') }}
         </button>
-        <button class="start-action-btn-dropdown-arrow" @click.stop="shellMenuRef?.toggle($event.currentTarget)">
-          <el-icon><ChevronDown :size="'0.75rem'" /></el-icon>
+        <button class="start-action-btn-dropdown-arrow" @click.stop="toggleMenu(shellMenuRef, $event)">
+          <el-icon><ChevronDown :size="lucideSize('0.75rem')" /></el-icon>
         </button>
         <Menu ref="shellMenuRef" v-model:visible="shellMenuVisible">
           <MenuItem
@@ -64,7 +64,7 @@
         <span v-else class="link" @click="enterGroupAt(crumb.id)">{{ crumb.name }}</span>
       </template>
       <span class="start-add-group-btn" @click="openNewGroupDialog" :title="t('conn.newGroupTitle')">
-        <el-icon><Plus :size="'0.75rem'" /></el-icon>
+        <el-icon><Plus :size="lucideSize('0.75rem')" /></el-icon>
       </span>
     </div>
 
@@ -94,8 +94,8 @@
             </div>
             <!-- Inside the favorites section the star is hover-only (everything
                  here is favorited; a lit star would be redundant noise) -->
-            <button class="card-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="'0.875rem'" /></button>
-            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config, 'fav:')" :title="t('terminal.more')"><MoreHorizontal :size="'1rem'" /></button>
+            <button class="card-fav-btn lit" :title="t('sidebar.removeFromFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="lucideSize('0.875rem')" /></button>
+            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config, 'fav:')" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('1rem')" /></button>
           </div>
         </div>
       </template>
@@ -122,8 +122,8 @@
                 <div class="start-card-meta">{{ getCardSubtitle(config) }}</div>
               </div>
             </div>
-            <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="'0.875rem'" /></button>
-            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config, 'recent:')" :title="t('terminal.more')"><MoreHorizontal :size="'1rem'" /></button>
+            <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="lucideSize('0.875rem')" /></button>
+            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config, 'recent:')" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('1rem')" /></button>
           </div>
         </div>
       </template>
@@ -131,7 +131,7 @@
       <!-- Groups -->
       <div class="start-section-label">
         {{ t('startTab.groups') }}
-        <span class="start-add-group-btn" @click="openNewGroupDialog" :title="t('conn.newGroupTitle')"><el-icon><Plus :size="'0.75rem'" /></el-icon></span>
+        <span class="start-add-group-btn" @click="openNewGroupDialog" :title="t('conn.newGroupTitle')"><el-icon><Plus :size="lucideSize('0.75rem')" /></el-icon></span>
       </div>
       <div class="start-cards-grid">
         <div
@@ -144,7 +144,7 @@
           @contextmenu.prevent="onGroupContextMenu($event, group.id, group.name)"
         >
           <div class="start-card-top">
-            <div class="start-card-icon group"><el-icon><Folder :size="'1.375rem'" /></el-icon></div>
+            <div class="start-card-icon group"><el-icon><Folder :size="lucideSize('1.375rem')" /></el-icon></div>
             <div>
               <div class="start-card-name">{{ group.name }}</div>
               <div class="start-card-meta">{{ t('startTab.connectionsCount', { count: group.count }) }}</div>
@@ -159,7 +159,7 @@
           @dblclick="enterGroup('__ungrouped__')"
         >
           <div class="start-card-top">
-            <div class="start-card-icon ungrouped"><el-icon><FolderOpen :size="'1.375rem'" /></el-icon></div>
+            <div class="start-card-icon ungrouped"><el-icon><FolderOpen :size="lucideSize('1.375rem')" /></el-icon></div>
             <div>
               <div class="start-card-name">{{ t('conn.noGroup') }}</div>
               <div class="start-card-meta">{{ t('startTab.connectionsCount', { count: groupCards.ungroupedCount }) }}</div>
@@ -190,8 +190,8 @@
                 <div class="start-card-meta">{{ getCardSubtitle(config) }}</div>
               </div>
             </div>
-            <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="'0.875rem'" /></button>
-            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config)" :title="t('terminal.more')"><MoreHorizontal :size="'1rem'" /></button>
+            <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="lucideSize('0.875rem')" /></button>
+            <button class="card-more-btn" @click.stop="onCardMoreClick($event, config)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('1rem')" /></button>
           </div>
         </div>
         <div v-if="filteredConnections.length === 0 && connectionStore.connections.length > 0" class="start-empty-hint">
@@ -215,7 +215,7 @@
           @contextmenu.prevent="onGroupContextMenu($event, group.id, group.name)"
         >
           <div class="start-card-top">
-            <div class="start-card-icon group"><el-icon><Folder :size="'1.375rem'" /></el-icon></div>
+            <div class="start-card-icon group"><el-icon><Folder :size="lucideSize('1.375rem')" /></el-icon></div>
             <div>
               <div class="start-card-name">{{ group.name }}</div>
               <div class="start-card-meta">{{ t('startTab.connectionsCount', { count: group.count }) }}</div>
@@ -245,8 +245,8 @@
               <div class="start-card-meta">{{ getCardSubtitle(config) }}</div>
             </div>
           </div>
-          <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="'0.875rem'" /></button>
-          <button class="card-more-btn" @click.stop="onCardMoreClick($event, config)" :title="t('terminal.more')"><MoreHorizontal :size="'1rem'" /></button>
+          <button class="card-fav-btn" :class="{ on: favoriteStore.isFavorite(config.id) }" :title="favoriteStore.isFavorite(config.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(config.id)"><Star :size="lucideSize('0.875rem')" /></button>
+          <button class="card-more-btn" @click.stop="onCardMoreClick($event, config)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('1rem')" /></button>
         </div>
       </div>
       <div v-if="filteredConnections.length === 0" class="start-empty-hint">
@@ -263,7 +263,7 @@
       @dblclick="emit('new-connection', { host: searchQuery.trim() })"
     >
       <div class="start-card-top">
-        <div class="start-card-icon quick"><el-icon><Zap :size="'1.375rem'" /></el-icon></div>
+        <div class="start-card-icon quick"><el-icon><Zap :size="lucideSize('1.375rem')" /></el-icon></div>
         <div>
           <div class="start-card-name quick-name">{{ t('startTab.quickConnect', { host: searchQuery.trim() }) }}</div>
           <div class="start-card-meta">{{ t('startTab.quickConnectDesc') }}</div>
@@ -315,6 +315,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import Menu from './Menu.vue'
 import TypeFilterMenu from './TypeFilterMenu.vue'
@@ -353,6 +354,7 @@ const emit = defineEmits<{
   'edit-connection': [config: ConnectionConfig]
   'change-group': [config: ConnectionConfig]
   'change-group-ids': [ids: string[]]
+  'change-group-parent': [groupId: string]
 }>()
 
 const { t } = useI18n()
@@ -441,6 +443,13 @@ const filterMenuRef = ref<InstanceType<typeof TypeFilterMenu> | null>(null)
 
 const shellMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const shellMenuVisible = ref(false)
+
+// Menu.toggle() anchors below an HTMLElement; template click handlers expose
+// EventTarget | null, so narrow it here (same guard as Panel.vue / TabBar.vue).
+function toggleMenu(menu: InstanceType<typeof Menu> | null, e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) menu?.toggle(e.currentTarget)
+}
+
 // Local terminals spawn a host shell, which does not exist on android/ios.
 const isMobile = isMobilePlatform()
 

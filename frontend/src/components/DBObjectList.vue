@@ -7,7 +7,7 @@
         :placeholder="t('db.searchTables')"
       />
       <button class="btn btn-default btn-sm" @click="openNewTable">
-        <Plus :size="'0.875rem'" /> {{ t('db.newTable') }}
+        <Plus :size="lucideSize('0.875rem')" /> {{ t('db.newTable') }}
       </button>
     </div>
     <el-table
@@ -20,7 +20,7 @@
       <el-table-column :label="t('db.colName')" prop="name" sortable>
         <template #default="{ row }">
           <span class="object-name" @click="onRowClick(row)">
-            <component :is="row.type === 'view' ? Eye : Table2" :size="'0.875rem'" class="object-icon" />
+            <component :is="row.type === 'view' ? Eye : Table2" :size="lucideSize('0.875rem')" class="object-icon" />
             {{ row.name }}
           </span>
         </template>
@@ -44,14 +44,14 @@
             :title="t('db.dropView')"
             @click.stop="askDropView(row)"
           >
-            <Trash2 :size="'0.875rem'" />
+            <Trash2 :size="lucideSize('0.875rem')" />
           </button>
           <template v-else>
             <button class="btn btn-ghost btn-icon btn-sm" :title="t('db.truncateTable')" @click.stop="askTruncate(row)">
-              <Eraser :size="'0.875rem'" />
+              <Eraser :size="lucideSize('0.875rem')" />
             </button>
             <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('db.dropTable')" @click.stop="askDrop(row)">
-              <Trash2 :size="'0.875rem'" />
+              <Trash2 :size="lucideSize('0.875rem')" />
             </button>
           </template>
         </template>
@@ -91,6 +91,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch } from 'vue'
 import { Table2, Eye, Eraser, Trash2, Plus } from '@lucide/vue'
 import { useI18n } from '../i18n'

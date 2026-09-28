@@ -18,7 +18,7 @@
           <code>{{ token }}</code>
           <el-tooltip :content="copied === 'token' ? t('common.copied') : t('common.copy')" placement="top">
             <el-button link :type="copied === 'token' ? ('success' as const) : ('default' as const)" @click="copy('token', token)">
-              <el-icon><Check v-if="copied === 'token'" /><Copy v-else :size="'0.875rem'" /></el-icon>
+              <el-icon><Check v-if="copied === 'token'" /><Copy v-else :size="lucideSize('0.875rem')" /></el-icon>
             </el-button>
           </el-tooltip>
         </div>
@@ -31,7 +31,7 @@
             <pre>{{ c.config }}</pre>
             <el-tooltip :content="copied === c.id ? t('common.copied') : t('common.copy')" placement="top">
               <el-button link class="mcp-setup-copy" :type="copied === c.id ? ('success' as const) : ('default' as const)" @click="copy(c.id, c.config)">
-                <el-icon><Check v-if="copied === c.id" /><Copy v-else :size="'0.875rem'" /></el-icon>
+                <el-icon><Check v-if="copied === c.id" /><Copy v-else :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
             </el-tooltip>
           </div>
@@ -45,6 +45,7 @@
   </el-dialog>
 </template>
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { writeClipboard } from '../composables/useClipboardWrite'

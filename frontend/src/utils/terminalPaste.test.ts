@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { normalizePastedText, bracketPaste, pasteWithScroll } from './terminalPaste'
 import type { PasteTarget } from './terminalPaste'
 
-function mkTarget(overrides: Partial<PasteTarget> = {}): PasteTarget & { scrollToBottom: ReturnType<typeof vi.fn> } {
+function mkTarget(overrides: Partial<PasteTarget> = {}): PasteTarget {
   return {
     bracketedPasteMode: false,
     write: vi.fn(),

@@ -42,7 +42,7 @@ const palette: PreviewPalette = {
   ],
 }
 
-function makeLine(cells: Array<Partial<PreviewBufferCell>>) {
+function makeLine(cells: PreviewBufferCell[]) {
   return {
     isWrapped: false,
     getCell(x: number): PreviewBufferCell | undefined {
@@ -134,6 +134,7 @@ describe('lineToRuns', () => {
       getWidth: () => 1,
       getChars: () => 'a',
       getFgColor: () => 0,
+      getFgColorMode: () => 0,
       getBgColor: () => 0,
       isFgRGB: () => false,
       isFgPalette: () => false,

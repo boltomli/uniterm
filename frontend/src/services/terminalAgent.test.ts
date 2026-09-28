@@ -63,9 +63,9 @@ const mockGetManagedTerminal = vi.fn(() => ({
   lineOffset: 0,
 }))
 const mockIsTerminalActive = vi.fn(() => true)
-const mockGetMirrorPromptSnapshot = vi.fn(() => null)
-const mockReadMirrorScreenFromRow = vi.fn(() => null)
-const mockReadMirrorTail = vi.fn(() => null)
+const mockGetMirrorPromptSnapshot = vi.fn((): { promptLine: string; startRow: number } | null => null)
+const mockReadMirrorScreenFromRow = vi.fn((): string | null => null)
+const mockReadMirrorTail = vi.fn((): string | null => null)
 vi.mock('../services/terminalManager', () => ({
   getManagedTerminal: (...args: any[]) => mockGetManagedTerminal(...(args as [])),
   isTerminalActive: (...args: any[]) => mockIsTerminalActive(...(args as [])),
@@ -121,6 +121,12 @@ const MOCK_TIMESTAMP = 1700000000000
 function fakeData(sessionId: string, data: string) {
   return { id: sessionId, data }
 }
+
+// @wailsio/runtime invokes registered handlers with a WailsEvent object
+// ({ name, data }); the session:data payload rides on `data`. Tests capture the
+// handler the code under test registered and invoke it with that event shape to
+// simulate incoming PTY output.
+type SessionDataEvent = { name: string; data: { id: string; data: string } }
 
 function withMockedTime() {
   const originalNow = Date.now
@@ -224,7 +230,7 @@ describe('watchOutput', () => {
   })
 
   it('resolves when the prompt line reappears after the command', async () => {
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -236,7 +242,7 @@ describe('watchOutput', () => {
     setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
 
     // Echoed command line, then output, then the prompt returns.
-    capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
 
     const result: WatchResult = await promise
     expect(result.timedOut).toBe(false)
@@ -247,7 +253,7 @@ describe('watchOutput', () => {
   })
 
   it('captures the final screen state, not raw ConPTY redraw frames (issue 624)', async () => {
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -273,6 +279,7 @@ describe('watchOutput', () => {
       'Server\\WinStationtControlSet\\Control\\Terminal',
     ].join('\r\n')
     capturedCallback!({
+      name: 'session:data',
       data: fakeData(
         's1',
         `${PROMPT} reg query X\r\n${redrawFragments}\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\r\n${PROMPT} `
@@ -290,7 +297,7 @@ describe('watchOutput', () => {
 
   it('resolves via idle heuristic when prompt differs (e.g. dynamic prompt)', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -299,7 +306,7 @@ describe('watchOutput', () => {
     const { promise } = watchOutput('s1', PROMPT, 5000)
 
     setFakeScreen([`${PROMPT} echo hi`, 'hi', '[user@host ~]$ '])
-    capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n[user@host ~]$ `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n[user@host ~]$ `) })
     vi.advanceTimersByTime(800)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -311,7 +318,7 @@ describe('watchOutput', () => {
 
   it('does not resolve on the initial prompt alone', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -320,7 +327,7 @@ describe('watchOutput', () => {
     const { promise } = watchOutput('s1', PROMPT, 1000)
 
     // Only the prompt so far (no echoed command line before it) → keep waiting.
-    capturedCallback!({ data: fakeData('s1', `${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} `) })
     vi.advanceTimersByTime(1000)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -331,7 +338,7 @@ describe('watchOutput', () => {
 
   it('never resolves early when promptLine is empty (timeout only)', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -341,7 +348,7 @@ describe('watchOutput', () => {
 
     // Even output that looks like a prompt must not trigger detection.
     setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
-    capturedCallback!({ data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
     vi.advanceTimersByTime(1000)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -353,7 +360,7 @@ describe('watchOutput', () => {
 
   it('times out after timeoutMs', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -362,7 +369,7 @@ describe('watchOutput', () => {
     const { promise } = watchOutput('s1', PROMPT, 1000)
 
     setFakeScreen(['partial output'])
-    capturedCallback!({ data: fakeData('s1', 'partial output') })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'partial output') })
     vi.advanceTimersByTime(1000)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -374,7 +381,7 @@ describe('watchOutput', () => {
 
   it('ignores events from different sessions', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -383,7 +390,7 @@ describe('watchOutput', () => {
     setFakeScreen([''])
     const { promise } = watchOutput('s1', PROMPT, 1000)
 
-    capturedCallback!({ data: fakeData('s2', 'wrong session data') })
+    capturedCallback!({ name: 'session:data', data: fakeData('s2', 'wrong session data') })
     vi.advanceTimersByTime(1000)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -442,7 +449,7 @@ describe('executeCommand', () => {
   it('sends the command with no injected marker', async () => {
     const restore = withMockedTime()
 
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => {}
@@ -463,7 +470,7 @@ describe('executeCommand', () => {
 
     // Prompt reappears after the echoed command + output → completion.
     setFakeScreen([`${PROMPT} echo hello`, 'hello', `${PROMPT} `])
-    capturedCallback!({ data: fakeData('test-session-id', `${PROMPT} echo hello\nhello\n${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} echo hello\nhello\n${PROMPT} `) })
 
     const result = await cmdPromise
     expect(result.exitCode).toBe(0)
@@ -477,7 +484,7 @@ describe('executeCommand', () => {
     vi.mocked(mockGetRemoteOS).mockReturnValue('windows-openssh')
     const restore = withMockedTime()
 
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => {}
@@ -490,7 +497,7 @@ describe('executeCommand', () => {
     expect(writtenArg).toBe('dir\r') // CR terminator, no leading space
 
     await Promise.resolve()
-    capturedCallback!({ data: fakeData('test-session-id', `${PROMPT} dir\r\n${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} dir\r\n${PROMPT} `) })
     await cmdPromise
 
     restore()
@@ -498,7 +505,7 @@ describe('executeCommand', () => {
 
   it('returns timedOut=true on timeout', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -514,7 +521,7 @@ describe('executeCommand', () => {
     // (no trailing prompt row yet). Five lines so head=2/tail=2 keeps
     // line1+line2 and line4+line5.
     setFakeScreen(['line1', 'line2', 'line3', 'line4', 'line5'])
-    capturedCallback!({ data: fakeData('test-session-id', 'some output line1\nline2\nline3\nline4\nline5') })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', 'some output line1\nline2\nline3\nline4\nline5') })
     vi.advanceTimersByTime(1000)
     vi.advanceTimersByTime(100) // screen-read settle delay
 
@@ -533,7 +540,7 @@ describe('executeCommand', () => {
   it('truncates long output on success path', async () => {
     const restore = withMockedTime()
 
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -552,7 +559,7 @@ describe('executeCommand', () => {
     // Echoed command + long output + returning prompt on the final screen.
     setFakeScreen([`${PROMPT} some-cmd`, ...lines, `${PROMPT} `])
     // Echoed command + long output + returning prompt triggers completion.
-    capturedCallback!({ data: fakeData('test-session-id', `${PROMPT} some-cmd\n` + output + `\n${PROMPT} `) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} some-cmd\n` + output + `\n${PROMPT} `) })
 
     const result: ExecuteResult = await cmdPromise
     expect(result.exitCode).toBe(0)
@@ -603,7 +610,7 @@ describe('startCommand', () => {
 
   it('returns the final screen state even when the stream carries redraw frames', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -614,6 +621,7 @@ describe('startCommand', () => {
 
     setFakeScreen([`${PROMPT} cmd-with-redraws`, 'final state only'])
     capturedCallback!({
+      name: 'session:data',
       data: fakeData('test-session-id', 'frame1\rframe2\rframe3\r\nfinal state only'),
     })
     vi.advanceTimersByTime(3000)
@@ -674,7 +682,7 @@ describe('background terminal fallback (frozen xterm buffer)', () => {
   })
 
   it('executeCommand rebuilds output from the raw stream instead of the frozen screen', async () => {
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -686,7 +694,7 @@ describe('background terminal fallback (frozen xterm buffer)', () => {
 
     const pending = executeCommand('echo hi', 5000)
     await flush()
-    capturedCallback!({ data: fakeData('test-session-id', stream) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
 
     const result = await pending
     expect(result.timedOut).toBe(false)
@@ -697,7 +705,7 @@ describe('background terminal fallback (frozen xterm buffer)', () => {
     // Indirect: exact-prompt completion only fires when the snapshot matches
     // the stream's final line. A frozen-buffer snapshot of a panel that was
     // backgrounded mid-command would not contain the prompt at all.
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -708,7 +716,7 @@ describe('background terminal fallback (frozen xterm buffer)', () => {
 
     const pending = executeCommand('sleep 1', 5000)
     await flush()
-    capturedCallback!({ data: fakeData('test-session-id', stream) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
 
     const result = await pending
     expect(result.timedOut).toBe(false)
@@ -751,7 +759,7 @@ describe('background terminal headless mirror', () => {
   })
 
   it('executeCommand prefers the mirror screen over raw reconstruction when inactive', async () => {
-    let capturedCallback: ((payload: { id: string; data: string }) => void) | null = null
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
     vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
       capturedCallback = callback
       return () => { }
@@ -766,7 +774,7 @@ describe('background terminal headless mirror', () => {
 
     const pending = executeCommand('echo hi', 5000)
     await flush()
-    capturedCallback!({ data: fakeData('test-session-id', stream) })
+    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
 
     const result = await pending
     expect(result.timedOut).toBe(false)

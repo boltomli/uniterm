@@ -40,10 +40,10 @@
       <el-table-column :label="t('k8s.actions')" :width="uiPx(66)" fixed="right" class-name="k8s-action-cell">
         <template #default="{ row }">
           <button class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionEdit')" @click.stop="emit('open-yaml', row)">
-            <Pencil :size="'0.875rem'" />
+            <Pencil :size="lucideSize('0.875rem')" />
           </button>
           <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('k8s.actionDelete')" @click.stop="onDeleteCr(row)">
-            <Trash2 :size="'0.875rem'" />
+            <Trash2 :size="lucideSize('0.875rem')" />
           </button>
         </template>
       </el-table-column>
@@ -65,7 +65,7 @@
         v-for="col in desc?.columns || []"
         :key="col.header"
         :label="col.header"
-        :width="uiPx(col.width)"
+        :width="col.width === undefined ? undefined : uiPx(col.width)"
         sortable
         show-overflow-tooltip
         :sort-method="(a, b) => compareCells(col, a, b)"
@@ -78,31 +78,31 @@
       <el-table-column v-if="actionColWidth" :label="t('k8s.actions')" :width="uiPx(actionColWidth)" fixed="right" class-name="k8s-action-cell">
         <template #default="{ row }">
           <button v-if="has('detail')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionEdit')" @click.stop="emit('open-yaml', row)">
-            <Pencil :size="'0.875rem'" />
+            <Pencil :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('logs')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionLogs')" @click.stop="emit('open-logs', row)">
-            <ScrollText :size="'0.875rem'" />
+            <ScrollText :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('terminal')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionTerminal')" @click.stop="emit('open-terminal', row)">
-            <SquareTerminal :size="'0.875rem'" />
+            <SquareTerminal :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('viewPods')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionViewPods')" @click.stop="onViewPods(row)">
-            <Box :size="'0.875rem'" />
+            <Box :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('restart')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionRestart')" @click.stop="onCommand('restart', row)">
-            <Repeat :size="'0.875rem'" />
+            <Repeat :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('scale')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionScale')" @click.stop="onCommand('scale', row)">
-            <ArrowUpDown :size="'0.875rem'" />
+            <ArrowUpDown :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('cordon')" class="btn btn-ghost btn-icon btn-sm" :title="row.spec?.unschedulable ? t('k8s.actionUncordon') : t('k8s.actionCordon')" @click.stop="onCommand('cordon', row)">
-            <component :is="row.spec?.unschedulable ? CircleCheck : Ban" :size="'0.875rem'" />
+            <component :is="row.spec?.unschedulable ? CircleCheck : Ban" :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('drain')" class="btn btn-ghost btn-icon btn-sm" :title="t('k8s.actionDrain')" @click.stop="onCommand('drain', row)">
-            <CirclePower :size="'0.875rem'" />
+            <CirclePower :size="lucideSize('0.875rem')" />
           </button>
           <button v-if="has('delete')" class="btn btn-ghost btn-icon btn-sm danger" :title="t('k8s.actionDelete')" @click.stop="onCommand('delete', row)">
-            <Trash2 :size="'0.875rem'" />
+            <Trash2 :size="lucideSize('0.875rem')" />
           </button>
         </template>
       </el-table-column>
@@ -120,6 +120,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch, onBeforeUnmount, h } from 'vue'
 import { uiPx } from '../utils/uiScale'
 import {

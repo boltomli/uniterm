@@ -24,7 +24,7 @@
               <el-button size="small" text :disabled="idx === 0" @click="move(dim.key, idx, -1)">↑</el-button>
               <el-button size="small" text :disabled="idx === draft[dim.key].length - 1" @click="move(dim.key, idx, 1)">↓</el-button>
               <el-button size="small" text type="danger" @click="remove(dim.key, idx)">
-                <Trash2 size="13" />
+                <Trash2 :size="13" />
               </el-button>
             </span>
           </div>

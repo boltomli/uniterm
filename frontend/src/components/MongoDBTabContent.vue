@@ -10,10 +10,10 @@
             :placeholder="t('db.searchTables')"
           />
           <button class="btn btn-ghost btn-icon btn-sm" :title="t('mongodb.refresh')" @click="refreshDatabases">
-            <RefreshCw :size="'0.875rem'" />
+            <RefreshCw :size="lucideSize('0.875rem')" />
           </button>
-          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
-            <MoreHorizontal :size="'0.875rem'" />
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="onMoreToggle">
+            <MoreHorizontal :size="lucideSize('0.875rem')" />
           </button>
           <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
             <MenuItem @click="onMoreNewCollection">{{ t('mongodb.newCollection') }}</MenuItem>
@@ -33,9 +33,9 @@
                 @contextmenu.prevent="onDbContextMenu($event, db)"
               >
                 <span class="db-arrow" @click.stop="toggleDb(db)">
-                  <component :is="expandedDbs.has(db) ? ChevronDown : ChevronRight" :size="'0.75rem'" />
+                  <component :is="expandedDbs.has(db) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
                 </span>
-                <Database :size="'0.875rem'" class="db-icon" />
+                <Database :size="lucideSize('0.875rem')" class="db-icon" />
                 <span class="db-name">{{ db }}</span>
               </div>
               <div v-if="expandedDbs.has(db)" class="child-list">
@@ -48,7 +48,7 @@
                   @contextmenu.prevent="onColContextMenu($event, db, col)"
                 >
                   <span class="table-icon-spacer" />
-                  <Layers :size="'0.875rem'" class="table-icon" />
+                  <Layers :size="lucideSize('0.875rem')" class="table-icon" />
                   <span class="table-name">{{ col }}</span>
                 </div>
                 <div v-if="!collections[db] || collections[db].length === 0" class="empty-hint">
@@ -90,7 +90,7 @@
                   @dragend="clearTabDragState"
                   @drop.prevent="onTabDrop($event, index)"
                 >
-                  <component :is="tab.kind === 'collection' ? Layers : Database" :size="'0.75rem'" class="tab-icon" />
+                  <component :is="tab.kind === 'collection' ? Layers : Database" :size="lucideSize('0.75rem')" class="tab-icon" />
                   <span class="tab-title">{{ tabTitle(tab) }}</span>
                   <button class="tab-close" :title="t('db.tabClose')" @click.stop="closeTab(tab.id)">×</button>
                 </div>
@@ -101,9 +101,9 @@
               v-if="tabShowMore"
               class="mongo-tab-more"
               :title="t('tab.more')"
-              @click.stop="moreTabsMenuRef?.toggle($event.currentTarget)"
+              @click.stop="onMoreTabsToggle"
             >
-              <MoreHorizontal :size="'0.875rem'" />
+              <MoreHorizontal :size="lucideSize('0.875rem')" />
             </button>
             <Menu ref="moreTabsMenuRef" v-model:visible="moreTabsMenuVisible" align="end">
               <MenuItem
@@ -141,7 +141,7 @@
                   :placeholder="t('db.searchTables')"
                 />
                 <button class="btn btn-default btn-sm" @click="onObjectsNewCollection(tab.dbName)">
-                  <Plus :size="'0.875rem'" /> {{ t('mongodb.newCollection') }}
+                  <Plus :size="lucideSize('0.875rem')" /> {{ t('mongodb.newCollection') }}
                 </button>
               </div>
               <el-table
@@ -155,7 +155,7 @@
                 <el-table-column :label="t('mongodb.collection')" :min-width="uiPx(240)" show-overflow-tooltip>
                   <template #default="{ row }">
                     <span class="object-name" @click="openCollectionTab(tab.dbName, row)">
-                      <Layers :size="'0.875rem'" class="object-icon" />
+                      <Layers :size="lucideSize('0.875rem')" class="object-icon" />
                       {{ row }}
                     </span>
                   </template>
@@ -167,7 +167,7 @@
                       :title="t('mongodb.dropCollection')"
                       @click.stop="onCtxDropCollection({ db: tab.dbName, col: row } as CtxMenuData)"
                     >
-                      <Trash2 :size="'0.875rem'" />
+                      <Trash2 :size="lucideSize('0.875rem')" />
                     </button>
                   </template>
                 </el-table-column>
@@ -187,19 +187,19 @@
 
     <!-- Context menu -->
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible" v-slot="{ current }">
-      <template v-if="current?.type === 'blank'">
+      <template v-if="isCtxMenuData(current) && current.type === 'blank'">
         <MenuItem @click="onCtxNewDatabase">{{ t('db.newDatabase') }}</MenuItem>
         <MenuDivider />
         <MenuItem @click="onCtxRefresh">{{ t('mongodb.refresh') }}</MenuItem>
       </template>
-      <template v-else-if="current?.type === 'db'">
+      <template v-else-if="isCtxMenuData(current) && current.type === 'db'">
         <MenuItem @click="onCtxNewCollection(current as CtxMenuData)">{{ t('mongodb.newCollection') }}</MenuItem>
         <MenuDivider />
         <MenuItem @click="onCtxRefresh">{{ t('mongodb.refresh') }}</MenuItem>
         <MenuDivider />
         <MenuItem class="danger" @click="onCtxDropDatabase(current as CtxMenuData)">{{ t('mongodb.dropDatabase') }}</MenuItem>
       </template>
-      <template v-else-if="current?.type === 'col'">
+      <template v-else-if="isCtxMenuData(current) && current.type === 'col'">
         <MenuItem @click="onCtxOpenColQuery(current as CtxMenuData)">{{ t('mongodb.openQuery') }}</MenuItem>
         <MenuItem @click="onCtxViewIndexes(current as CtxMenuData)">{{ t('mongodb.indexesTab') }}</MenuItem>
         <MenuDivider />
@@ -266,6 +266,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { Database, Layers, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal, Plus, Trash2 } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
@@ -401,6 +402,10 @@ const ctxMenuVisible = ref(false)
 const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreMenuVisible = ref(false)
 
+function onMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) moreMenuRef.value?.toggle(e.currentTarget)
+}
+
 function onMoreNewDatabase() {
   moreMenuVisible.value = false
   onCtxNewDatabase()
@@ -512,6 +517,10 @@ const tabShowMore = ref(false)
 const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreTabsMenuVisible = ref(false)
 
+function onMoreTabsToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) moreTabsMenuRef.value?.toggle(e.currentTarget)
+}
+
 function updateTabOverflow() {
   const el = tabScrollRef.value
   if (!el) return
@@ -556,6 +565,10 @@ interface CtxMenuData {
   col: string
 }
 
+function isCtxMenuData(v: unknown): v is CtxMenuData {
+  return typeof v === 'object' && v !== null && 'type' in v
+}
+
 // ── Dialog state ──
 const newColDialogVisible = ref(false)
 const newColName = ref('')
@@ -570,7 +583,7 @@ async function loadCollectionsFor(db: string) {
   if (collections.value[db]) return
   try {
     const cols = await MongoListCollections(props.sessionId, db)
-    collections.value[db] = cols.filter(c => !c.startsWith('system.'))
+    collections.value[db] = cols.filter((c: string) => !c.startsWith('system.'))
     collections.value = { ...collections.value }
   } catch (e: any) {
     msg.error(e?.message || String(e))
@@ -597,7 +610,7 @@ async function refreshDatabases() {
   treeLoading.value = true
   try {
     const allDbs = await MongoListDatabases(props.sessionId)
-    databases.value = allDbs.filter(d => d !== 'config' && d !== 'local')
+    databases.value = allDbs.filter((d: string) => d !== 'config' && d !== 'local')
     await expandDefaultDbs(databases.value)
   } catch (e: any) {
     const err = e?.message || String(e)
@@ -605,7 +618,7 @@ async function refreshDatabases() {
       await new Promise(r => setTimeout(r, 300))
       try {
         const allDbs = await MongoListDatabases(props.sessionId)
-        databases.value = allDbs.filter(d => d !== 'config' && d !== 'local')
+        databases.value = allDbs.filter((d: string) => d !== 'config' && d !== 'local')
         await expandDefaultDbs(databases.value)
         treeLoading.value = false
         return
@@ -699,7 +712,7 @@ async function createCollection() {
     msg.success(t('mongodb.collectionCreated'))
     newColDialogVisible.value = false
     const cols = await MongoListCollections(props.sessionId, ctxNewColDb.value)
-    collections.value[ctxNewColDb.value] = cols.filter(c => !c.startsWith('system.'))
+    collections.value[ctxNewColDb.value] = cols.filter((c: string) => !c.startsWith('system.'))
     collections.value = { ...collections.value }
   } catch (e: any) {
     msg.error(e?.message || String(e))

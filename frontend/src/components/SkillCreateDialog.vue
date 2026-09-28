@@ -21,14 +21,14 @@
           @change="onFileChange"
         />
         <template v-if="!uploadFile">
-          <FileUp :size="'1.5rem'" class="upload-icon" />
+          <FileUp :size="lucideSize('1.5rem')" class="upload-icon" />
           <p class="upload-hint">{{ t('settings.skillsUploadHint') }}</p>
         </template>
         <template v-else>
-          <FileUp :size="'1.5rem'" class="upload-icon" />
+          <FileUp :size="lucideSize('1.5rem')" class="upload-icon" />
           <p class="upload-file-name">{{ uploadFile }}</p>
           <p v-if="parseState === 'ok'" class="parse-ok">
-            <CircleCheck :size="'0.875rem'" /> {{ t('settings.skillsParseOk') }}
+            <CircleCheck :size="lucideSize('0.875rem')" /> {{ t('settings.skillsParseOk') }}
           </p>
           <p v-else-if="parseState === 'fail'" class="parse-fail">
             {{ parseError }}
@@ -80,6 +80,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { FileUp, CircleCheck } from '@lucide/vue'

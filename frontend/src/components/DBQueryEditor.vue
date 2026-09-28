@@ -16,15 +16,15 @@
           @keydown.enter="generateSQL"
         />
         <button class="btn btn-default btn-sm" @click="generateSQL" :disabled="aiGenerating || !nlInput.trim()">
-          <Sparkles :size="'0.875rem'" :class="{ 'ai-pulse': aiGenerating }" />
+          <Sparkles :size="lucideSize('0.875rem')" :class="{ 'ai-pulse': aiGenerating }" />
           {{ aiGenerating ? '...' : 'AI' }}
         </button>
         <button class="btn btn-default btn-sm" @click="historyOpen = !historyOpen">
-          <History :size="'0.875rem'" />
+          <History :size="lucideSize('0.875rem')" />
           {{ t('db.queryHistory') }}
         </button>
         <button class="btn btn-ghost btn-icon btn-sm" :title="t('db.runSqlFile')" @click="onOpenScriptFile">
-          <FolderOpen :size="'0.875rem'" />
+          <FolderOpen :size="lucideSize('0.875rem')" />
         </button>
         <button class="btn btn-primary btn-sm" title="Ctrl+Enter" @click="onExecute">{{ t('db.execute') }}</button>
       </div>
@@ -84,14 +84,14 @@
             v-if="tableName && !isView"
             class="btn btn-default btn-sm"
             @click="startInsertRow"
-          ><Plus :size="'0.875rem'" /> {{ t('db.insertRow') }}</button>
+          ><Plus :size="lucideSize('0.875rem')" /> {{ t('db.insertRow') }}</button>
           <button
             ref="exportBtnRef"
             class="btn btn-ghost btn-icon btn-sm"
             :title="t('db.exportResults')"
-            @click.stop="exportMenuRef?.toggle($event.currentTarget)"
+            @click.stop="onExportToggle"
           >
-            <Download :size="'0.875rem'" />
+            <Download :size="lucideSize('0.875rem')" />
           </button>
           <Menu
             ref="exportMenuRef"
@@ -199,6 +199,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
 import { Sparkles, History, FolderOpen, Download, Plus } from '@lucide/vue'
 import { ElMessageBox } from 'element-plus'
@@ -211,8 +212,7 @@ import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTab
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
-import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry } from '../types/database'
-import { ScriptResult } from '../../bindings/github.com/ys-ll/uniterm/backend/database/models'
+import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult } from '../types/database'
 
 const { t } = useI18n()
 
@@ -303,6 +303,10 @@ const browsePageTotal = computed(() => {
 
 const exportMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const exportMenuVisible = ref(false)
+
+function onExportToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) exportMenuRef.value?.toggle(e.currentTarget)
+}
 
 function csvCell(v: unknown): string {
   if (v == null) return ''
@@ -478,7 +482,7 @@ async function generateSQL() {
       if (schemas[name]) continue
       try {
         const schema = await GetTableSchema(props.sessionId, dbName, name)
-        schemas[name] = schema.columns?.map(c => ({
+        schemas[name] = schema.columns?.map((c: ColumnInfo) => ({
           name: c.name,
           type: c.type,
           nullable: c.nullable,

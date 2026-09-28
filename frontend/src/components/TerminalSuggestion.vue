@@ -17,8 +17,8 @@
         @mouseenter="onHover(index)"
       >
         <span class="suggestion-desc">
-          <el-icon v-if="item.type === 'quick-command'"><Zap :size="'0.75rem'" /></el-icon>
-          <el-icon v-else-if="item.type === 'history'"><Clock :size="'0.75rem'" /></el-icon>
+          <el-icon v-if="item.type === 'quick-command'"><Zap :size="lucideSize('0.75rem')" /></el-icon>
+          <el-icon v-else-if="item.type === 'history'"><Clock :size="lucideSize('0.75rem')" /></el-icon>
         </span>
         <span v-if="item.type === 'quick-command' && item.label !== item.value" class="suggestion-label">
           <span class="qc-name">
@@ -37,7 +37,7 @@
             <span :class="{ 'match-char': item.matchIndices?.includes(charIdx) }">{{ char }}</span>
           </template>
         </span>
-        <button class="delete-btn" :class="{ visible: item.type === 'history' }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
+        <button class="delete-btn" :class="{ visible: item.type === 'history' }" @click.stop="item.id && onRemove(item.id)"><Trash2 :size="lucideSize('0.75rem')" /></button>
       </div>
     </div>
     <!-- AI section (fixed at bottom) -->
@@ -53,7 +53,7 @@
       @mouseenter="onHover(aiItemWithIndex.index)"
     >
       <span class="suggestion-desc">
-        <el-icon><Sparkles :size="'0.75rem'" /></el-icon>
+        <el-icon><Sparkles :size="lucideSize('0.75rem')" /></el-icon>
       </span>
       <span class="suggestion-label">{{ aiItemWithIndex.item.label }}</span>
     </div>
@@ -61,6 +61,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { Trash2, Clock, Zap, Sparkles } from '@lucide/vue'
 import type { SuggestionItem } from '../composables/useSuggestions'

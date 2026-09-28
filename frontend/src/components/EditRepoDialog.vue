@@ -10,7 +10,7 @@
       <el-form-item :label="t('editRepo.url')">
         <div class="locked-field">
           <span class="locked-value">{{ syncStore.config.repoUrl }}</span>
-          <el-icon class="lock-icon"><Lock :size="'0.875rem'" /></el-icon>
+          <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
         </div>
         <div class="form-hint">{{ t('editRepo.urlLocked') }}</div>
       </el-form-item>
@@ -55,6 +55,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch } from 'vue'
 import { Lock } from '@lucide/vue'
 import { useI18n } from '../i18n'

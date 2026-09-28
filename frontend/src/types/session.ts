@@ -97,6 +97,12 @@ export interface ConnectionConfig {
   // and passes them in CreateSession.
   initialCols?: number
   initialRows?: number
+  // Deferred connect: configs written at create time may carry this flag
+  // (companionStore.cloneConfig sets false so companion SFTP/monitor sessions
+  // connect immediately; the backend documents true at create time so the
+  // generic launch goroutine skips Connect — see
+  // backend/session/x11_desktop_session.go).
+  deferConnect?: boolean
   tunnelSSHUser?: string
   tunnelSSHPassword?: string
   // SFTP max concurrent transfers (0 = unlimited)

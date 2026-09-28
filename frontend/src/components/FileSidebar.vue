@@ -90,7 +90,7 @@
             :disabled="!followSupported"
             :title="t('sftp.followPathHint')"
             @click="toggleFollow"
-          ><el-icon><FolderSync :size="'0.875rem'" /></el-icon></button>
+          ><el-icon><FolderSync :size="lucideSize('0.875rem')" /></el-icon></button>
         </template>
         <template #actions-end>
           <button
@@ -98,7 +98,7 @@
             :disabled="!sessionId"
             :title="t('companion.openSftpTab')"
             @click="openStandaloneSftp"
-          ><el-icon><ExternalLink :size="'0.875rem'" /></el-icon></button>
+          ><el-icon><ExternalLink :size="lucideSize('0.875rem')" /></el-icon></button>
         </template>
       </TransferPanel>
     </template>
@@ -140,7 +140,7 @@
     <FileEditorDialog
       ref="fileEditorRef"
       v-model:visible="editorVisible"
-      :session-id="sessionId"
+      :session-id="sessionId ?? undefined"
       mode="remote"
       @saved="onRefresh"
     />
@@ -148,6 +148,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ExternalLink, FolderSync } from '@lucide/vue'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '../i18n'
@@ -497,7 +498,9 @@ watch(sessionId, async (sid) => {
   bindListeners()
   try {
     const sessions = await ListSessions()
-    const sess = sessions.find(s => s.id === sid)
+    // ListSessions comes from the untyped Wails bindings, so the element
+    // shape is annotated at the callback.
+    const sess = sessions.find((s: { id: string; status: string }) => s.id === sid)
     if (sess?.status === 'connected') await onRefresh()
     else scheduleRefreshRetry()
   } catch {

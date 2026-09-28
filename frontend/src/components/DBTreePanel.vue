@@ -8,10 +8,10 @@
         :placeholder="t('db.searchTables')"
       />
       <button class="btn btn-ghost btn-icon btn-sm" :title="t('db.refreshDatabases')" @click="refreshAll">
-        <RefreshCw :size="'0.875rem'" />
+        <RefreshCw :size="lucideSize('0.875rem')" />
       </button>
-      <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="moreMenuRef?.toggle($event.currentTarget)">
-        <MoreHorizontal :size="'0.875rem'" />
+      <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.more')" @click.stop="onMoreToggle">
+        <MoreHorizontal :size="lucideSize('0.875rem')" />
       </button>
       <Menu ref="moreMenuRef" v-model:visible="moreMenuVisible" align="end">
         <MenuItem :class="{ disabled: !canCreateDatabase }" @click="onMoreNewDatabase">{{ t('db.newDatabase') }}</MenuItem>
@@ -32,9 +32,9 @@
           @contextmenu.prevent="onDbContextMenu($event, db.name)"
         >
           <span class="db-arrow" @click.stop="onToggleDb(db.name)">
-            <component :is="expandedDbs.has(db.name) ? ChevronDown : ChevronRight" :size="'0.75rem'" />
+            <component :is="expandedDbs.has(db.name) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
           </span>
-          <Database class="db-icon" :size="'0.875rem'" />
+          <Database class="db-icon" :size="lucideSize('0.875rem')" />
           <span class="db-name">{{ db.name }}</span>
         </div>
         <template v-if="expandedDbs.has(db.name)">
@@ -49,7 +49,7 @@
             @contextmenu.prevent="onTableContextMenu($event, db.name, t)"
           >
             <span class="table-icon-spacer" />
-            <component :is="t.type === 'view' ? Eye : Table2" class="table-icon" :size="'0.875rem'" />
+            <component :is="t.type === 'view' ? Eye : Table2" class="table-icon" :size="lucideSize('0.875rem')" />
             <span class="table-name">{{ t.name }}</span>
           </div>
           <div v-if="db.tables.length === 0" class="empty-hint">
@@ -64,7 +64,7 @@
       v-model:visible="ctxMenuVisible"
       v-slot="{ current }"
     >
-      <template v-if="current && current.type === 'db'">
+      <template v-if="isDbMenuCtx(current) && current.type === 'db'">
         <MenuItem @click="onCtxListDatabase">{{ t('db.tableList') }}</MenuItem>
         <MenuItem @click="onCtxNewQuery">{{ t('db.newQuery') }}</MenuItem>
         <MenuItem @click="onCtxRunSqlFile">{{ t('db.runSqlFile') }}</MenuItem>
@@ -75,7 +75,7 @@
         <MenuDivider />
         <MenuItem @click="onCtxRefresh">{{ t('db.refreshTables') }}</MenuItem>
       </template>
-      <template v-else-if="current && current.type === 'table'">
+      <template v-else-if="isDbMenuCtx(current) && current.type === 'table'">
         <MenuItem @click="onCtxViewData">{{ t('db.openData') }}</MenuItem>
         <MenuItem v-if="current.tableType !== 'view'" @click="onCtxViewStructure">{{ t('db.tableStructure') }}</MenuItem>
         <MenuDivider />
@@ -94,7 +94,7 @@
           <MenuItem class="danger" @click="onCtxDropTable">{{ t('db.dropTable') }}</MenuItem>
         </template>
       </template>
-      <template v-else-if="current && current.type === 'blank'">
+      <template v-else-if="isDbMenuCtx(current) && current.type === 'blank'">
         <MenuItem @click="onCtxNewQueryBlank">{{ t('db.newQuery') }}</MenuItem>
         <MenuItem v-if="canCreateDatabase" @click="onCtxNewDatabase">{{ t('db.newDatabase') }}</MenuItem>
         <MenuItem @click="onCtxRefreshDatabases">{{ t('db.refreshDatabases') }}</MenuItem>
@@ -176,6 +176,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, watch, computed, nextTick, h } from 'vue'
 import { Database, Table2, Eye, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
@@ -368,7 +369,7 @@ watch(searchQuery, (q) => {
     const all = new Set(databases.value.map(d => d.name))
     for (const db of databases.value) {
       if (!db.loaded) {
-        GetTables(props.sessionId, db.name).then(tables => {
+        GetTables(props.sessionId, db.name).then((tables: TableInfo[]) => {
           db.tables = tables
           db.loaded = true
         }).catch(() => {})
@@ -385,6 +386,10 @@ interface DbMenuCtx {
   dbName: string
   tableName: string
   tableType: string
+}
+
+function isDbMenuCtx(v: unknown): v is DbMenuCtx {
+  return typeof v === 'object' && v !== null && 'type' in v
 }
 
 const ctxMenuVisible = ref(false)
@@ -703,6 +708,10 @@ defineExpose({ refreshDb })
 
 const moreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreMenuVisible = ref(false)
+
+function onMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) moreMenuRef.value?.toggle(e.currentTarget)
+}
 
 function refreshAll() {
   loadTree()

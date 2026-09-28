@@ -5,10 +5,10 @@
       <span>{{ t('ai.title') }}</span>
       <div class="ai-actions">
         <button class="ai-action-btn" @click="onNewSession" :title="t('ai.newSession')">
-          <el-icon><MessageSquarePlus :size="'0.875rem'" /></el-icon>
+          <el-icon><MessageSquarePlus :size="lucideSize('0.875rem')" /></el-icon>
         </button>
-        <button v-if="aiStore.sessions.length > 0" class="ai-action-btn" :title="t('ai.recentSessions')" @click.stop="sessionMenuRef?.toggle($event.currentTarget)" >
-          <el-icon><History :size="'0.875rem'" /></el-icon>
+        <button v-if="aiStore.sessions.length > 0" class="ai-action-btn" :title="t('ai.recentSessions')" @click.stop="toggleMenu(sessionMenuRef, $event)" >
+          <el-icon><History :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <Menu ref="sessionMenuRef" v-model:visible="sessionMenuVisible">
           <MenuItem
@@ -20,19 +20,19 @@
             <span class="session-item-name">{{ s.name }}</span>
             <span class="session-time">{{ formatRelativeTime(s.updatedAt) }}</span>
             <template #trailing>
-              <el-icon class="session-delete" :title="t('ai.renameSession')" @click.stop="onSessionRename(s.id); closeMenus()"><Pencil :size="'0.875rem'" /></el-icon>
-              <el-icon class="session-delete" @click.stop="aiStore.deleteSession(s.id); closeMenus()"><Trash2 :size="'0.875rem'" /></el-icon>
+              <el-icon class="session-delete" :title="t('ai.renameSession')" @click.stop="onSessionRename(s.id); closeMenus()"><Pencil :size="lucideSize('0.875rem')" /></el-icon>
+              <el-icon class="session-delete" @click.stop="aiStore.deleteSession(s.id); closeMenus()"><Trash2 :size="lucideSize('0.875rem')" /></el-icon>
             </template>
           </MenuItem>
         </Menu>
         <button class="ai-action-btn" @click="searchVisible = !searchVisible" :title="t('ai.search')">
-          <el-icon><Search :size="'0.875rem'" /></el-icon>
+          <el-icon><Search :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="ai-action-btn" @click="toggleMaximize" :title="isMaximized ? t('ai.restore') : t('ai.maximize')">
-          <el-icon><Shrink v-if="isMaximized" :size="'0.875rem'" /><Expand v-else :size="'0.875rem'" /></el-icon>
+          <el-icon><Shrink v-if="isMaximized" :size="lucideSize('0.875rem')" /><Expand v-else :size="lucideSize('0.875rem')" /></el-icon>
         </button>
         <button class="ai-action-btn" @click="onClose" :title="t('sidebar.collapse')">
-          <el-icon><X :size="'0.875rem'" /></el-icon>
+          <el-icon><X :size="lucideSize('0.875rem')" /></el-icon>
         </button>
       </div>
     </div>
@@ -50,13 +50,13 @@
       />
       <span class="search-count" v-if="searchText">{{ currentMatchIndex + 1 }}/{{ totalMatchCount || 0 }}</span>
       <button class="search-btn" @click="onSearchPrev" :title="t('terminal.searchPrev')">
-        <ChevronUp :size="'0.875rem'" />
+        <ChevronUp :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" @click="onSearchNext" :title="t('terminal.searchNext')">
-        <ChevronDown :size="'0.875rem'" />
+        <ChevronDown :size="lucideSize('0.875rem')" />
       </button>
       <button class="search-btn" @click="closeSearch" :title="t('ai.close')">
-        <el-icon><X :size="'0.75rem'" /></el-icon>
+        <el-icon><X :size="lucideSize('0.75rem')" /></el-icon>
       </button>
     </div>
 
@@ -120,7 +120,7 @@
               <button class="panel-tag-close" @click="onRemovePanelTag(pid)">&times;</button>
             </span>
           </template>
-          <button class="panel-tag-add-btn" :title="t('ai.addTerminal')" @click.stop="addTagMenuRef?.toggle($event.currentTarget)">+</button>
+          <button class="panel-tag-add-btn" :title="t('ai.addTerminal')" @click.stop="toggleMenu(addTagMenuRef, $event)">+</button>
             <Menu ref="addTagMenuRef" v-model:visible="addTagMenuVisible">
               <MenuItem
                 v-for="p in availableTerminalPanels"
@@ -166,7 +166,7 @@
             :class="{ highlighted: i === skillHighlightIndex }"
             @mousedown.prevent="onSelectItem(item)"
           >
-            <component :is="item.kind === 'command' ? Terminal : BookOpen" :size="'0.8125rem'" class="skill-dropdown-kind-icon" />
+            <component :is="item.kind === 'command' ? Terminal : BookOpen" :size="lucideSize('0.8125rem')" class="skill-dropdown-kind-icon" />
             <span class="skill-dropdown-name">/{{ item.name }}</span>
             <span v-if="item.kind === 'command' && item.argumentHint" class="skill-dropdown-args">{{ item.argumentHint }}</span>
             <span class="skill-dropdown-desc">{{ item.description }}</span>
@@ -177,7 +177,7 @@
           <div v-for="q in aiStore.queuedMessages" :key="q.id" class="queued-chip">
             <span class="queued-text">{{ q.content }}</span>
             <button class="queued-remove" :title="t('ai.queueRemove')" @click="aiStore.removeQueuedMessage(q.id)">
-              <X :size="'0.75rem'" />
+              <X :size="lucideSize('0.75rem')" />
             </button>
           </div>
         </div>
@@ -201,7 +201,7 @@
               <span class="hash-btn-icon">/</span>
             </button>
             <template v-if="settingsStore.settings.ai.models.length > 0">
-              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="modelMenuRef?.toggle($event.currentTarget)">{{ currentModelName }}</button>
+              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="toggleMenu(modelMenuRef, $event)">{{ currentModelName }}</button>
               <Menu ref="modelMenuRef" v-model:visible="modelMenuVisible">
                 <MenuItem
                   v-for="m in settingsStore.settings.ai.models"
@@ -218,12 +218,12 @@
               </Menu>
             </template>
             <button v-else class="ghost-btn model-btn add-model-btn" @click="onModelChange('__add_model__')">
-            <Plus :size="'0.875rem'" />
+            <Plus :size="lucideSize('0.875rem')" />
             <span>{{ t('settings.addModel') }}</span>
           </button>
           </div>
           <div class="input-actions-right">
-            <button class="ghost-btn mode-btn" :title="modeLabel" @click.stop="modeMenuRef?.toggle($event.currentTarget)">{{ modeLabel }}</button>
+            <button class="ghost-btn mode-btn" :title="modeLabel" @click.stop="toggleMenu(modeMenuRef, $event)">{{ modeLabel }}</button>
             <Menu ref="modeMenuRef" v-model:visible="modeMenuVisible">
               <MenuItem @click="onModeSelect('confirm_all')">
                 <span class="mode-option mode-confirm">{{ t('ai.confirmAll') }}</span>
@@ -245,10 +245,10 @@
               :title="busy ? t('ai.queue') : t('ai.send')"
               @click="onSend"
             >
-              <ArrowUp :size="'1.125rem'" />
+              <ArrowUp :size="lucideSize('1.125rem')" />
             </button>
             <button v-else class="send-btn stop" :title="t('ai.stop')" @click="onStop">
-              <Square :size="'0.9375rem'" :fill="'currentColor'" />
+              <Square :size="lucideSize('0.9375rem')" :fill="'currentColor'" />
             </button>
           </div>
         </div>
@@ -259,6 +259,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from 'vue'
 import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -537,6 +538,12 @@ const addTagMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const modelMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const modeMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 
+// Menu.toggle() anchors below an HTMLElement; template click handlers expose
+// EventTarget | null, so narrow it here (same guard as Panel.vue / TabBar.vue).
+function toggleMenu(menu: InstanceType<typeof Menu> | null, e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) menu?.toggle(e.currentTarget)
+}
+
 function onSessionSelect(id: string) { closeMenus(); onSessionCommand(id) }
 function onAddPanelTagSelect(id: string) { closeMenus(); onAddPanelTag(id) }
 function onModelSelect(id: string) { closeMenus(); onModelChange(id) }
@@ -561,6 +568,7 @@ async function onSessionRename(id: string) {
 async function onMsgCtxExport() {
   msgCtxMenuVisible.value = false
   const id = aiStore.currentSessionId
+  if (!id) return
   const s = aiStore.sessions.find(x => x.id === id)
   if (!s) return
   try {
@@ -1070,8 +1078,8 @@ function onHashButtonClick() {
     const range = document.createRange()
     range.setStart(textNode, 1)
     range.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(range)
+    sel?.removeAllRanges()
+    sel?.addRange(range)
   }
   syncInputText(); refreshHashDropdown()
 }
@@ -1097,8 +1105,8 @@ function onSlashButtonClick() {
     const range = document.createRange()
     range.setStart(textNode, 1)
     range.collapse(true)
-    sel.removeAllRanges()
-    sel.addRange(range)
+    sel?.removeAllRanges()
+    sel?.addRange(range)
   }
   syncInputText(); refreshSkillDropdown()
 }
@@ -1367,7 +1375,7 @@ async function onSend() {
   clearInput()
   scrollToBottom()
   if (cmd) aiStore.addCommandCard(cmd.name, cmd.args)
-  await runAgent(cmd ? '' : final, skillName, skillBody, cmd ? final : undefined)
+  await runAgent(cmd ? '' : final, skillName ?? undefined, skillBody, cmd ? final : undefined)
   scrollToBottom()
 }
 
@@ -1436,7 +1444,7 @@ function onResizeStart(e: MouseEvent) {
 
   function onMouseUp() {
     isResizing.value = false
-    sidebarWidth.value = el.offsetWidth
+    if (el) sidebarWidth.value = el.offsetWidth
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     window.dispatchEvent(new CustomEvent('split:resize-end'))

@@ -2,14 +2,14 @@
   <div class="ai-message" :class="[message.role, { interrupted: isInterrupted || isTimeout }]">
     <!-- Skill card: 仅显示用了哪个 skill，正文已隐藏进 _contextHeader -->
     <div v-if="message.skillName" class="skill-card">
-      <BookOpen :size="'0.8125rem'" class="skill-card-icon" />
+      <BookOpen :size="lucideSize('0.8125rem')" class="skill-card-icon" />
       <span class="skill-card-name">{{ message.skillName }}</span>
       <span class="skill-card-src">{{ message.skillSource === 'auto' ? t('ai.skillAuto') : t('ai.skillExplicit') }}</span>
     </div>
 
     <!-- Command card: 显示命令名 + 参数，正文已展开进 user 消息 -->
     <div v-if="message.commandName" class="skill-card">
-      <Terminal :size="'0.8125rem'" class="skill-card-icon" />
+      <Terminal :size="lucideSize('0.8125rem')" class="skill-card-icon" />
       <span class="skill-card-name">{{ message.commandName }}</span>
       <span v-if="message.commandArgs" class="skill-card-src">{{ message.commandArgs }}</span>
     </div>
@@ -19,7 +19,7 @@
 
       <div v-if="message.role === 'assistant' && message.content?.trim()" class="copy-action">
         <button class="copy-md-btn" @click="copyAsMarkdown" :title="t('ai.copyMarkdown')">
-          <el-icon><Copy :size="'0.875rem'" /></el-icon>
+          <el-icon><Copy :size="lucideSize('0.875rem')" /></el-icon>
           <span class="copy-md-label">{{ copyMdLabel }}</span>
         </button>
       </div>
@@ -39,7 +39,7 @@
               <span class="tool-box-label">{{ t('ai.in') }}</span>
               <span class="tool-box-name">{{ formatToolName(tc) }}</span>
               <span class="tool-box-count"></span>
-              <button class="tool-copy-btn" @click.stop="copyToolText(formatToolBody(tc), tc.id + '-in')" :title="t('ai.copy')"><el-icon><Check v-if="copiedTool === tc.id + '-in'" :size="'0.875rem'" /><Copy v-else :size="'0.875rem'" /></el-icon></button>
+              <button class="tool-copy-btn" @click.stop="copyToolText(formatToolBody(tc), tc.id + '-in')" :title="t('ai.copy')"><el-icon><Check v-if="copiedTool === tc.id + '-in'" :size="lucideSize('0.875rem')" /><Copy v-else :size="lucideSize('0.875rem')" /></el-icon></button>
               <span class="toggle-icon">{{ inExpanded ? '▼' : '▶' }}</span>
             </div>
             <div v-show="inExpanded" class="tool-box-body">
@@ -52,7 +52,7 @@
             <div class="tool-box-header" @click="outExpanded = !outExpanded">
               <span class="tool-box-label">{{ t('ai.out') }}</span>
               <span class="tool-box-count"></span>
-              <button class="tool-copy-btn" @click.stop="copyToolText(getToolResult(tc.id)?.content || '', tc.id + '-out')" :title="t('ai.copy')"><el-icon><Check v-if="copiedTool === tc.id + '-out'" :size="'0.875rem'" /><Copy v-else :size="'0.875rem'" /></el-icon></button>
+              <button class="tool-copy-btn" @click.stop="copyToolText(getToolResult(tc.id)?.content || '', tc.id + '-out')" :title="t('ai.copy')"><el-icon><Check v-if="copiedTool === tc.id + '-out'" :size="lucideSize('0.875rem')" /><Copy v-else :size="lucideSize('0.875rem')" /></el-icon></button>
               <span class="toggle-icon">{{ outExpanded ? '▼' : '▶' }}</span>
             </div>
             <div v-show="outExpanded" class="tool-box-body">
@@ -89,7 +89,7 @@
             @click="toggleOption(i, !pendingQ.multiSelect)"
           >
             <span v-if="pendingQ.multiSelect" class="option-check">
-              <el-icon v-if="selectedOptions.includes(i)"><Check :size="'0.875rem'" /></el-icon>
+              <el-icon v-if="selectedOptions.includes(i)"><Check :size="lucideSize('0.875rem')" /></el-icon>
               <span v-else class="option-check-empty"></span>
             </span>
             <span v-else class="option-radio" :class="{ on: selectedOptions.includes(i) }"></span>
@@ -104,7 +104,7 @@
             @click="toggleOther"
           >
             <span v-if="pendingQ.multiSelect" class="option-check">
-              <el-icon v-if="otherSelected"><Check :size="'0.875rem'" /></el-icon>
+              <el-icon v-if="otherSelected"><Check :size="lucideSize('0.875rem')" /></el-icon>
               <span v-else class="option-check-empty"></span>
             </span>
             <span v-else class="option-radio" :class="{ on: otherSelected }"></span>
@@ -131,6 +131,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed } from 'vue'
 import { Copy, Check, BookOpen, Terminal } from '@lucide/vue'
 import { useAIStore } from '../stores/aiStore'

@@ -976,8 +976,8 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         store.addSkillCard(name, 'auto')
         const manifest = [
           body,
-          files.references.length ? `\n\nREFERENCES:\n${files.references.map(f => `- ${f}`).join('\n')}` : '',
-          files.scripts.length ? `\n\nSCRIPTS:\n${files.scripts.map(f => `- ${f}`).join('\n')}` : '',
+          files.references.length ? `\n\nREFERENCES:\n${files.references.map((f: string) => `- ${f}`).join('\n')}` : '',
+          files.scripts.length ? `\n\nSCRIPTS:\n${files.scripts.map((f: string) => `- ${f}`).join('\n')}` : '',
         ].join('')
         store.addMessage({
           id: `msg-${Date.now()}`,

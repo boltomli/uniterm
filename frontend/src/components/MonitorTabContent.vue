@@ -41,7 +41,7 @@
         <div class="perf-extras">
           <template v-if="selectedPerf === 'cpu'">
             <div class="perf-sub-toggle" @click="showCores = !showCores">
-              <ChevronRight :size="'0.875rem'" class="chev" :class="{ open: showCores }" />
+              <ChevronRight :size="lucideSize('0.875rem')" class="chev" :class="{ open: showCores }" />
               <span>{{ t('monitor.allCores') }} ({{ cpus.length }})</span>
             </div>
             <div v-if="showCores" class="perf-sub-list">
@@ -55,7 +55,7 @@
 
           <template v-else-if="selectedPerf === 'network'">
             <div class="perf-sub-toggle" @click="showNets = !showNets">
-              <ChevronRight :size="'0.875rem'" class="chev" :class="{ open: showNets }" />
+              <ChevronRight :size="lucideSize('0.875rem')" class="chev" :class="{ open: showNets }" />
               <span>{{ t('monitor.allNetworks') }} ({{ nets.length }})</span>
             </div>
             <div v-if="showNets" class="perf-sub-list">
@@ -69,7 +69,7 @@
 
           <template v-else-if="selectedPerf === 'disk'">
             <div class="perf-sub-toggle" @click="toggleDisks">
-              <ChevronRight :size="'0.875rem'" class="chev" :class="{ open: showDisks }" />
+              <ChevronRight :size="lucideSize('0.875rem')" class="chev" :class="{ open: showDisks }" />
               <span>{{ t('monitor.allDisks') }} ({{ mountedDisks.length }})</span>
             </div>
             <div v-if="showDisks" class="perf-sub-list">
@@ -562,6 +562,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { SetMonitorActiveTab, SetMonitorPaused, GetProcessDetail, KillProcess, GetPorts, GetDisks, GetNetworkCards, GetServices, GetServiceDetail, GetServiceLogs, ServiceAction, GetDevices, GetHardwareFru, GetHardwareLan, GetHardwareSensors } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
@@ -1103,7 +1104,7 @@ const systemGroups = computed(() => {
 // local clock stays constant. (Same approach as MonitorOverviewSidebar.)
 const hostClockAt = ref(0)
 const clockNow = ref(0)
-let clockTimer: ReturnType<typeof setInterval> | null = null
+let clockTimer: number | null = null
 
 const hostClockText = computed(() => {
   const base = Number(systemInfo.value?.epochSec)

@@ -68,7 +68,7 @@ const isMobile = isMobilePlatform()
 async function autoKeychainSetup() {
   submitting.value = true
   try {
-    await cred.setup('keychain')
+    await cred.setup('keychain', '')
     emit('done')
     emit('update:visible', false)
   } catch (e: any) {

@@ -11,10 +11,6 @@ const WIN_UA =
 const MAC_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
-async function flushAsync() {
-  for (let i = 0; i < 5; i++) await Promise.resolve()
-}
-
 const { mockClipboardSetText, mockClipboardText } = vi.hoisted(() => ({
   mockClipboardSetText: vi.fn(),
   mockClipboardText: vi.fn(),

@@ -40,7 +40,7 @@
       ></div>
     </div>
     <div class="tab-more" v-if="tabs.length > 0">
-      <span class="tab-more-btn" :title="t('tab.more')" @click.stop="tabMoreRef?.toggle($event.currentTarget)">
+      <span class="tab-more-btn" :title="t('tab.more')" @click.stop="onTabMoreToggle">
         <el-icon class="tab-more-icon"><MoreHorizontal /></el-icon>
       </span>
       <Menu ref="tabMoreRef" v-model:visible="tabMoreVisible" align="end">
@@ -94,6 +94,10 @@ watch(tabMoreVisible, (v) => {
   if (v) window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
   else window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
 })
+
+function onTabMoreToggle(e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) tabMoreRef.value?.toggle(e.currentTarget)
+}
 
 function onTabMoreSelect(id: string) {
   tabMoreVisible.value = false

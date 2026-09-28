@@ -23,11 +23,11 @@
           v-if="item === '...'"
           class="breadcrumb-part breadcrumb-ellipsis"
           @click.stop="onEllipsisClick"
-        ><MoreHorizontal :size="'0.875rem'" /></span>
+        ><MoreHorizontal :size="lucideSize('0.875rem')" /></span>
         <span
           v-else-if="isWindowsPath && item === pathParts[0]"
           class="breadcrumb-part breadcrumb-drive"
-          @click.stop="driveMenuRef?.toggle($event.currentTarget)"
+          @click.stop="toggleMenu(driveMenuRef, $event)"
         >
           {{ item }}
           <span class="drive-arrow">&#9660;</span>
@@ -45,9 +45,9 @@
         v-if="bookmarkMode"
         class="bookmark-btn"
         :title="t('sftp.bookmark.title')"
-        @click.stop="bookmarkMenuRef?.toggle($event.currentTarget)"
+        @click.stop="toggleMenu(bookmarkMenuRef, $event)"
       >
-        <Bookmark :size="'0.875rem'" :class="{ 'bookmark-active': hasCurrentPathBookmarked }" />
+        <Bookmark :size="lucideSize('0.875rem')" :class="{ 'bookmark-active': hasCurrentPathBookmarked }" />
       </button>
     </template>
 
@@ -99,12 +99,12 @@
             @click.stop="onRemoveBookmark(savedPath)"
             :title="t('sftp.bookmark.remove')"
           >
-            <Trash2 :size="'0.75rem'" />
+            <Trash2 :size="lucideSize('0.75rem')" />
           </button>
         </template>
       </MenuItem>
       <MenuItem
-        v-if="savedPaths.length === 0"
+        v-if="!savedPaths?.length"
         class="bookmark-empty"
       >
         {{ t('sftp.bookmark.empty') }}
@@ -114,6 +114,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { Bookmark, BookmarkPlus, BookmarkCheck, Trash2, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
@@ -257,6 +258,12 @@ function cancelEdit() {
 // Drive menu
 const driveMenuVisible = ref(false)
 const driveMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+
+// Menu.toggle() anchors below an HTMLElement; template click handlers expose
+// EventTarget | null, so narrow it here (same guard as Panel.vue / TabBar.vue).
+function toggleMenu(menu: InstanceType<typeof Menu> | null, e: MouseEvent) {
+  if (e.currentTarget instanceof HTMLElement) menu?.toggle(e.currentTarget)
+}
 
 function onGlobalContextMenu(e: MouseEvent) {
   const target = e.target as HTMLElement
