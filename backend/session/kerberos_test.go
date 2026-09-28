@@ -53,7 +53,18 @@ func TestKerberosCachePathFromEnvironment(t *testing.T) {
 func TestKerberosCachePathRejectsUnsupportedType(t *testing.T) {
 	t.Setenv("KRB5CCNAME", "KEYRING:session")
 	if _, _, err := kerberosCachePath(); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("kerberosCachePath() error = %v, want unsupported cache error", err)
+		t.Fatalf("kerberosCachePath() error = nil, want unsupported cache error")
+	}
+}
+
+// A bare Windows drive path is a FILE cache: its drive colon must not be read
+// as the KRB5CCNAME "type:" prefix, or every Windows KRB5CCNAME= C:\… value
+// would be rejected as cache type "C".
+func TestKerberosCachePathTreatsDrivePathAsFileCache(t *testing.T) {
+	t.Setenv("KRB5CCNAME", `C:\Users\example\krb5cc`)
+	_, _, err := kerberosCachePath()
+	if err == nil || !strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("kerberosCachePath() error = %v, want missing-cache error for a bare drive path", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -160,14 +161,23 @@ func TestParsePrivateKeyFileTildePath(t *testing.T) {
 func TestKerberosDoesNotFallBackToKeyboardInteractive(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "missing-krb5.conf")
 	t.Setenv("KRB5_CONFIG", configPath)
+	// Pin an explicit FILE cache: on Windows an unset KRB5CCNAME selects the
+	// SSPI/LSA path, which never reads KRB5_CONFIG, so the config error below
+	// would not surface there. Resolving a FILE cache consults the config on
+	// every platform.
+	cachePath := filepath.Join(t.TempDir(), "krb5cc")
+	if err := os.WriteFile(cachePath, []byte("cache"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KRB5CCNAME", "FILE:"+cachePath)
 	kb := func(string, string, []string, []bool) ([]string, error) {
 		t.Fatal("keyboard-interactive callback must not be used for Kerberos auth")
 		return nil, nil
 	}
 
 	methods, err := makeSSHAuthMethods(ConnectionConfig{AuthType: "kerberos", Host: "server.example.com"}, kb)
-	if err == nil {
-		t.Fatal("makeSSHAuthMethods() error = nil, want missing Kerberos config error")
+	if err == nil || !strings.Contains(err.Error(), "KRB5_CONFIG") {
+		t.Fatalf("makeSSHAuthMethods() error = %v, want missing Kerberos config error", err)
 	}
 	if len(methods) != 0 {
 		t.Fatalf("makeSSHAuthMethods() returned %d fallback methods, want 0", len(methods))

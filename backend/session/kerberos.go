@@ -40,6 +40,10 @@ func kerberosCachePath() (string, func(), error) {
 			path = strings.TrimPrefix(path, "FILE:")
 		case strings.HasPrefix(path, "DIR:"):
 			path = filepath.Join(strings.TrimPrefix(path, "DIR:"), "tkt")
+		case isDrivePath(path):
+			// A bare path is a FILE cache. Without this branch a Windows path
+			// like "C:\Users\me\krb5cc" would be read as cache type "C" and
+			// rejected as unsupported.
 		case strings.Contains(path, ":"):
 			if runtime.GOOS == "darwin" && strings.HasPrefix(path, "API:") {
 				return exportDarwinCredentialCache()
@@ -110,6 +114,16 @@ func exportDarwinCredentialCache() (string, func(), error) {
 		return "", nil, fmt.Errorf("secure temporary Kerberos cache: %w", err)
 	}
 	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// isDrivePath reports whether value is a bare filesystem path with a Windows
+// drive prefix, such as "C:\Users\me\krb5cc". KRB5CCNAME accepts a bare path as
+// a FILE cache, and the drive colon must not be read as the cache "type:" prefix.
+func isDrivePath(value string) bool {
+	if len(value) < 3 || value[1] != ':' || (value[2] != '\\' && value[2] != '/') {
+		return false
+	}
+	return (value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')
 }
 
 func fileExists(path string) bool {
