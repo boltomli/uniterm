@@ -1059,6 +1059,7 @@
   "credential.tunnelTitle": "SSH-Tunnel – Anmeldedaten erforderlich",
   "credential.tunnelSubtitle": "Tunnel: {name}",
   "credential.authFailedSubtitle": "Authentifizierung fehlgeschlagen – bitte Zugangsdaten erneut eingeben.",
+  "credential.cancelled": "Keine Zugangsdaten eingegeben — Verbindung abgebrochen.",
   "credential.connect": "Verbinden",
   "conn.categoryFileTransfer": "Dateiübertragung",
   "conn.categoryContainer": "Container",

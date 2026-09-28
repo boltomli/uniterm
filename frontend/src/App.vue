@@ -142,6 +142,12 @@
       <MenuItem @click="inputMenuSelectAll">{{ t('input.selectAll') }}</MenuItem>
     </Menu>
 
+    <MCPApprovalDialog
+      v-model:visible="mcpApprovalVisible"
+      :request="mcpApprovalRequest"
+      @resolve="onMcpApprovalResolve"
+    />
+
     <SyncConflictDialog />
     <UpdateDialog />
     <DataDirDialog v-model:visible="dataDirVisible" :first-run="credStore.firstRun || credStore.dataDirInfo.firstRun" @done="onDataDirDone" />
@@ -196,6 +202,8 @@ import CredentialUnlockDialog from './components/CredentialUnlockDialog.vue'
 import KeychainLostDialog from './components/KeychainLostDialog.vue'
 import CredentialPrompt from './components/CredentialPrompt.vue'
 import type { CredentialResult } from './components/CredentialPrompt.vue'
+import MCPApprovalDialog from './components/MCPApprovalDialog.vue'
+import type { MCPApprovalRequest } from './types/mcp'
 import Menu from './components/Menu.vue'
 import MenuItem from './components/MenuItem.vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
@@ -219,9 +227,10 @@ import { useUpdateCheck } from './composables/useUpdateCheck'
 import { loadKeybindings, installGlobalListener, uninstallGlobalListener, matchDigitShortcut, isRebinding } from './composables/useKeyboardShortcuts'
 import { focusPanelTerminal, installTerminalFocusRestore } from './composables/useFocusTerminal'
 import { useDuplicateSession } from './composables/useDuplicateSession'
+import { useTunnelCredentials } from './composables/useTunnelCredentials'
 import type { ShortcutAction } from './types/settings'
 import { useI18n } from './i18n'
-import { CreateSession, CloseSession, RDPHide, RDPShow, RDPInvalidate, RDPSnapshot, RDPSetPosition, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp } from '../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, RDPHide, RDPShow, RDPInvalidate, RDPSnapshot, RDPSetPosition, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval } from '../bindings/github.com/ys-ll/uniterm/app'
 import { waitForTerminalSize } from './services/terminalManager'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
@@ -623,65 +632,44 @@ function onCredentialResolve(result: CredentialResult | null) {
   }
 }
 
-function needsCredentialCheck(config: ConnectionConfig): boolean {
-  const inScope = ['ssh', 'mosh', 'sftp', 'scp', 'ftp'].includes(config.type)
-  if (!inScope) return false
-  if ((config.type === 'ssh' || config.type === 'mosh' || config.type === 'scp' || config.type === 'sftp') && (config.authType === 'key' || config.authType === 'keyText')) return false
-  // 身份认证：账密来自身份库，由后端 materializeIdentity 解析，无需补全提示
-  if (config.authType === 'identity' || config.authType === 'kerberos' || config.authType === 'agent') return false
-  return !config.user || !config.password
+// ── MCP approval bridge (external AI agents) ──────────────────────
+// backend mcp:approval-request event → dialog → ResolveMCPApproval binding.
+const mcpApprovalVisible = ref(false)
+const mcpApprovalRequest = ref<MCPApprovalRequest | null>(null)
+let unsubMcpApproval: (() => void) | null = null
+let unsubMcpSessionCreated: (() => void) | null = null
+
+function onMcpApprovalResolve(approved: boolean, reason: string) {
+  const req = mcpApprovalRequest.value
+  mcpApprovalVisible.value = false
+  mcpApprovalRequest.value = null
+  if (req) ResolveMCPApproval(req.id, approved, reason).catch(() => {})
 }
 
-
-async function ensureCredentials(config: ConnectionConfig): Promise<ConnectionConfig | null> {
-  // 1. Check SSH tunnel connection first
-  if (config.tunnelSSHConnId) {
-    const tunnelConn = connectionStore.connections.find(c => c.id === config.tunnelSSHConnId)
-    if (tunnelConn && needsCredentialCheck(tunnelConn)) {
-      const result = await showCredentialDialog(
-        t('credential.tunnelTitle'),
-        t('credential.tunnelSubtitle', { name: tunnelConn.name }),
-        ['user', 'password'],
-        tunnelConn.user,
-        tunnelConn.password
-      )
-      if (!result) return null
-      // Pass credentials inline so Go can apply them without reading the store
-      config.tunnelSSHUser = result.user || tunnelConn.user
-      config.tunnelSSHPassword = result.password || tunnelConn.password
-      if (result.action === 'save_and_connect') {
-        await connectionStore.update(tunnelConn.id, {
-          user: config.tunnelSSHUser,
-          password: config.tunnelSSHPassword
-        })
-      }
-    }
+// backend mcp:session-created: an agent opened a new SSH session; mount a
+// visible terminal tab for it so the user can watch and control it.
+function onMcpSessionCreated(payload: { sessionId: string; name?: string; host?: string }) {
+  const cfg: Partial<ConnectionConfig> = {
+    type: 'ssh',
+    name: payload.name || payload.host || 'MCP',
+    host: payload.host || '',
   }
-
-  // 2. Check main connection
-  if (!needsCredentialCheck(config)) return config
-
-  const result = await showCredentialDialog(
-    t('credential.title'),
-    [config.name, config.host].filter(Boolean).join(' · '),
-    ['user', 'password'],
-    config.user,
-    config.password
-  )
-  if (!result) return null
-  // Create new object instead of mutating the original (which may be
-  // referenced by the Pinia store). For "save_and_connect" we explicitly
-  // persist via connectionStore.update below.
-  config = {
-    ...config,
-    user: result.user || config.user,
-    password: result.password || config.password
-  }
-  if (result.action === 'save_and_connect') {
-    await connectionStore.update(config.id, { user: config.user, password: config.password })
-  }
-  return config
+  const panel = panelStore.createPanel(cfg as ConnectionConfig, 'ssh')
+  const title = payload.name || payload.host || 'MCP'
+  panelStore.updateTitle(panel.id, title)
+  panelStore.bindSession(panel.id, payload.sessionId)
+  sessionStore.initSession(payload.sessionId)
+  sessionStore.updateStatus(payload.sessionId, 'connecting')
+  const tab = tabStore.activeTab?.type === 'start'
+    ? tabStore.replaceStartTab(tabStore.activeTab.id, title, panel.id)
+    : tabStore.createTerminalTab(title, panel.id)
+  panelStore.movePanelToTab(panel.id, tab.id)
 }
+
+// 凭据补全统一在 composables/useTunnelCredentials.ts：终端连接、容器、K8s 等
+// 入口共用同一实现。App.vue 自身的 showCredentialDialog 无法被本组件
+// inject 到，需显式传入。
+const { ensureConnectionCredentials: ensureCredentials } = useTunnelCredentials(showCredentialDialog)
 
 let inputMenuTarget: HTMLInputElement | HTMLTextAreaElement | HTMLElement | null = null
 interface InputMenuSelection {
@@ -966,6 +954,14 @@ onMounted(async () => {
   // Tray menu: "Settings" / "About" show the window (Go side) then land here.
   unsubTrayOpenSettings = Events.On('app:open-settings', () => openSettings())
   unsubTrayOpenAbout = Events.On('app:open-about', () => openSettings('about'))
+  // MCP (external AI agents): approval dialogs + session takeover.
+  unsubMcpApproval = Events.On('mcp:approval-request', (ev) => {
+    mcpApprovalRequest.value = ev.data as MCPApprovalRequest
+    mcpApprovalVisible.value = true
+  })
+  unsubMcpSessionCreated = Events.On('mcp:session-created', (ev) => {
+    onMcpSessionCreated(ev.data)
+  })
   // Go-side WndProc events: window move/resize start/end. The RDP window is a
   // WS_CHILD, so it moves with the main window automatically; only a resize of
   // the .rdp-area (or a re-show after an overlay) needs a position sync.
@@ -1215,6 +1211,8 @@ onUnmounted(() => {
   unsubRdpMoveResizeEnd?.()
   unsubTrayOpenSettings?.()
   unsubTrayOpenAbout?.()
+  unsubMcpApproval?.()
+  unsubMcpSessionCreated?.()
   rdpAreaObserver?.disconnect()
   settingsStore.dispose?.()
   connectionStore.dispose?.()

@@ -10,7 +10,18 @@ import type {
   ContainerInfo, InspectResult, ContainerImage, ContainerStats as ContainerStatsInfo, ContainerCreateOptions,
 } from '../types/container'
 
-export const connect = (id: string) => ContainerConnect(id)
+// 凭据补全弹窗（useTunnelCredentials）提交的临时账密；error 非 null 表示用户取消，
+// store 据此展示取消状态而不发起连接。
+export interface ContainerConnectCreds {
+  sshUser?: string
+  sshPassword?: string
+  tunnelUser?: string
+  tunnelPassword?: string
+  error?: string
+}
+
+export const connect = (id: string, creds?: ContainerConnectCreds) =>
+  ContainerConnect(id, creds?.sshUser || '', creds?.sshPassword || '', creds?.tunnelUser || '', creds?.tunnelPassword || '')
 export const disconnect = (id: string) => ContainerDisconnect(id)
 export const list = (id: string) => ContainerList(id) as Promise<ContainerInfo[]>
 export const inspect = (id: string, cid: string) => ContainerInspect(id, cid) as Promise<InspectResult>

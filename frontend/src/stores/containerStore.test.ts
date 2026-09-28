@@ -46,7 +46,7 @@ describe('containerStore', () => {
   it('open connects and loads containers', async () => {
     const store = useContainerStore()
     await store.open(tab)
-    expect(client.connect).toHaveBeenCalledWith('conn1')
+    expect(client.connect).toHaveBeenCalledWith('conn1', undefined)
     const s = store.sessions['tab1']
     expect(s.containers).toHaveLength(1)
     expect(s.containers[0].name).toBe('web')
@@ -58,6 +58,14 @@ describe('containerStore', () => {
     const store = useContainerStore()
     await store.open(tab)
     expect(store.sessions['tab1'].error).toContain('docker not found')
+  })
+
+  it('open with cancelled credentials shows error without connecting', async () => {
+    const store = useContainerStore()
+    await store.open(tab, { error: 'cancelled' })
+    expect(client.connect).not.toHaveBeenCalled()
+    expect(store.sessions['tab1'].error).toBe('cancelled')
+    expect(store.sessions['tab1'].loading).toBe(false)
   })
 
   it('action calls client and refreshes', async () => {

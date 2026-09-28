@@ -177,7 +177,9 @@ func readKubeconfigSource(source string, sourceIsPath bool) ([]byte, error) {
 // ContainerConnect 打开容器连接：解析配置、按 transport 建 Local 或 SSH runner。
 // SSH 传输时若被引用连接配了跳板机（TunnelSSHConnID），先起本地转发隧道，
 // 与 CreateSession 的单层隧道行为一致。
-func (a *App) ContainerConnect(connectionID string) error {
+// sshUser/sshPassword/tunnelUser/tunnelPassword 为前端统一凭据补全弹窗
+// （useCredentials）提交的临时账密：只填空缺，不覆盖已存储或身份库解析的值。
+func (a *App) ContainerConnect(connectionID, sshUser, sshPassword, tunnelUser, tunnelPassword string) error {
 	if a.containerManager == nil || a.connectionStore == nil {
 		return fmt.Errorf("container manager not initialized")
 	}
@@ -223,6 +225,34 @@ func (a *App) ContainerConnect(connectionID string) error {
 			return err
 		}
 		sshCfg = &m
+	}
+
+	// 临时账密（凭据补全弹窗"直接连接"未保存时）：只填空缺，不覆盖
+	// 已存储或身份库解析的值，与 setupJumpHostTunnel 的内联凭据语义一致。
+	if sshCfg.AuthType != "identity" {
+		if sshUser != "" && sshCfg.User == "" {
+			sshCfg.User = sshUser
+		}
+		if sshPassword != "" && sshCfg.Password == "" {
+			sshCfg.Password = sshPassword
+		}
+	}
+
+	// 防御性钥匙串兜底，与 CreateSession/SessionStart 一致：Load 的
+	// populatePasswords 理论上已同步填好密码，但若密码只存在系统钥匙串
+	// 中仍未取回，这里补一次，否则非交互拨号会直接认证失败。
+	if sshCfg.Password == "" && sshCfg.ID != "" {
+		if pw, err := a.connectionStore.EnsurePassword(sshCfg.ID); err == nil && pw != "" {
+			sshCfg.Password = pw
+		}
+	}
+
+	// 跳板机的临时账密随 sshCfg 传入，由 setupJumpHostTunnel 内部消费。
+	if tunnelUser != "" {
+		sshCfg.TunnelSSHUser = tunnelUser
+	}
+	if tunnelPassword != "" {
+		sshCfg.TunnelSSHPassword = tunnelPassword
 	}
 
 	// 跳板机：复用统一的 setupJumpHostTunnel（与其它连接类型同一段逻辑）。

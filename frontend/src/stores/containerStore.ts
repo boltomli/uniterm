@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import * as client from '../services/containerClient'
+import type { ContainerConnectCreds } from '../services/containerClient'
 import { usePanelStore } from './panelStore'
 import { useTabStore } from './tabStore'
 import { useSessionStore } from './sessionStore'
@@ -20,7 +21,7 @@ export interface ContainerSession {
 export const useContainerStore = defineStore('container', {
   state: () => ({ sessions: {} as Record<string, ContainerSession> }),
   actions: {
-    async open(tab: ContainerTab) {
+    async open(tab: ContainerTab, creds?: ContainerConnectCreds) {
       this.sessions[tab.id] = {
         connId: tab.connectionId, runtime: tab.runtime,
         containers: [], images: [], namespaces: [], namespace: 'default',
@@ -28,8 +29,14 @@ export const useContainerStore = defineStore('container', {
       }
       // 读回响应式代理再操作：直接改闭包里的原始对象不会触发视图更新
       const s = this.sessions[tab.id]
+      // 用户在凭据补全弹窗里点了取消：不发起连接，展示取消状态
+      if (creds?.error) {
+        s.error = creds.error
+        s.loading = false
+        return
+      }
       try {
-        await client.connect(tab.connectionId)
+        await client.connect(tab.connectionId, creds)
         if (this.sessions[tab.id] !== s) {
           // 连接期间 tab 已关闭：回收后端连接
           client.disconnect(tab.connectionId)

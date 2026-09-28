@@ -151,8 +151,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
 import { RefreshCw, SquareTerminal, ScrollText, Play, Square, Power, Pencil, Trash2 } from '@lucide/vue'
 import { useContainerStore } from '../stores/containerStore'
+import { useConnectionStore } from '../stores/connectionStore'
 import * as client from '../services/containerClient'
 import type { StreamHandle } from '../services/containerClient'
+import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import { useI18n } from '../i18n'
 import ContainerDetailDrawer from './ContainerDetailDrawer.vue'
 import ContainerCreateDialog from './ContainerCreateDialog.vue'
@@ -163,7 +165,34 @@ const props = defineProps<{ tab: ContainerTab }>()
 
 const { t } = useI18n()
 const store = useContainerStore()
+const connectionStore = useConnectionStore()
+const { ensureConnectionCredentials } = useTunnelCredentials()
 const session = computed(() => store.sessions[props.tab.id])
+
+// SSH 传输的容器连接先走统一的凭据补全（含跳板机链），被引用的 SSH 主机
+// 未保存密码时弹窗补全而不是直接报认证错误；取消则中止连接。无需补全时
+// ensureConnectionCredentials 原样返回，不影响正常连接。
+async function openWithCredentials() {
+  const conn = connectionStore.connections.find(c => c.id === props.tab.connectionId)
+  if (conn && conn.containerTransport === 'ssh' && conn.containerSSHConnId) {
+    const sshCfg = connectionStore.connections.find(c => c.id === conn.containerSSHConnId)
+    if (sshCfg) {
+      const resolved = await ensureConnectionCredentials(sshCfg)
+      if (!resolved) {
+        await store.open(props.tab, { error: t('credential.cancelled') })
+        return
+      }
+      await store.open(props.tab, {
+        sshUser: resolved.user,
+        sshPassword: resolved.password,
+        tunnelUser: resolved.tunnelSSHUser,
+        tunnelPassword: resolved.tunnelSSHPassword,
+      })
+      return
+    }
+  }
+  await store.open(props.tab)
+}
 
 const namespaceOptions = computed(() => {
   const s = session.value
@@ -328,11 +357,11 @@ function onReconnectEvent(e: Event) {
 // (open() re-initializes loading/error state and reconnects the client).
 async function reconnect() {
   try { store.close(props.tab.id) } catch (_) {}
-  await store.open(props.tab)
+  await openWithCredentials()
 }
 
 onMounted(() => {
-  store.open(props.tab)
+  openWithCredentials()
   // Tab right-click 「重连」(Reconnect) menu → forced reconnect of this tab.
   window.addEventListener('panel:reconnect', onReconnectEvent)
 })

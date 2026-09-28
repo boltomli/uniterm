@@ -1059,6 +1059,7 @@
   "credential.tunnelTitle": "SSH 터널 - 자격 증명 필요",
   "credential.tunnelSubtitle": "터널: {name}",
   "credential.authFailedSubtitle": "인증에 실패했습니다. 자격 증명을 다시 입력하세요.",
+  "credential.cancelled": "자격 증명이 입력되지 않아 연결이 취소되었습니다.",
   "credential.connect": "연결",
   "conn.categoryFileTransfer": "파일 전송",
   "conn.categoryContainer": "컨테이너",
