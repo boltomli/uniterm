@@ -5,12 +5,14 @@ package session
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -26,6 +28,7 @@ var (
 	procAtlAxGetControl = atlDll.NewProc("AtlAxGetControl")
 
 	user32Dll              = windows.NewLazySystemDLL("user32.dll")
+	procCreateWindowExW    = user32Dll.NewProc("CreateWindowExW")
 	procSetWindowPos       = user32Dll.NewProc("SetWindowPos")
 	procShowWindow         = user32Dll.NewProc("ShowWindow")
 	procDestroyWindow      = user32Dll.NewProc("DestroyWindow")
@@ -276,13 +279,6 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("AtlAxWinInit failed")
 	}
 
-	progID := s.findRdpProgID()
-	if progID == "" {
-		log.Writef("[RDP] ERROR: no RDP ActiveX control found")
-		s.setStatus(StatusError)
-		return fmt.Errorf("no RDP ActiveX control found")
-	}
-
 	width := config.RdpFixedWidth
 	height := config.RdpFixedHeight
 	// Sentinel -1 means "follow the display": use the primary monitor's
@@ -300,57 +296,11 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 		height = 600
 	}
 
-	// Create the RDP container as a WS_CHILD at 32000,32000 (parent-client-
-	// relative, i.e. outside the client area = hidden). The actual show/position
-	// is done by positionFromMainWindow once Connect succeeds.
-	name, _ := windows.UTF16PtrFromString(progID)
-	className, _ := windows.UTF16PtrFromString("AtlAxWin")
-
-	createWindowEx := windows.NewLazySystemDLL("user32.dll").NewProc("CreateWindowExW")
-	// Create as a WS_CHILD of the main window. A child window:
-	//  - follows the parent automatically when it moves (owned top-level windows do not),
-	//  - is clipped to the parent's client area (so it can never cover the header/tabs),
-	//  - cannot become the foreground window (so cannot push uniTerm behind other
-	//    windows during/after connect).
-	// The RDP overlay is driven purely by sibling z-order: HWND_TOP to show it above
-	// the webview, HWND_BOTTOM to tuck it under the webview while an HTML menu/dialog
-	// is open — leaving the ActiveX rendering surface untouched, so no black screen
-	// on restore. WS_EX_NOACTIVATE keeps the ActiveX + its child dialogs from
-	// stealing foreground/focus during Connect.
-	hwnd, _, _ := createWindowEx.Call(
-		uintptr(WS_EX_NOACTIVATE),
-		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(name)),
-		uintptr(WS_CHILD|WS_CLIPSIBLINGS),
-		32000, 32000, // child-relative; outside the client area = hidden
-		uintptr(width), uintptr(height),
-		uintptr(s.parentHwnd), // parent window handle
-		0,                     // menu
-		0,                     // hInstance
-		0,                     // lParam
-	)
-	if hwnd == 0 {
-		log.Writef("[RDP] ERROR: CreateWindowExW failed")
-		s.setStatus(StatusError)
-		return fmt.Errorf("CreateWindowEx failed")
-	}
-
-	// No GWLP_HWNDPARENT owner call needed — the window is a genuine child now.
-
-	var unk *ole.IUnknown
-	procAtlAxGetControl.Call(hwnd, uintptr(unsafe.Pointer(&unk)))
-	if unk == nil {
-		procDestroyWindow.Call(hwnd)
-		s.setStatus(StatusError)
-		return fmt.Errorf("AtlAxGetControl failed")
-	}
-
-	dispatch, err := unk.QueryInterface(ole.IID_IDispatch)
-	unk.Release()
+	dispatch, hwnd, err := hostRdpControl(s.parentHwnd, width, height)
 	if err != nil {
-		procDestroyWindow.Call(hwnd)
+		log.Writef("[RDP] ERROR: %v", err)
 		s.setStatus(StatusError)
-		return fmt.Errorf("QI IDispatch: %w", err)
+		return err
 	}
 
 	s.mu.Lock()
@@ -632,8 +582,14 @@ func (s *RDPSession) runMessagePump() {
 	}
 }
 
-func (s *RDPSession) findRdpProgID() string {
-	candidates := []string{
+// rdpControlCandidates lists the RDP ActiveX control identifiers to try,
+// preferred first. The "NotSafeForScripting" ProgIDs are what the Remote
+// Desktop client registers on stock Windows; the versioned MsRDP./MsTscAx.
+// ProgIDs cover machines where only those are registered; literal CLSIDs are a
+// last resort for the redistributable control.
+func rdpControlCandidates() []string {
+	ids := []string{
+		"MsRdpClient13NotSafeForScripting",
 		"MsRdpClient12NotSafeForScripting",
 		"MsRdpClient11NotSafeForScripting",
 		"MsRdpClient10NotSafeForScripting",
@@ -642,43 +598,102 @@ func (s *RDPSession) findRdpProgID() string {
 		"MsTscAxNotSafeForScripting",
 		"MsTscAx",
 	}
-	ole32 := windows.NewLazySystemDLL("ole32.dll")
-	procCLSIDFromProgID := ole32.NewProc("CLSIDFromProgID")
-	for _, id := range candidates {
-		progID, _ := windows.UTF16PtrFromString(id)
-		var clsid ole.GUID
-		ret, _, _ := procCLSIDFromProgID.Call(
-			uintptr(unsafe.Pointer(progID)),
-			uintptr(unsafe.Pointer(&clsid)),
-		)
-		if ret == 0 {
-			return id
-		}
+	for v := 13; v >= 2; v-- {
+		ids = append(ids, fmt.Sprintf("MsRDP.MsRDP.%d", v), fmt.Sprintf("MsTscAx.MsTscAx.%d", v))
 	}
-
-	clsidCandidates := []string{
+	return append(ids,
 		"{9059F30F-4EB1-4BD2-9FDC-36F43A218F4A}",
 		"{54D38BF7-B1EF-4479-9674-1BD6EA465258}",
 		"{C0EFA91A-EEB7-41C7-97FA-F0ED645EFB24}",
 		"{301B94BA-5F25-4A12-9FFE-3B274E75C7DE}",
 		"{5F681803-2900-4C43-A1CC-CF405404A676}",
 		"{1FB464C8-09BB-4017-A2F5-EB742F04392F}",
-	}
-	ole32Dll := windows.NewLazySystemDLL("ole32.dll")
-	procCLSIDFromString := ole32Dll.NewProc("CLSIDFromString")
-	for _, clsidStr := range clsidCandidates {
-		wideStr, _ := windows.UTF16PtrFromString(clsidStr)
-		var clsid ole.GUID
-		ret, _, _ := procCLSIDFromString.Call(
-			uintptr(unsafe.Pointer(wideStr)),
-			uintptr(unsafe.Pointer(&clsid)),
-		)
-		if ret == 0 {
-			return clsidStr
-		}
-	}
+	)
+}
 
-	return ""
+// hostRdpControl creates the RDP ActiveX container: a WS_CHILD AtlAxWin window
+// at 32000,32000 (parent-client-relative, i.e. outside the client area =
+// hidden; the actual show/position is done by positionFromMainWindow once
+// Connect succeeds) hosting the first RDP control this machine can actually
+// instantiate. A child window:
+//   - follows the parent automatically when it moves (owned top-level windows do not),
+//   - is clipped to the parent's client area (so it can never cover the header/tabs),
+//   - cannot become the foreground window (so cannot push uniTerm behind other
+//     windows during/after connect).
+//
+// The RDP overlay is driven purely by sibling z-order: HWND_TOP to show it above
+// the webview, HWND_BOTTOM to tuck it under the webview while an HTML menu/dialog
+// is open — leaving the ActiveX rendering surface untouched, so no black screen
+// on restore. WS_EX_NOACTIVATE keeps the ActiveX + its child dialogs from
+// stealing foreground/focus during Connect.
+//
+// Each candidate is tried until one yields a control that answers the RDP
+// automation API (how Connect drives it). Class-name resolution alone is not
+// enough: CLSIDFromString parses any well-formed GUID even when the class is
+// unregistered, and a registered class can still fail to instantiate inside the
+// AtlAxWin WM_CREATE handler — which used to surface as a bare
+// "CreateWindowExW failed" with no indication of which control or why.
+func hostRdpControl(parent uintptr, width, height int) (*ole.IDispatch, uintptr, error) {
+	className, _ := windows.UTF16PtrFromString("AtlAxWin")
+	var failures []string
+	for _, id := range rdpControlCandidates() {
+		name, _ := windows.UTF16PtrFromString(id)
+		hwnd, _, callErr := procCreateWindowExW.Call(
+			uintptr(WS_EX_NOACTIVATE),
+			uintptr(unsafe.Pointer(className)),
+			uintptr(unsafe.Pointer(name)),
+			uintptr(WS_CHILD|WS_CLIPSIBLINGS),
+			32000, 32000, // child-relative; outside the client area = hidden
+			uintptr(width), uintptr(height),
+			uintptr(parent), // parent window handle
+			0,               // menu
+			0,               // hInstance
+			0,               // lParam
+		)
+		if hwnd == 0 {
+			failures = append(failures, fmt.Sprintf("%s: CreateWindowExW: %s", id, win32Error(callErr)))
+			continue
+		}
+		// No GWLP_HWNDPARENT owner call needed — the window is a genuine child now.
+
+		var unk *ole.IUnknown
+		procAtlAxGetControl.Call(hwnd, uintptr(unsafe.Pointer(&unk)))
+		if unk == nil {
+			procDestroyWindow.Call(hwnd)
+			failures = append(failures, id+": AtlAxGetControl returned no control")
+			continue
+		}
+		dispatch, err := unk.QueryInterface(ole.IID_IDispatch)
+		unk.Release()
+		if err != nil {
+			procDestroyWindow.Call(hwnd)
+			failures = append(failures, fmt.Sprintf("%s: control has no IDispatch: %v", id, err))
+			continue
+		}
+		// Connect drives the control by name ("Server", "Connect", "Connected",
+		// ...). An object that cannot resolve them is not a usable RDP control
+		// even if it hosts and exposes IDispatch.
+		if _, err := dispatch.GetProperty("Server"); err != nil {
+			dispatch.Release()
+			procDestroyWindow.Call(hwnd)
+			failures = append(failures, fmt.Sprintf("%s: hosted object has no RDP API: %v", id, err))
+			continue
+		}
+		log.Writef("[RDP] hosting ActiveX control %s", id)
+		return dispatch, hwnd, nil
+	}
+	return nil, 0, fmt.Errorf("no usable RDP ActiveX control (is mstscax.dll installed?): %s", strings.Join(failures, " | "))
+}
+
+// win32Error renders a LazyProc.Call lastErr with its numeric code; the bare
+// message is not diagnostic (it reads "The operation completed successfully"
+// whenever the value is stale).
+func win32Error(err error) string {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return fmt.Sprintf("win32 error %d (%v)", errno, errno)
+	}
+	return fmt.Sprintf("%v", err)
 }
 
 // setAuthLevelOverride sets the system-wide RDP authentication level to 0,

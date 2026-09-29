@@ -49,6 +49,7 @@
 - UI: batch fixes — custom window controls stay drawn until the native title bar setting takes effect after a relaunch, the chmod octal input is a plain text field again, multi-file SFTP drags show a drag ghost, and the tab strip end-drop indicator no longer pushes the add button to the far right.
 - SSH: `~` in private key paths is expanded at import and connect time.
 - Kerberos: `KRB5CCNAME` written as a bare Windows path (e.g. `C:\Users\me\krb5cc`) is honored as a file cache instead of failing with "unsupported KRB5CCNAME cache type: C".
+- RDP: the ActiveX control is picked from the RDP client classes actually registered on the machine (including the versioned `MsRDP.` / `MsTscAx.` ProgIDs) and validated against the RDP automation API before use, falling through to the next candidate when a class fails to instantiate — previously a machine with missing `MsRdpClient*` registrations fell back to a blindly parsed CLSID and failed with a bare "CreateWindowEx failed". Failures now list every attempted control with its Win32 error code.
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
@@ -102,6 +103,7 @@ Thanks to @surenwuyuwuqiu, @zhangsir1211 and @sonnartliao for their contribution
 - 界面：批量修复——重启后原生标题栏设置生效前保留自绘窗口控件；chmod 八进制输入恢复为纯文本框；SFTP 多文件拖拽显示拖拽幻影；标签栏末尾落区指示不再把新增按钮挤到最右侧。
 - SSH：私钥路径中的 `~` 在导入与连接时展开。
 - Kerberos：`KRB5CCNAME` 写成裸 Windows 路径（如 `C:\Users\me\krb5cc`）时按文件缓存处理，不再报「unsupported KRB5CCNAME cache type: C」。
+- RDP：ActiveX 控件改为从系统实际注册的 RDP 客户端类中选取（含带版本号的 `MsRDP.` / `MsTscAx.` ProgID），并以 RDP 自动化接口可用为准逐个尝试直到成功——此前缺失 `MsRdpClient*` 注册项的机器会退到盲解析的 CLSID 并只报一句「CreateWindowEx failed」。现在失败时会列出每个候选控件及其 Win32 错误码。
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报。这是 Go/Wails 应用的已知问题（见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请仅从官方开源渠道 GitHub 与 Gitee 下载。如仍有顾虑，可下载源码自行构建运行。
