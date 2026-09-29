@@ -1,168 +1,53 @@
 <template>
   <div class="container-tab">
-    <div class="container-toolbar">
-      <el-select
-        v-if="session?.runtime === 'nerdctl'"
-        :model-value="session.namespace"
-        size="small"
-        style="width: 8.75rem"
-        filterable
-        allow-create
-        @change="onNamespaceChange"
-      >
-        <el-option v-for="ns in namespaceOptions" :key="ns" :label="ns" :value="ns" />
-      </el-select>
-      <el-input
-        v-model="filter"
-        size="small"
-        :placeholder="t('k8s.filter')"
-        clearable
-        style="width: 12.5rem"
-      />
-      <div class="toolbar-spacer" />
-      <el-button size="small" @click="createOpen = true">{{ t('container.create') }}</el-button>
-      <el-button size="small" :icon="RefreshCw" @click="store.refresh(tab.id)" />
-      <el-radio-group :model-value="view" size="small" @change="onViewChange">
-        <el-radio-button value="containers">{{ t('container.containers') }}</el-radio-button>
-        <el-radio-button value="images">{{ t('container.images') }}</el-radio-button>
-      </el-radio-group>
-    </div>
-
     <div v-if="session?.error" class="container-error">{{ session.error }}</div>
     <div v-else-if="!session || session.loading" class="container-loading">{{ t('container.loading') }}</div>
 
-    <template v-else>
-      <div v-show="view === 'containers'" class="container-table-wrap">
-        <el-table
-          :data="filteredContainers"
-          size="small"
-          height="calc(100% - 2.5rem)"
-          class="k8s-list-table"
-          border
-          @row-click="openDetail"
-        >
-          <el-table-column :label="t('container.colName')" :min-width="uiPx(180)" sortable :sort-method="(a, b) => a.name.localeCompare(b.name)" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span>{{ row.name }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('container.colImage')" :min-width="uiPx(220)" sortable :sort-method="(a, b) => a.image.localeCompare(b.image)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.image }}</template>
-          </el-table-column>
-          <el-table-column
-            :label="t('container.colState')"
-            :width="uiPx(110)"
-            sortable
-            :sort-method="(a, b) => a.state.localeCompare(b.state)"
-            :filters="stateFilters"
-            :filter-method="(val, row) => row.state === val"
-          >
-            <template #default="{ row }">
-              <span :data-state="row.state" class="container-state">{{ row.state }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column :label="t('container.colPorts')" :min-width="uiPx(160)" sortable :sort-method="(a, b) => a.ports.localeCompare(b.ports)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.ports }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colCreated')" :min-width="uiPx(130)" sortable :sort-method="(a, b) => a.createdAt.localeCompare(b.createdAt)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.createdAt }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colActions')" :width="uiPx(172)" fixed="right" class-name="k8s-action-cell">
-            <template #default="{ row }">
-              <!-- `row` is element-plus el-table's DefaultRow slot payload; cast at this third-party boundary. -->
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.exec')" @click.stop="openExec(row as ContainerInfo)">
-                <SquareTerminal :size="lucideSize('0.875rem')" />
-              </button>
-              <button class="btn btn-ghost btn-icon btn-sm" :title="t('container.logs')" @click.stop="openLogs(row as ContainerInfo)">
-                <ScrollText :size="lucideSize('0.875rem')" />
-              </button>
-              <button v-if="row.state !== 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.start')" @click.stop="runAction(row as ContainerInfo, 'start')">
-                <Play :size="lucideSize('0.875rem')" />
-              </button>
-              <button v-if="row.state === 'running'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.stop')" @click.stop="runAction(row as ContainerInfo, 'stop')">
-                <Square :size="lucideSize('0.875rem')" />
-              </button>
-              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.restart')" @click.stop="runAction(row as ContainerInfo, 'restart')">
-                <Power :size="lucideSize('0.875rem')" />
-              </button>
-              <button v-if="session?.runtime !== 'wslc'" class="btn btn-ghost btn-icon btn-sm" :title="t('container.rename')" @click.stop="onRename(row as ContainerInfo)">
-                <Pencil :size="lucideSize('0.875rem')" />
-              </button>
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.remove')" @click.stop="onRemove(row as ContainerInfo)">
-                <Trash2 :size="lucideSize('0.875rem')" />
-              </button>
-            </template>
-          </el-table-column>
-        </el-table>
+    <div v-else class="db-main">
+      <div class="db-left" :style="{ width: leftWidth + 'px' }">
+        <ContainerTree v-model="view" />
       </div>
-
-      <div v-show="view === 'images'" class="container-table-wrap">
-        <el-table
-          :data="filteredImages"
-          size="small"
-          height="calc(100% - 5.0rem)"
-          class="k8s-list-table"
-          border
-        >
-          <el-table-column :label="t('container.colRepository')" :min-width="uiPx(220)" sortable :sort-method="(a, b) => a.repository.localeCompare(b.repository)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.repository }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colTag')" :min-width="uiPx(140)" sortable :sort-method="(a, b) => a.tag.localeCompare(b.tag)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.tag }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colId')" :width="uiPx(130)">
-            <template #default="{ row }">{{ shortId(row.id) }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colSize')" :width="uiPx(110)" sortable :sort-method="(a, b) => a.size.localeCompare(b.size)">
-            <template #default="{ row }">{{ row.size }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colCreated')" :min-width="uiPx(130)" sortable :sort-method="(a, b) => a.createdAt.localeCompare(b.createdAt)" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.createdAt }}</template>
-          </el-table-column>
-          <el-table-column :label="t('container.colActions')" :width="uiPx(38)" fixed="right" class-name="k8s-action-cell">
-            <template #default="{ row }">
-              <!-- `row` is element-plus el-table's DefaultRow slot payload; cast at this third-party boundary. -->
-              <button class="btn btn-ghost btn-icon btn-sm danger" :title="t('container.removeImage')" @click.stop="onRemoveImage(row as ContainerImage)">
-                <Trash2 :size="lucideSize('0.875rem')" />
-              </button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <div class="pull-actions">
-          <el-input v-model="pullImage" size="small" :placeholder="t('container.pullPlaceholder')" style="width: 20.0rem" @keyup.enter="onPull" />
-          <el-button size="small" :loading="pulling" @click="onPull">{{ t('container.pull') }}</el-button>
-        </div>
-        <div v-if="pullLines.length" class="pull-log">
-          <div v-for="(l, i) in pullLines" :key="i" class="log-line">{{ l }}</div>
-        </div>
+      <div class="db-resizer" @mousedown="onResizeStart" />
+      <div class="db-right">
+        <OverviewView
+          v-if="view === 'overview'"
+          :tab="tab"
+          :session="session"
+          @show-state="onShowState"
+          @show-images="view = 'images'"
+        />
+        <!-- v-show 常驻：切换视图不销毁组件，进行中的拉取/推送任务面板跨视图存活 -->
+        <ContainersView
+          v-show="view === 'containers'"
+          :tab="tab"
+          :session="session"
+          :image-filter="imageFilter"
+          :state-filter="stateFilter"
+          @clear-image-filter="imageFilter = ''"
+          @clear-state-filter="stateFilter = ''"
+        />
+        <ImagesView
+          v-show="view === 'images'"
+          :tab="tab"
+          :session="session"
+          @view-related="onViewRelated"
+        />
       </div>
-    </template>
-
-    <ContainerDetailDrawer
-      :mode="drawerMode"
-      :tab-id="tab.id"
-      :target="drawerTarget"
-      @close="drawerMode = null"
-    />
-    <ContainerCreateDialog v-model="createOpen" :tab-id="tab.id" @created="store.refresh(tab.id)" />
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { lucideSize } from '../utils/lucideSize'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox, ElTable, ElTableColumn } from 'element-plus'
-import { RefreshCw, SquareTerminal, ScrollText, Play, Square, Power, Pencil, Trash2 } from '@lucide/vue'
 import { useContainerStore } from '../stores/containerStore'
 import { useConnectionStore } from '../stores/connectionStore'
-import * as client from '../services/containerClient'
-import type { StreamHandle } from '../services/containerClient'
 import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import { useI18n } from '../i18n'
-import ContainerDetailDrawer from './ContainerDetailDrawer.vue'
-import ContainerCreateDialog from './ContainerCreateDialog.vue'
-import type { ContainerImage, ContainerInfo, ContainerTab } from '../types/container'
-import { uiPx } from '../utils/uiScale'
+import ContainerTree from './ContainerTree.vue'
+import OverviewView from './OverviewView.vue'
+import ContainersView from './ContainersView.vue'
+import ImagesView from './ImagesView.vue'
+import type { ContainerTab } from '../types/container'
 
 const props = defineProps<{ tab: ContainerTab }>()
 
@@ -197,158 +82,45 @@ async function openWithCredentials() {
   await store.open(props.tab)
 }
 
-const namespaceOptions = computed(() => {
-  const s = session.value
-  if (!s) return []
-  const set = new Set(s.namespaces.length ? s.namespaces : [s.namespace])
-  set.add('default')
-  return [...set]
-})
+// ── view switch（左树：总览分组 + 概览/容器/镜像）──────────────
+const view = ref<'overview' | 'containers' | 'images'>('overview')
+const imageFilter = ref('')
+const stateFilter = ref('')
 
-const view = ref<'containers' | 'images'>('containers')
-
-// ── search / filter ────────────────────────────────────────────
-const filter = ref('')
-const filteredContainers = computed(() => {
-  const f = filter.value.trim().toLowerCase()
-  const list = session.value?.containers || []
-  return f ? list.filter(c => c.name.toLowerCase().includes(f)) : list
-})
-const filteredImages = computed(() => {
-  const f = filter.value.trim().toLowerCase()
-  const list = session.value?.images || []
-  return f ? list.filter(i => i.repository.toLowerCase().includes(f)) : list
-})
-const stateFilters = computed(() => {
-  const set = new Set<string>()
-  for (const c of session.value?.containers || []) set.add(c.state)
-  return [...set].filter(Boolean).sort().map(v => ({ text: v, value: v }))
-})
-
-function onViewChange(v: string | number | boolean) {
-  view.value = v as 'containers' | 'images'
-  if (view.value === 'images') store.loadImages(props.tab.id)
+// 镜像列表「关联容器」点击：切到容器页并按镜像过滤。
+function onViewRelated(ref: string) {
+  imageFilter.value = ref
+  stateFilter.value = ''
+  view.value = 'containers'
 }
 
-async function onNamespaceChange(ns: string) {
-  try {
-    await store.setNamespace(props.tab.id, ns)
-  } catch (e: any) {
-    ElMessage.error(String(e?.message || e))
-  }
+// 概览页状态统计点击：切到容器页并按状态过滤。
+function onShowState(state: string) {
+  stateFilter.value = state
+  imageFilter.value = ''
+  view.value = 'containers'
 }
 
-// ── drawer / create ────────────────────────────────────────────
-const drawerMode = ref<'detail' | 'logs' | null>(null)
-const drawerTarget = ref<ContainerInfo | null>(null)
-const createOpen = ref(false)
-
-function openDetail(c: ContainerInfo) {
-  drawerMode.value = 'detail'
-  drawerTarget.value = c
+// ── 左侧宽度 + resizer（抄 K8sTabContent / DBTabContent）───────
+const leftWidth = ref(180)
+let resizeStartX = 0
+let resizeStartWidth = 0
+let resizing = false
+function onResizeStart(e: MouseEvent) {
+  resizeStartX = e.clientX
+  resizeStartWidth = leftWidth.value
+  resizing = true
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', onResizeEnd)
 }
-function openLogs(c: ContainerInfo) {
-  drawerTarget.value = c
-  drawerMode.value = 'logs'
+function onResizeMove(e: MouseEvent) {
+  const dx = e.clientX - resizeStartX
+  leftWidth.value = Math.max(120, Math.min(360, resizeStartWidth + dx))
 }
-async function openExec(c: ContainerInfo) {
-  try {
-    await store.openContainerExec(props.tab, c)
-  } catch (e: any) {
-    ElMessage.error(String(e?.message || e))
-  }
-}
-
-// ── actions ────────────────────────────────────────────────────
-async function runAction(c: ContainerInfo, act: string) {
-  try {
-    if (act === 'start' || act === 'stop' || act === 'restart') {
-      await ElMessageBox.confirm(
-        t('container.actionConfirm', { action: t('container.' + act), name: c.name }),
-        t('common.confirm'),
-        { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') },
-      )
-    }
-    await store.action(props.tab.id, c.id, act)
-  } catch (e: any) {
-    if (e === 'cancel' || e === 'close') return
-    ElMessage.error(String(e?.message || e))
-  }
-}
-
-async function onRename(c: ContainerInfo) {
-  try {
-    const { value } = await ElMessageBox.prompt(
-      t('container.renameMessage', { name: c.name }),
-      t('container.rename'),
-      { inputValue: c.name, confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') },
-    )
-    if (value && value !== c.name) await store.rename(props.tab.id, c.id, value)
-  } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(String(e?.message || e))
-  }
-}
-
-async function onRemove(c: ContainerInfo) {
-  try {
-    await ElMessageBox.confirm(
-      t('container.removeConfirm', { name: c.name }),
-      t('common.confirm'),
-      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') },
-    )
-    await store.action(props.tab.id, c.id, 'rm')
-  } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(String(e?.message || e))
-  }
-}
-
-async function onRemoveImage(img: ContainerImage) {
-  try {
-    await ElMessageBox.confirm(
-      t('container.removeImageConfirm', { name: `${img.repository}:${img.tag}` }),
-      t('common.confirm'),
-      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') },
-    )
-    const s = session.value
-    if (!s) return
-    await client.removeImage(s.connId, img.id)
-    await store.loadImages(props.tab.id)
-  } catch (e: any) {
-    if (e !== 'cancel' && e !== 'close') ElMessage.error(String(e?.message || e))
-  }
-}
-
-// ── image pull ─────────────────────────────────────────────────
-const pullImage = ref('')
-const pulling = ref(false)
-const pullLines = ref<string[]>([])
-let pullHandle: StreamHandle | null = null
-
-async function onPull() {
-  const s = session.value
-  const image = pullImage.value.trim()
-  if (!s || !image || pulling.value) return
-  pullLines.value = []
-  pulling.value = true
-  try {
-    pullHandle = await client.startPull(s.connId, image,
-      (line) => pullLines.value.push(line),
-      (err) => {
-        pulling.value = false
-        pullHandle = null
-        if (err) ElMessage.error(err)
-        else store.loadImages(props.tab.id)
-      },
-    )
-  } catch (e: any) {
-    pulling.value = false
-    ElMessage.error(String(e?.message || e))
-  }
-}
-
-function shortId(id: string) {
-  const raw = id.replace(/^sha256:/, '')
-  return raw.length > 12 ? raw.slice(0, 12) : raw
+function onResizeEnd() {
+  resizing = false
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
 }
 
 function onReconnectEvent(e: Event) {
@@ -370,12 +142,16 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('panel:reconnect', onReconnectEvent)
-  pullHandle?.stop()
+  if (resizing) {
+    document.removeEventListener('mousemove', onResizeMove)
+    document.removeEventListener('mouseup', onResizeEnd)
+  }
   store.close(props.tab.id)
 })
 </script>
 
 <style scoped>
+/* 直接抄 K8sTabContent 的骨架 CSS，class 同名 */
 .container-tab {
   flex: 1;
   display: flex;
@@ -384,17 +160,31 @@ onBeforeUnmount(() => {
   position: relative;
 }
 
-.container-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
-  border-bottom: 1px solid var(--el-border-color-lighter, #333);
-  flex-shrink: 0;
-}
-
-.toolbar-spacer {
+.db-main {
   flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+.db-left {
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-subtle, #333);
+  overflow: hidden;
+}
+.db-resizer {
+  width: 0.25rem;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.db-resizer:hover {
+  background: var(--border-subtle, #333);
+}
+.db-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .container-error {
@@ -406,65 +196,5 @@ onBeforeUnmount(() => {
 .container-loading {
   padding: 0.75rem;
   opacity: 0.7;
-}
-
-.container-table-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.k8s-list-table {
-  flex: 1;
-}
-
-/* Action-column cell: tighter padding + 0.25rem gap between .btn-icon buttons
-   (mirrors K8sResourceList's action-cell styling). */
-.k8s-list-table :deep(.k8s-action-cell .cell) {
-  padding: 0 0.25rem;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-}
-.k8s-list-table :deep(.k8s-action-cell .btn-icon + .btn-icon) {
-  margin-left: 0.25rem;
-}
-
-.k8s-list-table :deep(.el-table__row) {
-  cursor: pointer;
-}
-
-.container-state[data-state='running'] {
-  color: var(--el-color-success, #67c23a);
-}
-
-.container-state[data-state='paused'] {
-  color: var(--el-color-warning, #e6a23c);
-}
-
-.pull-actions {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
-  flex-shrink: 0;
-}
-
-.pull-log {
-  margin: 0 0.625rem 0.625rem;
-  padding: 0.5rem 0.75rem;
-  max-height: 15rem;
-  overflow: auto;
-  background: var(--bg-surface);
-  border: 1px solid var(--el-border-color-lighter, #333);
-  border-radius: var(--radius-sm, 0.25rem);
-  font-family: var(--font-mono, monospace);
-  font-size: 0.75rem;
-  user-select: text;
-}
-
-.pull-log .log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 </style>

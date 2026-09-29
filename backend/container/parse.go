@@ -209,6 +209,10 @@ func normalizeState(state, status string) string {
 }
 
 func ParseContainers(rt Runtime, out []byte) ([]Container, error) {
+	// docker 走竖线分隔的字段模板（见 psFormatDocker 的说明）
+	if rt == RuntimeDocker {
+		return parseDockerPS(out), nil
+	}
 	var list []Container
 	jsonLines(out, func(m map[string]any) {
 		name := ""
@@ -239,6 +243,35 @@ func ParseContainers(rt Runtime, out []byte) ([]Container, error) {
 		})
 	})
 	return list, nil
+}
+
+// parseDockerPS 解析 docker ps 的竖线分隔输出（ID|Image|Names|State|Status|Ports|CreatedAt）。
+// docker 模板输出的字段值不含竖线（镜像名/状态/端口/时间均无此字符）。
+func parseDockerPS(out []byte) []Container {
+	var list []Container
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 7)
+		if len(parts) != 7 {
+			log.Writef("[container] skip bad ps line: %q", line)
+			continue
+		}
+		list = append(list, Container{
+			ID:        parts[0],
+			Image:     parts[1],
+			Name:      parts[2],
+			State:     normalizeState(parts[3], parts[4]),
+			Status:    parts[4],
+			CreatedAt: parts[6],
+			Ports:     parts[5],
+		})
+	}
+	return list
 }
 
 // pickSize 取镜像大小。docker/nerdctl 是人类可读字符串（"192MB"）；
@@ -290,6 +323,161 @@ func ParseImages(rt Runtime, out []byte) ([]Image, error) {
 			Tag:        tag,
 			Size:       pickSize(m),
 			CreatedAt:  pickCreated(m),
+		})
+	})
+	return list, nil
+}
+
+// nestedMap 取 m[k] 下第一个子对象（podman info 的 host/version/store 嵌套）。
+func nestedMap(m map[string]any, keys ...string) map[string]any {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			if sub, ok := v.(map[string]any); ok {
+				return sub
+			}
+		}
+	}
+	return nil
+}
+
+func orDefault(cur, alt string) string {
+	if cur == "" {
+		return alt
+	}
+	return cur
+}
+
+func bytesHuman(v any) string {
+	if n, ok := v.(float64); ok {
+		return humanSize(int64(n))
+	}
+	return ""
+}
+
+// ParseRuntimeInfo 归一化 info 输出：docker/nerdctl 是扁平键，
+// podman 是 host/version/store 嵌套；取不到的字段留空。
+// Os 是发行版名称（如 "Ubuntu 22.04"），OsType 是内核类型（linux/windows）。
+func ParseRuntimeInfo(rt Runtime, out []byte) RuntimeInfo {
+	var info RuntimeInfo
+	jsonLines(out, func(m map[string]any) {
+		if info.ServerVersion != "" {
+			return
+		}
+		if host := nestedMap(m, "host"); host != nil {
+			// podman：host.os 是内核类型，发行版在 Distribution 对象里
+			info.OsType = pickStr(host, "osType", "os", "OS")
+			if dist := nestedMap(host, "Distribution", "distribution"); dist != nil {
+				name := pickStr(dist, "Distribution", "distribution", "Name", "name")
+				ver := pickStr(dist, "Version", "version")
+				info.Os = strings.TrimSpace(name + " " + ver)
+			}
+			info.Arch = pickStr(host, "Arch", "arch", "Architecture", "architecture")
+			info.KernelVersion = pickStr(host, "Kernel", "kernel", "KernelVersion", "kernelVersion")
+			info.CgroupDriver = pickStr(host, "CgroupsDriver", "cgroupsDriver", "cgroupManager", "CgroupDriver")
+			info.CgroupVersion = pickStr(host, "CgroupsVersion", "cgroupsVersion", "CgroupVersion")
+			info.NCPU = pickStr(host, "CPUs", "cpus", "NCPU", "ncpu")
+			if v, ok := pick(host, "Memory", "memory"); ok {
+				info.MemTotal = bytesHuman(v)
+			}
+			if st := nestedMap(m, "store"); st != nil {
+				info.Driver = pickStr(st, "GraphDriverName", "graphDriverName", "Driver", "driver")
+			}
+			if ver := nestedMap(m, "version"); ver != nil {
+				info.ServerVersion = pickStr(ver, "Version", "version")
+			}
+		}
+		info.ServerVersion = orDefault(info.ServerVersion, pickStr(m, "ServerVersion", "serverVersion"))
+		info.Os = orDefault(info.Os, pickStr(m, "OperatingSystem", "operatingSystem"))
+		info.OsType = orDefault(info.OsType, pickStr(m, "OSType", "osType"))
+		info.Arch = orDefault(info.Arch, pickStr(m, "Architecture", "architecture"))
+		info.KernelVersion = orDefault(info.KernelVersion, pickStr(m, "KernelVersion", "kernelVersion"))
+		info.Driver = orDefault(info.Driver, pickStr(m, "Driver", "driver"))
+		info.CgroupDriver = orDefault(info.CgroupDriver, pickStr(m, "CgroupDriver", "cgroupDriver"))
+		info.CgroupVersion = orDefault(info.CgroupVersion, pickStr(m, "CgroupVersion", "cgroupVersion"))
+		info.NCPU = orDefault(info.NCPU, pickStr(m, "NCPU", "ncpu"))
+		if info.MemTotal == "" {
+			if v, ok := pick(m, "MemTotal", "memTotal"); ok {
+				info.MemTotal = bytesHuman(v)
+			}
+		}
+	})
+	return info
+}
+
+// ParseVersions 从 version 输出提取客户端/服务端版本及服务端组件名。
+// docker/podman 是 Client/Server 两个对象；nerdctl 的 Server 无 Version 字段，
+// 版本在 Components 数组（containerd 组件）里，且 Server 可能是数组（多后端）。
+func ParseVersions(rt Runtime, out []byte) (client, server, serverComp string) {
+	jsonLines(out, func(m map[string]any) {
+		if cli := nestedMap(m, "Client", "client"); cli != nil {
+			client = orDefault(client, pickStr(cli, "Version", "version"))
+		}
+		switch srv := m["Server"].(type) {
+		case map[string]any:
+			server = orDefault(server, pickStr(srv, "Version", "version"))
+			server = orDefault(server, componentVersion(srv))
+			serverComp = orDefault(serverComp, componentName(srv))
+		case []any:
+			for _, e := range srv {
+				if m0, ok := e.(map[string]any); ok {
+					server = orDefault(server, pickStr(m0, "Version", "version"))
+					server = orDefault(server, componentVersion(m0))
+					serverComp = orDefault(serverComp, componentName(m0))
+				}
+			}
+		}
+		if client == "" {
+			client = pickStr(m, "Version", "version")
+		}
+	})
+	return client, server, serverComp
+}
+
+// componentName 取 Components 里的第一个组件名（docker 的 "Engine"、
+// nerdctl 的 "containerd"）；没有 Components 时返回空。
+func componentName(m map[string]any) string {
+	comps, ok := m["Components"].([]any)
+	if !ok || len(comps) == 0 {
+		return ""
+	}
+	if cm, ok := comps[0].(map[string]any); ok {
+		return pickStr(cm, "Name", "name")
+	}
+	return ""
+}
+
+// componentVersion 从 nerdctl 的 Server.Components 里取容器运行时（containerd）版本；
+// 没有 containerd 项时取第一个组件。
+func componentVersion(m map[string]any) string {
+	comps, ok := m["Components"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, c := range comps {
+		if cm, ok := c.(map[string]any); ok {
+			if pickStr(cm, "Name", "name") == "containerd" {
+				return pickStr(cm, "Version", "version")
+			}
+		}
+	}
+	if len(comps) > 0 {
+		if cm, ok := comps[0].(map[string]any); ok {
+			return pickStr(cm, "Version", "version")
+		}
+	}
+	return ""
+}
+
+// ParseImageHistory 解析 history --format json 的分层输出。
+// CreatedSince（如 "3 weeks ago"）比绝对时间更适合展示，优先取它。
+func ParseImageHistory(rt Runtime, out []byte) ([]ImageLayer, error) {
+	var list []ImageLayer
+	jsonLines(out, func(m map[string]any) {
+		list = append(list, ImageLayer{
+			ID:        pickStr(m, "ID", "Id", "id"),
+			CreatedBy: pickStr(m, "CreatedBy", "createdBy"),
+			Size:      pickSize(m),
+			CreatedAt: pickStr(m, "CreatedSince", "createdSince", "CreatedAt", "created"),
 		})
 	})
 	return list, nil

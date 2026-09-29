@@ -5,9 +5,8 @@
     :title="t('container.create')"
     width="35rem"
     :close-on-click-modal="false"
-    destroy-on-close
   >
-    <el-form label-width="6.875rem" size="small">
+    <el-form label-width="6.875rem">
       <el-form-item :label="t('container.createDialog.image')" required :error="imageError">
         <el-input v-model="form.image" placeholder="nginx:latest" @input="imageError = ''" />
       </el-form-item>
@@ -83,7 +82,7 @@ import { useI18n } from '../i18n'
 import { useContainerStore } from '../stores/containerStore'
 import type { ContainerCreateOptions } from '../types/container'
 
-const props = defineProps<{ modelValue: boolean; tabId: string }>()
+const props = defineProps<{ modelValue: boolean; tabId: string; initialImage?: string }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'created'): void }>()
 
 const { t } = useI18n()
@@ -114,7 +113,7 @@ const portErrors = ref<boolean[]>([])
 watch(() => props.modelValue, (v) => { if (v) resetForm() })
 
 function resetForm() {
-  form.image = ''
+  form.image = props.initialImage || ''
   form.name = ''
   form.ports = []
   form.volumes = []

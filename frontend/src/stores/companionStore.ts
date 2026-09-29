@@ -74,14 +74,27 @@ export const useCompanionStore = defineStore('companion', () => {
     return pid
   }
 
-  /** Active panel that owns a file sidebar: an SSH panel or a WSL terminal. */
+  function getActiveContainerExecPanelId(): string | null {
+    const pid = tabStore.getActivePanelId()
+    if (!pid) return null
+    const panel = panelStore.getPanel(pid)
+    if (!panel || panel.type !== 'container-exec') return null
+    return pid
+  }
+
+  /** Active panel that owns a file sidebar: an SSH panel, a WSL terminal or a container exec terminal. */
   function getActiveFilesPanelId(): string | null {
-    return getActiveSshPanelId() ?? getActiveWslPanelId()
+    return getActiveSshPanelId() ?? getActiveWslPanelId() ?? getActiveContainerExecPanelId()
   }
 
   function isWslPanel(pid: string | null): boolean {
     if (!pid) return false
     return panelStore.getPanel(pid)?.type === 'wsl'
+  }
+
+  function isContainerExecPanel(pid: string | null): boolean {
+    if (!pid) return false
+    return panelStore.getPanel(pid)?.type === 'container-exec'
   }
 
   const activeSshPanelId = computed(() => getActiveSshPanelId())
@@ -196,6 +209,22 @@ export const useCompanionStore = defineStore('companion', () => {
     }
     entry.creatingSftp = true
     try {
+      // Container exec terminals have no SFTP subsystem — their file sidebar is
+      // served by the container-file session over docker exec/cp.
+      const execConnId = config.containerExecConnId
+      const execContainerId = config.containerExecContainerId
+      if (isContainerExecPanel(sshPanelId) && execConnId && execContainerId) {
+        config.type = 'container-file'
+        config.id = execConnId
+        config.containerId = execContainerId
+        const info = await CreateSession('container-file', config)
+        entries.value = {
+          ...entries.value,
+          [sshPanelId]: { ...entries.value[sshPanelId], sftpSessionId: info.id, creatingSftp: false },
+        }
+        sessionStore.initSession(info.id)
+        return info.id
+      }
       // WSL terminals have no SFTP subsystem — their file sidebar is served by
       // the WSL file session over \\wsl.localhost\<distro>.
       if (isWslPanel(sshPanelId)) {
@@ -378,6 +407,7 @@ export const useCompanionStore = defineStore('companion', () => {
     getActiveSshPanelId,
     getActiveFilesPanelId,
     isWslPanel,
+    isContainerExecPanel,
     getFileViewCache,
     setFileViewCache,
     getMonitorViewCache,

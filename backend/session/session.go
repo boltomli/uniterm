@@ -228,6 +228,8 @@ type ConnectionConfig struct {
 	ContainerTransport string `json:"containerTransport,omitempty"` // "ssh" | "local"
 	ContainerSSHConnID string `json:"containerSSHConnId,omitempty"` // 引用的 SSH 连接（transport=ssh）
 	ContainerRuntime   string `json:"containerRuntime,omitempty"`   // "docker" | "podman" | "nerdctl"
+	// 容器文件会话（type=container-file）的目标容器 ID；容器连接走 config.ID
+	ContainerID string `json:"containerId,omitempty"`
 	// LogOnConnect, when true, tells the App layer to enable the
 	// session output log automatically the first time this panel binds
 	// a session. It has no effect on later reconnects — a manually

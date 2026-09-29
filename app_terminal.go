@@ -30,6 +30,11 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	}
 	log.Writef("[CreateSession] type=%s, dbType=%s, host=%s, port=%d, user=%s, dbName=%s, name=%s",
 		sessionType, config.DBType, config.Host, config.Port, config.User, config.DBName, config.Name)
+	// 容器文件会话：通道由 container.Manager 解析（App 层拦截，不走
+	// sessionManager.Create 的 config-only 构造）。
+	if sessionType == "container-file" {
+		return a.createContainerFileSession(config)
+	}
 	// Defensive credential fallback: the frontend may hold a connection
 	// snapshot taken before passwords were filled (or a stale copy from an
 	// older session). If the password is stored in the OS keychain, resolve

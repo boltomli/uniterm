@@ -284,11 +284,19 @@ function onDropUpload(e: DragEvent) {
 
 // Open the current companion's file view as a standalone tab. SSH panels open
 // an SFTP tab (mirroring the SSH tab's context-menu action); WSL panels open a
-// wsl-file tab over the distro.
+// wsl-file tab over the distro; container exec panels open a container-file tab.
 function openStandaloneSftp() {
   const pid = companionStore.activeFilesPanelId
   const panel = pid ? panelStore.getPanel(pid) : null
   if (!panel) return
+  if (companionStore.isContainerExecPanel(pid)) {
+    const cfg = panel.config as any
+    if (!cfg?.containerExecConnId || !cfg?.containerExecContainerId) return
+    window.dispatchEvent(new CustomEvent('app:connect-container-file', {
+      detail: { config: { id: cfg.containerExecConnId, name: cfg.name, containerId: cfg.containerExecContainerId } },
+    }))
+    return
+  }
   const ev = companionStore.isWslPanel(pid) ? 'app:connect-wsl-file' : 'app:connect-sftp'
   window.dispatchEvent(new CustomEvent(ev, { detail: panel }))
 }

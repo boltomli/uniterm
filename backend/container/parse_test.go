@@ -5,29 +5,29 @@ import (
 	"testing"
 )
 
-func TestParseContainersDocker(t *testing.T) {
-	raw, err := os.ReadFile("testdata/docker_ps.jsonl")
-	if err != nil {
-		t.Skip("golden file missing, run spike task")
-	}
-	list, err := ParseContainers(RuntimeDocker, raw)
+func TestParseContainersDockerTSV(t *testing.T) {
+	out := []byte("a1b2c3d4e5f6|nginx:latest|web|running|Up 5 days|0.0.0.0:8080->80/tcp|2026-01-02 03:04:05 +0000 UTC\n" +
+		"a1b2c3d4e5f7|registry.example.com/foo:1|api|exited|Exited (0) 2 hours ago||2026-01-02 03:04:06 +0000 UTC\n" +
+		"bad line without separators\n")
+	list, err := ParseContainers(RuntimeDocker, out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) == 0 {
-		t.Fatal("no containers parsed")
+	if len(list) != 2 {
+		t.Fatalf("got %d containers: %+v", len(list), list)
 	}
-	for _, c := range list {
-		if c.ID == "" || c.Name == "" || c.Image == "" || c.State == "" {
-			t.Fatalf("incomplete row: %+v", c)
-		}
+	if list[0].Name != "web" || list[0].State != "running" || list[0].Ports != "0.0.0.0:8080->80/tcp" {
+		t.Fatalf("row0: %+v", list[0])
+	}
+	if list[1].Name != "api" || list[1].State != "exited" || list[1].Ports != "" {
+		t.Fatalf("row1: %+v", list[1])
 	}
 }
 
 // 单行坏数据不拖垮整列表
 func TestParseContainersSkipsBadLine(t *testing.T) {
-	out := []byte("{\"ID\":\"a1\",\"Image\":\"nginx\",\"Names\":\"web\",\"State\":\"running\",\"Status\":\"Up 1h\",\"Ports\":\"\",\"CreatedAt\":\"\"}\nnot-json\n")
-	list, err := ParseContainers(RuntimeDocker, out)
+	out := []byte("{\"ID\":\"a1\",\"Image\":\"nginx\",\"Names\":[\"web\"],\"State\":\"running\",\"Status\":\"Up 1h\",\"Ports\":\"\",\"CreatedAt\":\"\"}\nnot-json\n")
+	list, err := ParseContainers(RuntimePodman, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +116,70 @@ func TestParseContainersWSLCJSONArray(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].State != "running" {
 		t.Fatalf("got %+v", list)
+	}
+}
+
+func TestParseVersions(t *testing.T) {
+	out := []byte(`{"Client":{"Version":"27.3.1","ApiVersion":"1.47"},"Server":{"Version":"26.1.4","ApiVersion":"1.45"}}`)
+	client, server, comp := ParseVersions(RuntimeDocker, out)
+	if client != "27.3.1" || server != "26.1.4" || comp != "" {
+		t.Fatalf("got client=%q server=%q comp=%q", client, server, comp)
+	}
+	// daemon 不可达时只有 Client 段
+	client, server, comp = ParseVersions(RuntimeDocker, []byte(`{"Client":{"Version":"27.3.1"},"Server":{"Version":""}}`))
+	if client != "27.3.1" || server != "" || comp != "" {
+		t.Fatalf("got client=%q server=%q comp=%q", client, server, comp)
+	}
+	// docker 的 Server.Components 首个组件是 Engine
+	client, server, comp = ParseVersions(RuntimeDocker, []byte(`{"Client":{"Version":"27.3.1"},"Server":{"Version":"26.1.4","Components":[{"Name":"Engine","Version":"26.1.4"},{"Name":"containerd","Version":"1.6.33"}]}}`))
+	if client != "27.3.1" || server != "26.1.4" || comp != "Engine" {
+		t.Fatalf("got client=%q server=%q comp=%q", client, server, comp)
+	}
+}
+
+func TestParseVersionsNerdctlComponents(t *testing.T) {
+	// nerdctl 真实输出：Server 无 Version，版本在 Components 的 containerd 项里。
+	out := []byte(`{"Client":{"Version":"v2.2.1","Components":[{"Name":"buildctl","Version":""}]},"Server":{"Components":[{"Name":"containerd","Version":"v1.7.13","Details":{"GitCommit":"7c3aca7a"}},{"Name":"runc","Version":"1.1.12"}]}}`)
+	client, server, comp := ParseVersions(RuntimeNerdctl, out)
+	if client != "v2.2.1" || server != "v1.7.13" || comp != "containerd" {
+		t.Fatalf("got client=%q server=%q comp=%q", client, server, comp)
+	}
+}
+
+func TestParseRuntimeInfo(t *testing.T) {
+	// docker 扁平键
+	info := ParseRuntimeInfo(RuntimeDocker, []byte(`{"ServerVersion":"27.3.1","OperatingSystem":"Ubuntu 22.04","OSType":"linux","Architecture":"x86_64","KernelVersion":"5.15.0","Driver":"overlay2","CgroupDriver":"cgroupfs","CgroupVersion":"1","NCPU":8,"MemTotal":16300000000}`))
+	if info.Os != "Ubuntu 22.04" || info.OsType != "linux" || info.Arch != "x86_64" ||
+		info.Driver != "overlay2" || info.CgroupDriver != "cgroupfs" || info.CgroupVersion != "1" ||
+		info.NCPU != "8" || info.MemTotal == "" {
+		t.Fatalf("docker info: %+v", info)
+	}
+	// podman 嵌套结构
+	info = ParseRuntimeInfo(RuntimePodman, []byte(`{"host":{"os":"linux","Distribution":{"distribution":"fedora","version":"39"},"arch":"amd64","kernel":"6.5.0","cpus":4,"memory":8000000000,"cgroupsVersion":"v2","cgroupManager":"systemd"},"store":{"driver":"overlay"},"version":{"Version":"5.0.0"}}`))
+	if info.Os != "fedora 39" || info.OsType != "linux" || info.Arch != "amd64" ||
+		info.Driver != "overlay" || info.CgroupVersion != "v2" || info.CgroupDriver != "systemd" ||
+		info.NCPU != "4" || info.ServerVersion != "5.0.0" {
+		t.Fatalf("podman info: %+v", info)
+	}
+}
+
+func TestParseImageHistory(t *testing.T) {
+	out := []byte(`{"Comment":"","CreatedAt":"2026-01-02T03:04:05Z","CreatedBy":"/bin/sh -c #(nop) CMD [\"sh\"]","ID":"<missing>","Size":12345,"Tags":null,"CreatedSince":"3 weeks ago"}
+{"Comment":"","CreatedAt":"2026-01-02T03:04:06Z","CreatedBy":"COPY app /app","ID":"abc123","Size":6789012,"Tags":["latest"],"CreatedSince":"3 weeks ago"}
+not-json-line
+`)
+	layers, err := ParseImageHistory(RuntimeDocker, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 2 {
+		t.Fatalf("got %d layers, want 2: %+v", len(layers), layers)
+	}
+	if layers[0].CreatedBy != `/bin/sh -c #(nop) CMD ["sh"]` || layers[0].Size != "12.1KB" {
+		t.Fatalf("layer0: %+v", layers[0])
+	}
+	if layers[1].ID != "abc123" || layers[1].CreatedAt != "3 weeks ago" {
+		t.Fatalf("layer1: %+v", layers[1])
 	}
 }
 

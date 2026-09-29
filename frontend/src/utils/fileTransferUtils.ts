@@ -21,7 +21,7 @@ export function connectFileMenuKey(config?: { type?: string; fileTransferProto?:
 // "new link" entry.
 export function supportsRemoteSymlink(config?: { type?: string } | null): boolean {
   if (!config) return false
-  return config.type === 'ssh' || config.type === 'sftp' || config.type === 'scp' || config.type === 'wsl' || config.type === 'wsl-file'
+  return config.type === 'ssh' || config.type === 'sftp' || config.type === 'scp' || config.type === 'wsl' || config.type === 'wsl-file' || config.type === 'container-file'
 }
 
 // True when a file-browser tab may offer "open terminal": the backing config

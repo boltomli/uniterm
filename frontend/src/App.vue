@@ -241,7 +241,7 @@ import { Application, Clipboard, Events } from '@wailsio/runtime'
 import { parseQuickConnect } from './utils/quickConnect'
 import { getShellLabel as getShellLabelBase, parseWslFromShell } from './utils/shellLabel'
 import { reconnectFileTransferPanel } from './composables/usePanelReconnect'
-import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
+import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, launchContainerFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
 import { openSavedWorkspace } from './composables/savedWorkspace'
 import { createWorkspaceFromSelection } from './composables/createWorkspace'
 
@@ -1010,6 +1010,9 @@ onMounted(async () => {
   }) as EventListener)
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+  }) as EventListener)
+  window.addEventListener('app:connect-container-file', ((e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
   }) as EventListener)
   window.addEventListener('app:connect-monitor', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined) }

@@ -75,6 +75,33 @@ type Image struct {
 	CreatedAt  string `json:"createdAt"`
 }
 
+// ImageLayer 是 history 输出的单层信息；Size 已转为人类可读。
+type ImageLayer struct {
+	ID        string `json:"id"`
+	CreatedBy string `json:"createdBy"`
+	Size      string `json:"size"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// RuntimeInfo 是概览页的运行时信息；取不到的字段留空（前端降级展示）。
+// CLI 在本机或 SSH 远端执行，客户端与服务端版本可能不同，分开返回。
+// Client/ServerComponent 是版本对应的组件名（如 nerdctl/containerd）。
+type RuntimeInfo struct {
+	ClientVersion   string `json:"clientVersion"`
+	ServerVersion   string `json:"serverVersion"`
+	ClientComponent string `json:"clientComponent"`
+	ServerComponent string `json:"serverComponent"`
+	Os              string `json:"os"`
+	OsType          string `json:"osType"`
+	Arch            string `json:"arch"`
+	KernelVersion   string `json:"kernelVersion"`
+	Driver          string `json:"driver"`
+	CgroupDriver    string `json:"cgroupDriver"`
+	CgroupVersion   string `json:"cgroupVersion"`
+	NCPU            string `json:"ncpu"`
+	MemTotal        string `json:"memTotal"`
+}
+
 type Stats struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -83,6 +110,23 @@ type Stats struct {
 	MemPercent string `json:"memPercent"`
 	NetIO      string `json:"netIO"`
 	BlockIO    string `json:"blockIO"`
+}
+
+// TransferOptions 是 push/pull 共用的镜像传输参数。
+// Insecure 在 docker/wslc 的 CLI 上没有单命令级参数，后端直接忽略，
+// 由前端置灰并提示走 daemon 配置。
+type TransferOptions struct {
+	Platform string `json:"platform"` // --platform，空则不传
+	AllTags  bool   `json:"allTags"`  // 仅 pull：--all-tags
+	Insecure bool   `json:"insecure"` // 跳过 TLS 验证（podman/nerdctl 支持）
+}
+
+// LoginOptions 是 registry 登录参数；密码走 --password-stdin，不进进程参数。
+type LoginOptions struct {
+	Registry string `json:"registry"` // 空 = 运行时默认（docker.io）
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Insecure bool   `json:"insecure"`
 }
 
 type CreateOptions struct {

@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,18 @@ func (f *fakeRunner) Run(_ context.Context, argv []string) ([]byte, error) {
 	f.lastArgv = argv
 	return f.runOut, f.runErr
 }
+func (f *fakeRunner) RunStdin(_ context.Context, argv []string, _ []byte) ([]byte, error) {
+	f.lastArgv = argv
+	return f.runOut, f.runErr
+}
+func (f *fakeRunner) RunStdinStream(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+	f.lastArgv = argv
+	return f.runOut, f.runErr
+}
+func (f *fakeRunner) RunRaw(_ context.Context, argv []string) (RawStream, error) {
+	f.lastArgv = argv
+	return nil, f.runErr
+}
 func (f *fakeRunner) RunStream(_ context.Context, argv []string) (LineStream, error) {
 	f.lastArgv = argv
 	return nil, f.runErr
@@ -26,7 +39,7 @@ func (f *fakeRunner) RunPTY(_ context.Context, argv []string, _, _ int) (PTYStre
 }
 
 func TestProviderList(t *testing.T) {
-	fr := &fakeRunner{runOut: []byte("{\"ID\":\"a1\",\"Image\":\"nginx\",\"Names\":\"web\",\"State\":\"running\",\"Status\":\"Up\",\"Ports\":\"\",\"CreatedAt\":\"\"}\n")}
+	fr := &fakeRunner{runOut: []byte("a1b2c3d4e5f6|nginx:latest|web|running|Up 5 days||2026-01-02 03:04:05 +0000 UTC\n")}
 	p := NewProvider(RuntimeDocker, "", fr)
 	list, err := p.List(context.Background())
 	if err != nil {
@@ -35,7 +48,7 @@ func TestProviderList(t *testing.T) {
 	if len(list) != 1 || list[0].Name != "web" {
 		t.Fatalf("got %+v", list)
 	}
-	if strings.Join(fr.lastArgv, " ") != "docker ps -a --format {{json .}}" {
+	if strings.Join(fr.lastArgv, " ") != "docker ps -a --format {{.ID}}|{{.Image}}|{{.Names}}|{{.State}}|{{.Status}}|{{.Ports}}|{{.CreatedAt}}" {
 		t.Fatalf("argv: %v", fr.lastArgv)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -360,8 +361,63 @@ func (a *App) ContainerStartLogs(connectionID, containerID string, tail int, tim
 	return a.containerManager.StartLogStream(connectionID, containerID, tail, timestamps)
 }
 
-func (a *App) ContainerStartPull(connectionID, image string) (string, error) {
-	return a.containerManager.StartPullStream(connectionID, image)
+func (a *App) ContainerStartPull(connectionID, image string, opts container.TransferOptions) (string, error) {
+	return a.containerManager.StartPullStream(connectionID, image, opts)
+}
+
+func (a *App) ContainerStartPush(connectionID, image string, opts container.TransferOptions) (string, error) {
+	return a.containerManager.StartPushStream(connectionID, image, opts)
+}
+
+func (a *App) ContainerTagImage(connectionID, image, repoTag string) error {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return err
+	}
+	return p.TagImage(a.ctx, image, repoTag)
+}
+
+func (a *App) ContainerImagePrune(connectionID string) error {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return err
+	}
+	return p.ImagePrune(a.ctx)
+}
+
+// ContainerImageInspect 返回镜像 inspect 原始 JSON（结构与容器 inspect 不同，不归一化）。
+func (a *App) ContainerImageInspect(connectionID, imageID string) (string, error) {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return "", err
+	}
+	return p.ImageInspect(a.ctx, imageID)
+}
+
+// ContainerImageHistory 返回镜像的分层信息（history 输出）。
+func (a *App) ContainerImageHistory(connectionID, imageID string) ([]container.ImageLayer, error) {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	return p.ImageHistory(a.ctx, imageID)
+}
+
+// ContainerRuntimeInfo 返回概览页运行时信息；info/version 失败时字段为空，不阻断。
+func (a *App) ContainerRuntimeInfo(connectionID string) (container.RuntimeInfo, error) {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return container.RuntimeInfo{}, err
+	}
+	return p.Info(a.ctx)
+}
+
+func (a *App) ContainerRegistryLogin(connectionID string, opts container.LoginOptions) error {
+	p, err := a.containerManager.Provider(connectionID)
+	if err != nil {
+		return err
+	}
+	return p.Login(a.ctx, opts)
 }
 
 func (a *App) ContainerStopStream(streamID string) {
@@ -393,4 +449,45 @@ func (a *App) ContainerExecSession(connectionID, containerID, shell string) (*se
 	})
 	a.sessionManager.Add(sess)
 	return &session.SessionInfo{ID: id, Type: "container-exec", Title: containerID, Status: session.StatusConnected}, nil
+}
+
+// createContainerFileSession 建立容器文件会话（CreateSession 的 container-file
+// 分支）：通过 container.Manager 解析目标连接的 Provider，文件操作走 docker
+// exec / docker cp 通道。
+func (a *App) createContainerFileSession(config session.ConnectionConfig) (*session.SessionInfo, error) {
+	if a.containerManager == nil {
+		return nil, fmt.Errorf("container manager not initialized")
+	}
+	// 容器文件会话复用 config.ID 作为容器连接 key（同 wsl-file 模式）
+	p, err := a.containerManager.Provider(config.ID)
+	if err != nil {
+		return nil, err
+	}
+	id := uuid.New().String()
+	sess := session.NewContainerFileSession(id, container.NewFileBackend(p, config.ContainerID), config.ContainerID, config.Name)
+	// 与标准 CreateSession 尾部一致：接上数据/状态回调，前端的"已连接"
+	// 状态靠 session:status 事件驱动。
+	sess.SetOnDataCallback(func(data []byte) {
+		a.emit("session:data", map[string]interface{}{
+			"id":   sess.ID(),
+			"data": string(data),
+		})
+	})
+	sess.SetOnBinaryCallback(func(data []byte) {
+		a.emit("session:binary", map[string]interface{}{
+			"id":   sess.ID(),
+			"data": base64.StdEncoding.EncodeToString(data),
+		})
+	})
+	sess.SetOnStatusChangeCallback(func(status session.SessionStatus) {
+		a.emit("session:status", map[string]interface{}{
+			"id":     sess.ID(),
+			"status": status,
+		})
+	})
+	if err := sess.Connect(config); err != nil {
+		return nil, err
+	}
+	a.sessionManager.Add(sess)
+	return &session.SessionInfo{ID: id, Type: "container-file", Title: config.Name, Status: session.StatusConnected}, nil
 }

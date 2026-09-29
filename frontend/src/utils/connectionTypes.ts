@@ -12,7 +12,7 @@
 import type { Component } from 'vue'
 import {
   Activity, AppWindow, ArrowLeftRight, Box, Boxes, Cable, Cloud, Database, DatabaseSearch,
-  DatabaseZap, FileUp, FolderOpen, FolderUp, Folders, Globe, HardDrive, Laptop,
+  DatabaseZap, FileBox, FileUp, FolderOpen, FolderUp, Folders, Globe, HardDrive, Laptop,
   LaptopMinimal, LayoutDashboard, Layers, Monitor, MonitorCloud, MonitorSmartphone,
   MoreHorizontal, Settings, ShipWheel, SquarePlus, SquareTerminal, Terminal, Zap,
 } from '@lucide/vue'
@@ -65,6 +65,8 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   { type: 'webdav', label: 'WebDAV', icon: Globe, category: 'filetransfer', connectMenuKey: 'sidebar.connectWebdav' },
   // WSL file browser — a runtime variant of the wsl terminal, never persisted
   { type: 'wsl-file', label: 'WSL Files', icon: FolderOpen, category: 'filetransfer', formHidden: true },
+  // Container file browser — a runtime view over docker exec/cp, never persisted
+  { type: 'container-file', label: 'Container Files', icon: FileBox, category: 'filetransfer', formHidden: true },
   // Remote desktop
   { type: 'rdp', label: 'RDP', icon: Monitor, category: 'remote', defaultPort: 3389, windowsOnly: true, connectMenuKey: 'sidebar.connectRDP' },
   { type: 'vnc', label: 'VNC', icon: MonitorSmartphone, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectVNC' },

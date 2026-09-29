@@ -103,6 +103,14 @@ export async function launchWslFileBrowser(config: ConnectionConfig, opts: Launc
   await runSpec('wsl-file', fileConfig, SPECS['wsl-file'], { ...opts, persist: false })
 }
 
+// Open a container's file browser (container-file session over docker
+// exec/cp). Never persists — it is a transient view bound to a container
+// connection; the config carries the container connection id + container id.
+export async function launchContainerFileBrowser(config: ConnectionConfig, opts: LaunchOptions = {}) {
+  const fileConfig: ConnectionConfig = { ...config, type: 'container-file' }
+  await runSpec('container-file', fileConfig, SPECS['container-file'], { ...opts, persist: false })
+}
+
 // Per-type connect behavior. Every field defaults from the SPEC KEY (which is
 // the config type, or the forced kind for the companion entries), so a plain
 // entry only lists its deviations:
@@ -203,6 +211,22 @@ const SPECS: Record<string, ConnectSpec> = {
     needsCredentials: false,
     title: c => c.name || `WSL ${parseWslFromShell(c.shellPath) || ''}`,
     prepare: c => { c.type = 'wsl-file' },
+  },
+  // Container file browser: docker exec/cp backed file session over a
+  // container connection. The config carries containerFileConnId +
+  // containerFileContainerId; CreateSession intercepts this kind in App.
+  // sessionFirst: probe the container BEFORE opening a tab, so shell-less
+  // containers (k8s pause etc.) fail as a toast instead of a closing tab.
+  'container-file': {
+    uiType: 'sftp',
+    needsCredentials: false,
+    sessionFirst: true,
+    title: c => c.name || 'Container Files',
+    prepare: c => { c.type = 'container-file' },
+    onError: (panelId, e) => {
+      usePanelStore().removePanel(panelId)
+      msg.error(String((e as any)?.message || e))
+    },
   },
 }
 

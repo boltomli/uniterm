@@ -28,7 +28,7 @@ export interface ConnectionConfig {
   id: string
   name: string
   remark?: string
-  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'local' | 'wsl' | 'wsl-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'x11-desktop' | 'workspace'
+  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'local' | 'wsl' | 'wsl-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'container-file' | 'x11-desktop' | 'workspace'
   host: string
   port: number
   user: string
@@ -175,6 +175,9 @@ export interface ConnectionConfig {
   containerExecConnId?: string
   containerExecContainerId?: string
   containerExecShell?: string
+  // Container file browser (type: 'container-file') — config.ID 即容器连接 ID，
+  // containerId 为目标容器
+  containerId?: string
   // X11 Desktop (type: 'x11-desktop') — carries its own SSH credentials
   // (host, port, user, authType, password, keyPath) for direct connection.
   // X11 forwarding is forced on automatically. The actual desktop is

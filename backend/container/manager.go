@@ -170,12 +170,24 @@ func (m *Manager) StartLogStream(connID, id string, tail int, timestamps bool) (
 	return m.startStream(connID, s), nil
 }
 
-func (m *Manager) StartPullStream(connID, image string) (string, error) {
+func (m *Manager) StartPullStream(connID, image string, o TransferOptions) (string, error) {
 	p, err := m.Provider(connID)
 	if err != nil {
 		return "", err
 	}
-	s, err := p.Pull(context.Background(), image)
+	s, err := p.Pull(context.Background(), image, o)
+	if err != nil {
+		return "", err
+	}
+	return m.startStream(connID, s), nil
+}
+
+func (m *Manager) StartPushStream(connID, image string, o TransferOptions) (string, error) {
+	p, err := m.Provider(connID)
+	if err != nil {
+		return "", err
+	}
+	s, err := p.Push(context.Background(), image, o)
 	if err != nil {
 		return "", err
 	}
