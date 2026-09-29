@@ -745,6 +745,7 @@
   "rdp.retry": "重試",
   "rdp.timeout": "連線逾時，請檢查主機位址和網路連線。",
   "rdp.resolution": "解析度",
+  "rdp.refresh": "重新整理畫面",
   "rdp.fullscreen": "全螢幕",
   "rdp.customResolution": "自訂解析度…",
   "vnc.connecting": "正在連線到 {host}...",

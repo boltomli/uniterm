@@ -745,6 +745,7 @@
   "rdp.retry": "Повторить",
   "rdp.timeout": "Тайм-аут подключения. Проверьте адрес узла и сетевое соединение.",
   "rdp.resolution": "Разрешение",
+  "rdp.refresh": "Обновить экран",
   "rdp.fullscreen": "Полный экран",
   "rdp.customResolution": "Своё разрешение…",
   "vnc.connecting": "Подключение к {host}...",

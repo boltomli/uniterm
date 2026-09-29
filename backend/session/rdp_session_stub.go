@@ -50,6 +50,8 @@ func (s *RDPSession) SetOnFullScreenExit(_ func()) {}
 
 func (s *RDPSession) Invalidate() {}
 
+func (s *RDPSession) Refresh() {}
+
 func (s *RDPSession) Snapshot() (string, error) {
 	return "", fmt.Errorf("RDP is only supported on Windows")
 }

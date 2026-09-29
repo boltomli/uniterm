@@ -745,6 +745,7 @@
   "rdp.retry": "Reintentar",
   "rdp.timeout": "Tiempo de conexión agotado. Verifique la dirección del host y la conectividad de red.",
   "rdp.resolution": "Resolución",
+  "rdp.refresh": "Actualizar pantalla",
   "rdp.fullscreen": "Pantalla completa",
   "rdp.customResolution": "Resolución personalizada…",
   "vnc.connecting": "Conectando a {host}...",

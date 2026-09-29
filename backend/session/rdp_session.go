@@ -46,6 +46,19 @@ var (
 	procGetWindowThreadPID = user32Dll.NewProc("GetWindowThreadProcessId")
 	procInvalidateRect     = user32Dll.NewProc("InvalidateRect")
 	procRedrawWindow       = user32Dll.NewProc("RedrawWindow")
+	procGetDC              = user32Dll.NewProc("GetDC")
+	procReleaseDC          = user32Dll.NewProc("ReleaseDC")
+	procPrintWindow        = user32Dll.NewProc("PrintWindow")
+
+	gdi32Dll                   = windows.NewLazySystemDLL("gdi32.dll")
+	procBitBlt                 = gdi32Dll.NewProc("BitBlt")
+	procStretchBlt             = gdi32Dll.NewProc("StretchBlt")
+	procCreateCompatibleDC     = gdi32Dll.NewProc("CreateCompatibleDC")
+	procCreateCompatibleBitmap = gdi32Dll.NewProc("CreateCompatibleBitmap")
+	procSelectObject           = gdi32Dll.NewProc("SelectObject")
+	procDeleteObject           = gdi32Dll.NewProc("DeleteObject")
+	procDeleteDC               = gdi32Dll.NewProc("DeleteDC")
+	procGetDIBits              = gdi32Dll.NewProc("GetDIBits")
 
 	// kernel32Dll is declared in local_session_windows.go (same package).
 	procGetCurrentProcID = kernel32Dll.NewProc("GetCurrentProcessId")
@@ -76,6 +89,29 @@ const (
 	IDOK               = 1
 	SM_CXSCREEN        = 0
 	SM_CYSCREEN        = 1
+
+	// Display/input messages used by the display watchdog. WM_DISPLAYCHANGE is
+	// broadcast to top-level windows only, so the WS_CHILD-hosted control never
+	// sees it natively — resync kicks replay it directly (see relayout).
+	WM_DISPLAYCHANGE = 0x007E
+	WM_KEYDOWN       = 0x0100
+	WM_KEYUP         = 0x0101
+	WM_SYSKEYDOWN    = 0x0104
+	WM_SYSKEYUP      = 0x0105
+	WM_MOUSEMOVE     = 0x0200
+	WM_LBUTTONDOWN   = 0x0201
+	WM_LBUTTONUP     = 0x0202
+	WM_RBUTTONDOWN   = 0x0204
+	WM_RBUTTONUP     = 0x0205
+	WM_MBUTTONDOWN   = 0x0207
+	WM_MBUTTONUP     = 0x0208
+	WM_MOUSEWHEEL    = 0x020A
+	WM_XBUTTONDOWN   = 0x020B
+	WM_XBUTTONUP     = 0x020C
+
+	// Thumbnail size for the watchdog's frame samples (see sampleFrame).
+	sampleThumbW = 64
+	sampleThumbH = 36
 )
 
 type RDPSession struct {
@@ -98,6 +134,14 @@ type RDPSession struct {
 	fsValue     bool   // desired FullScreen value
 	fsActive    bool   // last observed FullScreen state (for exit detection)
 	onFsExit    func() // called (on COM thread) when user leaves full screen via the connection bar
+
+	// Remote desktop size (DesktopWidth/DesktopHeight) configured at Connect.
+	// The display watchdog's renegotiation kick shrinks it by 2px and restores
+	// it, forcing the server to resynchronize the graphics stream.
+	deskW, deskH int
+	// Manual refresh request (frontend "refresh" button), applied on the COM
+	// STA thread by the message pump for the same reason as fsRequested.
+	resyncRequested bool
 }
 
 // SetOnFullScreenExit registers a callback fired when the user exits the
@@ -306,6 +350,8 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 	s.mu.Lock()
 	s.hwnd = hwnd
 	s.rdp = dispatch
+	s.deskW = width
+	s.deskH = height
 	s.mu.Unlock()
 
 	port := config.Port
@@ -457,6 +503,22 @@ type rect struct {
 	Left, Top, Right, Bottom int32
 }
 
+// bitmapInfoHeader is the BITMAPINFOHEADER layout for GetDIBits (32bpp BGRA,
+// top-down when biHeight is negative).
+type bitmapInfoHeader struct {
+	biSize          uint32
+	biWidth         int32
+	biHeight        int32
+	biPlanes        uint16
+	biBitCount      uint16
+	biCompression   uint32
+	biSizeImage     uint32
+	biXPelsPerMeter int32
+	biYPelsPerMeter int32
+	biClrUsed       uint32
+	biClrImportant  uint32
+}
+
 type msg struct {
 	HWND    uintptr
 	Message uint32
@@ -470,12 +532,78 @@ func (s *RDPSession) runMessagePump() {
 	var m msg
 	noMsgCount := 0
 	disconnectLogged := false
+	// Display watchdog state (this thread only): samples the presented frame
+	// and escalates resync kicks when it stops updating while the user is
+	// interacting with the control — the "black screen after a long session,
+	// clicks still work" failure. See rdp_watchdog.go for the decision logic.
+	wd := newDisplayWatchdog()
+	lastSampleAt := time.Time{}
+	lastRenegotiated := time.Time{}
+	renegRestoreAt := time.Time{}
 	for {
 		s.mu.Lock()
 		done := s.hwnd == 0
 		s.mu.Unlock()
 		if done {
 			break
+		}
+
+		now := time.Now()
+
+		// Restore the remote desktop size after a renegotiation nudge. Must run
+		// on THIS (COM STA) thread, like every other control call.
+		if !renegRestoreAt.IsZero() && !now.Before(renegRestoreAt) {
+			renegRestoreAt = time.Time{}
+			s.restoreDesktopSize()
+		}
+
+		// Manual refresh (frontend button): the user asked for a full resync —
+		// the COM half has to run here (see fsRequested).
+		s.mu.Lock()
+		resync := s.resyncRequested
+		s.resyncRequested = false
+		s.mu.Unlock()
+		if resync {
+			lastRenegotiated = now
+			if s.renegotiateDesktop() {
+				renegRestoreAt = now.Add(2 * time.Second)
+			}
+		}
+
+		// Display watchdog: sample the presented frame at a fixed cadence and
+		// run the resync ladder when it stalls.
+		if now.Sub(lastSampleAt) >= displaySampleInterval {
+			lastSampleAt = now
+			s.mu.Lock()
+			visible := s.shown
+			fullScreen := s.fsActive
+			s.mu.Unlock()
+			if visible {
+				if hash, dark, ok := s.sampleFrame(); ok {
+					kick := wd.tick(now, hash, dark)
+					// Full screen is the control's own top-level-like mode: only
+					// the neutral repaint kick applies there.
+					if fullScreen && kick != displayKickNone {
+						kick = displayKickRepaint
+					}
+					switch kick {
+					case displayKickRepaint:
+						log.Writef("[RDP] display watchdog: frame stalled, forcing repaint")
+						s.Invalidate()
+					case displayKickRelayout:
+						log.Writef("[RDP] display watchdog: frame still stalled, relayout + display-change replay")
+						s.relayout()
+					case displayKickRenegotiate:
+						if now.Sub(lastRenegotiated) >= displayRenegotiateCooldown {
+							lastRenegotiated = now
+							log.Writef("[RDP] display watchdog: frame still stalled, renegotiating desktop size")
+							if s.renegotiateDesktop() {
+								renegRestoreAt = now.Add(2 * time.Second)
+							}
+						}
+					}
+				}
+			}
 		}
 
 		// Apply any pending full-screen toggle on THIS (COM STA) thread.
@@ -501,6 +629,11 @@ func (s *RDPSession) runMessagePump() {
 		if ret != 0 {
 			if m.Message == 0x0012 { // WM_QUIT
 				return
+			}
+			// The watchdog only acts on stalls the user is waiting on, so track
+			// input aimed at the RDP window as it flows through this pump.
+			if isInputMessage(m.Message) {
+				wd.observeInput(time.Now())
 			}
 			procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
 			procDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
@@ -1024,6 +1157,170 @@ func (s *RDPSession) Invalidate() {
 	}
 }
 
+// isInputMessage reports whether a window message is user input aimed at the
+// RDP window — the "the user is waiting for feedback" signal for the display
+// watchdog (rdp_watchdog.go).
+func isInputMessage(m uint32) bool {
+	switch m {
+	case WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+		WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP,
+		WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+		WM_MOUSEWHEEL, WM_XBUTTONDOWN, WM_XBUTTONUP:
+		return true
+	}
+	return false
+}
+
+// sampleFrame returns an FNV-1a hash of a small thumbnail of the control's
+// currently presented frame plus the fraction of near-black pixels. The
+// thumbnail is ~9 KB, so polling every couple of seconds stays cheap. ok is
+// false when the window cannot be sampled (e.g. mid-teardown), in which case
+// the caller must keep its watchdog state untouched.
+func (s *RDPSession) sampleFrame() (hash uint64, dark float64, ok bool) {
+	s.mu.Lock()
+	hwnd := s.hwnd
+	s.mu.Unlock()
+	if hwnd == 0 {
+		return 0, 0, false
+	}
+	var cr rect
+	if ret, _, _ := procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&cr))); ret == 0 {
+		return 0, 0, false
+	}
+	srcW, srcH := int(cr.Right-cr.Left), int(cr.Bottom-cr.Top)
+	if srcW <= 0 || srcH <= 0 {
+		return 0, 0, false
+	}
+
+	winDC, _, _ := procGetDC.Call(hwnd)
+	if winDC == 0 {
+		return 0, 0, false
+	}
+	defer procReleaseDC.Call(hwnd, winDC)
+
+	memDC, _, _ := procCreateCompatibleDC.Call(winDC)
+	if memDC == 0 {
+		return 0, 0, false
+	}
+	defer procDeleteDC.Call(memDC)
+
+	hbm, _, _ := procCreateCompatibleBitmap.Call(winDC, sampleThumbW, sampleThumbH)
+	if hbm == 0 {
+		return 0, 0, false
+	}
+	defer procDeleteObject.Call(hbm)
+
+	oldObj, _, _ := procSelectObject.Call(memDC, hbm)
+	if oldObj == 0 {
+		return 0, 0, false
+	}
+	defer procSelectObject.Call(memDC, oldObj)
+
+	const srcCopy = 0x00CC0020
+	procStretchBlt.Call(memDC, 0, 0, sampleThumbW, sampleThumbH,
+		winDC, 0, 0, uintptr(srcW), uintptr(srcH), srcCopy)
+
+	bi := bitmapInfoHeader{
+		biSize:     uint32(unsafe.Sizeof(bitmapInfoHeader{})),
+		biWidth:    sampleThumbW,
+		biHeight:   -sampleThumbH, // negative = top-down rows
+		biPlanes:   1,
+		biBitCount: 32,
+	}
+	pix := make([]byte, sampleThumbW*sampleThumbH*4)
+	if ret, _, _ := procGetDIBits.Call(memDC, hbm, 0, sampleThumbH,
+		uintptr(unsafe.Pointer(&pix[0])), uintptr(unsafe.Pointer(&bi)), 0); ret == 0 {
+		return 0, 0, false
+	}
+
+	const (
+		fnvOffset64 = 14695981039346656037
+		fnvPrime64  = 1099511628211
+	)
+	h := uint64(fnvOffset64)
+	darkCount := 0
+	for i := 0; i < len(pix); i += 4 {
+		b, g, r := pix[i], pix[i+1], pix[i+2]
+		h ^= uint64(r)
+		h *= fnvPrime64
+		h ^= uint64(g)
+		h *= fnvPrime64
+		h ^= uint64(b)
+		h *= fnvPrime64
+		if int(r)+int(g)+int(b) <= 24 {
+			darkCount++
+		}
+	}
+	return h, float64(darkCount) / float64(sampleThumbW*sampleThumbH), true
+}
+
+// relayout re-places the control at its tracked rect and replays the display
+// notifications a WS_CHILD never receives (WM_DISPLAYCHANGE broadcasts reach
+// top-level windows only), then forces a repaint. Neutral when the tracked size
+// is unchanged. Thread-safe: plain user32 calls.
+func (s *RDPSession) relayout() {
+	s.mu.Lock()
+	hwnd := s.hwnd
+	x, y, w, h := s.trackX, s.trackY, s.trackW, s.trackH
+	s.mu.Unlock()
+	if hwnd == 0 || w <= 0 || h <= 0 {
+		return
+	}
+	procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS)
+	lparam := uintptr(h<<16 | w&0xFFFF)
+	procPostMessageW.Call(hwnd, WM_SIZE, 0, lparam)
+	procPostMessageW.Call(hwnd, WM_DISPLAYCHANGE, 32, lparam)
+	s.Invalidate()
+}
+
+// renegotiateDesktop briefly shrinks the remote desktop by 2px so the server
+// resynchronizes the graphics stream — a full-frame redraw, the recovery a
+// window resize gives mstsc users stuck on a frozen picture. The remote side
+// sees a transient resize (restoreDesktopSize puts the size back), so callers
+// gate it behind the watchdog's black-frame + cooldown rules. COM call: the
+// message-pump (STA) thread only.
+func (s *RDPSession) renegotiateDesktop() bool {
+	s.mu.Lock()
+	rdp := s.rdp
+	w, h := s.deskW, s.deskH
+	s.mu.Unlock()
+	if rdp == nil || w <= 2 || h <= 2 {
+		return false
+	}
+	log.Writef("[RDP] display watchdog: renegotiating desktop size %dx%d", w, h)
+	rdp.PutProperty("DesktopWidth", w-2)
+	rdp.PutProperty("DesktopHeight", h-2)
+	return true
+}
+
+// restoreDesktopSize undoes renegotiateDesktop. COM call: the message-pump
+// (STA) thread only.
+func (s *RDPSession) restoreDesktopSize() {
+	s.mu.Lock()
+	rdp := s.rdp
+	w, h := s.deskW, s.deskH
+	s.mu.Unlock()
+	if rdp == nil {
+		return
+	}
+	log.Writef("[RDP] display watchdog: restoring desktop size %dx%d", w, h)
+	rdp.PutProperty("DesktopWidth", w)
+	rdp.PutProperty("DesktopHeight", h)
+}
+
+// Refresh forces a full resync of the RDP display: re-place the control,
+// replay the display-change notifications and repaint immediately, then ask
+// the COM thread to renegotiate the desktop size. Wired to the frontend's
+// refresh button for stalls the watchdog cannot see (e.g. a frozen but
+// non-black frame nobody is clicking on). Thread-safe.
+func (s *RDPSession) Refresh() {
+	s.relayout()
+	s.mu.Lock()
+	s.resyncRequested = true
+	s.mu.Unlock()
+}
+
 // Snapshot captures the RDP window's current content as a base64-encoded PNG.
 // The frontend uses it as a frozen background for .rdp-area while the RDP window
 // is hidden under an overlay (menu/dialog), so the area shows a snapshot instead
@@ -1044,19 +1341,6 @@ func (s *RDPSession) Snapshot() (string, error) {
 	if w <= 0 || h <= 0 {
 		return "", fmt.Errorf("bad window size %dx%d", w, h)
 	}
-
-	user32 := windows.NewLazySystemDLL("user32.dll")
-	gdi32 := windows.NewLazySystemDLL("gdi32.dll")
-	procGetDC := user32.NewProc("GetDC")
-	procReleaseDC := user32.NewProc("ReleaseDC")
-	procBitBlt := gdi32.NewProc("BitBlt")
-	procPrintWindow := user32.NewProc("PrintWindow")
-	procCreateCompatibleDC := gdi32.NewProc("CreateCompatibleDC")
-	procCreateCompatibleBitmap := gdi32.NewProc("CreateCompatibleBitmap")
-	procSelectObject := gdi32.NewProc("SelectObject")
-	procDeleteObject := gdi32.NewProc("DeleteObject")
-	procDeleteDC := gdi32.NewProc("DeleteDC")
-	procGetDIBits := gdi32.NewProc("GetDIBits")
 
 	winDC, _, _ := procGetDC.Call(hwnd)
 	if winDC == 0 {
@@ -1095,19 +1379,6 @@ func (s *RDPSession) Snapshot() (string, error) {
 	}
 
 	// DIB header for GetDIBits (top-down 32bpp BGRA).
-	type bitmapInfoHeader struct {
-		biSize          uint32
-		biWidth         int32
-		biHeight        int32
-		biPlanes        uint16
-		biBitCount      uint16
-		biCompression   uint32
-		biSizeImage     uint32
-		biXPelsPerMeter int32
-		biYPelsPerMeter int32
-		biClrUsed       uint32
-		biClrImportant  uint32
-	}
 	bi := bitmapInfoHeader{
 		biSize:     uint32(unsafe.Sizeof(bitmapInfoHeader{})),
 		biWidth:    int32(w),
@@ -1158,6 +1429,8 @@ func (s *RDPSession) Disconnect() error {
 func (s *RDPSession) Resize(cols, rows int) error {
 	s.mu.Lock()
 	if s.rdp != nil {
+		s.deskW = cols
+		s.deskH = rows
 		s.rdp.PutProperty("DesktopWidth", cols)
 		s.rdp.PutProperty("DesktopHeight", rows)
 	}

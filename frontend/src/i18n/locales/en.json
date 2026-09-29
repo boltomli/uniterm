@@ -745,6 +745,7 @@
   "rdp.retry": "Retry",
   "rdp.timeout": "Connection timed out. Please check the host address and network connectivity.",
   "rdp.resolution": "Resolution",
+  "rdp.refresh": "Refresh display",
   "rdp.fullscreen": "Fullscreen",
   "rdp.customResolution": "Custom resolution…",
   "vnc.connecting": "Connecting to {host}...",

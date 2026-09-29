@@ -745,6 +745,7 @@
   "rdp.retry": "다시 시도",
   "rdp.timeout": "연결 시간이 초과되었습니다. 호스트 주소와 네트워크 연결을 확인하세요.",
   "rdp.resolution": "해상도",
+  "rdp.refresh": "화면 새로고침",
   "rdp.fullscreen": "전체 화면",
   "rdp.customResolution": "사용자 지정 해상도…",
   "vnc.connecting": "{host}에 연결 중...",

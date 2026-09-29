@@ -745,6 +745,7 @@
   "rdp.retry": "Réessayer",
   "rdp.timeout": "Délai de connexion dépassé. Veuillez vérifier l&apos;adresse de l&apos;hôte et la connectivité réseau.",
   "rdp.resolution": "Résolution",
+  "rdp.refresh": "Actualiser l'affichage",
   "rdp.fullscreen": "Plein écran",
   "rdp.customResolution": "Résolution personnalisée…",
   "vnc.connecting": "Connexion à {host}...",

@@ -106,6 +106,26 @@ func (a *App) RDPInvalidate(sessionID string) error {
 	return nil
 }
 
+// RDPRefresh forces a full resync of the RDP display — re-place the control,
+// replay the display-change notifications, repaint, and renegotiate the desktop
+// size on the COM thread. Wired to the frontend's refresh button for frozen
+// frames the display watchdog cannot see (e.g. a stale non-black frame).
+func (a *App) RDPRefresh(sessionID string) error {
+	if a.sessionManager == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	rdp, ok := s.(*session.RDPSession)
+	if !ok {
+		return fmt.Errorf("session is not RDP")
+	}
+	rdp.Refresh()
+	return nil
+}
+
 // X11DesktopConnect starts an x11-desktop session: looks up the saved
 // connection config (which carries its own SSH credentials), opens an
 // SSH connection with X11 forwarding, and runs the chosen desktop

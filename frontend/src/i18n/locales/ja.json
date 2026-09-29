@@ -745,6 +745,7 @@
   "rdp.retry": "再試行",
   "rdp.timeout": "接続がタイムアウトしました。ホストアドレスとネットワーク接続を確認してください。",
   "rdp.resolution": "解像度",
+  "rdp.refresh": "画面を更新",
   "rdp.fullscreen": "全画面",
   "rdp.customResolution": "カスタム解像度…",
   "vnc.connecting": "{host} に接続中...",

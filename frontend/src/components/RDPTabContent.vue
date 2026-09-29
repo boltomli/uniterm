@@ -34,7 +34,8 @@
       <span class="rdp-status-sep">|</span>
       <span>{{ t('rdp.resolution') }}: {{ statusResolution }}</span>
       <span class="rdp-status-spacer" />
-      <button class="rdp-fullscreen-btn" @click="enterFullScreen">{{ t('rdp.fullscreen') }}</button>
+      <button class="rdp-status-btn" @click="refreshDisplay">{{ t('rdp.refresh') }}</button>
+      <button class="rdp-status-btn" @click="enterFullScreen">{{ t('rdp.fullscreen') }}</button>
     </div>
   </div>
 </template>
@@ -44,7 +45,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Loader } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
-import { CreateSession, CloseSession, RDPHide, RDPSetFullScreen } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, RDPHide, RDPSetFullScreen, RDPRefresh } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 import { Events } from '@wailsio/runtime'
 import { usePanelStore } from '../stores/panelStore'
@@ -128,6 +129,15 @@ async function enterFullScreen() {
   if (!currentSessionId.value) return
   window.dispatchEvent(new CustomEvent('rdp:fullscreen-enter'))
   try { await RDPSetFullScreen(currentSessionId.value, true) } catch (e) { console.error('RDP fullscreen error:', e) }
+}
+
+// Manual display resync for the "picture stopped refreshing" stall the backend
+// watchdog cannot always see (frozen but non-black frames): re-places the
+// control, replays display-change notifications and renegotiates the desktop
+// size so the server sends a full frame again.
+async function refreshDisplay() {
+  if (!currentSessionId.value) return
+  try { await RDPRefresh(currentSessionId.value) } catch (e) { console.error('RDP refresh error:', e) }
 }
 
 // --- Events (lifecycle-scoped to avoid listener accumulation) ---
@@ -239,7 +249,7 @@ watch(() => props.sessionId, (newId) => {
 }
 .rdp-status-sep { color: var(--text-disabled); }
 .rdp-status-spacer { flex: 1; }
-.rdp-fullscreen-btn {
+.rdp-status-btn {
   border: 1px solid var(--border-default);
   background: transparent;
   color: var(--text-muted);
@@ -248,7 +258,7 @@ watch(() => props.sessionId, (newId) => {
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.rdp-fullscreen-btn:hover {
+.rdp-status-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
