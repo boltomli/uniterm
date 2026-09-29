@@ -57,13 +57,17 @@ function goStructTags(src: string, structName: string): Set<string> {
   return tags
 }
 
-// All structs that mirror a slice of AppSettings, and which top-level key
-// each nested struct serves. Everything else lives directly on AppSettings.
-// When a nested settings struct is added on the Go side, register it here.
+// All structs that mirror a slice of AppSettings, keyed by the frontend path
+// prefix they store (the longest matching prefix owns a leaf key — nesting
+// nests, e.g. mcp.tools → MCPToolToggles inside mcp → MCPSettings). Everything
+// else lives directly on AppSettings. When a nested settings struct is added
+// on the Go side, register it here.
 const NESTED_STRUCTS: Record<string, string> = {
   terminal: 'TerminalSettings',
   ai: 'AISettings',
-  sftpBookmarks: 'SFTPBookmarks'
+  sftpBookmarks: 'SFTPBookmarks',
+  mcp: 'MCPSettings',
+  'mcp.tools': 'MCPToolToggles',
 }
 
 const tagsByStruct: Record<string, Set<string>> = {}
@@ -72,11 +76,14 @@ for (const s of new Set(['AppSettings', ...Object.values(NESTED_STRUCTS)])) {
 }
 
 // A frontend leaf key passes when its last segment has a json tag in the Go
-// struct that stores it (top-level key → AppSettings or the nested struct).
+// struct that stores it (longest registered path prefix, else AppSettings).
 function hasGoTag(path: string): boolean {
   const parts = path.split('.')
-  const structTags = tagsByStruct[NESTED_STRUCTS[parts[0]] ?? 'AppSettings']
-  return structTags.has(parts[parts.length - 1])
+  for (let i = parts.length - 1; i > 0; i--) {
+    const owner = NESTED_STRUCTS[parts.slice(0, i).join('.')]
+    if (owner) return tagsByStruct[owner].has(parts[parts.length - 1])
+  }
+  return tagsByStruct['AppSettings'].has(parts[parts.length - 1])
 }
 
 describe('settings schema parity (frontend ↔ backend/store/settings_store.go)', () => {
