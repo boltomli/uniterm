@@ -919,11 +919,11 @@
               {{ t('settings.userManual') }}
             </a>
             <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://github.com/ys-ll/uniterm')">
-              <svg class="about-link-icon" viewBox="0 0 16 16" width="0.875rem" height="0.875rem" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+              <GitHubLogo class="about-link-icon" />
               GitHub
             </a>
             <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://gitee.com/ys-l/uniterm')">
-              <svg class="about-link-icon" viewBox="0 0 24 24" width="0.875rem" height="0.875rem" fill="currentColor"><path d="M11.984 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.016 0zm6.09 5.333c.328 0 .593.266.592.593v1.482a.594.594 0 0 1-.593.592H9.777c-.982 0-1.778.796-1.778 1.778v5.63c0 .327.266.592.593.592h5.63c.982 0 1.778-.796 1.778-1.778v-.296a.593.593 0 0 0-.592-.593h-4.15a.592.592 0 0 1-.592-.592v-1.482a.593.593 0 0 1 .593-.592h6.815c.327 0 .593.265.593.592v3.408a4 4 0 0 1-4 4H5.926a.593.593 0 0 1-.593-.593V9.778a4.444 4.444 0 0 1 4.445-4.444h8.296z"/></svg>
+              <GiteeLogo class="about-link-icon" />
               Gitee
             </a>
           </div>
@@ -1450,6 +1450,8 @@ import { backendErrorText } from '../utils/backendError'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import SkillsManager from './SkillsManager.vue'
 import CommandsManager from './CommandsManager.vue'
+import GitHubLogo from './icons/GitHubLogo.vue'
+import GiteeLogo from './icons/GiteeLogo.vue'
 import type { AIModelConfig, ShortcutAction, KeyBinding, KeyboardSettings } from '../types/settings'
 import { DEFAULT_MCP_SETTINGS } from '../types/mcp'
 import type { MCPStatus } from '../types/mcp'
@@ -2627,7 +2629,6 @@ async function onToggleSystemTitleBar(v: boolean) {
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  cursor: pointer;
   transition: all 0.12s ease;
 }
 
@@ -2662,7 +2663,6 @@ async function onToggleSystemTitleBar(v: boolean) {
   margin: 0 0.5rem;
   font-size: 0.8125rem;
   font-family: var(--font-ui);
-  cursor: pointer;
   user-select: none;
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
@@ -2835,7 +2835,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 0.75rem 1.125rem;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   transition: all 0.12s ease;
 }
 
@@ -2935,6 +2935,8 @@ async function onToggleSystemTitleBar(v: boolean) {
   text-decoration: underline;
 }
 .about-link-icon {
+  width: 0.875rem;
+  height: 0.875rem;
   flex-shrink: 0;
   opacity: 0.7;
 }
@@ -2949,7 +2951,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 .sync-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   margin-bottom: 1rem;
   overflow: hidden;
 }
@@ -3018,7 +3020,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 0.625rem 0.875rem;
   background: var(--el-color-warning-light-9);
   border: 1px solid var(--el-color-warning-light-5);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-sm);
   margin-bottom: 0.875rem;
   color: var(--el-color-warning-dark-2);
   font-size: 0.75rem;
@@ -3065,7 +3067,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 .sync-tag {
   font-size: 0.6875rem;
   padding: 0.125rem 0.5rem;
-  border-radius: 0.625rem;
+  border-radius: var(--radius-sm);
   font-weight: 500;
 }
 
@@ -3159,7 +3161,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 0.125rem 0.5rem;
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   /* UI font so macOS modifier symbols (⌘⌥⇧) render with their native
      system-font shapes instead of the thin mono fallback glyphs. */
   font-family: var(--font-ui);
@@ -3233,7 +3235,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 
 .bg-image-row { display: flex; align-items: center; gap: 0.5rem; }
 .bg-thumb {
-  width: 4rem; height: 2.5rem; border-radius: 0.25rem;
+  width: 4rem; height: 2.5rem; border-radius: var(--radius-sm);
   background-size: cover; background-position: center;
   border: 1px solid var(--border-subtle);
 }

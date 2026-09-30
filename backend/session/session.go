@@ -156,7 +156,6 @@ type ConnectionConfig struct {
 	// FTP-specific fields
 	FtpEncryption string `json:"ftpEncryption,omitempty"` // "none"(default) | "auto" | "required"
 	FtpPassive    bool   `json:"ftpPassive"`              // passive mode (default true)
-	FtpEncoding   string `json:"ftpEncoding,omitempty"`   // "utf-8" | "gbk" | "shift-jis" | "latin-1"
 	// FtpSkipVerify opts in to tls.Config.InsecureSkipVerify for FTPS connections.
 	// Defaults to false (verify enabled). Off by default preserves backwards
 	// compatibility for users today who rely on it for self-signed certs —
@@ -185,8 +184,8 @@ type ConnectionConfig struct {
 	// "SecondLevelDomainForbidden" (issue #452). "path" uses path-style
 	// (https://endpoint/bucket/key) for AWS S3 and MinIO.
 	S3URLStyle string `json:"s3UrlStyle,omitempty"`
-	// Terminal character encoding for ssh/telnet:
-	// "" / "utf-8"(default) | "gbk" | "gb2312" | "gb18030" | "big5" | "shift-jis" | "euc-jp" | "euc-kr"
+	// Terminal character encoding for ssh/telnet, filename charset for ftp:
+	// "" / "utf-8"(default) | "gbk" | "gb2312" | "gb18030" | "big5" | "shift-jis" | "euc-jp" | "euc-kr" | "latin-1"
 	Encoding string `json:"encoding,omitempty"`
 	// X11Forwarding enables SSH X11 forwarding (ssh -X semantics). Sends an
 	// "x11-req" global request after RequestPty; accepts "x11" channels from
@@ -229,7 +228,9 @@ type ConnectionConfig struct {
 	ContainerSSHConnID string `json:"containerSSHConnId,omitempty"` // 引用的 SSH 连接（transport=ssh）
 	ContainerRuntime   string `json:"containerRuntime,omitempty"`   // "docker" | "podman" | "nerdctl"
 	// 容器文件会话（type=container-file）的目标容器 ID；容器连接走 config.ID
-	ContainerID string `json:"containerId,omitempty"`
+	// ContainerNamespace 仅 k8s 连接使用（目标 Pod 的资源 namespace）
+	ContainerID       string `json:"containerId,omitempty"`
+	ContainerNamespace string `json:"containerNamespace,omitempty"`
 	// LogOnConnect, when true, tells the App layer to enable the
 	// session output log automatically the first time this panel binds
 	// a session. It has no effect on later reconnects — a manually

@@ -837,7 +837,6 @@ watch(() => props.sessionId, async (newId) => {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }
@@ -868,7 +867,6 @@ watch(() => props.sessionId, async (newId) => {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
   font-family: var(--font-ui);
@@ -884,7 +882,6 @@ watch(() => props.sessionId, async (newId) => {
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  cursor: pointer;
 }
 .db-arrow:hover {
   color: var(--text-primary);
@@ -923,7 +920,6 @@ watch(() => props.sessionId, async (newId) => {
   border: 1px solid var(--border-subtle);
   background: var(--bg-base);
   color: var(--text-secondary);
-  cursor: pointer;
   padding: 0.125rem 0.25rem;
   border-radius: var(--radius-sm);
   font-size: 0.75rem;
@@ -933,7 +929,7 @@ watch(() => props.sessionId, async (newId) => {
   justify-content: center;
 }
 .page-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
-.page-btn:disabled { opacity: 0.4; cursor: default; }
+.page-btn:disabled { opacity: 0.4; }
 .page-num {
   min-width: 1.25rem;
   text-align: center;
@@ -992,7 +988,7 @@ watch(() => props.sessionId, async (newId) => {
 /* .btn.btn-ghost.btn-icon(.danger) now supplies the base look; keep only
    Redis-specific overrides here (font-size for icon glyphs, table-cell reset). */
 .btn-icon.is-disabled,
-.btn-icon:disabled { opacity: 0.3; cursor: default; }
+.btn-icon:disabled { opacity: 0.3; }
 .btn-icon:disabled:hover { color: var(--text-secondary); background: none; }
 :deep(.el-table .btn-icon) { background: none; }
 .drag-handle {

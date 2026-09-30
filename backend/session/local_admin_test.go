@@ -332,7 +332,7 @@ func waitForMarker(t *testing.T, p *adminPty, substr string, timeout time.Durati
 	select {
 	case o := <-done:
 		if o.err != nil {
-			t.Fatalf("relay closed before %q appeared (saw %q): %v", substr, truncateLog(o.acc), o.err)
+			t.Fatalf("relay closed before %q appeared (saw %q): %v", substr, truncateTestOutput(o.acc), o.err)
 		}
 	case <-time.After(timeout):
 		p.Close()
@@ -340,7 +340,7 @@ func waitForMarker(t *testing.T, p *adminPty, substr string, timeout time.Durati
 	}
 }
 
-func truncateLog(b []byte) string {
+func truncateTestOutput(b []byte) string {
 	const max = 512
 	if len(b) > max {
 		return string(b[:max]) + "..."

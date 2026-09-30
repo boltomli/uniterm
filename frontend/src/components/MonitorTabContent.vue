@@ -1672,7 +1672,6 @@ watch(activeTab, (tab) => {
   font-size: 0.8125rem;
   font-family: var(--font-ui);
   color: var(--text-secondary);
-  cursor: pointer;
   user-select: none;
   border-bottom: 0.125rem solid transparent;
   transition: all 0.15s ease;
@@ -1709,7 +1708,6 @@ watch(activeTab, (tab) => {
 .perf-nav-item {
   padding: 0.625rem 0.75rem;
   border-radius: var(--radius-sm);
-  cursor: pointer;
   margin-bottom: 0.25rem;
   transition: background 0.12s ease;
 }
@@ -1738,13 +1736,13 @@ watch(activeTab, (tab) => {
 .perf-nav-bar {
   height: 0.25rem;
   background: var(--bg-hover);
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .perf-nav-bar-inner {
   height: 100%;
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
   transition: width 0.3s ease;
 }
 
@@ -1809,7 +1807,6 @@ watch(activeTab, (tab) => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  cursor: pointer;
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-secondary);
@@ -1834,7 +1831,7 @@ watch(activeTab, (tab) => {
   font-size: 0.75rem;
   min-width: 0;
   padding: 1px 0.25rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   transition: background 0.12s ease;
 }
 .perf-sub-row:hover {
@@ -1920,7 +1917,7 @@ watch(activeTab, (tab) => {
   padding: 0.5rem 0.75rem;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   overflow-x: auto;
   flex: 1;
 }
@@ -2208,10 +2205,10 @@ watch(activeTab, (tab) => {
   font-variant-numeric: tabular-nums;
 }
 .svc-state.state-ok {
-  color: #67c23a;
+  color: var(--success);
 }
 .svc-state.state-bad {
-  color: #f56c6c;
+  color: var(--error);
 }
 .svc-state.state-idle {
   color: var(--text-muted);
@@ -2233,7 +2230,7 @@ watch(activeTab, (tab) => {
 
 .health-card {
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -2325,7 +2322,6 @@ watch(activeTab, (tab) => {
   padding: 0.5rem 0.625rem;
   font-size: 0.75rem;
   color: var(--text-secondary);
-  cursor: pointer;
   user-select: none;
   border-bottom: 0.125rem solid transparent;
 }

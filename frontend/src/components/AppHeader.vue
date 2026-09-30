@@ -477,7 +477,6 @@ onUnmounted(() => {
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
   flex-shrink: 0;

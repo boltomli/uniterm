@@ -376,7 +376,6 @@ function onTabDrop(e: DragEvent, targetTabId: string, index: number) {
   width: 1.5rem;
   height: 1.5rem;
   border-radius: var(--radius-sm);
-  cursor: pointer;
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -397,7 +396,7 @@ function onTabDrop(e: DragEvent, targetTabId: string, index: number) {
   background: var(--accent);
   opacity: 0.8;
   margin: 0.25rem 0;
-  border-radius: 1px;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 /* 拖到标签条空白处时的"插到末尾"指示条。不带 margin-left:auto——那会把
@@ -409,10 +408,9 @@ function onTabDrop(e: DragEvent, targetTabId: string, index: number) {
   width: 1.75rem;
   height: 1.75rem;
   border: none;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;

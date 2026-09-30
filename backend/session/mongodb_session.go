@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/log"
@@ -89,6 +90,12 @@ func (s *MongoSession) Connect(config ConnectionConfig) error {
 }
 
 // buildMongoURI constructs a MongoDB connection URI from config fields.
+//
+// Query params are merged structurally instead of string-concatenated so the
+// user's DBParams override the built-in defaults without ever producing a
+// duplicate option (the driver rejects those at parse time). Credentials are
+// percent-escaped so passwords containing URI delimiters (@ / # : …) no longer
+// break the URI.
 func buildMongoURI(config ConnectionConfig) string {
 	host := config.Host
 	if host == "" {
@@ -101,7 +108,7 @@ func buildMongoURI(config ConnectionConfig) string {
 
 	uri := "mongodb://"
 	if config.User != "" && config.Password != "" {
-		uri += fmt.Sprintf("%s:%s@", config.User, config.Password)
+		uri += fmt.Sprintf("%s:%s@", url.QueryEscape(config.User), url.QueryEscape(config.Password))
 	}
 	uri += fmt.Sprintf("%s:%d", host, port)
 
@@ -109,13 +116,30 @@ func buildMongoURI(config ConnectionConfig) string {
 	if config.DBName != "" {
 		uri += "/" + config.DBName
 	}
-	uri += "?authSource=admin"
 
-	// Append extra params
+	// Merge user-supplied params over the defaults so nothing is duplicated.
+	params := url.Values{}
+	params.Set("authSource", "admin")
+	// Pin the topology to the single configured host: without this the driver
+	// chases the replica-set member hostnames returned by hello(), which are
+	// unreachable through an SSH tunnel (and typically through NAT too).
+	params.Set("directConnection", "true")
 	if config.DBParams != "" {
-		uri += "&" + config.DBParams
+		if userParams, err := url.ParseQuery(config.DBParams); err == nil {
+			for k, vs := range userParams {
+				if len(vs) > 0 {
+					params.Set(k, vs[0])
+				}
+			}
+		}
+	}
+	// directConnection and replicaSet are mutually exclusive driver options;
+	// a user-declared replica set must keep the driver's discovery behavior.
+	if _, hasReplicaSet := params["replicaSet"]; hasReplicaSet && params.Get("directConnection") == "true" {
+		params.Del("directConnection")
 	}
 
+	uri += "?" + params.Encode()
 	return uri
 }
 

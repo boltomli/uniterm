@@ -24,7 +24,7 @@ export interface ColumnDef {
 export type ResourceGroup = 'workloads' | 'network' | 'config' | 'storage' | 'rbac' | 'cluster'
 
 export type ResourceAction =
-  | 'detail' | 'delete' | 'restart' | 'scale' | 'viewPods' | 'logs' | 'terminal' | 'cordon' | 'drain'
+  | 'detail' | 'delete' | 'restart' | 'scale' | 'viewPods' | 'logs' | 'terminal' | 'cordon' | 'drain' | 'files'
 
 export interface DetailField {
   label: string
@@ -307,8 +307,73 @@ export const RESOURCES: ResourceDescriptor[] = [
       { header: 'Node', value: p => p.spec?.nodeName || '', filterable: { type: 'enum' }, searchable: true },
       { header: 'Age', value: p => age(p.metadata?.creationTimestamp) },
     ],
-    actions: ['detail', 'logs', 'terminal', 'delete'],
+    actions: ['terminal', 'files', 'logs', 'delete'],
     canCreate: true,
+    createTemplate: ns => `apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+  namespace: ${ns}
+  labels:
+    app: my-app
+spec:
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 30
+  # Optional: pin the pod to nodes with matching labels
+  # nodeSelector:
+  #   kubernetes.io/os: linux
+  containers:
+    - name: main
+      image: nginx:1.27
+      imagePullPolicy: IfNotPresent
+      ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+      env:
+        - name: TZ
+          value: Asia/Shanghai
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      readinessProbe:
+        httpGet:
+          path: /
+          port: http
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /
+          port: http
+        initialDelaySeconds: 15
+        periodSeconds: 20
+      volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  # Sidecar container example (keep if needed)
+  # - name: sidecar
+  #   image: busybox:1.36
+  #   command: ["sh", "-c", "while true; do date; sleep 30; done"]
+  #   resources:
+  #     requests:
+  #       cpu: 10m
+  #       memory: 16Mi
+  volumes:
+    - name: data
+      emptyDir: {}
+      # To use a PVC instead, replace emptyDir with:
+      # persistentVolumeClaim:
+      #   claimName: my-pvc
+`,
     metrics: 'pod',
     rowTone: podTone,
     detailSections: [
@@ -389,8 +454,20 @@ metadata:
   namespace: ${ns}
   labels:
     app: my-app
+    app.kubernetes.io/name: my-app
+    app.kubernetes.io/component: backend
+  annotations:
+    kubernetes.io/change-cause: initial deployment
 spec:
-  replicas: 1
+  replicas: 2
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: my-app
@@ -399,11 +476,20 @@ spec:
       labels:
         app: my-app
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: app
-          image: nginx:latest
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 80
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            - name: LOG_LEVEL
+              value: info
           resources:
             requests:
               cpu: 100m
@@ -411,6 +497,20 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -448,9 +548,16 @@ kind: StatefulSet
 metadata:
   name: my-statefulset
   namespace: ${ns}
+  labels:
+    app: my-app
 spec:
-  serviceName: my-service
-  replicas: 1
+  serviceName: my-statefulset
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
   selector:
     matchLabels:
       app: my-app
@@ -459,16 +566,42 @@ spec:
       labels:
         app: my-app
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: app
-          image: nginx:latest
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 80
+            - name: http
+              containerPort: 80
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
   volumeClaimTemplates:
     - metadata:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        storageClassName: ""
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 1Gi
@@ -511,7 +644,13 @@ kind: DaemonSet
 metadata:
   name: my-daemonset
   namespace: ${ns}
+  labels:
+    app: my-app
 spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: my-app
@@ -520,9 +659,38 @@ spec:
       labels:
         app: my-app
     spec:
+      hostNetwork: false
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: app
-          image: nginx:latest
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              hostPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -563,17 +731,32 @@ kind: Job
 metadata:
   name: my-job
   namespace: ${ns}
+  labels:
+    app: my-job
 spec:
   completions: 1
   parallelism: 1
   backoffLimit: 4
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
   template:
+    metadata:
+      labels:
+        app: my-job
     spec:
       restartPolicy: Never
       containers:
         - name: job
-          image: busybox:latest
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
           command: ["sh", "-c", "echo hello && sleep 5"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -613,18 +796,41 @@ kind: CronJob
 metadata:
   name: my-cronjob
   namespace: ${ns}
+  labels:
+    app: my-cronjob
 spec:
   schedule: "*/5 * * * *"
-  concurrencyPolicy: Allow
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  suspend: false
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
   jobTemplate:
+    metadata:
+      labels:
+        app: my-cronjob
     spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
       template:
+        metadata:
+          labels:
+            app: my-cronjob
         spec:
           restartPolicy: OnFailure
           containers:
             - name: job
-              image: busybox:latest
+              image: busybox:1.36
+              imagePullPolicy: IfNotPresent
               command: ["sh", "-c", "date; echo hello"]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -656,6 +862,45 @@ spec:
     actions: ['detail', 'viewPods', 'scale', 'delete'],
     canCreate: true,
     rowTone: r => replicaTone(r.status?.readyReplicas || 0, r.spec?.replicas ?? 0),
+    createTemplate: ns => `apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: my-replicaset
+  namespace: ${ns}
+  labels:
+    app: my-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          image: nginx:1.27
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+`,
     detailSections: withMeta(
       { label: 'Spec', fields: [
         { label: 'Replicas', value: r => String(r.spec?.replicas ?? 0) },
@@ -689,15 +934,24 @@ kind: Service
 metadata:
   name: my-service
   namespace: ${ns}
+  labels:
+    app: my-app
 spec:
   type: ClusterIP
+  sessionAffinity: None
   selector:
     app: my-app
   ports:
     - name: http
       port: 80
-      targetPort: 80
+      targetPort: http
       protocol: TCP
+    # NodePort example (takes effect after changing type to NodePort):
+    # - name: https
+    #   port: 443
+    #   targetPort: 8443
+    #   nodePort: 30443
+    #   protocol: TCP
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -734,8 +988,17 @@ kind: Ingress
 metadata:
   name: my-ingress
   namespace: ${ns}
+  labels:
+    app: my-app
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - example.local
+      secretName: my-ingress-tls
   rules:
     - host: example.local
       http:
@@ -747,6 +1010,13 @@ spec:
                 name: my-service
                 port:
                   number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: my-api-service
+                port:
+                  number: 8080
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -760,6 +1030,53 @@ spec:
         { label: 'Address', value: i => (i.status?.loadBalancer?.ingress || []).map((g: any) => g.ip || g.hostname).join(',') || '—' },
       ]},
     ),
+  },
+  // ── Gateway API（gateway.networking.k8s.io；GatewayClass 属集群级基建定义，
+  //    不单独列出，需要时从 Cluster → CRDs 查看）──────────────────────
+  {
+    key: 'gateways', kind: 'Gateway', apiVersion: 'gateway.networking.k8s.io/v1',
+    namespaced: true, group: 'network', icon: 'Waypoints', label: 'Gateways',
+    listPath: ns => apisListPath('gateway.networking.k8s.io', 'v1', 'gateways', ns),
+    watchPath: (ns, rv) => apisWatchPath('gateway.networking.k8s.io', 'v1', 'gateways', ns, rv),
+    columns: [
+      { header: 'Name', value: i => i.metadata?.name || '' },
+      { header: 'Namespace', value: i => i.metadata?.namespace || '' },
+      { header: 'Class', value: i => i.spec?.gatewayClassName || '', searchable: true },
+      { header: 'Addresses', value: i => (i.status?.addresses || []).map((a: any) => a.value).filter(Boolean).join(','), searchable: true },
+      { header: 'Ports', value: i => (i.spec?.listeners || []).map((l: any) => l.port).filter(Boolean).join(',') },
+      { header: 'Age', value: i => age(i.metadata?.creationTimestamp) },
+    ],
+    actions: ['detail', 'delete'],
+    // 未 Programmed（如没有可用 controller/地址）整行告警
+    rowTone: i => ((i.status?.conditions || []).find((c: any) => c.type === 'Programmed')?.status === 'False' ? 'warn' : ''),
+  },
+  {
+    key: 'httproutes', kind: 'HTTPRoute', apiVersion: 'gateway.networking.k8s.io/v1',
+    namespaced: true, group: 'network', icon: 'Route', label: 'HTTPRoutes',
+    listPath: ns => apisListPath('gateway.networking.k8s.io', 'v1', 'httproutes', ns),
+    watchPath: (ns, rv) => apisWatchPath('gateway.networking.k8s.io', 'v1', 'httproutes', ns, rv),
+    columns: [
+      { header: 'Name', value: i => i.metadata?.name || '' },
+      { header: 'Namespace', value: i => i.metadata?.namespace || '' },
+      { header: 'Hostnames', value: i => (i.spec?.hostnames || []).join(','), searchable: true },
+      { header: 'ParentRefs', value: i => (i.spec?.parentRefs || []).map((p: any) => p.name).filter(Boolean).join(','), searchable: true },
+      { header: 'Age', value: i => age(i.metadata?.creationTimestamp) },
+    ],
+    actions: ['detail', 'delete'],
+  },
+  {
+    key: 'grpcroutes', kind: 'GRPCRoute', apiVersion: 'gateway.networking.k8s.io/v1',
+    namespaced: true, group: 'network', icon: 'Route', label: 'GRPCRoutes',
+    listPath: ns => apisListPath('gateway.networking.k8s.io', 'v1', 'grpcroutes', ns),
+    watchPath: (ns, rv) => apisWatchPath('gateway.networking.k8s.io', 'v1', 'grpcroutes', ns, rv),
+    columns: [
+      { header: 'Name', value: i => i.metadata?.name || '' },
+      { header: 'Namespace', value: i => i.metadata?.namespace || '' },
+      { header: 'Hostnames', value: i => (i.spec?.hostnames || []).join(','), searchable: true },
+      { header: 'ParentRefs', value: i => (i.spec?.parentRefs || []).map((p: any) => p.name).filter(Boolean).join(','), searchable: true },
+      { header: 'Age', value: i => age(i.metadata?.creationTimestamp) },
+    ],
+    actions: ['detail', 'delete'],
   },
   // ── Config ──────────────────────────────────────────────────
   {
@@ -780,10 +1097,23 @@ kind: ConfigMap
 metadata:
   name: my-configmap
   namespace: ${ns}
+  labels:
+    app: my-app
 data:
-  key1: value1
-  config.yaml: |
-    foo: bar
+  # plain key-value pairs
+  LOG_LEVEL: info
+  MAX_CONNECTIONS: "100"
+  # multi-line config file
+  app.properties: |
+    server.port=8080
+    spring.profiles.active=prod
+  nginx.conf: |
+    server {
+      listen 8080;
+      location / {
+        root /usr/share/nginx/html;
+      }
+    }
 `,
     detailSections: withMeta(
       { label: 'Data', fields: [
@@ -810,10 +1140,30 @@ kind: Secret
 metadata:
   name: my-secret
   namespace: ${ns}
+  labels:
+    app: my-app
 type: Opaque
+# stringData accepts plain text; the apiserver base64-encodes it into data automatically
 stringData:
   username: admin
   password: changeme
+---
+# TLS secret example (for ingress/gateway certificates), requires tls.crt and tls.key:
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: my-ingress-tls
+#   namespace: ${ns}
+# type: kubernetes.io/tls
+# stringData:
+#   tls.crt: |
+#     -----BEGIN CERTIFICATE-----
+#     ...
+#     -----END CERTIFICATE-----
+#   tls.key: |
+#     -----BEGIN PRIVATE KEY-----
+#     ...
+#     -----END PRIVATE KEY-----
 `,
     detailSections: withMeta(
       { label: 'Data', fields: [
@@ -845,12 +1195,18 @@ kind: PersistentVolumeClaim
 metadata:
   name: my-pvc
   namespace: ${ns}
+  labels:
+    app: my-app
 spec:
   accessModes:
     - ReadWriteOnce
+  # Omit storageClassName to use the cluster default StorageClass;
+  # set it to the matching value when binding to a manually created PV (storageClassName: manual)
+  storageClassName: ""
+  volumeMode: Filesystem
   resources:
     requests:
-      storage: 1Gi
+      storage: 5Gi
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -889,15 +1245,20 @@ spec:
 kind: PersistentVolume
 metadata:
   name: my-pv
+  labels:
+    app: my-app
 spec:
   capacity:
-    storage: 1Gi
+    storage: 5Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: manual
+  volumeMode: Filesystem
+  # hostPath is for single-node testing only; use nfs / csi in production
   hostPath:
     path: /mnt/data
+    type: DirectoryOrCreate
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -1039,12 +1400,23 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: my-deployment
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 10
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
   metrics:
     - type: Resource
       resource:
         name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Resource
+      resource:
+        name: memory
         target:
           type: Utilization
           averageUtilization: 80
@@ -1090,14 +1462,40 @@ spec:
       app: my-app
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     - from:
+        # pods labeled frontend in the same namespace
         - podSelector:
             matchLabels:
               app: frontend
+        # allow a specific CIDR range
+        - ipBlock:
+            cidr: 10.0.0.0/16
+            except:
+              - 10.0.5.0/24
       ports:
         - protocol: TCP
           port: 80
+        - protocol: TCP
+          port: 443
+  egress:
+    # allow cluster DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+        # allow the mysql pod in the same namespace
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -1149,11 +1547,19 @@ metadata:
   namespace: ${ns}
 spec:
   hard:
-    requests.cpu: "2"
-    requests.memory: 4Gi
-    limits.cpu: "4"
-    limits.memory: 8Gi
-    pods: "20"
+    # compute resource totals
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    # object counts
+    pods: "40"
+    services: "10"
+    services.nodeports: "5"
+    services.loadbalancers: "2"
+    persistentvolumeclaims: "20"
+    configmaps: "50"
+    secrets: "50"
 `,
     detailSections: withMeta(
       { label: 'Quota', fields: [
@@ -1180,6 +1586,7 @@ metadata:
   namespace: ${ns}
 spec:
   limits:
+    # Container: inject defaults when requests/limits are unset, and enforce min/max
     - type: Container
       default:
         cpu: 500m
@@ -1187,6 +1594,25 @@ spec:
       defaultRequest:
         cpu: 100m
         memory: 128Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+      min:
+        cpu: 50m
+        memory: 64Mi
+      maxLimitRequestRatio:
+        cpu: "4"
+    # Pod: cap the whole pod
+    - type: Pod
+      max:
+        cpu: "4"
+        memory: 4Gi
+    # PVC: cap volume size
+    - type: PersistentVolumeClaim
+      max:
+        storage: 100Gi
+      min:
+        storage: 1Gi
 `,
   },
   // ── Storage ─────────────────────────────────────────────────
@@ -1208,10 +1634,20 @@ spec:
 kind: StorageClass
 metadata:
   name: my-storageclass
+  # Optional: make this the cluster default StorageClass
+  # annotations:
+  #   storageclass.kubernetes.io/is-default-class: "true"
 provisioner: kubernetes.io/no-provisioner
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+mountOptions:
+  - rw
+  - noatime
+# provisioner-specific parameters, e.g. for the NFS CSI driver:
+# parameters:
+#   server: 192.168.1.100
+#   share: /export/data
 `,
     detailSections: withMeta(
       { label: 'Spec', fields: [
@@ -1241,6 +1677,13 @@ kind: ServiceAccount
 metadata:
   name: my-serviceaccount
   namespace: ${ns}
+  labels:
+    app: my-app
+# Do not auto-mount API credentials by default (safer); set true when API access is needed
+automountServiceAccountToken: false
+# Credentials for pulling images from private registries (create a docker-registry Secret first)
+# imagePullSecrets:
+#   - name: my-registry-secret
 `,
     detailSections: withMeta(
       { label: 'Detail', fields: [
@@ -1266,9 +1709,19 @@ metadata:
   name: my-role
   namespace: ${ns}
 rules:
+  # read-only access to core resources
   - apiGroups: [""]
-    resources: ["pods", "services"]
+    resources: ["pods", "pods/log", "services", "endpoints"]
     verbs: ["get", "list", "watch"]
+  # read-only access to workloads
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # read/write on ConfigMaps, restricted to a specific name
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["my-configmap"]
+    verbs: ["get", "list", "watch", "update", "patch"]
 `,
     detailSections: withMeta(
       { label: 'Rules', fields: [ { label: 'Rules', value: rbacRules } ] },
@@ -1298,9 +1751,18 @@ roleRef:
   kind: Role
   name: my-role
 subjects:
+  # bind to a ServiceAccount (used by pods)
   - kind: ServiceAccount
     name: my-serviceaccount
     namespace: ${ns}
+  # bind to a user (requires OIDC/cert-based authentication)
+  # - kind: User
+  #   name: alice@example.com
+  #   apiGroup: rbac.authorization.k8s.io
+  # bind to a group
+  # - kind: Group
+  #   name: my-team
+  #   apiGroup: rbac.authorization.k8s.io
 `,
     detailSections: withMeta(
       { label: 'Binding', fields: [
@@ -1324,9 +1786,17 @@ kind: ClusterRole
 metadata:
   name: my-clusterrole
 rules:
+  # read-only access to cluster-scoped resources
   - apiGroups: [""]
-    resources: ["pods", "nodes"]
+    resources: ["nodes", "namespaces", "persistentvolumes"]
     verbs: ["get", "list", "watch"]
+  # read-only access to pods in all namespaces
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # non-resource paths (/healthz etc.)
+  - nonResourceURLs: ["/healthz", "/metrics"]
+    verbs: ["get"]
 `,
     detailSections: withMeta(
       { label: 'Rules', fields: [ { label: 'Rules', value: rbacRules } ] },
@@ -1354,9 +1824,14 @@ roleRef:
   kind: ClusterRole
   name: my-clusterrole
 subjects:
+  # bind to a ServiceAccount in a specific namespace
   - kind: ServiceAccount
     name: my-serviceaccount
     namespace: default
+  # bind to a group (e.g. grant access to the whole ops team)
+  # - kind: Group
+  #   name: ops-team
+  #   apiGroup: rbac.authorization.k8s.io
 `,
     detailSections: withMeta(
       { label: 'Binding', fields: [

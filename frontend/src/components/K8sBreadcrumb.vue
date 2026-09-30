@@ -92,7 +92,6 @@ const crumbs = computed<Crumb[]>(() => {
   flex-shrink: 0;
 }
 .crumb.clickable {
-  cursor: pointer;
   transition: all 0.1s ease;
 }
 .crumb.clickable:hover {

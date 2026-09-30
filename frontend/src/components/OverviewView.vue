@@ -213,9 +213,9 @@ async function onNamespaceChange(ns: string) {
 }
 
 .ov-card {
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   border: 1px solid var(--border-subtle, #333);
-  border-radius: var(--radius-sm, 0.25rem);
+  border-radius: var(--radius-sm);
   padding: 1rem 1.25rem;
 }
 
@@ -279,8 +279,7 @@ async function onNamespaceChange(ns: string) {
 }
 
 .ov-clickable {
-  cursor: pointer;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   padding: 0.4375rem 0.5rem;
   margin: 0 -0.5rem;
   transition: background 0.12s ease;
@@ -326,12 +325,12 @@ async function onNamespaceChange(ns: string) {
   flex-shrink: 0;
 }
 .state-dot[data-state='running'] {
-  background: var(--el-color-success, #67c23a);
+  background: var(--el-color-success);
 }
 .state-dot[data-state='paused'] {
-  background: var(--el-color-warning, #e6a23c);
+  background: var(--el-color-warning);
 }
 .state-dot[data-state='exited'] {
-  background: var(--el-color-info, #909399);
+  background: var(--el-color-info);
 }
 </style>

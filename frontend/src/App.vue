@@ -931,6 +931,8 @@ onMounted(async () => {
   try {
     const platform = await GetPlatform()
     isMac = platform === 'darwin'
+    // Expose for platform-specific CSS (e.g. dialog close-button styles)
+    document.documentElement.dataset.platform = platform
   } catch {
     isMac = false
   }
@@ -1986,8 +1988,7 @@ watch(
 }
 .group-list .group-item {
   padding: 0.625rem 0.875rem;
-  border-radius: 0.375rem;
-  cursor: pointer;
+  border-radius: var(--radius-sm);
   transition: background .15s;
 }
 .group-list .group-item:hover {

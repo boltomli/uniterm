@@ -619,10 +619,9 @@ watch(searchQuery, (q) => {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   flex-shrink: 0;
 }
 
@@ -642,7 +641,6 @@ watch(searchQuery, (q) => {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.625rem 0.375rem 0.375rem;
-  cursor: pointer;
   user-select: none;
   border-radius: var(--radius-sm);
   transition: background 0.12s ease;
@@ -680,7 +678,6 @@ watch(searchQuery, (q) => {
   padding: 0.375rem 0.625rem;
   min-height: 2.25rem;
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all 0.12s ease;
   margin-bottom: 0.125rem;
   user-select: none;

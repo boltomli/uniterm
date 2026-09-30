@@ -536,7 +536,7 @@ async function retryConnection() {
   // Exec panels (k8s-exec / container-exec): rebuild the exec stream via the
   // dedicated wails method — CreateSession has no such type. The original
   // params live on the config from open time.
-  if (props.panel.type === 'k8s-exec' || props.panel.type === 'container-exec') {
+  if (props.panel.type === 'container-exec') {
     const c = props.panel.config
     const now = new Date()
     const pad = (n: number) => String(n).padStart(2, '0')
@@ -544,9 +544,10 @@ async function retryConnection() {
     baseTerminalRef.value?.write(RESET_MOUSE_MODES + `\r\n\x1b[33mReconnecting... (${at})\x1b[0m\r\n`)
     try {
       let info
-      if (props.panel.type === 'k8s-exec') {
-        if (!c.k8sExecConnId || !c.k8sExecPod || !c.k8sExecContainer) throw new Error('exec session parameters missing')
-        info = await K8sExecSession(c.k8sExecConnId, c.k8sNamespace || '', c.k8sExecPod, c.k8sExecContainer)
+      if (c.containerExecNamespace) {
+        // k8s 连接：containerExecContainerId 为 Pod 名
+        if (!c.containerExecConnId || !c.containerExecContainerId || !c.containerExecContainerName) throw new Error('exec session parameters missing')
+        info = await K8sExecSession(c.containerExecConnId, c.containerExecNamespace, c.containerExecContainerId, c.containerExecContainerName)
       } else {
         if (!c.containerExecConnId || !c.containerExecContainerId) throw new Error('exec session parameters missing')
         info = await ContainerExecSession(c.containerExecConnId, c.containerExecContainerId, c.containerExecShell || 'sh')
@@ -796,10 +797,9 @@ watch(() => props.panel.outputLog, (val) => {
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   font-size: 0.75rem;
   padding: 0.125rem 0.25rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   line-height: 1;
 }
 .panel-broadcast:hover,
@@ -818,9 +818,8 @@ watch(() => props.panel.outputLog, (val) => {
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0.125rem 0.25rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -838,9 +837,8 @@ watch(() => props.panel.outputLog, (val) => {
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0.125rem 0.25rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -859,7 +857,6 @@ watch(() => props.panel.outputLog, (val) => {
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
   font-size: 0.875rem;
   transition: all 0.12s ease;
 }
@@ -875,9 +872,8 @@ watch(() => props.panel.outputLog, (val) => {
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0.125rem 0.25rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
 }

@@ -217,6 +217,7 @@ export const useCompanionStore = defineStore('companion', () => {
         config.type = 'container-file'
         config.id = execConnId
         config.containerId = execContainerId
+        config.containerNamespace = config.containerExecNamespace
         const info = await CreateSession('container-file', config)
         entries.value = {
           ...entries.value,

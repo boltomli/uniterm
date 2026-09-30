@@ -259,7 +259,6 @@ function onRemove(id: string) {
   font-size: 0.8125rem;
   font-family: var(--font-mono);
   color: var(--text-secondary);
-  cursor: pointer;
   user-select: none;
   transition: background 0.1s ease;
 }
@@ -335,10 +334,9 @@ function onRemove(id: string) {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   font-size: 0.75rem;
   line-height: 1;
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
   padding: 0;
   margin-left: 0.125rem;
   flex-shrink: 0;
@@ -367,6 +365,6 @@ function onRemove(id: string) {
 
 .history-list::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
 }
 </style>

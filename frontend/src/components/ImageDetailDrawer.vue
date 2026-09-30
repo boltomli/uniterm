@@ -375,7 +375,6 @@ watch(() => [props.mode, props.target], () => {
   border: none;
   background: none;
   color: var(--text-secondary);
-  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 0.8125rem;
   border-bottom: 0.125rem solid transparent;
@@ -424,7 +423,6 @@ watch(() => [props.mode, props.target], () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
-  cursor: pointer;
 }
 /* 点击展开：完整显示命令内容 */
 .layer-cmd.expanded {

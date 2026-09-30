@@ -1106,7 +1106,6 @@ function onEditRowCancel() {
   border-bottom: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-primary);
-  cursor: pointer;
   font-family: var(--font-mono);
   font-size: 0.75rem;
 }
@@ -1286,11 +1285,10 @@ function onEditRowCancel() {
   justify-content: flex-end;
   gap: 0.25rem;
   font-size: 0.625rem;
-  cursor: pointer;
   color: var(--text-muted);
   white-space: nowrap;
 }
-.field-toggle input { cursor: pointer; margin: 0; }
+.field-toggle input { margin: 0; }
 .field-input {
   width: 100%;
   box-sizing: border-box;

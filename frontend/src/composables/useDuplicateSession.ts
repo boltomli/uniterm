@@ -74,11 +74,11 @@ export function useDuplicateSession() {
     let config: ConnectionConfig | undefined
     if (panel.config) {
       try {
-        if (panel.type === 'k8s-exec' || panel.type === 'container-exec') {
+        if (panel.type === 'container-exec') {
           // Exec panels can't be rebuilt via CreateSession (no such type); re-dial the exec stream.
           const c = panel.config
-          info = panel.type === 'k8s-exec'
-            ? await K8sExecSession(c.k8sExecConnId, c.k8sNamespace || '', c.k8sExecPod, c.k8sExecContainer)
+          info = c.containerExecNamespace
+            ? await K8sExecSession(c.containerExecConnId, c.containerExecNamespace, c.containerExecContainerId, c.containerExecContainerName)
             : await ContainerExecSession(c.containerExecConnId, c.containerExecContainerId, c.containerExecShell || 'sh')
           panelStore.bindSession(newPanel.id, info.id)
           sessionStore.initSession(info.id)

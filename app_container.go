@@ -145,7 +145,8 @@ func (a *App) K8sExecSession(connID, namespace, pod, container string) (*session
 		return nil, err
 	}
 	id := uuid.New().String()
-	sess := session.NewK8sExecSession(id, wsConn)
+	// k8s exec 的 WS 通道适配为通用 PTYStream，与容器 exec 会话统一
+	sess := session.NewContainerExecSession(id, session.NewK8sExecStream(wsConn))
 	sess.SetOnDataCallback(func(data []byte) {
 		a.emit("session:data", map[string]interface{}{
 			"id":   sess.ID(),
@@ -159,7 +160,7 @@ func (a *App) K8sExecSession(connID, namespace, pod, container string) (*session
 		})
 	})
 	a.sessionManager.Add(sess)
-	return &session.SessionInfo{ID: id, Type: "k8s-exec", Title: pod, Status: session.StatusConnected}, nil
+	return &session.SessionInfo{ID: id, Type: "container-exec", Title: pod, Status: session.StatusConnected}, nil
 }
 
 func readKubeconfigSource(source string, sourceIsPath bool) ([]byte, error) {
@@ -458,13 +459,18 @@ func (a *App) createContainerFileSession(config session.ConnectionConfig) (*sess
 	if a.containerManager == nil {
 		return nil, fmt.Errorf("container manager not initialized")
 	}
-	// 容器文件会话复用 config.ID 作为容器连接 key（同 wsl-file 模式）
-	p, err := a.containerManager.Provider(config.ID)
-	if err != nil {
-		return nil, err
-	}
+	// 按 connID 分发：容器连接走 docker exec/cp，k8s 连接走 exec WebSocket
+	//（k8s 复用 config.ID 作为 k8s 连接 key，config.ContainerID 为 Pod 名）
 	id := uuid.New().String()
-	sess := session.NewContainerFileSession(id, container.NewFileBackend(p, config.ContainerID), config.ContainerID, config.Name)
+	var sess session.Session
+	if p, err := a.containerManager.Provider(config.ID); err == nil {
+		sess = session.NewContainerFileSession(id, container.NewFileBackend(p, config.ContainerID), config.ContainerID, config.Name)
+	} else if config.ContainerNamespace != "" {
+		backend := k8s.NewFileBackend(a.k8sManager, config.ID, config.ContainerNamespace, config.ContainerID, "")
+		sess = session.NewContainerFileSession(id, backend, config.ContainerID, config.Name)
+	} else {
+		return nil, fmt.Errorf("connection %q not found", config.ID)
+	}
 	// 与标准 CreateSession 尾部一致：接上数据/状态回调，前端的"已连接"
 	// 状态靠 session:status 事件驱动。
 	sess.SetOnDataCallback(func(data []byte) {

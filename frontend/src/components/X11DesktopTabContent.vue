@@ -217,7 +217,7 @@ onBeforeUnmount(() => {
   width: 100%;
   background: var(--bg-elevated);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md, 0.375rem);
+  border-radius: var(--radius-md);
   padding: 1rem 1.25rem;
   color: var(--text-primary);
 }
@@ -235,7 +235,7 @@ onBeforeUnmount(() => {
   font-family: var(--font-mono, monospace);
   background: var(--bg-base);
   padding: 0.125rem 0.375rem;
-  border-radius: var(--radius-sm, 0.25rem);
+  border-radius: var(--radius-sm);
   color: var(--text-primary);
   word-break: break-all;
 }

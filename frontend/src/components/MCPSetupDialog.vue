@@ -187,7 +187,7 @@ async function copy(key: string, text: string) {
   padding: 0 0.5rem;
 }
 .mcp-setup-once {
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .mcp-setup-token {
   display: flex;
@@ -211,7 +211,7 @@ async function copy(key: string, text: string) {
   background: var(--bg-surface);
   color: var(--text-primary);
   border: 1px solid var(--border-color, var(--el-border-color));
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   white-space: nowrap;
   overflow-x: auto;
   user-select: all;
@@ -237,7 +237,7 @@ async function copy(key: string, text: string) {
   background: var(--bg-surface);
   color: var(--text-primary);
   border: 1px solid var(--border-color, var(--el-border-color));
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-all;
   user-select: all;

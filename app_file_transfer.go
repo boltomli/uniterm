@@ -8,6 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ys-ll/uniterm/backend/session"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"io"
 	"os"
 	"os/exec"
@@ -18,10 +21,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/ys-ll/uniterm/backend/session"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/transform"
 )
 
 // SFTP direct API — called from frontend without terminal layer

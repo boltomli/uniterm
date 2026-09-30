@@ -259,10 +259,9 @@ async function importDir() {
   align-items: center;
   gap: 0.375rem;
   border: 1px dashed var(--el-border-color);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
   padding: 1.5rem;
   text-align: center;
-  cursor: pointer;
   transition: border-color 0.15s;
 }
 .import-actions {

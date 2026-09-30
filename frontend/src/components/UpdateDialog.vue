@@ -134,7 +134,7 @@ function fmtSize(bytes: number): string {
   overflow-y: auto;
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-sm);
   padding: 0.625rem 0.75rem;
   margin-bottom: 0.75rem;
   font-size: 0.7813rem;
@@ -170,7 +170,7 @@ function fmtSize(bytes: number): string {
 .update-dialog-changelog :deep(code) {
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   padding: 0 0.25rem;
   font-family: var(--font-mono);
   font-size: 0.7188rem;
@@ -181,7 +181,7 @@ function fmtSize(bytes: number): string {
   margin: 0.625rem 0;
 }
 .update-dialog-error {
-  color: #f56c6c;
+  color: var(--error);
   font-size: 0.8125rem;
   margin-bottom: 0.625rem;
   word-break: break-word;

@@ -87,7 +87,7 @@ function onDenyWithReason() {
   margin: 0 0 0.75rem;
   padding: 0.5rem 0.75rem;
   background: var(--el-fill-color-dark);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-family: var(--el-font-family-mono, monospace);
   font-size: 0.8rem;
   white-space: pre-wrap;

@@ -649,13 +649,13 @@ function escapeHtml(text: string): string {
 :deep(mark.ai-search-highlight) {
   background: rgba(250, 204, 21, 0.4);
   color: inherit;
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
 }
 :deep(mark.ai-search-highlight.active) {
   background: rgba(250, 204, 21, 0.6);
   color: inherit;
   outline: 0.125rem solid var(--warning);
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
 }
 .ai-message {
   display: flex;
@@ -668,7 +668,7 @@ function escapeHtml(text: string): string {
 .ai-message.user .text {
   background: var(--bg-surface);
   padding: 0.625rem 1rem;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
 }
 .ai-message.interrupted .text {
@@ -841,14 +841,13 @@ function escapeHtml(text: string): string {
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
-  cursor: pointer;
   user-select: none;
 }
 .tool-box-label {
   font-weight: bold;
   font-size: 0.625rem;
   padding: 1px 0.3125rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   text-transform: uppercase;
 }
 .tool-box-count {
@@ -858,12 +857,10 @@ function escapeHtml(text: string): string {
 .toggle-icon {
   color: var(--text-muted);
   font-size: 0.625rem;
-  cursor: pointer;
 }
 .tool-copy-btn {
   background: none;
   border: none;
-  cursor: pointer;
   font-size: 0.6875rem;
   padding: 0 0.125rem;
   opacity: 0;
@@ -880,7 +877,6 @@ function escapeHtml(text: string): string {
 .text :deep(.code-block-header .tool-copy-btn) {
   background: none;
   border: none;
-  cursor: pointer;
   padding: 0 0.125rem;
   opacity: 0.4;
   transition: opacity 0.15s;
@@ -935,7 +931,7 @@ function escapeHtml(text: string): string {
   margin: 0;
   padding: 0.25rem 0.375rem;
   background: var(--bg-base);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -970,7 +966,7 @@ function escapeHtml(text: string): string {
   margin: 0;
   padding: 0.25rem 0.375rem;
   background: var(--bg-base);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -996,7 +992,7 @@ function escapeHtml(text: string): string {
   font-size: 0.625rem;
   font-weight: 600;
   padding: 1px 0.375rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   background: var(--error);
   color: var(--on-accent);
   text-transform: uppercase;
@@ -1006,7 +1002,7 @@ function escapeHtml(text: string): string {
   font-size: 0.625rem;
   font-weight: 500;
   padding: 1px 0.375rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border-hover);
   color: var(--text-secondary);
 }
@@ -1052,7 +1048,6 @@ function escapeHtml(text: string): string {
   background: transparent;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all 0.2s;
 }
 .copy-md-label {
@@ -1113,7 +1108,6 @@ function escapeHtml(text: string): string {
   padding: 0.375rem 0.5rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
   user-select: none;
 }
@@ -1143,7 +1137,7 @@ function escapeHtml(text: string): string {
   width: 1rem;
   height: 1rem;
   border: 1px solid var(--border-hover);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
   margin-top: 0.125rem;
   display: flex;
@@ -1186,7 +1180,7 @@ function escapeHtml(text: string): string {
   color: var(--text-primary);
   background: var(--bg-base);
   border: 1px solid var(--border-hover);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   outline: none;
   margin-top: 0.25rem;
 }
@@ -1204,7 +1198,7 @@ function escapeHtml(text: string): string {
   padding: 0.25rem 0.625rem;
   background: var(--accent-subtle, rgba(64,158,255,0.1));
   border: 1px solid var(--accent-glow, rgba(64,158,255,0.3));
-  border-radius: 0.75rem;
+  border-radius: var(--radius-sm);
   font-size: 0.75rem;
   margin: 0.125rem 0;
 }
@@ -1212,7 +1206,7 @@ function escapeHtml(text: string): string {
   font-size: 0.75rem;
 }
 .skill-card-name {
-  color: var(--accent, #409eff);
+  color: var(--accent);
   font-weight: 600;
   font-family: var(--font-mono);
 }

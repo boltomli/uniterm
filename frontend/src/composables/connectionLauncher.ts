@@ -153,6 +153,15 @@ function resolveSessionType(key: string, spec: ConnectSpec, config: ConnectionCo
   return typeof st === 'function' ? st(config) : st
 }
 
+// Database-family error UX: keep the tab open (the SQL/mongo editor is usable
+// to retry) and surface the failure on the panel + toast, instead of the
+// default tear-down that made a failed MongoDB-over-tunnel connect look like
+// a vanishing window (issue #1048).
+const dbOnError = (panelId: string, e: unknown) => {
+  usePanelStore().updateStatus(panelId, 'error')
+  msg.error(`${t('db.connectFailed')}: ${(e as any)?.message || String(e)}`)
+}
+
 const SPECS: Record<string, ConnectSpec> = {
   // File-transfer family: the panel/tab are the protocol-agnostic 'sftp'
   // browser; only the SESSION differs (and the ssh companion honors the
@@ -178,19 +187,15 @@ const SPECS: Record<string, ConnectSpec> = {
     prepare: c => { c.dbType = c.dbType || 'mysql' },
     title: c => c.name || `${c.dbType}:${c.user}@${c.host}`,
     initSession: true,
-    onError: (panelId, e) => {
-      // Database tabs stay open on failure (the SQL editor is usable to
-      // retry); surface the error on the panel instead of tearing the tab
-      // down.
-      usePanelStore().updateStatus(panelId, 'error')
-      msg.error(`${t('db.connectFailed')}: ${(e as any)?.message || String(e)}`)
-    },
+    onError: dbOnError,
   },
   // Standalone NoSQL types share the database panel (reconnect routing) while
-  // tabs and sessions carry their own kind.
-  redis: { panelType: 'database', initSession: true, title: dbTitle },
-  mongodb: { panelType: 'database', initSession: true, title: dbTitle },
-  elasticsearch: { panelType: 'database', initSession: true, title: dbTitle },
+  // tabs and sessions carry their own kind. Same error UX as the database
+  // family: the tab stays open on connect failure instead of vanishing, so
+  // the user can read the error and retry (issue #1048).
+  redis: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
+  mongodb: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
+  elasticsearch: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
   k8s: {
     componentSession: true,
     needsCredentials: false,
@@ -282,7 +287,8 @@ async function runSpec(key: string, config: ConnectionConfig, spec: ConnectSpec,
       if (persist) RecordRecentConnection(config.id)
     }
   } catch (e) {
-    console.error(`Failed to create ${sessionType} session:`, e)
+    // 有 onError 的类型（如 container-file）自行决定错误呈现，控制台不再刷堆栈
+    if (!spec.onError) console.error(`Failed to create ${sessionType} session:`, e)
     if (spec.onError) {
       spec.onError(panel.id, e)
     } else {

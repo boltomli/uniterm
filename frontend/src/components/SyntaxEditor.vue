@@ -739,7 +739,7 @@ defineExpose({
   height: 55vh;
   font-size: 13px;
   border: 1px solid var(--border-subtle);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-base);
   color: var(--text-primary);
@@ -812,7 +812,7 @@ defineExpose({
   white-space: nowrap;
 }
 .match-count.none {
-  color: var(--el-color-danger, #f56c6c);
+  color: var(--el-color-danger);
 }
 .search-icon-btn {
   width: 1.625rem;
@@ -825,7 +825,6 @@ defineExpose({
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   flex-shrink: 0;
   transition: all 0.12s ease;
 }
@@ -835,7 +834,6 @@ defineExpose({
 }
 .search-icon-btn:disabled {
   opacity: 0.4;
-  cursor: default;
   background: transparent;
   color: var(--text-muted);
 }

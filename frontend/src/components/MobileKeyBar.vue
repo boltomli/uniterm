@@ -100,7 +100,6 @@ const props = defineProps<{ sessionId: string }>()
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   user-select: none;
   /* don't let the bar's horizontal scroll steal the tap */
   touch-action: none;

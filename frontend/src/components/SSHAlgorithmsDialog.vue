@@ -206,7 +206,7 @@ function onSave() {
 }
 .algo-list {
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-sm);
   max-height: 18rem;
   overflow-y: auto;
 }

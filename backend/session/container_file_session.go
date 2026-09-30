@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
 	"sync/atomic"
 	"time"
 )
@@ -648,11 +649,10 @@ func readTarSingleFile(rs RawStream) ([]byte, error) {
 			return nil, err
 		}
 		if hdr.Typeflag == tar.TypeReg {
-			b, rerr := io.ReadAll(tr)
-			if rerr != nil {
-				return nil, rerr
-			}
-			return b, rs.Wait()
+			// 注意：只消费 entry 自身，不能等流结束——tar.Reader 不会读
+			// trailing 数据，等待会造成 ExecRaw 写侧死锁（编辑器内容为空）。
+			// 流的清理由调用方 defer rs.Close() 负责。
+			return io.ReadAll(tr)
 		}
 	}
 }

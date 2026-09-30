@@ -887,7 +887,7 @@ function showDragGhost(dataTransfer: DataTransfer, items: { name: string; isDir:
   el.style.cssText =
     'position:fixed;top:-2000px;left:0;display:flex;flex-direction:column;gap:2px;' +
     'padding:0.375rem 0.5rem;background:var(--bg-base);border:1px solid var(--border-subtle);' +
-    'border-radius:0.375rem;box-shadow:0 0.25rem 0.75rem rgba(0,0,0,0.35);'
+    'border-radius: var(--radius-sm);box-shadow:0 0.25rem 0.75rem rgba(0,0,0,0.35);'
 
   const mkRow = (maxWidth: string) => {
     const row = document.createElement('div')
@@ -1103,7 +1103,7 @@ function applyBandSelection() {
 }
 /* Non-name columns read dimmer than the file name (issue #702). */
 .cell-secondary {
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--el-text-color-secondary);
 }
 /* Keep the `border` prop on el-table (column drag-resize needs it) but hide the
    visible vertical lines only on the data rows, keeping the header's. */
@@ -1145,7 +1145,6 @@ function applyBandSelection() {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   flex-shrink: 0;
   transition: all 0.12s ease;
 }
@@ -1155,7 +1154,6 @@ function applyBandSelection() {
 }
 .filter-icon-btn:disabled {
   opacity: 0.4;
-  cursor: default;
   background: transparent;
   color: var(--text-muted);
 }

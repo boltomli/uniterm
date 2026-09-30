@@ -99,9 +99,9 @@ describe('k8sResources completeness', () => {
 })
 
 describe('descriptor actions + canCreate', () => {
-  it('pods support detail/logs/terminal/delete and canCreate', () => {
+  it('pods support terminal/files/logs/delete and canCreate', () => {
     const p = getResource('pods')!
-    expect(p.actions).toEqual(['detail', 'logs', 'terminal', 'delete'])
+    expect(p.actions).toEqual(['terminal', 'files', 'logs', 'delete'])
     expect(p.canCreate).toBe(true)
   })
   it('deployments support viewPods/restart/scale', () => {

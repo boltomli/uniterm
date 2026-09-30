@@ -432,6 +432,10 @@ onMounted(async () => {
   await probeConnectAndLoad()
 })
 
+// 必须先于 immediate watcher 声明：container-file 的会话绑定发生在挂载前，
+// immediate watcher 会在 setup 期间同步触发并访问本状态。
+let probeRan = false
+
 watch(() => panel.value?.sessionId, async (newId, oldId) => {
   if (newId && !oldId) {
     fetchLocalDrives()
@@ -472,7 +476,6 @@ watch(() => panel.value?.sessionId, (sid, oldSid) => {
 // this panel binds its sessionId, so the connected-event handler and a mount-time
 // probe that runs while sid is still undefined both miss it. Once we know the id,
 // check whether the session is already up and, if so, run the initial load.
-let probeRan = false
 async function probeConnectAndLoad() {
   if (probeRan || initialNavDone) return
   const sid = panel.value?.sessionId

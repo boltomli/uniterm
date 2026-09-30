@@ -37,7 +37,11 @@ export interface ParsedCRD {
   printerColumns: { name: string; jsonPath: string; type?: string }[]
 }
 
+// 总览伪节点 key（K8sTree 顶部节点 / K8sTabContent 分发用）
+export const OVERVIEW_KEY = '__overview__'
+
 export type NavFrame =
-  | { kind: 'list'; resourceKey: string; namespace: string }
+  | { kind: 'overview' }
+  | { kind: 'list'; resourceKey: string; namespace: string; nameFilter?: string }
   | { kind: 'owned'; resourceKey: string; ownerKind: string; ownerName: string; ownerUid: string; namespace: string }
   | { kind: 'custom'; crd: ParsedCRD; namespace: string }

@@ -878,7 +878,6 @@ watch(() => props.sessionId, () => {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }
@@ -916,7 +915,6 @@ watch(() => props.sessionId, () => {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }
@@ -981,7 +979,6 @@ watch(() => props.sessionId, () => {
   max-width: 11.25rem;
   padding: 0.375rem 0.5rem 0.375rem 0.75rem;
   border-right: 1px solid var(--border-subtle);
-  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -1007,9 +1004,8 @@ watch(() => props.sessionId, () => {
   border: none;
   background: none;
   color: var(--text-muted);
-  cursor: pointer;
   font-size: 0.875rem;
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 .tab-close:hover {
@@ -1025,7 +1021,6 @@ watch(() => props.sessionId, () => {
   border-left: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
   flex-shrink: 0;
 }
 .mongo-tab-more:hover {

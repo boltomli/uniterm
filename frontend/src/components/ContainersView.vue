@@ -354,10 +354,10 @@ async function onRemove(c: ContainerInfo) {
 }
 
 .container-state[data-state='running'] {
-  color: var(--el-color-success, #67c23a);
+  color: var(--el-color-success);
 }
 
 .container-state[data-state='paused'] {
-  color: var(--el-color-warning, #e6a23c);
+  color: var(--el-color-warning);
 }
 </style>

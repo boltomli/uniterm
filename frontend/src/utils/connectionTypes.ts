@@ -54,7 +54,6 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   { type: 'serial', label: 'Serial', labelKey: 'serial.title', icon: Cable, category: 'terminal', connectMenuKey: 'sidebar.connectSerial' },
   { type: 'tcp', label: 'TCP', icon: ArrowLeftRight, category: 'terminal', defaultPort: 23, connectMenuKey: 'sidebar.connectTcp' },
   // Runtime exec panels inside workspace terminals — never persisted
-  { type: 'k8s-exec', label: 'Kubernetes Exec', icon: Box, category: 'terminal', formHidden: true },
   { type: 'container-exec', label: 'Container Exec', icon: Box, category: 'terminal', formHidden: true },
   // File transfer
   { type: 'sftp', label: 'SFTP', icon: Folders, category: 'filetransfer', defaultPort: 22, connectMenuKey: 'sidebar.connectSftp' },

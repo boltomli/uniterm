@@ -545,7 +545,7 @@ function showScriptFailure(result: { failedLine: number; failedSql?: string; err
     children.push(h('p', { style: 'margin:6px 0 0;color:var(--el-color-error);word-break:break-word;font-family:var(--font-mono,monospace);font-size:12px' }, result.error))
   }
   if (result.failedSql) {
-    children.push(h('pre', { style: 'margin:8px 0 0;padding:8px;background:var(--bg-base,#f5f5f5);border-radius:4px;font-family:var(--font-mono,monospace);font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto' }, result.failedSql))
+    children.push(h('pre', { style: 'margin:8px 0 0;padding:8px;background:var(--bg-base,#f5f5f5);border-radius: var(--radius-sm);font-family:var(--font-mono,monospace);font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto' }, result.failedSql))
   }
   ElMessageBox.alert(h('div', { style: 'display:flex;flex-direction:column' }, children), t('db.runSqlFile'), {
     confirmButtonText: t('common.confirm'),
@@ -845,7 +845,6 @@ async function onCreateTable() {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }
@@ -861,7 +860,6 @@ async function onCreateTable() {
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  cursor: pointer;
 }
 .db-arrow:hover {
   color: var(--text-primary);
@@ -884,7 +882,6 @@ async function onCreateTable() {
   align-items: center;
   gap: 0.25rem;
   padding: 0.375rem 0.5rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }

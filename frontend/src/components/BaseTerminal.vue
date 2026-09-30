@@ -2456,7 +2456,6 @@ defineExpose({
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  cursor: pointer;
   transition: all 0.15s;
 }
 .search-btn:hover {
@@ -2508,6 +2507,6 @@ defineExpose({
   color: var(--text-primary);
   padding: 0.75rem 1.5rem;
   border: 0.125rem dashed var(--border-hover);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
 }
 </style>

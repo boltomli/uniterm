@@ -146,7 +146,7 @@ async function handleSubmit() {
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   background: var(--el-fill-color-light);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-size: 0.8125rem;
   font-family: var(--font-mono);
   color: var(--text-secondary);

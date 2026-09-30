@@ -51,7 +51,6 @@ const items = [
   align-items: center;
   gap: 0.375rem;
   padding: 0.375rem 0.625rem;
-  cursor: pointer;
   user-select: none;
   transition: background 0.12s ease;
 }

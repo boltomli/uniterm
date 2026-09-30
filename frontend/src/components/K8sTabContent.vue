@@ -8,28 +8,46 @@
       </div>
       <div class="db-resizer" @mousedown="onResizeStart" />
       <div class="db-right">
-        <K8sBreadcrumb
-          :stack="navStack"
-          :namespace="currentNamespace"
-          :namespace-options="namespaceOptions"
-          @pop="popTo"
-          @update:namespace="setNamespace"
-        />
-        <div v-if="namespaceError" class="k8s-ns-warning" role="status">{{ namespaceError }}</div>
-        <K8sResourceList
-          :conn-id="connId"
-          :frame="topFrame"
-          :namespace-options="namespaceOptions"
-          @open-detail="openDetail"
-          @open-yaml="openYaml"
-          @open-logs="openLogs"
-          @view-pods="viewPods"
-          @open-crd="openCrd"
-          @open-terminal="openTerminal"
-          @changed="() => {}"
-        />
+        <template v-if="topFrame.kind === 'overview'">
+          <K8sOverview :conn-id="connId" :context-name="props.connection.name" @navigate="selectResource" />
+        </template>
+        <template v-else>
+          <K8sBreadcrumb
+            :stack="navStack"
+            :namespace="currentNamespace"
+            :namespace-options="namespaceOptions"
+            @pop="popTo"
+            @update:namespace="setNamespace"
+          />
+          <div v-if="namespaceError" class="k8s-ns-warning" role="status">{{ namespaceError }}</div>
+          <K8sResourceList
+            :conn-id="connId"
+            :frame="topFrame"
+            :namespace-options="namespaceOptions"
+            @open-detail="openDetail"
+            @open-yaml="openYaml"
+            @open-logs="openLogs"
+            @view-pods="viewPods"
+            @open-crd="openCrd"
+            @open-terminal="openTerminal"
+          @open-files="openFiles"
+            @changed="() => {}"
+          />
+        </template>
       </div>
     </div>
+
+    <!-- 多容器 Pod 的容器选择菜单（单实例，containers 数组经 slot current 传入） -->
+    <Menu ref="containerMenuRef" v-model:visible="containerMenuVisible">
+      <template #default="{ current }">
+        <MenuItem
+          v-for="c in (current as string[]) || []"
+          :key="c"
+          iconic
+          @click="onContainerPick(c)"
+        >{{ c }}</MenuItem>
+      </template>
+    </Menu>
 
     <K8sDetailDrawer
       :conn-id="connId"
@@ -46,7 +64,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessageBox, ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import * as k8sClient from '../services/k8sClient'
 import { usePanelStore } from '../stores/panelStore'
 import { useTabStore } from '../stores/tabStore'
@@ -57,6 +75,10 @@ import K8sTree from './K8sTree.vue'
 import K8sResourceList from './K8sResourceList.vue'
 import K8sBreadcrumb from './K8sBreadcrumb.vue'
 import K8sDetailDrawer from './K8sDetailDrawer.vue'
+import K8sOverview from './K8sOverview.vue'
+import { OVERVIEW_KEY } from '../types/k8s'
+import Menu from './Menu.vue'
+import MenuItem from './MenuItem.vue'
 import { parseCRD, crdListPath } from '../services/k8sCrd'
 import type { K8sTab, NavFrame } from '../types/k8s'
 import type { ConnectionConfig } from '../types/session'
@@ -105,19 +127,25 @@ async function loadNamespaces() {
 }
 
 // ── nav stack ──────────────────────────────────────────────────
-const navStack = ref<NavFrame[]>([{ kind: 'list', resourceKey: 'pods', namespace: props.tab.namespace || '' }])
+const navStack = ref<NavFrame[]>([{ kind: 'overview' }])
 const topFrame = computed(() => navStack.value[navStack.value.length - 1])
 const rootResourceKey = computed(() => {
+  if (topFrame.value.kind === 'overview') return OVERVIEW_KEY
   const base = navStack.value[0]
   return base.kind === 'list' ? base.resourceKey : ''
 })
 const currentNamespace = computed(() => {
   const f = topFrame.value
+  if (f.kind === 'overview') return props.tab.namespace || ''
   return f.kind === 'custom' ? f.namespace : (f as any).namespace || ''
 })
 
-function selectResource(key: string) {
-  navStack.value = [{ kind: 'list', resourceKey: key, namespace: currentNamespace.value }]
+function selectResource(key: string, nameFilter?: string) {
+  if (key === OVERVIEW_KEY) {
+    navStack.value = [{ kind: 'overview' }]
+    return
+  }
+  navStack.value = [{ kind: 'list', resourceKey: key, namespace: currentNamespace.value, nameFilter: nameFilter || undefined }]
 }
 function popTo(index: number) {
   navStack.value = navStack.value.slice(0, index + 1)
@@ -176,26 +204,55 @@ function crSelfPathOverride(): ((obj: any) => string) | undefined {
     return crdListPath(crd, ns).split('?')[0] + '/' + encodeURIComponent(obj.metadata?.name)
   }
 }
-async function openTerminal(pod: any) {
+// Pod 文件浏览：container-file 会话复用 container 的双栏文件管理（k8s 走
+// exec WebSocket 通道）。仅运行中的 Pod 可用。
+function openFiles(pod: any) {
+  if (pod.status?.phase !== 'Running') return
+  void import('../composables/connectionLauncher').then(({ launchContainerFileBrowser }) => {
+    void launchContainerFileBrowser({
+      id: connId.value, name: pod.metadata?.name || 'pod', type: 'container-file' as any,
+      host: '', port: 0, user: '', authType: 'password' as any,
+      containerId: pod.metadata?.name, containerNamespace: pod.metadata?.namespace || '',
+    } as any, { persist: false })
+  })
+}
+
+// 多容器 Pod：点终端按钮后在按钮位置弹出下拉菜单选容器；单容器直接进入。
+const containerMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const containerMenuVisible = ref(false)
+const pendingPod = ref<any>(null)
+
+function openTerminal(pod: any, ev?: MouseEvent) {
   const containers = (pod.spec?.containers || []).map((c: any) => c.name)
-  let container = containers[0]
+  if (!containers.length) return
+  if (containers.length === 1) {
+    void doExec(pod, containers[0])
+    return
+  }
+  pendingPod.value = pod
+  if (ev) containerMenuRef.value?.openAt(ev.clientX, ev.clientY, containers)
+  else containerMenuRef.value?.openAt(window.innerWidth / 2, window.innerHeight / 2, containers)
+}
+
+function onContainerPick(container: string) {
+  containerMenuRef.value?.close()
+  const pod = pendingPod.value
+  pendingPod.value = null
+  if (pod) void doExec(pod, container)
+}
+
+async function doExec(pod: any, container: string) {
   try {
-    if (containers.length > 1) {
-      const { value } = await ElMessageBox.prompt(
-        `Container (${containers.join(', ')})`, 'Select container',
-        { inputValue: containers[0], inputValidator: (v: string) => containers.includes(v) || 'unknown container' },
-      )
-      container = value
-    }
     const ns = pod.metadata?.namespace
     const info = await k8sClient.execSession(connId.value, ns, pod.metadata?.name, container)
     const title = `${pod.metadata?.name}/${container}`
     // Store exec params on the config so Panel.vue can rebuild the stream on reconnect.
     const cfg = {
-      id: '', name: title, type: 'k8s-exec' as any, host: '', port: 0, user: '', authType: 'password' as any,
-      k8sExecConnId: connId.value, k8sNamespace: ns, k8sExecPod: pod.metadata?.name, k8sExecContainer: container,
+      id: '', name: title, type: 'container-exec' as any, host: '', port: 0, user: '', authType: 'password' as any,
+      containerExecConnId: connId.value, containerExecNamespace: ns,
+      containerExecContainerId: pod.metadata?.name, containerExecContainerName: container,
     }
-    const panel = panelStore.createPanel(cfg as any, 'k8s-exec')
+    const panel = panelStore.createPanel(cfg as any, 'container-exec')
     panelStore.updateTitle(panel.id, title)
     panelStore.bindSession(panel.id, info.id)
     sessionStore.initSession(info.id)
@@ -344,8 +401,8 @@ onBeforeUnmount(() => {
 .k8s-ns-warning {
   padding: 0.375rem 0.75rem;
   font-size: 0.75rem;
-  color: var(--el-color-warning, #e6a23c);
-  background: var(--el-color-warning-light-9, #fdf6ec);
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
   border-bottom: 1px solid var(--el-color-warning-light-5, #faecd8);
   flex-shrink: 0;
 }

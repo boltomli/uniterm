@@ -601,7 +601,6 @@ async function onAddIndex() {
   color: var(--text-secondary);
   font-family: var(--font-ui);
   font-size: 0.75rem;
-  cursor: pointer;
   transition: all 0.15s ease;
 }
 .toggle-btn:first-child {

@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/encoding/korean"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -969,6 +970,8 @@ func encodingByName(name string) encoding.Encoding {
 		return japanese.EUCJP
 	case "euc-kr":
 		return korean.EUCKR
+	case "latin-1":
+		return charmap.ISO8859_1
 	default: // "", "utf-8"
 		return nil
 	}

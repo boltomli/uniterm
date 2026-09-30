@@ -439,7 +439,6 @@ function onTopResizeStart(e: MouseEvent) {
   border: none;
   background: none;
   color: var(--text-secondary);
-  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 0.8125rem;
   border-bottom: 0.125rem solid transparent;

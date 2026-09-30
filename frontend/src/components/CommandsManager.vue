@@ -239,8 +239,7 @@ onMounted(() => {
   padding: 0.75rem 0.875rem;
   background: var(--el-fill-color-lighter);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 0.5rem;
-  cursor: pointer;
+  border-radius: var(--radius-sm);
   transition: border-color 0.15s, background 0.15s;
 }
 .command-card:hover {
@@ -287,7 +286,6 @@ onMounted(() => {
   margin-top: 0.25rem;
   font-size: 0.6875rem;
   color: var(--el-text-color-placeholder);
-  cursor: pointer;
   width: fit-content;
   max-width: 100%;
 }

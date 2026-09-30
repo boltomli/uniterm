@@ -1575,7 +1575,6 @@ defineExpose({ focusInput })
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
   transition: all 0.12s ease;
 }
 .ai-action-btn:hover {
@@ -1597,7 +1596,6 @@ defineExpose({ focusInput })
   box-sizing: border-box;
   background: var(--bg-surface);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   font-size: 0.75rem;
   font-family: var(--font-ui);
   color: var(--text-primary);
@@ -1671,7 +1669,6 @@ defineExpose({ focusInput })
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0.125rem;
 }
 .ai-search-bar .search-btn:hover {
@@ -1708,7 +1705,7 @@ defineExpose({ focusInput })
 }
 .input-container {
   border: 1px solid var(--border-subtle);
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   background: var(--bg-elevated);
   transition: border-color 0.15s ease;
   position: relative;
@@ -1752,7 +1749,7 @@ defineExpose({ focusInput })
   display: inline;
   background: var(--accent);
   color: var(--on-accent);
-  border-radius: 0.1875rem;
+  border-radius: var(--radius-sm);
   padding: 1px 0.3125rem;
   font-size: 0.75rem;
   font-weight: 500;
@@ -1794,7 +1791,6 @@ defineExpose({ focusInput })
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .ghost-btn:hover {
@@ -1829,7 +1825,6 @@ defineExpose({ focusInput })
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--on-accent);
-  cursor: pointer;
   transition: background 0.12s ease, opacity 0.12s ease;
 }
 .send-btn:hover:not(:disabled) {
@@ -1869,7 +1864,7 @@ defineExpose({ focusInput })
 .ai-panel-tags {
   padding: 0.25rem 0.75rem;
   background: var(--bg-overlay);
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 }
 .panel-tags-list {
   display: flex;
@@ -1901,7 +1896,6 @@ defineExpose({ focusInput })
 .panel-tag-close {
   background: none;
   border: none;
-  cursor: pointer;
   padding: 0;
   font-size: 0.8125rem;
   line-height: 1;
@@ -1916,7 +1910,6 @@ defineExpose({ focusInput })
   border: 1px dashed var(--border-hover);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
   width: 1.25rem;
   height: 1.25rem;
   display: inline-flex;
@@ -1959,7 +1952,6 @@ defineExpose({ focusInput })
   align-items: center;
   justify-content: space-between;
   padding: 0.375rem 0.625rem;
-  cursor: pointer;
   font-size: 0.75rem;
   transition: background 0.1s;
 }
@@ -1981,7 +1973,7 @@ defineExpose({ focusInput })
   color: var(--accent);
   background: var(--accent-subtle);
   padding: 0 0.25rem;
-  border-radius: 0.125rem;
+  border-radius: var(--radius-sm);
   margin-left: 0.25rem;
   flex-shrink: 0;
 }
@@ -2011,7 +2003,6 @@ defineExpose({ focusInput })
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.375rem 0.625rem;
-  cursor: pointer;
   font-size: 0.75rem;
   transition: background 0.1s;
 }
@@ -2078,7 +2069,6 @@ defineExpose({ focusInput })
   background: none;
   border: none;
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0;
 }
 .queued-remove:hover {

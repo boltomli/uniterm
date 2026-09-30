@@ -112,7 +112,7 @@
                 </el-select>
               </el-form-item>
             </template>
-            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
+            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : '')" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos'" :label="t('conn.kerberos')">
@@ -131,9 +131,6 @@
                   <el-switch v-model="form.esSkipVerify" />
                   <span class="field-hint">{{ t('conn.esSkipVerifyHint') }}</span>
                 </div>
-              </el-form-item>
-              <el-form-item :label="t('conn.esPathPrefix')">
-                <el-input v-model="form.esPathPrefix" placeholder="/es" />
               </el-form-item>
             </template>
             <template v-if="isRedisSentinel">
@@ -194,11 +191,8 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
-            <el-form-item v-if="form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
+            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
               <el-input v-model="form.dbName" :placeholder="t('db.databases')" />
-            </el-form-item>
-            <el-form-item v-if="form.type === 'database' && form.dbType !== 'elasticsearch' && form.dbType !== 'redis'" :label="t('db.params')">
-              <el-input v-model="form.dbParams" :placeholder="defaultParamsHint" style="width:100%" />
             </el-form-item>
             <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.shell')">
               <el-select v-model="form.shellPath" filterable allow-create clearable>
@@ -419,12 +413,17 @@
               <span>{{ t('conn.advanced') }}</span>
             </div>
             <template v-if="showAdvanced">
-            <el-form-item v-if="form.type === 'database'" :label="t('db.params')">
+            <el-form-item v-if="form.type === 'database' || form.type === 'mongodb'" :label="t('db.params')">
               <el-input v-model="form.dbParams" :placeholder="defaultParamsHint" style="width:100%" />
             </el-form-item>
 <el-form-item v-if="form.type === 'redis'" :label="t('conn.redisKeySeparator')">
               <el-input v-model="form.redisKeySeparator" style="width: 10.0rem" />
             </el-form-item>
+            <template v-if="isElasticsearch">
+              <el-form-item :label="t('conn.esPathPrefix')">
+                <el-input v-model="form.esPathPrefix" placeholder="/es" />
+              </el-form-item>
+            </template>
             <el-form-item v-if="form.type === 'ssh' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl'" :label="t('conn.postLoginScript')">
               <div class="post-login-config">
                 <el-radio-group v-model="postLoginMode" size="small">
@@ -492,7 +491,7 @@
               </div>
             </el-form-item>
             <el-form-item
-              v-if="form.type === 'ssh' || form.type === 'telnet' || form.type === 'serial' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'tcp'"
+              v-if="form.type === 'ssh' || form.type === 'telnet' || form.type === 'serial' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'tcp' || form.type === 'ftp'"
               :label="t('conn.encoding')"
             >
               <el-select v-model="form.encoding" placeholder="Unicode (UTF-8)">
@@ -504,6 +503,7 @@
                 <el-option label="Japanese (Shift-JIS)" value="shift-jis" />
                 <el-option label="Japanese (EUC-JP)" value="euc-jp" />
                 <el-option label="Korean (EUC-KR)" value="euc-kr" />
+                <el-option label="Latin-1" value="latin-1" />
               </el-select>
             </el-form-item>
             <template v-if="form.type === 'telnet'">
@@ -582,14 +582,6 @@
               </el-form-item>
               <el-form-item :label="t('conn.ftpPassive')">
                 <el-switch v-model="form.ftpPassive" />
-              </el-form-item>
-              <el-form-item :label="t('conn.ftpEncoding')">
-                <el-select v-model="form.ftpEncoding" placeholder="UTF-8">
-                  <el-option label="UTF-8" value="utf-8" />
-                  <el-option label="GBK" value="gbk" />
-                  <el-option label="Shift-JIS" value="shift-jis" />
-                  <el-option label="Latin-1" value="latin-1" />
-                </el-select>
               </el-form-item>
             </template>
             <template v-if="form.type === 'vnc'">
@@ -880,7 +872,7 @@ const showAdvanced = ref(false)
 
 // Connection types that support the "test connection" button (issue #377).
 // local/serial/mosh/vnc/rdp/spice/x11-desktop don't have a non-interactive probe.
-const TESTABLE_TYPES = ['ssh', 'telnet', 'ftp', 'sftp', 'scp', 's3', 'webdav', 'smb', 'database', 'k8s', 'container', 'tcp']
+const TESTABLE_TYPES = ['ssh', 'telnet', 'ftp', 'sftp', 'scp', 's3', 'webdav', 'smb', 'database', 'mongodb', 'redis', 'elasticsearch', 'k8s', 'container', 'tcp']
 // Test-connection result state: 'checking' shows a spinner; 'success'/'error'
 // keep a colored status icon on the button until the next test or a reopen.
 const testStatus = ref<'idle' | 'checking' | 'success' | 'error'>('idle')
@@ -1014,7 +1006,7 @@ const showTunnel = computed(() =>
 )
 const showProxy = computed(() => ['ssh', 'sftp', 'scp', 'monitor'].includes(form.type))
 const showAdvancedToggle = computed(() =>
-  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'x11-desktop'
+  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'elasticsearch' || form.type === 'x11-desktop'
 )
 
 const isRedisSentinel = computed(() =>
@@ -1028,6 +1020,9 @@ const isEsApiKey = computed(() =>
 )
 
 const defaultParamsHint = computed(() => {
+  // Standalone MongoDB form carries no dbType — key off the type itself.
+  // Mirrors buildMongoURI's built-in defaults.
+  if (form.type === 'mongodb') return '默认: authSource=admin&directConnection=true'
   switch (form.dbType) {
     case 'mysql': return '默认: charset=utf8mb4'
     case 'postgres': return '默认: sslmode=disable'
@@ -1076,7 +1071,6 @@ const form = reactive<ConnectionConfig>({
   agentForwarding: false,
   ftpEncryption: 'none',
   ftpPassive: true,
-  ftpEncoding: 'utf-8',
   ftpSkipVerify: false,
   vncShared: true,
   vncRepeaterID: '',
@@ -1451,7 +1445,6 @@ function resetForm() {
   form.agentForwarding = false
   form.ftpEncryption = 'none'
   form.ftpPassive = true
-  form.ftpEncoding = 'utf-8'
   form.ftpSkipVerify = false
   form.vncShared = true
   form.vncRepeaterID = ''
@@ -1880,10 +1873,13 @@ function onConnect() {
 }
 
 /* ── Layout ── */
+/* Fills the dialog body (a padding-less flex container — see style.css):
+   the left category rail stays fixed while only the right column scrolls. */
 .conn-layout {
   display: flex;
   gap: 0;
-  min-height: 22.5rem;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Left sidebar ── */
@@ -1891,9 +1887,9 @@ function onConnect() {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  width: 5.625rem;
+  width: 6.875rem;
   flex-shrink: 0;
-  padding: 0.5rem 0.5rem 0.5rem 0;
+  padding: 0.5rem 0.625rem;
   border-right: 1px solid var(--border-subtle);
 }
 
@@ -1904,8 +1900,7 @@ function onConnect() {
   justify-content: center;
   gap: 0.25rem;
   padding: 0.75rem 0.25rem;
-  border-radius: var(--radius-md);
-  cursor: pointer;
+  border-radius: var(--radius-sm);
   user-select: none;
   color: var(--text-muted);
   border-left: 0.125rem solid transparent;
@@ -1937,7 +1932,12 @@ function onConnect() {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 0 0 1rem;
+  /* Vertical + right spacing moved here from the dialog body (which is
+     padding-less so the rail divider spans header-to-footer) */
+  padding: 1rem 1.25rem 1rem 1rem;
+  /* The scrolling happens here, not in the dialog body, so the left
+     category rail never moves */
+  overflow-y: auto;
 }
 
 /* ── Sub-type icon grid ── */
@@ -1961,10 +1961,9 @@ function onConnect() {
   height: 3.25rem;
   padding: 0.25rem 0.5rem;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   font-family: var(--font-ui);
   font-size: 0.6875rem;
   font-weight: 500;
@@ -2073,12 +2072,10 @@ function onConnect() {
   gap: 0.375rem;
   padding: 0.625rem 0 0.5rem;
   margin-bottom: 0.25rem;
-  cursor: pointer;
   user-select: none;
   color: var(--text-secondary);
   font-size: 0.8125rem;
   font-weight: 500;
-  border-bottom: 1px solid var(--border-subtle);
   transition: color 0.15s;
 }
 
@@ -2114,7 +2111,7 @@ function onConnect() {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-subtle);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -2216,7 +2213,6 @@ function onConnect() {
 }
 
 /* ── Dialog overrides ── */
-:deep(.el-dialog__body) {
-  padding: 1rem 1.25rem;
-}
+/* The body's padding/display override lives in style.css (.conn-dialog):
+   scoped :deep() can't reach the teleport'd append-to-body dialog. */
 </style>

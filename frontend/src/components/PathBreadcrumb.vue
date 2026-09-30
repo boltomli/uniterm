@@ -373,7 +373,6 @@ function onBookmarkClick(path: string) {
   flex: 1;
 }
 .breadcrumb-part {
-  cursor: pointer;
   padding: 0.125rem 0.25rem;
   border-radius: var(--radius-sm);
   transition: all 0.1s ease;
@@ -384,12 +383,10 @@ function onBookmarkClick(path: string) {
   color: var(--text-primary);
 }
 .breadcrumb-drive {
-  cursor: pointer;
   user-select: none;
 }
 .breadcrumb-ellipsis {
   color: var(--text-disabled);
-  cursor: pointer;
   padding: 0.125rem 0.375rem;
 }
 .drive-arrow {
@@ -420,7 +417,6 @@ function onBookmarkClick(path: string) {
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
   transition: all 0.1s ease;
 }
 .bookmark-btn:hover {
@@ -460,7 +456,6 @@ function onBookmarkClick(path: string) {
   border: none;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
   padding: 0;
 }
 .bookmark-remove-btn:hover {
@@ -470,6 +465,5 @@ function onBookmarkClick(path: string) {
 .bookmark-empty {
   font-family: var(--font-ui);
   color: var(--text-disabled);
-  cursor: default;
 }
 </style>

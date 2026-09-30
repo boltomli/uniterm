@@ -11,8 +11,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jlaffaye/ftp"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 type FTPSession struct {
@@ -24,6 +28,14 @@ type FTPSession struct {
 	transfers map[string]*TransferTask
 	taskSeq   int64
 	connMu    sync.Mutex // serialize data transfer operations (FTP is not concurrent)
+
+	// Filename charset handling. enc is nil in UTF-8 mode:
+	// names pass through as-is, except names that are not valid UTF-8 get a
+	// GBK fallback decode. rawNames remembers the original server bytes for
+	// every decoded name so outgoing operations can address the file.
+	encName  string            // "" means UTF-8
+	enc      encoding.Encoding // nil means UTF-8
+	rawNames sync.Map          // decoded name -> raw server bytes
 }
 
 func NewFTPSession(id string) *FTPSession {
@@ -53,6 +65,19 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 		encryption = "none"
 	}
 
+	// Charset: an explicit non-UTF-8 setting means the server must keep
+	// sending names in its local codepage, so stop the library from
+	// switching it to UTF-8 via "OPTS UTF8 ON".
+	encName := config.Encoding
+	if encName == "utf-8" {
+		encName = ""
+	}
+	enc := encodingByName(encName)
+	dialOpts := []ftp.DialOption{ftp.DialWithTimeout(30 * time.Second)}
+	if enc != nil {
+		dialOpts = append(dialOpts, ftp.DialWithDisabledUTF8(true))
+	}
+
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: config.FtpSkipVerify,
 	}
@@ -63,24 +88,20 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 	switch encryption {
 	case "required":
 		conn, err = ftp.Dial(addr,
-			ftp.DialWithTimeout(30*time.Second),
-			ftp.DialWithExplicitTLS(tlsConfig),
-		)
+			append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
 		if err != nil {
 			s.setStatus(StatusError)
 			return fmt.Errorf("ftp dial (TLS required): %w", err)
 		}
 	case "auto":
 		conn, err = ftp.Dial(addr,
-			ftp.DialWithTimeout(30*time.Second),
-			ftp.DialWithExplicitTLS(tlsConfig),
-		)
+			append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
 		if err != nil {
 			// Fall back to plain FTP
-			conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second))
+			conn, err = ftp.Dial(addr, dialOpts...)
 		}
 	default: // "none"
-		conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second))
+		conn, err = ftp.Dial(addr, dialOpts...)
 	}
 
 	if err != nil {
@@ -96,6 +117,9 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 
 	s.conn = conn
 	s.cwd = "/"
+	s.encName = encName
+	s.enc = enc
+	s.rawNames = sync.Map{} // fresh connection, no names seen yet
 	s.setStatus(StatusConnected)
 	// One-shot session log warning when the user has opted in to
 	// InsecureSkipVerify. Surfaces the MITM risk in the session feed so
@@ -135,6 +159,79 @@ func (s *FTPSession) IsConnected() bool {
 
 // --- Internal helpers ---
 
+// ftpDecodeName converts a raw name from the server's listing into UTF-8 for
+// display. In UTF-8 mode names that are not valid UTF-8 are assumed to be GBK
+// (same fallback FileZilla uses). The raw bytes of every decoded name are
+// remembered so later operations can address the file on the server.
+func (s *FTPSession) ftpDecodeName(name string) string {
+	if s.enc == nil {
+		if utf8.ValidString(name) {
+			return name
+		}
+		dec, _, err := transform.String(simplifiedchinese.GBK.NewDecoder(), name)
+		if err != nil {
+			return name
+		}
+		s.rawNames.Store(dec, name)
+		return dec
+	}
+	dec, _, err := transform.String(s.enc.NewDecoder(), name)
+	if err != nil {
+		return name
+	}
+	s.rawNames.Store(dec, name)
+	return dec
+}
+
+// ftpEncodePath converts a UTF-8 path into the server's byte encoding, one
+// segment at a time. Segments whose raw server bytes were seen in a listing
+// are restored verbatim; unknown segments are encoded with the configured
+// charset, or sent as UTF-8 when the server is in UTF-8 mode.
+func (s *FTPSession) ftpEncodePath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		if raw, ok := s.rawNames.Load(seg); ok {
+			segs[i] = raw.(string)
+			continue
+		}
+		if s.enc == nil {
+			continue // UTF-8 mode: pass through
+		}
+		enc, _, err := transform.String(s.enc.NewEncoder(), seg)
+		if err == nil {
+			segs[i] = enc
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// Encoded-path wrappers around the raw connection. All outgoing paths go
+// through ftpEncodePath so non-UTF-8 servers see names in their own charset.
+func (s *FTPSession) ftpList(dir string) ([]*ftp.Entry, error) {
+	return s.conn.List(s.ftpEncodePath(dir))
+}
+func (s *FTPSession) ftpMakeDir(dir string) error {
+	return s.conn.MakeDir(s.ftpEncodePath(dir))
+}
+func (s *FTPSession) ftpDelete(p string) error {
+	return s.conn.Delete(s.ftpEncodePath(p))
+}
+func (s *FTPSession) ftpRemoveDir(p string) error {
+	return s.conn.RemoveDir(s.ftpEncodePath(p))
+}
+func (s *FTPSession) ftpRename(from, to string) error {
+	return s.conn.Rename(s.ftpEncodePath(from), s.ftpEncodePath(to))
+}
+func (s *FTPSession) ftpRetr(p string) (*ftp.Response, error) {
+	return s.conn.Retr(s.ftpEncodePath(p))
+}
+func (s *FTPSession) ftpStor(p string, r io.Reader) error {
+	return s.conn.Stor(s.ftpEncodePath(p), r)
+}
+func (s *FTPSession) ftpFileSize(p string) (int64, error) {
+	return s.conn.FileSize(s.ftpEncodePath(p))
+}
+
 func (s *FTPSession) nextTaskID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, atomic.AddInt64(&s.taskSeq, 1))
 }
@@ -166,7 +263,7 @@ func (s *FTPSession) ListRemote(dir string) (FileListResult, error) {
 	} else if !path.IsAbs(dir) {
 		dir = path.Join(s.cwd, dir)
 	}
-	entries, err := s.conn.List(dir)
+	entries, err := s.ftpList(dir)
 	if err != nil {
 		return FileListResult{}, err
 	}
@@ -178,7 +275,7 @@ func (s *FTPSession) ListRemote(dir string) (FileListResult, error) {
 			modTime = e.Time.Format(time.RFC3339)
 		}
 		files = append(files, FileItem{
-			Name:    e.Name,
+			Name:    s.ftpDecodeName(e.Name),
 			Size:    int64(e.Size),
 			ModTime: modTime,
 			Mode:    ftpEntryMode(e),
@@ -210,7 +307,7 @@ func (s *FTPSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 	// Validate directory exists by listing it — must hold connMu because
 	// the FTP control connection is not concurrent-safe (SESSION-15).
 	s.connMu.Lock()
-	entries, err := s.conn.List(target)
+	entries, err := s.ftpList(target)
 	s.connMu.Unlock()
 	if err != nil {
 		return FileListResult{}, fmt.Errorf("no such directory: %s", target)
@@ -226,7 +323,7 @@ func (s *FTPSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 			modTime = e.Time.Format(time.RFC3339)
 		}
 		files = append(files, FileItem{
-			Name:    e.Name,
+			Name:    s.ftpDecodeName(e.Name),
 			Size:    int64(e.Size),
 			ModTime: modTime,
 			Mode:    ftpEntryMode(e),
@@ -252,7 +349,7 @@ func (s *FTPSession) MakeDir(dir string) error {
 	if !path.IsAbs(p) {
 		p = path.Join(s.cwd, p)
 	}
-	return s.conn.MakeDir(p)
+	return s.ftpMakeDir(p)
 }
 
 func (s *FTPSession) Remove(p string, recursive bool) error {
@@ -268,16 +365,16 @@ func (s *FTPSession) Remove(p string, recursive bool) error {
 		return s.rmRecursive(p)
 	}
 	// Try file deletion first; if that fails (e.g. it's a directory), try RemoveDir
-	err := s.conn.Delete(p)
+	err := s.ftpDelete(p)
 	if err == nil {
 		return nil
 	}
 	// Not a plain file — check if it's an empty directory
-	entries, listErr := s.conn.List(p)
+	entries, listErr := s.ftpList(p)
 	if listErr == nil && len(entries) > 0 {
 		return fmt.Errorf("directory not empty (%d items), use recursive=true", len(entries))
 	}
-	return s.conn.RemoveDir(p)
+	return s.ftpRemoveDir(p)
 }
 
 func (s *FTPSession) Rename(oldName, newName string) error {
@@ -294,7 +391,7 @@ func (s *FTPSession) Rename(oldName, newName string) error {
 	if !path.IsAbs(newPath) {
 		newPath = path.Join(s.cwd, newPath)
 	}
-	return s.conn.Rename(old, newPath)
+	return s.ftpRename(old, newPath)
 }
 
 func (s *FTPSession) Chmod(p string, mode os.FileMode) error {
@@ -339,6 +436,12 @@ func (s *FTPSession) Get(remotePath, localPath string, recursive bool) (string, 
 				s.mu.Unlock()
 			}()
 			if err := s.downloadDir(rp, lp, task); err != nil {
+				if task.ctx.Err() != nil {
+					// cancelled mid-transfer: not a transfer error
+					task.Status = "cancelled"
+					s.emitTransferComplete(task)
+					return
+				}
 				s.emitTransferEvent(task, err)
 				return
 			}
@@ -396,6 +499,12 @@ func (s *FTPSession) Put(localPath, remotePath string, recursive bool) (string, 
 				s.mu.Unlock()
 			}()
 			if err := s.uploadDir(lp, rp, task); err != nil {
+				if task.ctx.Err() != nil {
+					// cancelled mid-transfer: not a transfer error
+					task.Status = "cancelled"
+					s.emitTransferComplete(task)
+					return
+				}
 				s.emitTransferEvent(task, err)
 				return
 			}
@@ -430,7 +539,7 @@ func (s *FTPSession) PutContent(remotePath string, content []byte) error {
 		return err
 	}
 	reader := strings.NewReader(string(content))
-	return s.conn.Stor(rp, reader)
+	return s.ftpStor(rp, reader)
 }
 
 // GetContent reads the full content of a remote file via FTP.
@@ -444,7 +553,7 @@ func (s *FTPSession) GetContent(remotePath string) ([]byte, error) {
 	if !path.IsAbs(rp) {
 		rp = path.Join(s.cwd, rp)
 	}
-	r, err := s.conn.Retr(rp)
+	r, err := s.ftpRetr(rp)
 	if err != nil {
 		return nil, err
 	}
@@ -468,11 +577,11 @@ func (s *FTPSession) Copy(oldPath, newPath string) error {
 		n = path.Join(s.cwd, n)
 	}
 	// FTP cannot copy directories via Retr, check first
-	if _, listErr := s.conn.List(old); listErr == nil {
+	if _, listErr := s.ftpList(old); listErr == nil {
 		return fmt.Errorf("cannot copy directory via FTP: %s", old)
 	}
 	// Download
-	r, err := s.conn.Retr(old)
+	r, err := s.ftpRetr(old)
 	if err != nil {
 		return err
 	}
@@ -487,7 +596,7 @@ func (s *FTPSession) Copy(oldPath, newPath string) error {
 		return err
 	}
 	// Upload
-	return s.conn.Stor(n, strings.NewReader(string(data)))
+	return s.ftpStor(n, strings.NewReader(string(data)))
 }
 
 // Move moves a remote file via FTP Rename (server-side, no data transfer).
@@ -501,7 +610,7 @@ func (s *FTPSession) mkdirAllRemote(dir string) error {
 		return nil
 	}
 	// Try to list the directory; if it fails, create parent then this one
-	_, err := s.conn.List(dir)
+	_, err := s.ftpList(dir)
 	if err == nil {
 		return nil // already exists
 	}
@@ -509,7 +618,7 @@ func (s *FTPSession) mkdirAllRemote(dir string) error {
 	if err := s.mkdirAllRemote(path.Dir(dir)); err != nil {
 		return err
 	}
-	return s.conn.MakeDir(dir)
+	return s.ftpMakeDir(dir)
 }
 
 // CancelTransfer cancels an ongoing transfer task.
@@ -559,35 +668,35 @@ func (s *FTPSession) ResumeTransfer(taskID string) error {
 // --- Recursive helpers ---
 
 func (s *FTPSession) rmRecursive(p string) error {
-	entries, err := s.conn.List(p)
+	entries, err := s.ftpList(p)
 	if err != nil {
 		// Not a directory or cannot list; try deleting as file
-		return s.conn.Delete(p)
+		return s.ftpDelete(p)
 	}
 	for _, e := range entries {
-		childPath := path.Join(p, e.Name)
+		childPath := path.Join(p, s.ftpDecodeName(e.Name))
 		if e.Type == ftp.EntryTypeFolder {
 			if err := s.rmRecursive(childPath); err != nil {
 				return err
 			}
 		} else {
-			if err := s.conn.Delete(childPath); err != nil {
+			if err := s.ftpDelete(childPath); err != nil {
 				return err
 			}
 		}
 	}
-	return s.conn.RemoveDir(p)
+	return s.ftpRemoveDir(p)
 }
 
 func (s *FTPSession) dirSizeRemote(dir string) (int64, error) {
-	entries, err := s.conn.List(dir)
+	entries, err := s.ftpList(dir)
 	if err != nil {
 		return 0, err
 	}
 	var total int64
 	for _, e := range entries {
 		if e.Type == ftp.EntryTypeFolder {
-			sz, err := s.dirSizeRemote(path.Join(dir, e.Name))
+			sz, err := s.dirSizeRemote(path.Join(dir, s.ftpDecodeName(e.Name)))
 			if err != nil {
 				return 0, err
 			}
@@ -647,14 +756,14 @@ func (s *FTPSession) startTransfer(task *TransferTask) {
 
 		var err error
 		if task.Type == "download" {
-			resp, e := s.conn.Retr(task.RemotePath)
+			resp, e := s.ftpRetr(task.RemotePath)
 			if e != nil {
 				s.emitTransferEvent(task, e)
 				return
 			}
 			defer resp.Close()
 
-			fi, e := s.conn.FileSize(task.RemotePath)
+			fi, e := s.ftpFileSize(task.RemotePath)
 			if e == nil && fi > 0 {
 				task.setTotal(fi)
 			}
@@ -680,10 +789,20 @@ func (s *FTPSession) startTransfer(task *TransferTask) {
 				task.setTotal(fi.Size())
 			}
 
-			err = s.conn.Stor(task.RemotePath, &progressReader{r: localFile, task: task, s: s})
+			err = s.ftpStor(task.RemotePath, &progressReader{r: localFile, task: task, s: s})
 		}
 
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				if task.Type == "download" {
+					// drop the partially written local file
+					os.Remove(task.LocalPath)
+				}
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -699,6 +818,13 @@ type progressReader struct {
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
+	// Abort promptly when the task is cancelled; without this io.Copy never
+	// observes the context and the cancel button is a no-op.
+	select {
+	case <-pr.task.ctx.Done():
+		return 0, pr.task.ctx.Err()
+	default:
+	}
 	pr.task.waitIfPaused()
 	n, err := pr.r.Read(p)
 	if n > 0 {
@@ -719,13 +845,14 @@ func (s *FTPSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return err
 	}
-	entries, err := s.conn.List(remoteDir)
+	entries, err := s.ftpList(remoteDir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		rp := path.Join(remoteDir, e.Name)
-		lp := filepath.Join(localDir, e.Name)
+		name := s.ftpDecodeName(e.Name)
+		rp := path.Join(remoteDir, name)
+		lp := filepath.Join(localDir, name)
 		if e.Type == ftp.EntryTypeFolder {
 			if err := s.downloadDir(rp, lp, task); err != nil {
 				return err
@@ -770,7 +897,7 @@ func (s *FTPSession) uploadDir(localDir, remoteDir string, task *TransferTask) e
 
 func (s *FTPSession) transferFile(task *TransferTask, localPath, remotePath, tfType string) error {
 	if tfType == "download" {
-		resp, err := s.conn.Retr(remotePath)
+		resp, err := s.ftpRetr(remotePath)
 		if err != nil {
 			return err
 		}
@@ -807,7 +934,7 @@ func (s *FTPSession) transferFile(task *TransferTask, localPath, remotePath, tfT
 		pr, pw := io.Pipe()
 		doneCh := make(chan error, 1)
 		go func() {
-			doneCh <- s.conn.Stor(remotePath, pr)
+			doneCh <- s.ftpStor(remotePath, pr)
 		}()
 		buf := make([]byte, 64*1024)
 		for {

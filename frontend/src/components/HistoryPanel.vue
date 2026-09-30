@@ -292,7 +292,7 @@ watch(searchQuery, () => {
   color: var(--text-primary);
   background: var(--bg-overlay);
   border: 1px solid var(--border-subtle);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-md);
   pointer-events: none;
   white-space: pre-wrap;
@@ -333,7 +333,6 @@ watch(searchQuery, () => {
   gap: 0.625rem;
   min-height: 2.25rem;
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all 0.12s ease;
   margin-bottom: 0.125rem;
   user-select: none;
