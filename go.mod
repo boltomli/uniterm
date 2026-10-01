@@ -111,6 +111,6 @@ require (
 
 replace github.com/unixshells/mosh-go v0.5.2 => github.com/ys-ll/mosh-go v0.0.0-20260702130124-e17b92cd9dab
 
-replace github.com/rhnvrm/simples3 v0.11.1 => github.com/ys-ll/simples3 v0.0.0-20260801154215-9210db974cd6
+replace github.com/rhnvrm/simples3 => github.com/ys-ll/simples3 v0.0.0-20260930081831-3357c14e91bd
 
 replace golang.org/x/crypto => github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e

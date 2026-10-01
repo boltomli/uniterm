@@ -2,6 +2,7 @@ package container
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -73,10 +74,30 @@ func execShellArgs(rt Runtime, ns, cid, script string, stdin bool) []string {
 	return withNS(rt, ns, append(argv, cid, "sh", "-c", script)...)
 }
 
+// cpArgs 构造容器文件复制的 argv。wslc 的 cp 只存在于 container 子命令组下
+// （顶层没有 cp 子命令），需要多一层。
+func cpArgs(rt Runtime, ns string, args ...string) []string {
+	if rt == RuntimeWSLC {
+		return withNS(rt, ns, append([]string{"container", "cp"}, args...)...)
+	}
+	return withNS(rt, ns, append([]string{"cp"}, args...)...)
+}
+
 // cpRawArgs 是 docker cp 的导出方向：把容器路径打成 tar 流写到 stdout，
 // 路径前缀 "cid:" 由调用方拼好（本地/SSH runner 都不解析它）。
+// wslc 的 cp 不支持该方向（dest 为 "-" 时它写出一个名为 "-" 的本地文件），
+// WSLC 请用 tarExportArgs。
 func cpRawArgs(rt Runtime, ns, cid, remotePath string) []string {
-	return withNS(rt, ns, "cp", cid+":"+remotePath, "-")
+	return cpArgs(rt, ns, cid+":"+remotePath, "-")
+}
+
+// tarExportArgs 在容器内把路径打包成 tar 写到 stdout。
+// 供不能把 cp 导出到 stdout 的运行时（WSLC）代替 cpRawArgs 使用：
+// 与 Put 的 `tar xf -` 导入同一通道（exec），镜像内需有 tar。
+// 根 entry 是路径 basename，与 ContainerFileSession 的解包约定一致。
+func tarExportArgs(rt Runtime, ns, cid, remotePath string) []string {
+	script := "tar cf - -C " + posixQuote(path.Dir(remotePath)) + " " + posixQuote(path.Base(remotePath))
+	return execShellArgs(rt, ns, cid, script, false)
 }
 
 // action ∈ start/stop/restart/rm/pause/unpause
@@ -141,9 +162,10 @@ func transferArgv(rt Runtime, ns, sub, ref string, o TransferOptions) []string {
 	}
 	out = append(out, sub)
 	if o.Platform != "" && rt != RuntimeWSLC {
+		// wslc pull 没有 --platform（选项名未识别），只能忽略。
 		out = append(out, "--platform", o.Platform)
 	}
-	if sub == "pull" && o.AllTags && rt != RuntimeWSLC {
+	if sub == "pull" && o.AllTags {
 		out = append(out, "--all-tags")
 	}
 	if o.Insecure && rt == RuntimePodman {
@@ -193,14 +215,18 @@ func versionArgs(rt Runtime, ns string) []string {
 }
 
 // historyArgs 构造 history 的 argv；--no-trunc 避免 CreatedBy 被 CLI 截断。
-// wslc 的 flag 支持度未知，按保守处理不传 --no-trunc。
+// wslc 没有 history 子命令，其层列表走 wslcImageInspectArgs。
 func historyArgs(rt Runtime, ns, imageID string) []string {
-	if rt == RuntimeWSLC {
-		argv := []string{"history"}
-		argv = append(argv, wslcFormat()...)
-		return withNS(rt, ns, append(argv, imageID)...)
-	}
 	return withNS(rt, ns, "history", "--no-trunc", "--format", jsonFormat, imageID)
+}
+
+// wslcImageInspectArgs 构造 wslc 的镜像 inspect argv：wslc 的 --format 只接受
+// 固定值 json（不支持 {{json .}} 模板），输出是单行 JSON 数组。
+// 显式走 image inspect 而非顶层 inspect，避免镜像与同名容器歧义。
+func wslcImageInspectArgs(rt Runtime, ns, imageID string) []string {
+	argv := []string{"image", "inspect"}
+	argv = append(argv, wslcFormat()...)
+	return withNS(rt, ns, append(argv, imageID)...)
 }
 
 // loginArgs 构造 login 的 argv；密码由调用方通过 RunStdin 喂给 --password-stdin。

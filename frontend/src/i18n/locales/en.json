@@ -471,7 +471,7 @@
   "settings.languageDesc": "Switch the display language",
   "settings.colorSchemeDesc": "Terminal color scheme",
   "settings.followAppTheme": "Follow app theme",
-"settings.terminalTheme": "Terminal theme",
+  "settings.terminalTheme": "Terminal theme",
   "settings.fontDesc": "Terminal font family",
   "settings.fontPrimary": "Primary font",
   "settings.fontFallback": "Fallback Font",
@@ -1236,6 +1236,9 @@
   "conn.x11Forwarding": "X11 Forwarding",
   "conn.agentForwarding": "SSH Agent Forwarding",
   "conn.agentForwardingDesc": "Exposes your local SSH agent to the remote host; use only with trusted servers",
+  "conn.cwdHookMode": "Directory follow injection",
+  "conn.cwdHookModeStartup": "Automatically on connect",
+  "conn.cwdHookModeFollow": "When follow is enabled",
   "quickCommands.quickCommandsTab": "Quick Commands",
   "quickCommands.historyTab": "History",
   "quickCommands.saveAs": "Save as Quick Command",
@@ -1810,5 +1813,6 @@
   "mcp.regenerateHint": "The plaintext of token {name} can no longer be viewed (only a hash is stored). Regenerating invalidates the old token immediately; client configs must be updated.",
   "mcp.zcodeHint": "Merge into the mcp.servers field of ~/.zcode/cli/config.json (do not replace the whole file):",
   "mcp.traeHint": "Save as .trae/mcp.json in the project root (or ~/.trae/mcp.json user-level):",
-  "mcp.workbuddyHint": "WorkBuddy connector format. Save as ~/.workbuddy/connectors-marketplace/connectors/uniterm/mcp.json and enable it in the app:"
+  "mcp.workbuddyHint": "WorkBuddy connector format. Save as ~/.workbuddy/connectors-marketplace/connectors/uniterm/mcp.json and enable it in the app:",
+  "mcp.dshHint": "Cordis overlay snippet for DeepSeek Harness (dsh). Save as uniterm.cordis.yml and start with dsh web --patch <file>; put the token in the UNITERM_MCP_TOKEN env var (export it first, or configure config.env):"
 }

@@ -23,6 +23,9 @@
             <el-option v-for="p in platformOptions" :key="p" :label="p" :value="p" />
           </el-select>
         </el-form-item>
+        <el-form-item :label="t('container.allTags')">
+          <el-checkbox v-model="form.allTags" />
+        </el-form-item>
       </template>
       <!-- docker/wslc 的 CLI 无单命令级 TLS 参数，直接不展示该选项 -->
       <el-form-item v-if="!insecureUnsupported" :label="t('container.skipTlsVerify')">
@@ -44,7 +47,7 @@ import { useI18n } from '../i18n'
 // pull/push 共用的传输对话框；insecure 仅 podman/nerdctl 生效，
 // docker/wslc 的 CLI 无单命令级参数，勾选置灰并提示走 daemon 配置。
 const props = defineProps<{ modelValue: boolean; runtime: string; mode: 'pull' | 'push'; initialImage?: string }>()
-const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'start', opts: { image: string; platform: string; insecure: boolean }): void }>()
+const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'start', opts: { image: string; platform: string; insecure: boolean; allTags: boolean }): void }>()
 
 const { t } = useI18n()
 
@@ -53,7 +56,7 @@ const visible = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
-const form = reactive({ image: '', platform: '', insecure: false })
+const form = reactive({ image: '', platform: '', insecure: false, allTags: false })
 const imageError = ref('')
 const insecureUnsupported = computed(() => props.runtime === 'docker' || props.runtime === 'wslc')
 
@@ -65,6 +68,7 @@ watch(() => props.modelValue, (v) => {
     form.image = props.initialImage || ''
     form.platform = ''
     form.insecure = true
+    form.allTags = false
     imageError.value = ''
   }
 })
@@ -79,6 +83,7 @@ function onSubmit() {
     image: form.image.trim(),
     platform: form.platform.trim(),
     insecure: form.insecure,
+    allTags: form.allTags,
   })
   visible.value = false
 }

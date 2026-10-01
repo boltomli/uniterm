@@ -66,7 +66,7 @@ uniTerm 内置容器管理界面，支持 **Kubernetes** 集群管理，以及 *
 | 传输方式 | **远程主机 (SSH)**（默认）引用已有 SSH 连接，继承其凭证与跳板机配置管理远程主机上的容器；**本机** 使用本机安装的容器运行时 |
 | SSH 连接 | 传输方式为远程主机时，选择一个已保存的 SSH 连接作为通道 |
 
-> nerdctl 支持在顶部切换 containerd 的 namespace。WSLC 运行时不提供「重启」「重命名」操作。
+> nerdctl 支持在顶部切换 containerd 的 namespace。WSLC 运行时不提供「重启」「重命名」操作；其镜像分层来自 `image inspect`，只有层摘要（该 CLI 没有 `history` 命令）。
 
 ### 容器管理
 

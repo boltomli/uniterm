@@ -13,10 +13,13 @@ import (
 // machinery by composition, overriding only the two things that differ: the
 // reported session type and a Connect that always forces the `wsl://<distro>`
 // shell. This keeps the PTY plumbing in a single implementation instead of a
-// copy-paste variant.
+// copy-paste variant. The embedded LocalSession also provides InjectCwdHook,
+// so WSL sessions satisfy session.CwdHookInjector the same way SSH does.
 type WSLSession struct {
 	*LocalSession
 }
+
+var _ CwdHookInjector = (*WSLSession)(nil)
 
 func NewWSLSession(id string) *WSLSession {
 	return &WSLSession{LocalSession: NewLocalSession(id)}

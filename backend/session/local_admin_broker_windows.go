@@ -249,36 +249,26 @@ func elevatedClinkArgsAllowed(rest string) bool {
 
 // elevatedWslArgsAllowed matches the wsl.exe launch line Connect builds:
 //
-//	wsl.exe -d <distro> [--cd ~] [-e bash --rcfile <path> | -e env ZDOTDIR=<dir> zsh]
+//	wsl.exe -d <distro> [--cd ~]
 //
 // The distro name is re-validated with validWSLDistroName (the tail reaches
-// wsl.exe argv, which re-quotes it for the distro's login shell), and the
-// -e target is pinned to bash/env so the tail can never name an arbitrary
-// executable for wsl to run — WSL interop would otherwise pass a Windows
-// command through an elevated wsl.exe.
+// wsl.exe argv, which re-quotes it for the distro's login shell). No -e tail
+// is accepted: the WSL cwd hook is typed into the running shell, never
+// injected as launch args, so wsl.exe must never be handed a program to run —
+// WSL interop would otherwise pass an arbitrary Windows command through an
+// elevated wsl.exe.
 func elevatedWslArgsAllowed(rest string) bool {
 	f := strings.Fields(rest)
 	if len(f) < 2 || f[0] != "-d" || !validWSLDistroName(f[1]) {
 		return false
 	}
 	f = f[2:]
-	// The launcher only ever emits `--cd ~` (no cwd case emits nothing).
-	if len(f) >= 2 && f[0] == "--cd" {
-		if f[1] != "~" {
-			return false
-		}
-		f = f[2:]
-	}
+	// The launcher only ever emits `--cd ~`; an explicit cwd emits nothing.
 	switch {
 	case len(f) == 0:
 		return true
-	case len(f) == 4 && f[0] == "-e" && f[1] == "bash" && f[2] == "--rcfile":
-		// wslShellIntegration asserts no space/tab/quote in start args;
-		// Fields already removed whitespace, reject what remains of it.
-		return !strings.Contains(f[3], `"`)
-	case len(f) == 4 && f[0] == "-e" && f[1] == "env" && strings.HasPrefix(f[2], "ZDOTDIR=") && f[3] == "zsh":
-		dir := strings.TrimPrefix(f[2], "ZDOTDIR=")
-		return dir != "" && !strings.Contains(dir, `"`)
+	case len(f) == 2 && f[0] == "--cd" && f[1] == "~":
+		return true
 	}
 	return false
 }

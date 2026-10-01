@@ -177,8 +177,16 @@ func defaultServerComponent(rt Runtime) string {
 	return string(rt)
 }
 
-// ImageHistory 返回镜像的分层信息（history 输出）。
+// ImageHistory 返回镜像的分层信息（history 输出）。wslc 没有 history 子命令，
+// 层列表改从 image inspect 的 RootFS.Layers 取（只有层摘要，无逐层命令与大小）。
 func (p *Provider) ImageHistory(ctx context.Context, imageID string) ([]ImageLayer, error) {
+	if p.rt == RuntimeWSLC {
+		out, err := p.runner.Run(ctx, wslcImageInspectArgs(p.rt, p.ns, imageID))
+		if err != nil {
+			return nil, err
+		}
+		return ParseImageLayersFromInspect(out)
+	}
 	out, err := p.runner.Run(ctx, historyArgs(p.rt, p.ns, imageID))
 	if err != nil {
 		return nil, err
@@ -235,7 +243,7 @@ func (p *Provider) FileExecStdinStream(ctx context.Context, cid, script string, 
 // FileCpToFile 把容器路径复制到宿主机文件（cp 的常规用法，nerdctl 等都支持；
 // stdout 导出未实现的运行时用它中转）。
 func (p *Provider) FileCpToFile(ctx context.Context, cid, remotePath, destPath string) error {
-	_, err := p.runner.Run(ctx, withNS(p.rt, p.ns, "cp", cid+":"+remotePath, destPath))
+	_, err := p.runner.Run(ctx, cpArgs(p.rt, p.ns, cid+":"+remotePath, destPath))
 	return err
 }
 
@@ -250,7 +258,12 @@ func (p *Provider) HostRaw(ctx context.Context, argv []string) (RawStream, error
 }
 
 // FileCpRaw 打开容器路径的 tar 导出流（docker cp <cid>:<path> -）。
+// wslc 的 cp 不能把内容写到 stdout（dest 为 "-" 时会写出一个名为 "-" 的
+// 本地文件），改在容器内用 tar 打包到 stdout（见 tarExportArgs）。
 func (p *Provider) FileCpRaw(ctx context.Context, cid, remotePath string) (RawStream, error) {
+	if p.rt == RuntimeWSLC {
+		return p.runner.RunRaw(ctx, tarExportArgs(p.rt, p.ns, cid, remotePath))
+	}
 	return p.runner.RunRaw(ctx, cpRawArgs(p.rt, p.ns, cid, remotePath))
 }
 

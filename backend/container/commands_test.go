@@ -126,9 +126,10 @@ func TestPullArgsPlatformAllTags(t *testing.T) {
 	}
 }
 
-func TestPullArgsWSLCNoExtras(t *testing.T) {
+// wslc pull 没有 --platform，但支持 --all-tags（与 docker 同名）。
+func TestPullArgsWSLCAllTagsNoPlatform(t *testing.T) {
 	got := pullArgs(RuntimeWSLC, "", "nginx", TransferOptions{Platform: "linux/arm64", AllTags: true})
-	want := []string{"wslc", "pull", "nginx"}
+	want := []string{"wslc", "pull", "--all-tags", "nginx"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -188,10 +189,36 @@ func TestHistoryArgsNoTrunc(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
-	got = historyArgs(RuntimeWSLC, "", "abc123")
-	want = []string{"wslc", "history", "--format", "json", "abc123"}
+}
+
+func TestWSLCImageInspectArgs(t *testing.T) {
+	got := wslcImageInspectArgs(RuntimeWSLC, "", "nginx:latest")
+	want := []string{"wslc", "image", "inspect", "--format", "json", "nginx:latest"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("wslc: got %v want %v", got, want)
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+// wslc 顶层没有 cp，必须走 container 子命令组。
+func TestCPArgsWSLC(t *testing.T) {
+	got := cpArgs(RuntimeWSLC, "", "cid:/etc/nginx", `C:\Temp\x`)
+	want := []string{"wslc", "container", "cp", "cid:/etc/nginx", `C:\Temp\x`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	got = cpArgs(RuntimeDocker, "", "cid:/etc", "/tmp/x")
+	want = []string{"docker", "cp", "cid:/etc", "/tmp/x"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("docker: got %v want %v", got, want)
+	}
+}
+
+// cp 导出到 stdout 不可用的运行时改用容器内 tar。
+func TestTarExportArgs(t *testing.T) {
+	got := tarExportArgs(RuntimeWSLC, "", "cid", "/etc/nginx")
+	want := []string{"wslc", "exec", "cid", "sh", "-c", "tar cf - -C '/etc' 'nginx'"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 }
 

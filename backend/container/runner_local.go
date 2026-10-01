@@ -150,8 +150,17 @@ func (r *LocalRunner) run(ctx context.Context, argv []string, stdin []byte) ([]b
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
+		if ee, ok := err.(*exec.ExitError); ok {
+			msg := strings.TrimSpace(string(ee.Stderr))
+			if msg == "" {
+				// 有的 CLI 失败时把原因写在 stdout、stderr 为空（wslc 的 exec
+				// 就是如此），只看 stderr 会退化成 "exit status 126" 丢掉原因，
+				// 例如镜像内没有 sh 时上层无法给出可读提示。
+				msg = strings.TrimSpace(string(out))
+			}
+			if msg != "" {
+				return nil, fmt.Errorf("%s", msg)
+			}
 		}
 		return nil, err
 	}

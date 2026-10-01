@@ -493,7 +493,9 @@ export function useFilePanel(opts: FilePanelOptions) {
     try {
       await ops.makeDir(id, joinPath(cwd.value, r.value))
       refresh()
-    } catch (e) { console.error('mkdir:', e) }
+    } catch (e: any) {
+      msg.error(e?.toString() || 'Failed to create directory')
+    }
   }
 
   async function onNewFile() {

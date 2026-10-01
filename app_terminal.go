@@ -611,6 +611,25 @@ func (a *App) SessionWrite(sessionID string, data string) error {
 	return s.Write([]byte(data))
 }
 
+// SessionInjectCwdHook types the OSC-7 cwd hook into a running SSH login
+// shell on demand. Used by connections with cwdHookMode "follow": the
+// frontend calls this when the user first enables directory follow for the
+// session's file panel.
+func (a *App) SessionInjectCwdHook(sessionID string) error {
+	if a.sessionManager == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	inj, ok := s.(session.CwdHookInjector)
+	if !ok {
+		return fmt.Errorf("session type %s does not support on-demand cwd hook injection", s.Type())
+	}
+	return inj.InjectCwdHook()
+}
+
 func (a *App) SessionResize(sessionID string, cols, rows int) error {
 	if a.sessionManager == nil {
 		return fmt.Errorf("session manager not initialized")

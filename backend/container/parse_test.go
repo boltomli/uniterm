@@ -183,6 +183,45 @@ not-json-line
 	}
 }
 
+// WSLC 无 history 命令，层列表来自 image inspect 的 RootFS.Layers。
+func TestParseImageLayersFromInspectWSLC(t *testing.T) {
+	raw, err := os.ReadFile("testdata/wslc_image_inspect.json")
+	if err != nil {
+		t.Skip("golden file missing")
+	}
+	layers, err := ParseImageLayersFromInspect(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 7 {
+		t.Fatalf("got %d layers, want 7: %+v", len(layers), layers)
+	}
+	// RootFS.Layers 自底向上；结果反转成新层在前。
+	if layers[0].ID != "sha256:7777777777777777777777777777777777777777777777777777777777777777" {
+		t.Errorf("first layer should be the newest: %+v", layers[0])
+	}
+	if layers[6].ID != "sha256:1111111111111111111111111111111111111111111111111111111111111111" {
+		t.Errorf("last layer should be the base: %+v", layers[6])
+	}
+	if layers[0].CreatedBy != "" || layers[0].Size != "" {
+		t.Errorf("inspect layers carry no command/size: %+v", layers[0])
+	}
+}
+
+func TestParseImageLayersFromInspectErrors(t *testing.T) {
+	if _, err := ParseImageLayersFromInspect([]byte(`not json`)); err == nil {
+		t.Fatal("want error for invalid json")
+	}
+	if _, err := ParseImageLayersFromInspect([]byte(`[]`)); err == nil {
+		t.Fatal("want error for empty result")
+	}
+	// 无 RootFS 时不报错，返回空列表（列表页对无层镜像仍可用）。
+	layers, err := ParseImageLayersFromInspect([]byte(`[{"Id":"x"}]`))
+	if err != nil || len(layers) != 0 {
+		t.Fatalf("got %v, %v", layers, err)
+	}
+}
+
 func TestParseImagesWSLC(t *testing.T) {
 	raw, err := os.ReadFile("testdata/wslc_images.json")
 	if err != nil {

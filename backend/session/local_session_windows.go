@@ -130,6 +130,23 @@ type LocalSession struct {
 	// output stream (see shell_integration.go). Only used from readLoop.
 	osc7 osc7Scanner
 
+	// WSL typed cwd-hook injection (SSH-style, two-phase). wslDistro is
+	// non-empty only for wsl:// shells. bash/zsh run in two phases: the
+	// echo-off line arms stty -echo and the hook body is written only once
+	// the echo-armed marker is seen in the output stream, so the body never
+	// renders. fish skips phase 1 (no stty in its snippet) and accepts the
+	// single-line echo leak, same as SSH fish. echoReady/hookReady strip the
+	// control markers; only used from readLoop.
+	wslDistro        string
+	wslShellBase     string
+	wslCwdHookBody   string
+	wslEchoPending   bool
+	cwdHookFollow    bool
+	cwdHookInstalled atomic.Bool
+	cwdHookTriggered atomic.Bool
+	hookReady        hookReadyScanner
+	echoReady        hookReadyScanner
+
 	mu             sync.RWMutex
 	enc            encoding.Encoding
 	decoder        *encoding.Decoder
@@ -151,6 +168,8 @@ func NewLocalSession(id string) *LocalSession {
 	// Set a generous default size so the PTY is unlikely to scroll before
 	// the frontend sends its first Resize() with the real dimensions.
 	s.SetPendingSize(200, 60)
+	s.hookReady = newHookReadyScanner(sshCwdHookReadyMarker)
+	s.echoReady = newHookReadyScanner(wslCwdHookEchoMarker)
 	return s
 }
 
@@ -203,14 +222,29 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	isMSYSBash := false
 
 	if distro, ok := parseWSLPath(shell); ok {
-		// Shell integration: probe the distro's shell and inject an OSC-7
-		// cwd hook. Any failure or timeout degrades silently to a plain
-		// `wsl.exe -d <distro>` — integration must never fail the session.
-		var startArgs []string
-		if injected, ok := wslShellIntegration(distro); ok {
-			startArgs = injected
+		if distro == "" {
+			s.setStatus(StatusError)
+			return fmt.Errorf("empty WSL distribution name")
 		}
-		wslArgs := buildWSLStartArgs(distro, config.Cwd, startArgs)
+		// SSH-style typed cwd hook: the distro starts through its native
+		// login flow (`wsl.exe` without -e), so the MOTD banner and profile
+		// scripts run exactly as in any other terminal; the OSC-7 hook is
+		// then typed into the running shell, never injected via launch args.
+		// Any probe failure or timeout degrades to a plain shell — the hook
+		// is optional and must never fail the session.
+		s.wslDistro = distro
+		s.cwdHookFollow = config.CwdHookMode == CwdHookModeFollow
+		if s.cwdHookFollow {
+			log.Writef("wsl: cwd hook deferred to directory-follow toggle")
+		} else if sh, ok := wslDetectShell(distro); ok {
+			if body, ok := buildShellCwdHookBody(sh); ok {
+				s.wslShellBase = shellBasename(sh)
+				s.wslCwdHookBody = body
+			} else {
+				log.Writef("wsl: cwd hook skipped (unsupported shell %q)", sh)
+			}
+		}
+		wslArgs := buildWSLStartArgs(distro, config.Cwd, nil)
 		commandLine = "wsl.exe " + strings.Join(wslArgs, " ")
 		cmd = exec.Command("wsl.exe", wslArgs...)
 		cmd.Env = os.Environ()
@@ -277,6 +311,7 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		s.setStatus(StatusConnected)
 		go s.readLoop()
 		go s.runPostLoginScript(config.PostLoginScript)
+		s.injectStartupCwdHook()
 		return nil
 	}
 
@@ -307,6 +342,7 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 			s.setStatus(StatusConnected)
 			go s.readLoop()
 			go s.runPostLoginScript(config.PostLoginScript)
+			s.injectStartupCwdHook()
 			return nil
 		}
 		// Fall through to pipe mode if ConPTY fails.
@@ -342,6 +378,7 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	s.setStatus(StatusConnected)
 	go s.readLoop()
 	go s.runPostLoginScript(config.PostLoginScript)
+	s.injectStartupCwdHook()
 	return nil
 }
 
@@ -377,70 +414,169 @@ func validWSLDistroName(name string) bool {
 // plain `wsl.exe -d <distro>`.
 const wslIntegrationTimeout = 10 * time.Second
 
-// wslShellIntegration probes the distro's default shell and builds the
-// wsl.exe start arguments that launch it with an OSC-7 cwd hook injected.
-// The bootstrap is written INSIDE the distro (mktemp under /tmp), so nothing
-// is ever added to the user's ~/.bashrc / ~/.zshrc. Any failure returns
-// ok=false and the session silently starts a plain shell.
-//
-// Only bash and zsh are wired: fish's -C command contains spaces and quotes
-// that cannot be embedded safely in a ConPTY command line, so it degrades to
-// a plain shell here (SSH fish sessions still get integration).
-func wslShellIntegration(distro string) (startArgs []string, ok bool) {
+// wslDetectShell probes the distro's default shell via a one-shot
+// wsl.exe -e process. This probe is throwaway and does not affect the
+// session's own shell, mirroring the SSH probe design: the session shell
+// starts untouched (MOTD and profile scripts intact) and the OSC-7 hook is
+// typed in afterwards.
+func wslDetectShell(distro string) (shell string, ok bool) {
 	shell, err := wslRunCommand(distro, "echo $SHELL", "", wslIntegrationTimeout)
 	if err != nil {
-		log.Writef("wsl: shell integration skipped for %s (detect shell: %v)", distro, err)
-		return nil, false
+		log.Writef("wsl: shell detection failed for %s: %v", distro, err)
+		return "", false
 	}
-	shell = strings.TrimSpace(shell)
-	files, ok := buildWSLShellBootstrap(shell)
-	if !ok {
-		return nil, false
-	}
-	switch shellBasename(shell) {
-	case "bash":
-		content, ok := files["rcfile"]
-		if !ok {
-			return nil, false
-		}
-		path, err := wslWriteFile(distro, content)
-		if err != nil {
-			log.Writef("wsl: shell integration skipped for %s (write rcfile: %v)", distro, err)
-			return nil, false
-		}
-		startArgs = []string{"-e", "bash", "--rcfile", path}
-	case "zsh":
-		dir, err := wslMakeDir(distro)
-		if err != nil {
-			log.Writef("wsl: shell integration skipped for %s (make dir: %v)", distro, err)
-			return nil, false
-		}
-		for _, name := range []string{".zshrc", ".zshenv"} {
-			content, ok := files[name]
-			if !ok {
-				return nil, false
-			}
-			if err := wslWritePath(distro, dir+"/"+name, content); err != nil {
-				log.Writef("wsl: shell integration skipped for %s (write %s: %v)", distro, name, err)
-				return nil, false
-			}
-		}
-		startArgs = []string{"-e", "env", "ZDOTDIR=" + dir, "zsh"}
-	default:
-		return nil, false
-	}
-	// Every argument lands in a ConPTY command line; mktemp paths have no
-	// spaces, but assert anyway and bail rather than build a broken one.
-	for _, a := range startArgs {
-		if strings.ContainsAny(a, " \t\"") {
-			log.Writef("wsl: shell integration skipped for %s (unsafe start arg %q)", distro, a)
-			return nil, false
-		}
-	}
-	log.Writef("wsl: shell integration injected for %s (shell %s, args %v)", distro, shell, startArgs)
-	return startArgs, true
+	return strings.TrimSpace(shell), true
 }
 
+// wslCwdHookEchoMarker is printed by the WSL echo-off line (phase 1 of the
+// typed cwd-hook injection) once stty -echo has taken effect. ConPTY cannot
+// pre-disable pty echo at creation, so the backend waits for this marker in
+// the output stream before sending the hook body (phase 2) — the body must
+// never render. The read loop strips the marker from the display stream.
+// Kept deliberately short so the phase-1 line stays single-row when echoed.
+const wslCwdHookEchoMarker = "\x1b]7777;e\x07"
+
+// wslCwdHookEchoOffLine is phase 1 of the WSL typed cwd-hook injection for
+// bash/zsh. It turns the pty echo off itself (ConPTY cannot pre-disable it)
+// and prints the echo-armed marker so the backend knows phase 2 may start.
+// The line is kept minimal (52 chars): while echo is still on it renders
+// twice — once at the top of the screen (conhost relays the input before
+// wsl.exe prints anything) and once after the first prompt (Linux pty echo)
+// — and both renders are erased later while echo is off: the top row by
+// wslCwdHookRowCleanup (absolute home positioning) and the prompt row right
+// here (cursor up one row onto the echo, clear, back down below it). A long
+// phase-1 line would wrap and leave residue rows that no fixed cleanup can
+// address, hence the shortness.
+const wslCwdHookEchoOffLine = " stty -echo;printf '\\033]7777;e\\007\\033[1A\\033[2K\\r\\n'\n"
+
+// wslCwdHookRowCleanup is prepended to the hook body (phase 2, echo off) to
+// wipe the conhost echo of phase 1: save the cursor, clear the home row,
+// restore. Absolute positioning, so it cannot drift with the prompt layout.
+const wslCwdHookRowCleanup = " printf '\\0337\\033[H\\033[2K\\0338';"
+
+// injectStartupCwdHook starts the typed cwd-hook injection right after the
+// PTY starts. ConPTY buffers the bytes, so the shell executes the phases in
+// order: phase 1 arms echo-off (bash/zsh) and the hook body is written only
+// after the echo-armed marker is seen in the output stream (read loop);
+// phase 2's body must never render. fish skips phase 1 (no stty in its
+// snippet) and accepts the single-line echo leak, same as SSH fish.
+func (s *LocalSession) injectStartupCwdHook() {
+	if s.cwdHookFollow || s.wslDistro == "" || s.wslCwdHookBody == "" {
+		return
+	}
+	if s.wslShellBase == "bash" || s.wslShellBase == "zsh" {
+		s.mu.Lock()
+		s.wslEchoPending = true
+		s.mu.Unlock()
+		_ = s.Write([]byte(wslCwdHookEchoOffLine))
+		return
+	}
+	// fish and other supported shells without an echo-off prefix: single
+	// phase, watch for the ready marker.
+	if err := s.Write([]byte(s.wslCwdHookBody)); err != nil {
+		log.Writef("wsl: cwd hook write failed: %v", err)
+		return
+	}
+	log.Writef("wsl: cwd hook injected (shell=%s)", s.wslShellBase)
+	go s.watchCwdHookConfirm()
+}
+
+// writeWslCwdHookBody is phase 2: runs once the echo-armed marker confirmed
+// that stty -echo took effect, so the hook body cannot echo. For bash/zsh the
+// body is prefixed with the absolute home-row cleanup that erases the
+// conhost echo of phase 1.
+func (s *LocalSession) writeWslCwdHookBody() {
+	s.mu.Lock()
+	body := s.wslCwdHookBody
+	s.wslEchoPending = false
+	s.mu.Unlock()
+	if body == "" {
+		return
+	}
+	if s.wslShellBase == "bash" || s.wslShellBase == "zsh" {
+		body = wslCwdHookRowCleanup + body
+	}
+	if err := s.Write([]byte(body)); err != nil {
+		log.Writef("wsl: cwd hook body write failed: %v", err)
+		return
+	}
+	log.Writef("wsl: cwd hook injected (shell=%s)", s.wslShellBase)
+	go s.watchCwdHookConfirm()
+}
+
+// watchCwdHookConfirm bounds how long the session waits for the injected
+// hook's ready marker. If the hook never confirms (unsupported setup, the
+// user exited the shell instantly), echo is restored blindly so the session
+// is never left with terminal echo off.
+func (s *LocalSession) watchCwdHookConfirm() {
+	select {
+	case <-time.After(cwdHookConfirmTimeout):
+	case <-s.quit:
+		return
+	}
+	if s.cwdHookInstalled.Load() || s.Status() != StatusConnected {
+		return
+	}
+	log.Writef("wsl: cwd hook not confirmed after %s, restoring echo blindly", cwdHookConfirmTimeout)
+	_ = s.Write([]byte(" stty echo\n"))
+}
+
+// InjectCwdHook types the OSC-7 cwd hook into the running shell on demand,
+// for WSL sessions with CwdHookMode "follow" (the startup injection was
+// skipped). WSLSession satisfies session.CwdHookInjector through embedding,
+// so the frontend's directory-follow toggle reaches it via the same
+// App.SessionInjectCwdHook route SSH uses. Repeated calls are no-ops; a
+// transiently failed attempt re-arms so a later call can retry.
+func (s *LocalSession) InjectCwdHook() error {
+	if s.wslDistro == "" {
+		return fmt.Errorf("on-demand cwd hook injection is only available for WSL sessions")
+	}
+	if !s.cwdHookTriggered.CompareAndSwap(false, true) {
+		return nil
+	}
+	if s.Status() != StatusConnected {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("wsl session not connected")
+	}
+	if s.cwdHookInstalled.Load() {
+		return nil
+	}
+	shell, ok := wslDetectShell(s.wslDistro)
+	if !ok {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("wsl shell detection failed")
+	}
+	base := shellBasename(shell)
+	body, ok := buildShellCwdHookBody(shell)
+	if !ok {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("cwd hook unavailable (shell %q)", shell)
+	}
+	if base == "bash" || base == "zsh" {
+		// Two-phase: arm echo-off, then let the read loop write the body
+		// once the echo-armed marker confirms stty -echo took effect.
+		s.mu.Lock()
+		s.wslShellBase = base
+		s.wslCwdHookBody = body
+		s.wslEchoPending = true
+		s.mu.Unlock()
+		if err := s.Write([]byte(wslCwdHookEchoOffLine)); err != nil {
+			s.mu.Lock()
+			s.wslEchoPending = false
+			s.mu.Unlock()
+			s.cwdHookTriggered.Store(false)
+			return fmt.Errorf("cwd hook write: %w", err)
+		}
+		return nil
+	}
+	if err := s.Write([]byte(body)); err != nil {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("cwd hook write: %w", err)
+	}
+	log.Writef("wsl: cwd hook injected on demand (shell=%s)", base)
+	go s.watchCwdHookConfirm()
+	return nil
+}
 // wslRunCommand runs a one-shot command inside the distro via wsl.exe -e
 // with a timeout, optionally feeding stdin, and returns stdout.
 func wslRunCommand(distro, command, stdin string, timeout time.Duration) (string, error) {
@@ -456,43 +592,6 @@ func wslRunCommand(distro, command, stdin string, timeout time.Duration) (string
 		return "", err
 	}
 	return string(out), nil
-}
-
-// wslWriteFile materializes content in a temp file inside the distro
-// (created via mktemp so the path is space-free) and returns the path.
-func wslWriteFile(distro, content string) (string, error) {
-	out, err := wslRunCommand(distro,
-		`f=$(mktemp /tmp/uniterm-XXXXXX); cat > "$f"; printf '%s' "$f"`,
-		content, wslIntegrationTimeout)
-	if err != nil {
-		return "", err
-	}
-	return cleanRemoteTempPath(out)
-}
-
-// wslMakeDir creates a temp directory inside the distro and returns its path.
-func wslMakeDir(distro string) (string, error) {
-	out, err := wslRunCommand(distro,
-		`d=$(mktemp -d /tmp/uniterm-XXXXXX); printf '%s' "$d"`,
-		"", wslIntegrationTimeout)
-	if err != nil {
-		return "", err
-	}
-	dir, err := cleanRemoteTempPath(out)
-	if err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-// wslWritePath writes content to an existing path inside the distro via
-// stdin (no shell-quoting of the content needed).
-func wslWritePath(distro, path, content string) error {
-	if strings.ContainsAny(path, " \t\"'\\\r\n") {
-		return fmt.Errorf("unsafe wsl temp path %q", path)
-	}
-	_, err := wslRunCommand(distro, "cat > '"+path+"'", content, wslIntegrationTimeout)
-	return err
 }
 
 // buildWSLStartArgs returns the full wsl.exe argument list for launching a
@@ -693,6 +792,24 @@ func (s *LocalSession) readLoop() {
 				recordSessionCwd(s.id, cwd)
 				if TerminalCwdSink != nil {
 					TerminalCwdSink(s.id, cwd)
+				}
+			}
+			if !s.cwdHookInstalled.Load() {
+				if s.wslEchoPending {
+					var armed bool
+					cleaned, armed = s.echoReady.Feed(cleaned)
+					if armed {
+						s.mu.Lock()
+						s.wslEchoPending = false
+						s.mu.Unlock()
+						go s.writeWslCwdHookBody()
+					}
+				}
+				var confirmed bool
+				cleaned, confirmed = s.hookReady.Feed(cleaned)
+				if confirmed {
+					s.cwdHookInstalled.Store(true)
+					log.Writef("wsl: cwd hook confirmed via ready marker")
 				}
 			}
 			s.emitData(s.decodeOutput(cleaned))

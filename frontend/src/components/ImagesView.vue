@@ -253,10 +253,11 @@ function openTransfer(mode: 'pull' | 'push', image = '') {
   transferOpen.value = true
 }
 
-function onTransferStart(opts: { image: string; platform: string; insecure: boolean }) {
+function onTransferStart(opts: { image: string; platform: string; insecure: boolean; allTags: boolean }) {
   startTransfer(transferMode.value, opts.image, {
     platform: opts.platform,
     insecure: opts.insecure,
+    allTags: opts.allTags,
   })
 }
 

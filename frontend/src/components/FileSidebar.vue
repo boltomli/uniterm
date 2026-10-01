@@ -158,6 +158,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import {
   SftpListRemote, SftpChangeRemoteDir, SftpOpenExternalEditor, SftpOpenWithSystem, ListSessions,
+  SessionInjectCwdHook,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import {
   useFilePanel, useConflictDialog, useFileDialogs, useFileListing, useChmodDialog,
@@ -319,8 +320,28 @@ function toggleFollow() {
   const pid = companionStore.activeFilesPanelId
   if (!pid) return
   // Cwd reporting is injected by the backend on every SSH attach (including
-  // clones and reconnects), so follow is a pure display-side toggle here.
+  // clones and reconnects) for the default "startup" mode, so follow is a
+  // pure display-side toggle there. "follow"-mode connections skip the
+  // startup injection — the hook is typed on demand below.
+  const enabling = companionStore.followPathByPanel[pid] !== true
   companionStore.toggleFollowPath(pid)
+  if (enabling) injectCwdHookIfNeeded(pid)
+}
+
+// Connections with cwdHookMode "follow" never touch the shell at connect
+// time; the cwd hook is typed into the running login shell the first time
+// the user enables path follow. Re-connects re-run it from the
+// session:status handler below (the session object resets on reconnect).
+function injectCwdHookIfNeeded(pid: string) {
+  const panel = panelStore.getPanel(pid)
+  if (!panel || (panel.type !== 'ssh' && panel.type !== 'wsl')) return
+  if ((panel.config as any)?.cwdHookMode !== 'follow') return
+  const sid = panel.sessionId
+  if (!sid) return
+  SessionInjectCwdHook(sid).catch(() => {
+    // Not connected (yet) or unsupported remote shell: follow stays passive
+    // until the next enable/reconnect.
+  })
 }
 
 let followTimer: ReturnType<typeof setTimeout> | null = null
@@ -425,6 +446,10 @@ function bindListeners() {
     if (payload.id !== sessionId.value) return
     if (payload.status === 'connected') {
       onRefresh()
+      // "follow"-mode SSH connections re-inject the cwd hook after every
+      // (re)connect while path follow is enabled for this panel.
+      const pid = companionStore.activeFilesPanelId
+      if (pid && companionStore.followPathByPanel[pid] === true) injectCwdHookIfNeeded(pid)
     } else if (payload.status === 'error') {
       markTransferTasksDisconnected()
       connectError.value = t('sftp.connectError')

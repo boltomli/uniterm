@@ -406,11 +406,26 @@ func (s *SMBSession) Copy(oldPath, newPath string) error {
 	if fi.IsDir() {
 		return fmt.Errorf("cannot copy directory via SMB: %s", old)
 	}
-	data, err := s.readRemoteFile(oldInternal)
+	newInternal := s.smbInternal(n)
+	if err := s.mkdirAllRemote(smbDir(newInternal)); err != nil {
+		return err
+	}
+	src, err := s.share.Open(oldInternal)
 	if err != nil {
 		return err
 	}
-	return s.writeRemoteFile(s.smbInternal(n), data)
+	defer src.Close()
+	dst, err := s.share.Create(newInternal)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	// Both files are on the same share, so io.Copy lands in File.ReadFrom,
+	// which issues a server-side FSCTL_SRV_COPYCHUNK (data never leaves the
+	// server). If the server doesn't support it, the library falls back to a
+	// max-size buffered copy instead of loading the file into memory.
+	_, err = io.Copy(dst, src)
+	return err
 }
 
 func (s *SMBSession) Move(oldPath, newPath string) error {
@@ -638,13 +653,150 @@ func (s *SMBSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 	return nil
 }
 
-func (s *SMBSession) downloadFile(task *TransferTask, remotePath, localPath string) error {
-	// Get file size first for progress tracking
-	if task.loadTotal() <= 0 {
-		if fi, err := s.share.Stat(remotePath); err == nil {
-			if fi.Size() > 0 {
-				task.setTotal(fi.Size())
+// Transfer chunking constants. A purely sequential 64KB loop turns every
+// chunk into one full SMB round trip and caps throughput well below what the
+// link allows (e.g. ~35MB/s at 1.8ms RTT). SMB2 credits permit several
+// requests in flight on a single connection, so we copy in large pipelined
+// chunks instead.
+const (
+	// One SMB request payload per chunk. The library further caps each
+	// request at the negotiated maximum (1MB on SMB3) and blocks on credits,
+	// so an oversized buffer is safe.
+	smbChunkSize = 1024 * 1024
+	// Concurrent SMB requests per file transfer.
+	smbInFlight = 4
+)
+
+// pipelinedCopy copies size bytes from readAt to writeAt using smbInFlight
+// concurrent chunk workers. Both sides must accept random offsets (io.ReaderAt
+// / io.WriterAt semantics). size <= 0 (unknown) falls back to a sequential
+// loop with a full-size buffer. Progress, cancel and pause follow the task.
+func (s *SMBSession) pipelinedCopy(task *TransferTask, size int64,
+	readAt func(buf []byte, off int64) (int, error),
+	writeAt func(buf []byte, off int64) error,
+) error {
+	if size <= 0 {
+		buf := make([]byte, smbChunkSize)
+		var off int64
+		for {
+			select {
+			case <-task.ctx.Done():
+				return task.ctx.Err()
+			default:
 			}
+			task.waitIfPaused()
+			n, err := readAt(buf, off)
+			if n > 0 {
+				if werr := writeAt(buf[:n], off); werr != nil {
+					return werr
+				}
+				task.addProgress(int64(n))
+				s.emitTransferProgress(task)
+			}
+			if err != nil {
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					return nil
+				}
+				return err
+			}
+			if n < len(buf) {
+				return nil
+			}
+			off += int64(n)
+		}
+	}
+
+	var (
+		next     atomic.Int64 // next unclaimed offset
+		stopped  atomic.Bool  // stop claiming (error, early EOF or cancel)
+		errOnce  sync.Once
+		firstErr error
+	)
+	abort := func(err error) {
+		if err == nil {
+			return
+		}
+		errOnce.Do(func() {
+			firstErr = err
+			stopped.Store(true)
+		})
+	}
+	// claim reserves the next chunk; ok=false when nothing is left.
+	claim := func() (off int64, length int, ok bool) {
+		for {
+			if stopped.Load() {
+				return 0, 0, false
+			}
+			off := next.Load()
+			if off >= size {
+				return 0, 0, false
+			}
+			length := int(min(int64(smbChunkSize), size-off))
+			if next.CompareAndSwap(off, off+int64(length)) {
+				return off, length, true
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < smbInFlight; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, smbChunkSize)
+			for {
+				select {
+				case <-task.ctx.Done():
+					abort(task.ctx.Err())
+					return
+				default:
+				}
+				task.waitIfPaused()
+				off, length, ok := claim()
+				if !ok {
+					return
+				}
+				n, err := readAt(buf[:length], off)
+				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+					abort(err)
+					return
+				}
+				if n > 0 {
+					if werr := writeAt(buf[:n], off); werr != nil {
+						abort(werr)
+						return
+					}
+					task.addProgress(int64(n))
+					s.emitTransferProgress(task)
+				}
+				if n < length {
+					// Source ended before the expected size: stop claiming.
+					stopped.Store(true)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	select {
+	case <-task.ctx.Done():
+		return task.ctx.Err()
+	default:
+	}
+	return nil
+}
+
+func (s *SMBSession) downloadFile(task *TransferTask, remotePath, localPath string) error {
+	// Stat the file for its own size (needed to chunk the reads); only set
+	// the task total if it isn't already carrying a directory-wide total.
+	var size int64
+	if fi, err := s.share.Stat(remotePath); err == nil {
+		size = fi.Size()
+		if task.loadTotal() <= 0 && size > 0 {
+			task.setTotal(size)
 		}
 	}
 
@@ -658,27 +810,12 @@ func (s *SMBSession) downloadFile(task *TransferTask, remotePath, localPath stri
 		return err
 	}
 	defer dst.Close()
-	buf := make([]byte, 64*1024)
-	for {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
-		}
-		task.waitIfPaused()
-		n, e := f.Read(buf)
-		if n > 0 {
-			dst.Write(buf[:n])
-			task.addProgress(int64(n))
-			s.emitTransferProgress(task)
-		}
-		if e != nil {
-			if e == io.EOF {
-				return nil
-			}
-			return e
-		}
-	}
+
+	return s.pipelinedCopy(task, size, f.ReadAt,
+		func(buf []byte, off int64) error {
+			_, err := dst.WriteAt(buf, off)
+			return err
+		})
 }
 
 func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) error {
@@ -718,12 +855,13 @@ func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) e
 }
 
 func (s *SMBSession) uploadFile(task *TransferTask, localPath, remotePath string) error {
-	// Get local file size first for progress tracking
-	if task.loadTotal() <= 0 {
-		if fi, err := os.Stat(localPath); err == nil {
-			if fi.Size() > 0 {
-				task.setTotal(fi.Size())
-			}
+	// Stat the local file for its own size (needed to chunk the reads); only
+	// set the task total if it isn't already carrying a directory-wide total.
+	var size int64
+	if fi, err := os.Stat(localPath); err == nil {
+		size = fi.Size()
+		if task.loadTotal() <= 0 && size > 0 {
+			task.setTotal(size)
 		}
 	}
 
@@ -737,28 +875,11 @@ func (s *SMBSession) uploadFile(task *TransferTask, localPath, remotePath string
 		return err
 	}
 	defer dst.Close()
-	buf := make([]byte, 64*1024)
-	for {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
-		}
-		task.waitIfPaused()
-		n, e := src.Read(buf)
-		if n > 0 {
-			if _, we := dst.Write(buf[:n]); we != nil {
-				return we
-			}
-			task.addProgress(int64(n))
-			s.emitTransferProgress(task)
-		}
-		if e != nil {
-			if e == io.EOF {
-				return nil
-			}
-			return e
-		}
-	}
+
+	return s.pipelinedCopy(task, size, src.ReadAt,
+		func(buf []byte, off int64) error {
+			_, err := dst.WriteAt(buf, off)
+			return err
+		})
 }
 

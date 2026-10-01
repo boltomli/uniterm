@@ -499,6 +499,14 @@ func (a *App) mcpApprove(req mcp.ApprovalRequest) error {
 		"createdAt":  req.CreatedAt,
 	})
 
+	// High-priority surface: the dialog lives in the app window, so when the
+	// app is in the background the request would sit invisible until the 110s
+	// timeout denies it. Escalate to the OS instead: system notification +
+	// attention request (Dock bounce / taskbar flash) + window raise.
+	if !a.foreground.Load() {
+		a.notifyMCPApproval(req)
+	}
+
 	// No-window guard: if the frontend never answers (window closed), the
 	// timeout below denies. Frontend dialogs auto-dismiss on timeout too.
 	select {

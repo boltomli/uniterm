@@ -44,6 +44,24 @@ type SSHAlgoConfig struct {
 	HostKeys     []string `json:"hostKeys,omitempty"`
 }
 
+// CwdHook injection timing for SSH connections (ConnectionConfig.CwdHookMode).
+const (
+	// CwdHookModeStartup injects the OSC-7 cwd hook right after the login
+	// shell starts (default).
+	CwdHookModeStartup = "startup"
+	// CwdHookModeFollow skips the startup injection; the hook is typed into
+	// the running shell on demand when the frontend's directory-follow toggle
+	// first enables for the session.
+	CwdHookModeFollow = "follow"
+)
+
+// CwdHookInjector is implemented by sessions whose OSC-7 cwd hook can be
+// typed into the shell after the session is up — SSH with CwdHookMode
+// "follow", where the startup injection is skipped.
+type CwdHookInjector interface {
+	InjectCwdHook() error
+}
+
 type ConnectionConfig struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -96,6 +114,11 @@ type ConnectionConfig struct {
 	ShellPath string `json:"shellPath,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)
 	Cwd string `json:"cwd,omitempty"`
+	// CwdHookMode controls when the OSC-7 cwd hook is typed into an SSH login
+	// shell: "" / "startup" injects right after the shell starts (default),
+	// "follow" skips the startup injection and defers it until the frontend's
+	// directory-follow toggle first enables for a session of this connection.
+	CwdHookMode string `json:"cwdHookMode,omitempty"`
 	// Serial port configuration
 	SerialPort     string  `json:"serialPort,omitempty"`
 	SerialBaudRate int     `json:"serialBaudRate,omitempty"`

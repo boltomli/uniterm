@@ -157,42 +157,73 @@ func decodeOSC7Payload(raw string) string {
 	return raw
 }
 
-// buildWSLShellBootstrap preserves the existing WSL startup behavior. SSH and
-// WSL use different launch mechanisms, so changes made to approximate SSH
-// login-shell semantics must not silently alter WSL initialization.
-func buildWSLShellBootstrap(shell string) (files map[string]string, ok bool) {
-	base := shellBasename(shell)
-	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
-	switch base {
-	case "bash":
-		rc := "[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"\n" +
-			"[ -f \"$HOME/.bash_profile\" ] && . \"$HOME/.bash_profile\"\n" +
-			oscFn + "\n" +
-			"case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in\n" +
-			"  \"declare -a\"*) PROMPT_COMMAND=(\"__uniterm_osc7\" \"${PROMPT_COMMAND[@]}\") ;;\n" +
-			"  *) PROMPT_COMMAND=\"__uniterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\" ;;\n" +
-			"esac\n"
-		return map[string]string{"rcfile": rc}, true
-	case "zsh":
-		rc := "[ -f \"$HOME/.zshrc\" ] && . \"$HOME/.zshrc\"\n" +
-			oscFn + "\nprecmd_functions+=(__uniterm_osc7)\n"
-		env := "[ -f \"$HOME/.zshenv\" ] && . \"$HOME/.zshenv\"\n"
-		return map[string]string{".zshrc": rc, ".zshenv": env}, true
+// cwdHookEchoOffLine is the first line typed into a bash/zsh login shell. It
+// turns the pty echo off itself so the long hook line that follows never
+// renders even when the remote rc files re-enable echo or the server ignores
+// the pty-req ECHO mode (the visible-command leak of the old single-line
+// injection), then clears the first-prompt row — which may hold an echo of
+// this short line — and advances one row. Everything the injection renders
+// from here on is deterministic: the shell prints its second prompt on the
+// fresh row, the hook line is read silently, and the cleanup below knows
+// exactly how many rows the injection produced.
+const cwdHookEchoOffLine = " stty -echo; printf '\\r\\033[2K\\n'\n"
+
+// buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
+// login shell (typed, never executed as a remote command, so sshd's native
+// login flow and banner are untouched). The hook ends by restoring echo,
+// clearing the rows the injection produced (so exactly one prompt remains on
+// screen), and printing the ready marker last — a missing stty must leave the
+// marker unsent so the session's blind echo-restore fallback fires.
+// ok=false for unsupported shells, which get a plain ECHO-on shell and no
+// injection.
+//
+// Row accounting for bash/zsh: shells differ in whether accepting a line
+// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
+// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
+// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
+// and distinguishes the two layouts: column 1 means the shell started command
+// output on a fresh row and four rows belong to the injection (prompt #1, the
+// row cleared by the echo-off line, prompt #2, the cursor row); any other
+// column means the shell reused the prompt row and two rows suffice. A
+// missing or late CPR reply falls back to the two-row clear — still correct
+// for prompt-reusing shells and no worse than the old behavior for fresh-row
+// shells.
+const cwdHookCleanup = `printf '\033[6n'; if IFS=';' read -rs -d R -t 1 __u7y __u7x < /dev/tty && [ "${__u7x-}" = 1 ]; then printf '\033[2K\033[1A\033[2K\033[1A\033[2K\033[1A\033[2K\r'; else printf '\r\033[2K\033[1A\033[2K\r'; fi;`
+
+// buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
+// login shell (typed, never executed as a remote command, so sshd's native
+// login flow and banner are untouched). The hook ends by restoring echo,
+// clearing the rows the injection produced (so exactly one prompt remains on
+// screen), and printing the ready marker last — a missing stty must leave the
+// marker unsent so the session's blind echo-restore fallback fires.
+// ok=false for unsupported shells, which get a plain ECHO-on shell and no
+// injection.
+//
+// Row accounting for bash/zsh: shells differ in whether accepting a line
+// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
+// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
+// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
+// and distinguishes the two layouts: column 1 means the shell started command
+// output on a fresh row and four rows belong to the injection (prompt #1, the
+// row cleared by the echo-off line, prompt #2, the cursor row); any other
+// column means the shell reused the prompt row and two rows suffice. A
+// missing or late CPR reply falls back to the two-row clear — still correct
+// for prompt-reusing shells and no worse than the old behavior for fresh-row
+// shells.
+func buildStartupCwdHook(shell string) (string, bool) {
+	body, ok := buildShellCwdHookBody(shell)
+	if !ok {
+		return "", false
 	}
-	return nil, false
+	return cwdHookEchoOffLine + body, true
 }
 
-// buildStartupCwdHook returns the one-line hook typed into a freshly started
-// SSH login shell (typed, never executed as a remote command, so sshd's
-// native login flow and banner are untouched). The pty is requested with ECHO
-// off so the line never renders; the hook ends by restoring echo, clearing
-// the current line (so a prompt printed before the injection landed is
-// overwritten by the one the shell prints after the hook — the prompt renders
-// exactly once), and then printing the ready marker last — a missing stty
-// must leave the marker unsent so the session's blind echo-restore fallback
-// fires. ok=false for unsupported shells, which get a plain ECHO-on shell and
-// no injection.
-func buildStartupCwdHook(shell string) (string, bool) {
+// buildShellCwdHookBody returns the hook line WITHOUT the echo-off prefix
+// (cwdHookEchoOffLine). WSL uses this variant: ConPTY cannot pre-disable
+// pty echo, so the WSL injection arms echo-off first (printing an
+// echo-armed marker) and only then sends the hook body, which must never
+// render.
+func buildShellCwdHookBody(shell string) (string, bool) {
 	base := shellBasename(shell)
 	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
 	switch base {
@@ -203,13 +234,16 @@ func buildStartupCwdHook(shell string) (string, bool) {
 			// ${PROMPT_COMMAND-} keeps the guard from erroring under set -u
 			// when the variable is unset.
 			`*) [[ "${PROMPT_COMMAND-}" == *__uniterm_osc7* ]] || PROMPT_COMMAND="__uniterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;` + " " +
-			"esac" + `; stty echo; printf '\r\033[2K'; printf '\033]7777;uniterm-ok\007'` + "\n", true
+			"esac; stty echo; " + cwdHookCleanup + ` printf '\033]7777;uniterm-ok\007'` + "\n", true
 	case "zsh":
 		// -0 default guards against set -u when precmd_functions is unset.
 		return " " + oscFn + "; " +
 			`(( ${precmd_functions[(I)__uniterm_osc7]-0} )) || precmd_functions+=(__uniterm_osc7)` +
-			`; stty echo; printf '\r\033[2K'; printf '\033]7777;uniterm-ok\007'` + "\n", true
+			`; stty echo; ` + cwdHookCleanup + ` printf '\033]7777;uniterm-ok\007'` + "\n", true
 	case "fish":
+		// fish has no read-until-delimiter for the CPR probe, so it keeps the
+		// old single-line injection: echo can still leak on fish and the
+		// prompt may render twice on fresh-row fish setups.
 		return " if not functions -q __uniterm_osc7; " +
 			"functions -c fish_prompt __uniterm_orig_prompt; " +
 			"function fish_prompt; __uniterm_osc7; __uniterm_orig_prompt; end; " +
@@ -219,16 +253,22 @@ func buildStartupCwdHook(shell string) (string, bool) {
 	return "", false
 }
 
-// hookReadyScanner strips the cwd hook's ready marker from the terminal byte
-// stream (it is pure control output, never meant to render) and reports each
-// completed marker so the session can confirm the hook came up. It tolerates
-// markers split across read chunks by holding back a trailing partial-prefix
-// tail, exactly like osc7Scanner. Once a marker is confirmed the caller sets
-// done and the scanner becomes a passthrough, so the hold-back never delays
-// steady-state output.
+// hookReadyScanner strips control markers from the terminal byte stream (they
+// are pure control output, never meant to render) and reports each completed
+// marker so the session can confirm a phase of the cwd-hook injection. It
+// tolerates markers split across read chunks by holding back a trailing
+// partial-prefix tail, exactly like osc7Scanner. Once a marker is confirmed
+// the caller sets done and the scanner becomes a passthrough, so the hold-back
+// never delays steady-state output.
 type hookReadyScanner struct {
+	marker   string
 	leftover []byte
 	done     bool
+}
+
+// newHookReadyScanner returns a scanner for the given control marker.
+func newHookReadyScanner(marker string) hookReadyScanner {
+	return hookReadyScanner{marker: marker}
 }
 
 // Feed consumes the next chunk of the terminal byte stream. It returns the
@@ -242,28 +282,28 @@ func (sc *hookReadyScanner) Feed(data []byte) (cleaned []byte, found bool) {
 	buf := append(append([]byte{}, sc.leftover...), data...)
 	sc.leftover = nil
 	for {
-		i := bytes.Index(buf, []byte(sshCwdHookReadyMarker))
+		i := bytes.Index(buf, []byte(sc.marker))
 		if i < 0 {
-			keep := partialMarkerLen(buf)
+			keep := sc.partialMarkerLen(buf)
 			cleaned = append(cleaned, buf[:len(buf)-keep]...)
 			sc.leftover = append(sc.leftover, buf[len(buf)-keep:]...)
 			return cleaned, found
 		}
 		cleaned = append(cleaned, buf[:i]...)
-		buf = buf[i+len(sshCwdHookReadyMarker):]
+		buf = buf[i+len(sc.marker):]
 		found = true
 	}
 }
 
 // partialMarkerLen returns the length of the longest suffix of buf that is a
-// proper prefix of the ready marker.
-func partialMarkerLen(buf []byte) int {
-	max := len(sshCwdHookReadyMarker) - 1
+// proper prefix of the scanner's marker.
+func (sc *hookReadyScanner) partialMarkerLen(buf []byte) int {
+	max := len(sc.marker) - 1
 	if len(buf) < max {
 		max = len(buf)
 	}
 	for k := max; k > 0; k-- {
-		if bytes.HasPrefix([]byte(sshCwdHookReadyMarker), buf[len(buf)-k:]) {
+		if bytes.HasPrefix([]byte(sc.marker), buf[len(buf)-k:]) {
 			return k
 		}
 	}
@@ -344,37 +384,3 @@ func closeSSHSessionAsync(sess *ssh.Session) {
 	}
 }
 
-func isSSHIntegrationTempPath(path string) bool {
-	const prefix = "/tmp/uniterm-"
-	if !strings.HasPrefix(path, prefix) || len(path) != len(prefix)+6 {
-		return false
-	}
-	for _, ch := range path[len(prefix):] {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-// cleanRemoteTempPath extracts exactly one standalone, strictly validated
-// mktemp path. Login banners or shell startup messages may surround the path,
-// but zero or multiple candidates are rejected so cleanup is never ambiguous.
-// Shared by the SSH and WSL bootstrap temp-file paths.
-func cleanRemoteTempPath(out string) (string, error) {
-	var path string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if !isSSHIntegrationTempPath(line) {
-			continue
-		}
-		if path != "" {
-			return "", fmt.Errorf("multiple remote temp paths in output %q", out)
-		}
-		path = line
-	}
-	if path == "" {
-		return "", fmt.Errorf("remote temp path not found in output %q", out)
-	}
-	return path, nil
-}

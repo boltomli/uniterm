@@ -130,8 +130,10 @@ func dialTestSSHClient(t *testing.T, addr string) *ssh.Client {
 }
 
 // plainConfig returns a minimal connection config for attach. Each attach
-// opens TWO session channels on the test server: the one-shot exec channel
-// used to detect the shell for cwd-hook injection, and the shell itself.
+// opens ONE session channel on the test server — the shell itself. The
+// cwd-hook shell detection no longer runs on the session connection: the
+// startup probe rides a separate short-lived TCP connection in Connect
+// (issues #1031/#1057) and channel clones inherit the probe result.
 func plainConfig() ConnectionConfig {
 	return ConnectionConfig{User: "tester", Host: "testhost", AuthType: "password", Password: "pw"}
 }
@@ -177,13 +179,13 @@ func TestSSHChannelCloneSharesConnection(t *testing.T) {
 	}
 
 	// Core assertion (issue #983): one TCP connection, no re-auth. Each
-	// attach opens two session channels (cwd-hook shell detection exec +
-	// the shell itself), so parent and clone make four in total.
+	// attach opens one session channel (the shell); the shell probe runs on
+	// its own connection, so parent and clone never add exec channels here.
 	if got := *tcpConns; got != 1 {
 		t.Fatalf("server accepted %d TCP connections, want 1 (clone must not re-dial)", got)
 	}
-	if got := *channels; got != 4 {
-		t.Fatalf("server opened %d channels, want 4 (detection exec + shell per attach)", got)
+	if got := *channels; got != 2 {
+		t.Fatalf("server opened %d channels, want 2 (one shell per attach)", got)
 	}
 }
 

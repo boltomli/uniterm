@@ -1,0 +1,34 @@
+[
+  {
+    "Architecture": "amd64",
+    "Author": "",
+    "Comment": "buildkit.dockerfile.v0",
+    "Config": {
+      "Cmd": ["nginx", "-g", "daemon off;"],
+      "Entrypoint": ["/docker-entrypoint.sh"],
+      "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+      "ExposedPorts": { "80/tcp": {} },
+      "WorkingDir": ""
+    },
+    "Created": "2026-09-19T00:20:21.403555998Z",
+    "Id": "sha256:e9567a94eddcc1f293d083044d4c988b853fe17c2a462f343704bcb1ea01c9a6",
+    "Metadata": { "LastTagTime": "0001-01-01T00:00:00Z" },
+    "Os": "linux",
+    "Parent": "",
+    "RepoDigests": ["docker.example.com/library/nginx@sha256:abe47724e466aeab9a345d8e46a221c2fa8953c7848bb4a3bd9976a7199f8cf2"],
+    "RepoTags": ["docker.example.com/library/nginx:latest"],
+    "RootFS": {
+      "Layers": [
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      "Type": "layers"
+    },
+    "Size": 162076942
+  }
+]

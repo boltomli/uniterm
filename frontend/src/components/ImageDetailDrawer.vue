@@ -27,7 +27,7 @@
             class="layer-cmd"
             :class="{ expanded: expandedLayers.has(i) }"
             @click.stop="toggleLayer(i)"
-          >{{ l.createdBy || '—' }}</span>
+          >{{ l.createdBy || shortDigest(l.id) || '—' }}</span>
           <span class="layer-meta">
             <span v-if="l.size" class="layer-size">{{ l.size }}</span>
             <span v-if="l.createdAt" class="layer-time">{{ l.createdAt }}</span>
@@ -138,6 +138,13 @@ function toggleLayer(i: number) {
   if (next.has(i)) next.delete(i)
   else next.add(i)
   expandedLayers.value = next
+}
+
+// WSLC 的 image inspect 不返回逐层命令，层列表只有层摘要（diff ID）；
+// createdBy 为空时用短摘要占位，避免整列显示「—」。
+function shortDigest(id: string) {
+  const raw = (id || '').replace(/^sha256:/, '')
+  return raw.length > 12 ? raw.slice(0, 12) : raw
 }
 
 async function loadHistory() {

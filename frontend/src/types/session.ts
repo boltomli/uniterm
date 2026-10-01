@@ -153,6 +153,11 @@ export interface ConnectionConfig {
   // missing $DISPLAY / xauth — see backend x11_forward.go.
   x11Forwarding?: boolean
   agentForwarding?: boolean
+  // When the OSC-7 cwd hook is typed into the SSH login shell: 'startup'
+  // injects right after the shell starts (default, stored as empty);
+  // 'follow' defers injection until the file panel's path-follow toggle is
+  // first enabled for a session.
+  cwdHookMode?: 'startup' | 'follow'
   // Enable session output log automatically on first connect. Applies
   // to terminal-stream types (ssh/telnet/serial/mosh/local).
   logOnConnect?: boolean

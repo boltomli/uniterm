@@ -483,6 +483,29 @@ func ParseImageHistory(rt Runtime, out []byte) ([]ImageLayer, error) {
 	return list, nil
 }
 
+// ParseImageLayersFromInspect 从 image inspect 的 JSON 数组（取 [0]）构造层列表，
+// 供没有 history 子命令的运行时（WSLC）使用：其 inspect 不含 History，只有
+// RootFS.Layers 的层摘要，故每层仅能给出 ID（无 CreatedBy、无逐层大小）。
+// RootFS.Layers 自底向上排列，这里反转成与 history 输出一致的「新层在前」。
+func ParseImageLayersFromInspect(raw []byte) ([]ImageLayer, error) {
+	var arr []map[string]any
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return nil, fmt.Errorf("image inspect: %w", err)
+	}
+	if len(arr) == 0 {
+		return nil, fmt.Errorf("image inspect: empty result")
+	}
+	root, _ := arr[0]["RootFS"].(map[string]any)
+	layers, _ := root["Layers"].([]any)
+	list := make([]ImageLayer, 0, len(layers))
+	for i := len(layers) - 1; i >= 0; i-- {
+		if id, ok := layers[i].(string); ok && id != "" {
+			list = append(list, ImageLayer{ID: id})
+		}
+	}
+	return list, nil
+}
+
 func ParseStats(rt Runtime, out []byte) ([]Stats, error) {
 	var list []Stats
 	jsonLines(out, func(m map[string]any) {

@@ -132,6 +132,24 @@ const clients = computed(() => [
     }, null, 2),
   },
   {
+    id: 'dsh',
+    label: 'DeepSeek',
+    hint: t('mcp.dshHint'),
+    // Cordis overlay YAML snippet; token kept via env indirection (DSH's own
+    // doc pattern) so the secret isn't inline in the config file.
+    config: [
+      '- id: mcp-uniterm',
+      "  name: '@deepseek-ai/dsh-mcp-client'",
+      '  config:',
+      '    serverName: uniterm',
+      '    transport: streamable-http',
+      `    url: ${url.value}`,
+      '    headers:',
+      '      Authorization: !!js `Bearer ${process.env.UNITERM_MCP_TOKEN}`',
+      '    toolCallTimeoutMs: 130000',
+    ].join('\n'),
+  },
+  {
     id: 'kimi',
     label: 'Kimi',
     hint: t('mcp.kimiHint'),

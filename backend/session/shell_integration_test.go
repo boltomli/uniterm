@@ -99,9 +99,10 @@ func TestBuildStartupCwdHook(t *testing.T) {
 			wantOK: true,
 			mustHave: []string{
 				"__uniterm_osc7",
-				`printf '\r\033[2K'`,
-				`printf '\033]7777;uniterm-ok\007'`,
+				"stty -echo",
+				`\033[6n`,
 				"stty echo",
+				`printf '\033]7777;uniterm-ok\007'`,
 			},
 		},
 		{
@@ -111,9 +112,10 @@ func TestBuildStartupCwdHook(t *testing.T) {
 			mustHave: []string{
 				"__uniterm_osc7",
 				"precmd_functions",
-				`printf '\r\033[2K'`,
-				`printf '\033]7777;uniterm-ok\007'`,
+				"stty -echo",
+				`\033[6n`,
 				"stty echo",
+				`printf '\033]7777;uniterm-ok\007'`,
 			},
 		},
 		{
@@ -146,6 +148,11 @@ func TestBuildStartupCwdHook(t *testing.T) {
 			}
 			if !strings.Contains(got, "__uniterm_osc7") {
 				t.Fatalf("snippet must define the __uniterm_osc7 hook: %q", got)
+			}
+			// bash/zsh inject two lines: the echo-off line must come first so
+			// the hook line itself never renders.
+			if tt.shell != "/usr/bin/fish" && !strings.HasPrefix(got, " stty -echo;") {
+				t.Fatalf("bash/zsh snippet must start with the echo-off line: %q", got)
 			}
 			for _, want := range tt.mustHave {
 				if !strings.Contains(got, want) {
@@ -193,7 +200,7 @@ func TestGeneratedStartupCwdHookHasValidBashSyntax(t *testing.T) {
 }
 
 func TestHookReadyScannerSingleChunk(t *testing.T) {
-	var sc hookReadyScanner
+	sc := newHookReadyScanner(sshCwdHookReadyMarker)
 	in := []byte("prompt stuff" + sshCwdHookReadyMarker + "more")
 	cleaned, found := sc.Feed(in)
 	if !found {
@@ -206,7 +213,7 @@ func TestHookReadyScannerSingleChunk(t *testing.T) {
 
 func TestHookReadyScannerSplitAcrossChunks(t *testing.T) {
 	m := []byte(sshCwdHookReadyMarker)
-	var sc hookReadyScanner
+	sc := newHookReadyScanner(sshCwdHookReadyMarker)
 	c1, found1 := sc.Feed(append([]byte("abc"), m[:7]...))
 	if found1 || string(c1) != "abc" {
 		t.Fatalf("first chunk found=%v cleaned=%q", found1, c1)
@@ -221,7 +228,7 @@ func TestHookReadyScannerSplitAcrossChunks(t *testing.T) {
 }
 
 func TestHookReadyScannerNoMarkerPassthrough(t *testing.T) {
-	var sc hookReadyScanner
+	sc := newHookReadyScanner(sshCwdHookReadyMarker)
 	in := []byte("normal terminal output\r\n$ ")
 	cleaned, found := sc.Feed(in)
 	if found {
@@ -233,7 +240,7 @@ func TestHookReadyScannerNoMarkerPassthrough(t *testing.T) {
 }
 
 func TestHookReadyScannerStopsAfterDone(t *testing.T) {
-	var sc hookReadyScanner
+	sc := newHookReadyScanner(sshCwdHookReadyMarker)
 	if _, found := sc.Feed([]byte(sshCwdHookReadyMarker)); !found {
 		t.Fatal("first marker must be detected")
 	}
@@ -245,20 +252,6 @@ func TestHookReadyScannerStopsAfterDone(t *testing.T) {
 	}
 	if string(cleaned) != string(in) {
 		t.Fatalf("cleaned = %q, want input unchanged", cleaned)
-	}
-}
-
-func TestWSLBootstrapKeepsIndependentStartupBehavior(t *testing.T) {
-	files, ok := buildWSLShellBootstrap("/bin/bash")
-	if !ok {
-		t.Fatal("WSL bash must be supported")
-	}
-	rc := files["rcfile"]
-	if !strings.Contains(rc, "$HOME/.bashrc") || !strings.Contains(rc, "$HOME/.bash_profile") {
-		t.Fatalf("WSL bootstrap must preserve its existing rc files: %s", rc)
-	}
-	if strings.Contains(rc, "/etc/profile") || strings.Contains(rc, "$HOME/.bash_login") {
-		t.Fatalf("SSH login emulation must not leak into WSL bootstrap: %s", rc)
 	}
 }
 
@@ -331,56 +324,3 @@ func TestSSHRunCommandTimesOutWhileOpeningSession(t *testing.T) {
 	_ = client.Close()
 }
 
-func TestSSHIntegrationTempPathValidation(t *testing.T) {
-	valid := []string{
-		"/tmp/uniterm-Ab12Z9",
-		"/tmp/uniterm-000000",
-	}
-	for _, path := range valid {
-		if !isSSHIntegrationTempPath(path) {
-			t.Errorf("isSSHIntegrationTempPath(%q) = false, want true", path)
-		}
-	}
-
-	invalid := []string{
-		"",
-		"/tmp/uniterm-",
-		"/tmp/uniterm-short",
-		"/tmp/uniterm-Ab12Z9/child",
-		"/tmp/uniterm-Ab12Z_",
-		"/var/tmp/uniterm-Ab12Z9",
-	}
-	for _, path := range invalid {
-		if isSSHIntegrationTempPath(path) {
-			t.Errorf("isSSHIntegrationTempPath(%q) = true, want false", path)
-		}
-	}
-}
-
-func TestCleanRemoteTempPath(t *testing.T) {
-	tests := []struct {
-		name    string
-		out     string
-		want    string
-		wantErr bool
-	}{
-		{name: "plain", out: "/tmp/uniterm-Ab12Z9\n", want: "/tmp/uniterm-Ab12Z9"},
-		{name: "crlf", out: "/tmp/uniterm-Ab12Z9\r\n", want: "/tmp/uniterm-Ab12Z9"},
-		{name: "surrounded by banner", out: "Welcome\n/tmp/uniterm-Ab12Z9\nLast login\n", want: "/tmp/uniterm-Ab12Z9"},
-		{name: "embedded path rejected", out: "created /tmp/uniterm-Ab12Z9\n", wantErr: true},
-		{name: "whitespace rejected", out: " /tmp/uniterm-Ab12Z9 \n", wantErr: true},
-		{name: "multiple paths rejected", out: "/tmp/uniterm-Ab12Z9\n/tmp/uniterm-Cd34Y8\n", wantErr: true},
-		{name: "invalid suffix rejected", out: "/tmp/uniterm-Ab12Z_\n", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := cleanRemoteTempPath(tt.out)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("cleanRemoteTempPath(%q) error = %v, wantErr %v", tt.out, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("cleanRemoteTempPath(%q) = %q, want %q", tt.out, got, tt.want)
-			}
-		})
-	}
-}

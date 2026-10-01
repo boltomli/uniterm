@@ -91,6 +91,22 @@ type SSHSession struct {
 	// re-injection still fires.
 	cwdHookInstalled atomic.Bool
 
+	// cwdHookFollow marks connections with CwdHookMode "follow": the hook is
+	// not injected at attach time; InjectCwdHook types it into the running
+	// shell on demand when the frontend enables directory follow.
+	cwdHookFollow bool
+
+	// detectedShell holds the remote login shell reported by the pre-connect
+	// probe ("" when the probe failed, was skipped for follow mode, or timed
+	// out). attach builds the startup cwd hook from it; channel clones inherit
+	// it from their source session so they never probe at all.
+	detectedShell string
+
+	// cwdHookTriggered guards the on-demand injection against repeated
+	// toggle clicks. Session objects are recreated on reconnect, so the
+	// guard re-arms naturally.
+	cwdHookTriggered atomic.Bool
+
 	// clientRef wraps the shared *ssh.Client with reference counting so a
 	// channel clone (issue #983, Xshell-style "duplicate channel") can hold
 	// the authenticated connection open after the source tab closes.
@@ -127,7 +143,7 @@ func newSSHClientRef(client *ssh.Client) *sshClientRef {
 }
 
 func NewSSHSession(id string) *SSHSession {
-	return &SSHSession{
+	s := &SSHSession{
 		baseSession: baseSession{
 			id:          id,
 			sessionType: "ssh",
@@ -135,6 +151,8 @@ func NewSSHSession(id string) *SSHSession {
 		},
 		quit: make(chan struct{}),
 	}
+	s.hookReady = newHookReadyScanner(sshCwdHookReadyMarker)
+	return s
 }
 
 // keyboardInteractiveChallenge builds the keyboard-interactive callback used
@@ -209,6 +227,7 @@ func NewSSHChannelSession(id string, source *SSHSession) *SSHSession {
 	source.mu.RLock()
 	ref := source.clientRef
 	remoteOS := source.remoteOS
+	detectedShell := source.detectedShell
 	source.mu.RUnlock()
 	clone := NewSSHSession(id)
 	if ref != nil {
@@ -216,6 +235,9 @@ func NewSSHChannelSession(id string, source *SSHSession) *SSHSession {
 		clone.clientRef = ref
 	}
 	clone.remoteOS = remoteOS
+	// Inherit the shell probe result so the clone's attach needs no detection
+	// of its own — the shared client must not carry exec requests.
+	clone.detectedShell = detectedShell
 	clone.channelClone = true
 	return clone
 }
@@ -350,6 +372,24 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 		s.setStatus(StatusError)
 		return err
 	}
+
+	// The login-shell probe for the cwd hook runs on a short-lived connection
+	// of its own, dialled in parallel with the main one (issues #1031/#1057).
+	// An exec on the main connection before the shell session would
+	//   (a) consume sshd's one-shot PAM loginmsg, so the shell session never
+	//       displays the MOTD (the "Last login" line is unaffected), and
+	//   (b) kill the login outright on CLI-only appliances whose SSH servers
+	//       implement only pty-req + shell and tear down the transport on exec.
+	// The probe result is an optional enhancement: any failure degrades to no
+	// injection, exactly like the old unsupported-shell skip.
+	s.cwdHookFollow = config.CwdHookMode == CwdHookModeFollow
+	probeCh := make(chan string, 1)
+	if !s.cwdHookFollow {
+		go func() { probeCh <- probeCwdShellSeparately(config) }()
+	} else {
+		log.Writef("ssh: cwd hook deferred to directory-follow toggle")
+	}
+
 	client, err := dialSSHWithAuthRetry(addr, sets, authConfig, fallbackConfig, func() (net.Conn, error) {
 		return dialFirstHop(addr, config.Proxy)
 	})
@@ -368,6 +408,23 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	if strings.Contains(string(client.ServerVersion()), windowsOpenSSHMarker) {
 		s.remoteOS = remoteOSWindowsOpenSSH
 	}
+
+	// The probe usually lands while the main dial is still running (it does
+	// strictly less work than dial + auth), so the wait below costs nothing in
+	// the common case. Bound it so a straggling probe (slow network, TCP
+	// black hole) delays the login by at most cwdProbeWaitTimeout — a missing
+	// probe result only skips the optional cwd-hook injection.
+	var detectedShell string
+	if !s.cwdHookFollow {
+		select {
+		case detectedShell = <-probeCh:
+		case <-time.After(cwdProbeWaitTimeout):
+			log.Writef("ssh: cwd hook probe did not finish within %s, skipping startup injection", cwdProbeWaitTimeout)
+		}
+	}
+	s.mu.Lock()
+	s.detectedShell = detectedShell
+	s.mu.Unlock()
 
 	s.mu.Lock()
 	s.clientRef = newSSHClientRef(client)
@@ -390,12 +447,29 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 // (issue #983). On failure the channel is closed but the client stays open —
 // the dial path's own error handling closes its client, clones hold a ref.
 func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
-	// Shell detection MUST run before opening the shell channel: it executes
-	// `echo $SHELL` on a second exec channel, and some servers (e.g. dropbear
-	// on OpenWrt CPEs) kill the whole connection when an exec channel runs
-	// while another session channel is open — the later pty-req then fails
-	// with EOF. Detect first, close the probe, then open the shell channel.
-	injectHook, injectShell := startupCwdHook(client)
+	// The startup cwd-hook injection is decided by s.detectedShell — probed
+	// on a separate short-lived connection in Connect, or inherited by channel
+	// clones from their source session. The main connection NEVER carries an
+	// exec request: on OpenSSH the first exec session consumes the one-shot
+	// PAM loginmsg, so the shell session would never display the MOTD, and
+	// CLI-only appliances (Netgear M4300 etc.) tear down the whole transport
+	// on exec, killing the login. CwdHookMode "follow"
+	// skips the startup injection entirely: InjectCwdHook re-detects on
+	// demand.
+	s.cwdHookFollow = config.CwdHookMode == CwdHookModeFollow
+	injectHook, injectShell := "", ""
+	if s.cwdHookFollow {
+		log.Writef("ssh: cwd hook deferred to directory-follow toggle")
+	} else {
+		s.mu.RLock()
+		shell := s.detectedShell
+		s.mu.RUnlock()
+		if snippet, ok := buildStartupCwdHook(shell); ok {
+			injectHook, injectShell = snippet, shellBasename(shell)
+		} else {
+			log.Writef("ssh: cwd hook skipped (no probe result or unsupported shell %q)", shell)
+		}
+	}
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -506,11 +580,15 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		}
 	}
 
+	// Publish the channels under the session mutex: the on-demand
+	// InjectCwdHook path reads them from a frontend-triggered goroutine.
+	s.mu.Lock()
 	s.client = client
 	s.session = session
 	s.stdin = stdinPipe
 	s.stdout = stdoutPipe
 	s.stderr = stderrPipe
+	s.mu.Unlock()
 	s.setStatus(StatusConnected)
 
 	// Apply pending terminal size if one was set before connection.
@@ -786,9 +864,12 @@ func (s *SSHSession) Disconnect() error {
 	return nil
 }
 
-// startupCwdHook detects the remote login shell over a separate exec channel
-// and returns the hook line to type into it after it starts. An empty snippet
-// means no injection (detection failed or the shell is unsupported).
+// startupCwdHook detects the remote login shell over an exec channel on the
+// live client. Only used by the on-demand path (InjectCwdHook, directory-follow
+// mode): the startup path probes on a connection of its own
+// (probeCwdShellSeparately) so the main connection never carries an exec
+// request. An empty snippet means no injection (detection failed or the shell
+// is unsupported).
 func startupCwdHook(client *ssh.Client) (snippet, shell string) {
 	if client == nil {
 		return "", ""
@@ -805,6 +886,67 @@ func startupCwdHook(client *ssh.Client) (snippet, shell string) {
 		return "", ""
 	}
 	return snippet, shellBasename(shell)
+}
+
+// cwdProbeDialTimeout bounds the probe connection's TCP dial. It only needs
+// to beat the main dial for the probe to be free (they start together); a
+// probe that loses that race is skipped rather than delaying the login.
+const (
+	cwdProbeDialTimeout = 6 * time.Second
+	// cwdProbeWaitTimeout bounds how long Connect waits for the probe result
+	// after the main dial completes. ...
+	cwdProbeWaitTimeout = 8 * time.Second
+)
+
+// probeCwdShellSeparately dials a short-lived SSH connection of its own and
+// runs `echo $SHELL` there. The main session connection therefore never
+// carries an exec request: on OpenSSH the first exec session consumes the
+// one-shot PAM loginmsg so the shell session never displays the MOTD, and
+// CLI-only appliances tear down the whole transport on exec, killing the
+// login. Any failure degrades to no cwd-hook
+// injection — the hook is an optional enhancement.
+//
+// Re-auth on the probe connection works for password/key/agent (the same
+// credentials the main dial uses). Interactive-only challenges (2FA) cannot
+// be answered non-interactively; the probe fails and the hook is skipped —
+// the session itself is unaffected.
+func probeCwdShellSeparately(config ConnectionConfig) string {
+	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	factory := func() (*ssh.ClientConfig, func(), error) {
+		authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &ssh.ClientConfig{
+			User:            config.User,
+			Auth:            authMethods,
+			Timeout:         cwdProbeDialTimeout,
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}, cleanup, nil
+	}
+	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
+	if err != nil {
+		log.Writef("ssh: cwd hook probe skipped (algorithms: %v)", err)
+		return ""
+	}
+	client, err := dialSSHWithAuthRetry(addr, sets, factory, factory, func() (net.Conn, error) {
+		return dialFirstHop(addr, config.Proxy)
+	})
+	if err != nil {
+		// Expected on exec-less appliance servers: the probe transport dies,
+		// the main connection is unaffected.
+		log.Writef("ssh: cwd hook probe connection failed: %v", err)
+		return ""
+	}
+	defer client.Close()
+	shell, err := sshRunCommand(client, "echo $SHELL", "", sshIntegrationTimeout)
+	if err != nil {
+		log.Writef("ssh: cwd hook probe exec failed: %v", err)
+		return ""
+	}
+	shell = strings.TrimSpace(shell)
+	log.Writef("ssh: login shell probed on a separate connection: %q", shell)
+	return shell
 }
 
 // cwdHookConfirmTimeout bounds how long the session waits for the injected
@@ -830,6 +972,42 @@ func (s *SSHSession) watchCwdHookConfirm() {
 		// Leading space keeps it out of bash history (HISTCONTROL=ignorespace).
 		_, _ = stdin.Write([]byte(" stty echo\n"))
 	}
+}
+
+// InjectCwdHook types the OSC-7 cwd hook into the running login shell on
+// demand, for connections with CwdHookMode "follow" (attach skipped the
+// startup injection and shell detection). Called from the frontend when
+// directory follow is first enabled for the session's file panel. Repeated
+// calls are no-ops; a transiently failed attempt re-arms so a later call can
+// retry.
+func (s *SSHSession) InjectCwdHook() error {
+	if !s.cwdHookTriggered.CompareAndSwap(false, true) {
+		return nil
+	}
+	if s.Status() != StatusConnected {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("ssh session not connected")
+	}
+	s.mu.RLock()
+	client, stdin := s.client, s.stdin
+	s.mu.RUnlock()
+	if client == nil || stdin == nil {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("ssh session not attached")
+	}
+	snippet, shell := startupCwdHook(client)
+	if snippet == "" {
+		// Unsupported shell or failed detection — definitive for this
+		// session object. Keep the guard set so later toggles don't re-probe.
+		return fmt.Errorf("cwd hook unavailable (shell %q)", shell)
+	}
+	if _, err := stdin.Write(s.encodeInput([]byte(snippet))); err != nil {
+		s.cwdHookTriggered.Store(false)
+		return fmt.Errorf("cwd hook write: %w", err)
+	}
+	log.Writef("ssh: cwd hook injected on demand (shell=%s)", shell)
+	go s.watchCwdHookConfirm()
+	return nil
 }
 
 func (s *SSHSession) Resize(cols, rows int) error {

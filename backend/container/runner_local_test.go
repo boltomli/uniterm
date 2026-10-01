@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,6 +22,25 @@ func TestLocalRunnerRun(t *testing.T) {
 	}
 	if string(out) == "" {
 		t.Fatal("empty output")
+	}
+}
+
+// 失败且 stderr 为空时，错误文本退回 stdout（wslc 的 exec 失败即如此），
+// 上层才能据此给出「镜像内没有 shell」这类可读提示。
+func TestLocalRunnerErrorFallsBackToStdout(t *testing.T) {
+	r := NewLocalRunner()
+	var argv []string
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd", "/c", "echo boom && exit 7"}
+	} else {
+		argv = []string{"sh", "-c", "echo boom && exit 7"}
+	}
+	_, err := r.Run(context.Background(), argv)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error should carry stdout text, got %v", err)
 	}
 }
 

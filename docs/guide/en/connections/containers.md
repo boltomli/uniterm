@@ -66,7 +66,7 @@ Four runtimes are supported: **Docker**, **Podman**, **nerdctl (containerd)**, a
 | Transport | **Remote host (SSH)** (default) reuses an existing SSH connection — inheriting its credentials and jump host configuration — to manage containers on a remote host; **Local machine** uses the container runtime installed on this machine |
 | SSH Connection | When the transport is remote host, select a saved SSH connection as the channel |
 
-> nerdctl supports switching the containerd namespace from the top bar. The WSLC runtime does not offer the "Restart" or "Rename" actions.
+> nerdctl supports switching the containerd namespace from the top bar. The WSLC runtime does not offer the "Restart" or "Rename" actions; its image layers come from `image inspect` (layer digests only — the CLI has no `history` command).
 
 ### Container Management
 
