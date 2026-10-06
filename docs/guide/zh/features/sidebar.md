@@ -156,6 +156,6 @@ uniTerm 自动记录终端中输入的命令，去重后保存在本地。历史
 ::: tip 相关内容
 - [SSH 隧道](/zh/features/ssh-tunnel) —— 隧道标签页的完整说明
 - [服务器监控](/zh/connections/server-monitor) —— 完整监控标签页
-- [标签和工作区](/zh/features/workspace) —— 标签页与面板管理
+- [工作区](/zh/connections/workspace) —— 标签页与面板管理
 - [智能补全](/zh/connections/remote-terminal) —— 终端输入的补全建议
 :::

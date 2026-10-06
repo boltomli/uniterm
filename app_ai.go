@@ -302,6 +302,29 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 					"index": currentBlockIndex,
 				})
 			}
+			if deltaType == "thinking_delta" && currentBlock != nil {
+				thinking, _ := delta["thinking"].(string)
+				if thinking == "" {
+					continue
+				}
+				if s, ok := currentBlock["thinking"].(string); ok {
+					currentBlock["thinking"] = s + thinking
+				} else {
+					currentBlock["thinking"] = thinking
+				}
+				a.emit("ai:thinking", aiThinkingEvent{
+					Text:  thinking,
+					Index: currentBlockIndex,
+				})
+			}
+			if deltaType == "signature_delta" && currentBlock != nil {
+				sig, _ := delta["signature"].(string)
+				if s, ok := currentBlock["signature"].(string); ok {
+					currentBlock["signature"] = s + sig
+				} else {
+					currentBlock["signature"] = sig
+				}
+			}
 			if deltaType == "input_json_delta" && currentBlock != nil {
 				partial, _ := delta["partial_json"].(string)
 				if currentBlock["input"] == nil || fmt.Sprintf("%T", currentBlock["input"]) != "string" {
@@ -475,6 +498,11 @@ func convertAnthropicMessageToOpenAI(msg map[string]interface{}) []map[string]in
 		if len(toolCalls) > 0 {
 			out["tool_calls"] = toolCalls
 		}
+		// A message whose only blocks were thinking/signature would otherwise
+		// serialize with neither content nor tool_calls and be rejected.
+		if _, hasContent := out["content"]; !hasContent && len(toolCalls) == 0 {
+			out["content"] = ""
+		}
 		results = append([]map[string]interface{}{out}, results...)
 
 	default:
@@ -606,16 +634,28 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	// Accumulating buffer for an open "thinking" block (OpenAI-compatible
+	// reasoning models stream delta.reasoning_content before/around content).
+	var reasoningBuf bytes.Buffer
+
 	flushCurrentTextBlock := func() {
 		if currentBlock == nil {
 			return
 		}
-		if t, _ := currentBlock["type"].(string); t == "text" && currentTextBuf.Len() > 0 {
-			currentBlock["text"] = currentTextBuf.String()
+		switch t, _ := currentBlock["type"].(string); t {
+		case "text":
+			if currentTextBuf.Len() > 0 {
+				currentBlock["text"] = currentTextBuf.String()
+			}
+			currentTextBuf.Reset()
+		case "thinking":
+			if reasoningBuf.Len() > 0 {
+				currentBlock["thinking"] = reasoningBuf.String()
+			}
+			reasoningBuf.Reset()
 		}
 		contentBlocks = append(contentBlocks, currentBlock)
 		currentBlock = nil
-		currentTextBuf.Reset()
 	}
 
 	// Emit message_start at the beginning
@@ -675,6 +715,36 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 		}
 		choice := ev.Choices[0]
 		delta := choice.Delta
+
+		// Handle reasoning/thinking content (DeepSeek-R1, QwQ, o-series via
+		// compatible gateways). Accumulated into a thinking block so it is
+		// preserved in message history, and streamed live via ai:thinking.
+		if delta.ReasoningContent != "" {
+			if currentBlock == nil || currentBlock["type"] != "thinking" {
+				// Close previous block if any
+				if currentBlock != nil {
+					flushCurrentTextBlock()
+					a.emit("ai:content_block_stop", aiContentBlockStopEvent{
+						Index: currentBlockIndex,
+					})
+				}
+				currentBlockIndex++
+				currentBlock = map[string]interface{}{
+					"type":     "thinking",
+					"thinking": "",
+				}
+				reasoningBuf.Reset()
+				a.emit("ai:block_start", aiBlockStartEvent{
+					Index:        currentBlockIndex,
+					ContentBlock: map[string]interface{}{"type": "thinking"},
+				})
+			}
+			reasoningBuf.WriteString(delta.ReasoningContent)
+			a.emit("ai:thinking", aiThinkingEvent{
+				Text:  delta.ReasoningContent,
+				Index: currentBlockIndex,
+			})
+		}
 
 		// Handle text content
 		if delta.Content != "" {
@@ -1028,6 +1098,8 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 	// doesn't work — keep one per output_index.
 	textBufs := make(map[int]*bytes.Buffer)
 	inputBufs := make(map[int]*bytes.Buffer)
+	// Reasoning summary accumulation, keyed by output_index like the others.
+	reasoningBufs := make(map[int]*bytes.Buffer)
 
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -1090,6 +1162,17 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 					ContentBlock: block,
 				})
 				nextBlockIndex++
+			case "reasoning":
+				// Reasoning items: keep the summary text as a thinking block
+				// (mirrors the OpenAI path) and stream it live via ai:thinking.
+				block := map[string]interface{}{"type": "thinking", "thinking": ""}
+				blockByOutputIdx[ev.OutputIndex] = block
+				idxByOutputIdx[ev.OutputIndex] = nextBlockIndex
+				a.emit("ai:block_start", aiBlockStartEvent{
+					Index:        nextBlockIndex,
+					ContentBlock: map[string]interface{}{"type": "thinking"},
+				})
+				nextBlockIndex++
 			case "function_call":
 				block := map[string]interface{}{
 					"type":  "tool_use",
@@ -1130,6 +1213,22 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 			// F-320: typed struct + dropped unused fields — see
 			// chatCompletionAnthropic for rationale.
 			a.emit("ai:token", aiTokenEvent{
+				Text:  ev.Delta,
+				Index: idxByOutputIdx[ev.OutputIndex],
+			})
+
+		case "response.reasoning_summary_text.delta":
+			block := blockByOutputIdx[ev.OutputIndex]
+			if block == nil || ev.Delta == "" {
+				continue
+			}
+			buf, ok := reasoningBufs[ev.OutputIndex]
+			if !ok {
+				buf = &bytes.Buffer{}
+				reasoningBufs[ev.OutputIndex] = buf
+			}
+			buf.WriteString(ev.Delta)
+			a.emit("ai:thinking", aiThinkingEvent{
 				Text:  ev.Delta,
 				Index: idxByOutputIdx[ev.OutputIndex],
 			})
@@ -1180,6 +1279,12 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 					}
 				}
 				delete(inputBufs, ev.OutputIndex)
+			}
+			if buf, ok := reasoningBufs[ev.OutputIndex]; ok {
+				if buf.Len() > 0 && block["type"] == "thinking" {
+					block["thinking"] = buf.String()
+				}
+				delete(reasoningBufs, ev.OutputIndex)
 			}
 			contentBlocks = append(contentBlocks, block)
 			// F-320: typed payload.
@@ -1296,7 +1401,6 @@ func (a *App) FetchModels(apiKey, baseURL, protocol string, proxyID string) ([]M
 	return result.Data, nil
 }
 
-
 // SkillsStore methods
 
 func (a *App) ListSkills() ([]store.SkillMeta, error) {
@@ -1408,6 +1512,15 @@ type aiInputJsonDeltaEvent struct {
 	PartialJSON string `json:"partial_json"`
 }
 
+// aiThinkingEvent carries streamed reasoning/thinking text (Anthropic
+// thinking_delta, OpenAI delta.reasoning_content, or Responses reasoning
+// summary deltas). The frontend appends these to the current assistant
+// message's thinking buffer and renders them in the collapsible thinking box.
+type aiThinkingEvent struct {
+	Text  string `json:"text"`
+	Index int    `json:"index"`
+}
+
 type aiMessageStartEvent struct {
 	Role string `json:"role"`
 }
@@ -1439,8 +1552,9 @@ type openaiDeltaToolCall struct {
 }
 
 type openaiStreamDelta struct {
-	Content   string                `json:"content"`
-	ToolCalls []openaiDeltaToolCall `json:"tool_calls"`
+	Content          string                `json:"content"`
+	ReasoningContent string                `json:"reasoning_content"`
+	ToolCalls        []openaiDeltaToolCall `json:"tool_calls"`
 }
 
 type openaiStreamChoice struct {
@@ -1468,4 +1582,3 @@ type responsesStreamEvent struct {
 	Item        json.RawMessage `json:"item"`
 	Delta       string          `json:"delta"`
 }
-

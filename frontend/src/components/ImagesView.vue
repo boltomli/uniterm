@@ -1,6 +1,7 @@
 <template>
   <div class="view-wrap">
     <div class="container-toolbar">
+      <slot name="toggle" />
       <el-select
         v-if="session?.runtime === 'nerdctl'"
         :model-value="session.namespace"

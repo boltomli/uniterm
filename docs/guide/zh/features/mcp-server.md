@@ -1,6 +1,6 @@
 # MCP Server(外部 AI Agent)
 
-uniTerm 可以作为 MCP(Model Context Protocol)服务器运行,让 Claude Code、Codex、ZCode、Kimi、Gemini CLI、Trae、WorkBuddy 等外部 AI Agent **直接在 uniTerm 管理的远程主机上执行命令、读取输出、传输文件**。
+uniTerm 可以作为 MCP(Model Context Protocol)服务器运行,让 Claude Code、Codex、ZCode、Kimi、Gemini CLI、Trae、WorkBuddy、DeepSeek 等外部 AI Agent **直接在 uniTerm 管理的远程主机上执行命令、读取输出、传输文件**。
 
 核心原则:**凭据永远留在 uniTerm**。Agent 拿不到任何密码或私钥——它只是向 uniTerm 发起请求,由 uniTerm 用已保存的连接代为执行,每一步都经过审批与审计。
 
@@ -24,13 +24,14 @@ uniTerm(127.0.0.1:61207/mcp)
 
 ### 1. 打开 MCP 服务器
 
-设置(`⌘,`)→ **AI** → 「MCP 服务器(外部 AI Agent)」:
+设置(`⌘,`)→ **MCP 服务器**:
 
 1. 打开「启用 MCP 服务器」开关,状态行显示 `运行中 · 127.0.0.1:61207`
 2. 按需调整:
    - **监听端口**(默认 61207,改后需重新生成接入配置)
    - **命令审批策略**(见下文)
-   - **工具分组**:命令执行、文件传输(默认只开命令执行)
+
+所有工具默认全部可用,副作用完全由审批策略约束。
 
 ### 2. 生成令牌并接入客户端
 
@@ -100,6 +101,20 @@ http_headers = { "Authorization" = "Bearer <你的令牌>" }
     }
   }
 }
+```
+
+**DeepSeek**(dsh 的 Cordis overlay 片段,保存为 `uniterm.cordis.yml`,启动时 `dsh web --patch <该文件>`;令牌放在环境变量 `UNITERM_MCP_TOKEN` 中):
+
+```yaml
+- id: mcp-uniterm
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: uniterm
+    transport: streamable-http
+    url: http://127.0.0.1:61207/mcp
+    headers:
+      Authorization: !!js `Bearer ${process.env.UNITERM_MCP_TOKEN}`
+    toolCallTimeoutMs: 130000
 ```
 
 **Kimi**(任意项目目录执行):
@@ -181,7 +196,7 @@ Agent 会自动调用相应工具完成「发现连接 → 建立会话 → 执�
 |----|------|
 | 传输 | 仅 127.0.0.1 监听,本机其他进程仍需 Bearer 令牌 |
 | 认证 | 每客户端一枚令牌,SHA-256 存储,可吊销,可热加载 |
-| 授权 | 工具分组开关 + 审批策略矩阵 |
+| 授权 | 审批策略矩阵(命令按风险分级,策略决定何时弹窗) |
 | 执行 | 独立 exec 通道,不触碰你的交互终端;并发上限 8,单命令 5 分钟硬超时 |
 | 审计 | JSONL 全量记录(客户端 / 工具 / 命令 / 退出码 / 审批结果) |
 | 凭据 | 永不出应用——Agent 看不到任何密码、私钥、密钥内容 |

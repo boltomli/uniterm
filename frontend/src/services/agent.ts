@@ -435,6 +435,8 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
   store.resetStop()
   store.isRunning = true
   store.status = 'thinking'
+  store.thinkingText = ''
+  store.thinkingStartedAt = 0
 
   // Record current panel context so buildDynamicContext can detect terminal switches
   const tabStore = useTabStore()
@@ -477,14 +479,47 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
   const cleanupTokenListener = registerTokenListener((data: any) => {
     if (store.stopRequested) return
     if (activeAssistantMsg && data.text) {
+      if (turnThinkingStart && activeAssistantMsg.thinking && !activeAssistantMsg.thinkingDurationMs) {
+        finalizeThinkingDuration(activeAssistantMsg)
+      }
       activeAssistantMsg.content += data.text
       streamedText += data.text
       store.status = 'outputting'
     }
   })
 
+  // Reasoning/thinking deltas (ai:thinking). Streamed into the store's live
+  // buffer (clickable "Thinking..." box) and appended to the current assistant
+  // message so it persists with the conversation. Also tracks when thinking
+  // began so the box can show a live elapsed timer and the finished block can
+  // record its total duration.
+  let turnThinkingStart = 0
+  const unsubThinking = Events.On('ai:thinking', (ev) => {
+    if (store.stopRequested) return
+    const data: any = ev.data
+    const text = typeof data === 'string' ? data : (data?.text ?? '')
+    if (!text) return
+    if (!turnThinkingStart) {
+      turnThinkingStart = Date.now()
+      store.thinkingStartedAt = turnThinkingStart
+    }
+    store.thinkingText += text
+    if (activeAssistantMsg) {
+      activeAssistantMsg.thinking = (activeAssistantMsg.thinking || '') + text
+    }
+  })
+
+  // Freeze the live elapsed timer / stamp the duration once thinking ends
+  // (the model has started emitting visible output or tool calls).
+  function finalizeThinkingDuration(msg: AIMessage) {
+    if (turnThinkingStart && msg.thinking && !msg.thinkingDurationMs) {
+      msg.thinkingDurationMs = Date.now() - turnThinkingStart
+    }
+    turnThinkingStart = 0
+  }
   function cleanupStreamListeners() {
     cleanupTokenListener()
+    unsubThinking?.()
     setActiveAssistantMsg(null)
   }
 
@@ -560,6 +595,16 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       if (chatOptions._rawApiMsg) {
         assistantMsg._rawApiMsg = chatOptions._rawApiMsg
       }
+      // Backfill thinking if live ai:thinking events were missed
+      const thinkingFromResponse = (chatOptions as any)._thinkingText as string | undefined
+      if (thinkingFromResponse && !assistantMsg.thinking) {
+        assistantMsg.thinking = thinkingFromResponse
+        if (!store.thinkingText.includes(thinkingFromResponse)) {
+          store.thinkingText += thinkingFromResponse
+        }
+      }
+      // Stamp duration if the turn ended without visible output tokens
+      finalizeThinkingDuration(assistantMsg)
       // Save immediately so the complete assistant content and raw API message are persisted
       store.doSave()
     } catch (e: any) {

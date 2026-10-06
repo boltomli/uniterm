@@ -46,7 +46,12 @@
         <!-- 主题 -->
         <MenuSubmenu :label="t('settings.theme')">
           <MenuItem
-            v-for="opt in themeOptions"
+            :class="{ active: settingsStore.settings.theme === 'system' }"
+            @click="applyTheme('system')"
+          >{{ t('settings.themeSystem') }}</MenuItem>
+          <MenuDivider />
+          <MenuItem
+            v-for="opt in themeOptions.slice(1)"
             :key="opt.value"
             :class="{ active: settingsStore.settings.theme === opt.value }"
             @click="applyTheme(opt.value)"
@@ -90,6 +95,7 @@
             :class="{ active: settingsStore.settings.language === 'system' }"
             @click="applyLanguage('system')"
           >{{ t('settings.langSystem') }}</MenuItem>
+          <MenuDivider />
           <MenuItem
             v-for="lang in LANGUAGE_OPTIONS"
             :key="lang.value"
@@ -100,8 +106,9 @@
 
         <MenuDivider />
 
-        <!-- AI模型 / 密钥库 / 代理 -->
+        <!-- AI模型 / MCP / 密钥库 / 代理 -->
         <MenuItem @click="openCategory('ai')">{{ t('settings.ai') }}</MenuItem>
+        <MenuItem v-if="!isMobilePlatform(platform)" @click="openCategory('mcp')">{{ t('settings.mcp') }}</MenuItem>
         <MenuItem @click="openCategory('identities')">{{ t('settings.identities') }}</MenuItem>
         <MenuItem @click="openCategory('proxies')">{{ t('settings.proxies') }}</MenuItem>
         <MenuItem @click="openCategory('tunnels')">{{ t('settings.tunnels') }}</MenuItem>
@@ -114,8 +121,9 @@
 
         <MenuDivider />
 
-        <!-- 设置 / 关于 / 检查更新 -->
+        <!-- 设置 / 云同步 / 关于 / 检查更新 -->
         <MenuItem :shortcut="menuShortcut('openSettings')" @click="openCategory('basic')">{{ t('settings.title') }}</MenuItem>
+        <MenuItem @click="openCategory('sync')">{{ t('settings.sync') }}</MenuItem>
         <MenuItem @click="openCategory('about')">{{ t('settings.about') }}</MenuItem>
         <!-- In-app update download is desktop-only -->
         <MenuItem v-if="!isMobilePlatform(platform)" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
@@ -257,7 +265,9 @@ const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 // " (Ctrl+Shift+K)" suffix for a shortcut action's tooltip, '' when unset.
 // Reactive via settingsStore, so tooltips update when the user rebinds keys.
+// '' on mobile too — no hardware keyboard, so the hint is meaningless.
 function shortcutSuffix(action: 'focusAI' | 'toggleSidebar'): string {
+  if (isMobilePlatform(platform.value)) return ''
   const b = settingsStore.settings.keyboard[action]
   if (!b) return ''
   const key = formatKeyBinding(b, isMac)
@@ -267,6 +277,7 @@ function shortcutSuffix(action: 'focusAI' | 'toggleSidebar'): string {
 // Right-aligned keybinding hint for a menu item, '' when unset. Reactive via
 // settingsStore, so hints follow the user's rebinds.
 function menuShortcut(action: ShortcutAction): string {
+  if (isMobilePlatform(platform.value)) return ''
   const b = settingsStore.settings.keyboard[action]
   if (!b) return ''
   return formatKeyBinding(b, isMac)
@@ -509,13 +520,6 @@ onUnmounted(() => {
 
 .app-header :deep(.window-controls) {
   --wails-draggable: no-drag;
-}
-
-/* Terminal theme flyout lists ~35 built-in themes plus custom ones — cap the
-   flyout height so it scrolls instead of overflowing the window. */
-.terminal-theme-submenu :deep(.menu-submenu) {
-  max-height: 60vh;
-  overflow-y: auto;
 }
 
 /* ── Settings dropdown menu ── */

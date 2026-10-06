@@ -57,6 +57,39 @@ func TestConnectionStore_LoadDecryptsPassword(t *testing.T) {
 	}
 }
 
+// TestConnectionStore_IdentityKeepsOverrideUser 锁定 issue #959 的语义：
+// identity 连接的 User 是用户显式填写的覆盖用户名（非密文），保存时必须
+// 原样保留；Password 仍照旧清空，凭据只从密钥库物化。
+func TestConnectionStore_IdentityKeepsOverrideUser(t *testing.T) {
+	dir := t.TempDir()
+	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}
+
+	data := session.ConnectionStoreData{
+		Groups:      []session.ConnectionGroup{},
+		Connections: []session.ConnectionConfig{{ID: "c1", Type: "ssh", AuthType: "identity", IdentityId: "id-1", User: "deploy", Password: enc("stale")}},
+	}
+	if err := s.Save(data); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, storeFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !contains(string(raw), "deploy") {
+		t.Fatalf("override User lost on save: %s", raw)
+	}
+	if contains(string(raw), "stale") {
+		t.Fatalf("stale Password leaked for identity connection: %s", raw)
+	}
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Connections[0].User != "deploy" {
+		t.Fatalf("Load User = %q, want deploy", loaded.Connections[0].User)
+	}
+}
+
 func TestConnectionStore_LoadMigratesLegacyPlaintext(t *testing.T) {
 	dir := t.TempDir()
 	s := &ConnectionStore{configDir: dir, passwordStore: fakeCipherStore{}}

@@ -1,6 +1,6 @@
 # MCP Server (External AI Agents)
 
-uniTerm can run as an MCP (Model Context Protocol) server, letting external AI agents — Claude Code, Codex, ZCode, Kimi, Gemini CLI, Trae, WorkBuddy — **run commands, read output, and transfer files on the remote hosts uniTerm manages**.
+uniTerm can run as an MCP (Model Context Protocol) server, letting external AI agents — Claude Code, Codex, ZCode, Kimi, Gemini CLI, Trae, WorkBuddy, DeepSeek — **run commands, read output, and transfer files on the remote hosts uniTerm manages**.
 
 The core principle: **credentials never leave uniTerm**. Agents never see a password or private key — they send requests to uniTerm, which executes them over its saved connections, with approval and audit at every step.
 
@@ -24,13 +24,14 @@ Saved SSH connections (credentials stay in the app)
 
 ### 1. Enable the MCP server
 
-Settings (`⌘,`) → **AI** → "MCP Server (external AI agents)":
+Settings (`⌘,`) → **MCP Server**:
 
 1. Turn on the "Enable MCP server" switch; the status line shows `Running · 127.0.0.1:61207`
 2. Adjust as needed:
    - **Listen port** (default 61207; client configs must be regenerated after changing it)
    - **Command approval policy** (see below)
-   - **Tool groups**: command execution, file transfers (only command execution is on by default)
+
+All tools are available by default; side effects are governed entirely by the approval policy.
 
 ### 2. Generate a token and connect a client
 
@@ -100,6 +101,20 @@ http_headers = { "Authorization" = "Bearer <your-token>" }
     }
   }
 }
+```
+
+**DeepSeek** (Cordis overlay snippet for dsh; save as `uniterm.cordis.yml` and start with `dsh web --patch <file>`; keep the token in the `UNITERM_MCP_TOKEN` env var):
+
+```yaml
+- id: mcp-uniterm
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: uniterm
+    transport: streamable-http
+    url: http://127.0.0.1:61207/mcp
+    headers:
+      Authorization: !!js `Bearer ${process.env.UNITERM_MCP_TOKEN}`
+    toolCallTimeoutMs: 130000
 ```
 
 **Kimi** (run in any project directory):
@@ -181,7 +196,7 @@ The **local side** of `upload_file` / `download_file` must be inside an allowed 
 |-------|-----------|
 | Transport | Loopback-only listener; local processes still need a Bearer token |
 | Auth | Per-client token, SHA-256 at rest, revocable, hot-reloaded |
-| Authorization | Tool group toggles + approval policy matrix |
+| Authorization | Approval policy matrix (commands are risk-classified; the policy decides when to prompt) |
 | Execution | Dedicated exec channel, never touches your interactive terminal; concurrency cap 8, 5-minute hard timeout per command |
 | Audit | Full JSONL log (client / tool / command / exit code / approval outcome) |
 | Credentials | Never leave the app — agents never see passwords, keys, or key contents |

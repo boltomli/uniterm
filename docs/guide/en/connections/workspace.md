@@ -1,4 +1,4 @@
-# Tabs and Workspace
+# Workspace
 
 uniTerm manages multiple connections through tabs and displays multiple terminals side by side through workspaces.
 
@@ -49,8 +49,22 @@ Right-click a tab to open a context menu. Different tab types show different ite
 ### Creating a Workspace
 
 - **Drag Tabs** — Drag a tab into the content area. Drag to the top/bottom edge to create a horizontal split; drag to the left/right edge to create a vertical split
+- **New Workspace** — Select one or more connections in the sidebar connection list, right-click and choose "New Workspace"; the selected connections form a workspace. The start page also offers a "New Workspace" entry
+- **Drop Connections** — Drag a connection from the sidebar into the workspace content area to add it as a new split
 - **Resize** — Drag the divider between splits to adjust panel proportions
 - **Close Split** — Drag the tab back to the tab bar to cancel the split
+
+### Save & Open
+
+Workspaces can be saved by name and restored with one click later:
+
+- **Save Workspace** — Right-click a workspace tab and choose "Save Workspace", then enter a name. Saving with the same name overwrites in place; a new name saves as a new workspace
+- **What Is Saved** — The member connections and the split layout; members store only connection references — no credentials are persisted, they re-resolve at open time
+- **Open Workspace** — Saved workspaces appear in the connection list; double-click to restore, which reconnects the members following the saved layout. Members that fail to open (host deleted or connection failed) are reported by count while the rest open normally
+
+### Dissolving a Workspace
+
+Right-click a workspace tab and choose "Dissolve Workspace": all terminals in the workspace return to the tab bar as independent tabs (**sessions stay connected**), and the workspace's broadcast is turned off automatically.
 
 ### Panel Menu
 

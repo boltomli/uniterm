@@ -7,7 +7,7 @@
         <button class="btn btn-default" @click="onCancelQuery">{{ t('common.cancel') }}</button>
       </div>
     </div>
-    <div class="editor-top" :style="{ height: topHeight + 'px' }">
+    <div class="editor-top" :style="editorCollapsed ? {} : { height: topHeight + 'px' }">
       <div class="editor-toolbar">
         <input
           v-model="nlInput"
@@ -27,6 +27,14 @@
           <FolderOpen :size="lucideSize('0.875rem')" />
         </button>
         <button class="btn btn-primary btn-sm" title="Ctrl+Enter" @click="onExecute">{{ t('db.execute') }}</button>
+        <button
+          class="btn btn-ghost btn-icon btn-sm editor-collapse-btn"
+          :title="editorCollapsed ? t('common.expand') : t('common.collapse')"
+          @click="editorCollapsed = !editorCollapsed"
+        >
+          <ChevronDown v-if="editorCollapsed" :size="lucideSize('0.875rem')" />
+          <ChevronUp v-else :size="lucideSize('0.875rem')" />
+        </button>
       </div>
       <div v-if="historyOpen" class="history-panel">
         <div v-if="history.length === 0" class="history-empty">{{ t('db.noHistory') }}</div>
@@ -44,7 +52,7 @@
           </span>
         </button>
       </div>
-      <div class="sql-editor-wrap">
+      <div v-show="!editorCollapsed" class="sql-editor-wrap">
         <SyntaxEditor
           ref="editorRef"
           v-model="sql"
@@ -54,7 +62,7 @@
         />
       </div>
     </div>
-    <div class="editor-resizer" @mousedown="onResizeStart" />
+    <div v-show="!editorCollapsed" class="editor-resizer" @mousedown="onResizeStart" />
     <div class="editor-bottom">
       <div v-if="error" class="error-msg">{{ error }}</div>
       <div v-if="scriptResult" class="script-result" :class="{ 'has-error': scriptResult.failedLine }">
@@ -201,7 +209,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
-import { Sparkles, History, FolderOpen, Download, Plus } from '@lucide/vue'
+import { Sparkles, History, FolderOpen, Download, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import SyntaxEditor from './SyntaxEditor.vue'
@@ -775,7 +784,11 @@ async function onDeleteRowByRow(row: Record<string, any>) {
 // ?? Resize splitter ??
 
 const rootRef = ref<HTMLElement | null>(null)
-const topHeight = ref(200)
+// Collapsed shows only the toolbar so the result grid gets the height; on
+// narrow screens (phone or small window) start collapsed. All platforms
+// get the toggle button.
+const editorCollapsed = ref(isNarrowScreen.value)
+const topHeight = ref(isNarrowScreen.value ? 140 : 200)
 let resizeStartY = 0
 let resizeStartHeight = 0
 
@@ -1122,12 +1135,26 @@ function onEditRowCancel() {
 }
 .history-err { color: var(--error); }
 .editor-resizer {
+  /* Hover accent floats over the editor's bottom edge (negative margin)
+     so it takes no layout height when idle - matches the tree resizers. */
   height: 0.25rem;
+  margin-top: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: row-resize;
   background: transparent;
   flex-shrink: 0;
 }
-.editor-resizer:hover { background: var(--border-subtle); }
+.editor-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
+}
 .editor-bottom {
   flex: 1;
   padding: 0 0.5rem 0.5rem;

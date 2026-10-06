@@ -18,6 +18,17 @@ uniTerm has a built-in container management interface supporting **Kubernetes** 
 
 After filling in the fields, click "Test Connection" to verify the kubeconfig and network reachability.
 
+### Cluster Overview
+
+The connection opens on the cluster overview, showing the whole cluster at a glance:
+
+- **Cluster info** — Kubernetes version, current Context, namespace count
+- **Nodes** — Total node count and readiness (not-ready nodes highlighted)
+- **Resource summary** — Counts of workloads / networking / storage & config resources
+- **Pod status** — Distribution by run state
+- **Usage** — Cluster CPU / memory actual usage vs. requests (requires metrics-server installed in the cluster)
+- **Recent events** — Recent warning events; clicking a resource stat jumps to its resource list
+
 ### Resource Browsing
 
 The left tree panel groups cluster resources by category, watches for changes, and refreshes automatically:
@@ -25,7 +36,7 @@ The left tree panel groups cluster resources by category, watches for changes, a
 | Group | Resources |
 |------|------|
 | Workloads | Pods, Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, HPAs |
-| Network | Services, Ingresses, Endpoints, NetworkPolicies |
+| Network | Services, Ingresses, Endpoints, NetworkPolicies, Gateways, HTTPRoutes, GRPCRoutes |
 | Config | ConfigMaps, Secrets, ResourceQuotas, LimitRanges |
 | Storage | PVCs, PVs, StorageClasses |
 | RBAC | ServiceAccounts, Roles, RoleBindings, ClusterRoles, ClusterRoleBindings |
@@ -53,6 +64,10 @@ After selecting a resource, the right-click menu or inline action buttons provid
 - **Logs** — Follow Pod logs in real time, with pause/resume, timestamps, previous container, auto-scroll, wrap, and clear
 - **Terminal** — Exec directly into a Pod container for an interactive shell
 
+### Container File Browser
+
+For running Pods, a dual-pane file browser can be opened to browse the container's filesystem directly, uploading / downloading files between local and container. Transfers are tracked in a task list (running / done / failed) — no need to run `kubectl cp` by hand.
+
 ## Container Engines
 
 ![Container Management](/imgs/container_light.webp)
@@ -70,12 +85,15 @@ Four runtimes are supported: **Docker**, **Podman**, **nerdctl (containerd)**, a
 
 ### Container Management
 
-The top tabs switch between the "Containers" and "Images" views.
+The left tree panel switches between the "Overview", "Containers", and "Images" views.
+
+The **overview** shows runtime and host info (client / server version, kernel, storage driver, CPU, memory) plus container and image counts.
 
 The **container list** shows name, image, state, port mappings, and creation time, with the following actions:
 
 - **Lifecycle** — Start, stop, restart, pause, unpause
 - **Exec** — Enter an interactive terminal in the container
+- **Files** — Open the container file browser to browse a running container's filesystem and upload / download files (same as the Kubernetes container file browser described above)
 - **Logs** — View container log output
 - **Rename** — Change the container name
 - **Remove** — Remove the container after confirmation

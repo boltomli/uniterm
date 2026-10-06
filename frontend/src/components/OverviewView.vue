@@ -1,6 +1,7 @@
 <template>
   <div class="view-wrap">
     <div class="container-toolbar">
+      <slot name="toggle" />
       <span class="overview-title">{{ t('container.overview') }}</span>
       <el-select
         v-if="session?.runtime === 'nerdctl'"

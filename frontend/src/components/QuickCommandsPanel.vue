@@ -603,7 +603,7 @@ watch(searchQuery, (q) => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0 0.625rem 0.375rem;
+  padding: 0.625rem 0.625rem 0.375rem;
   flex-shrink: 0;
 }
 

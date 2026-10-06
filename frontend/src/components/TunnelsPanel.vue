@@ -158,7 +158,7 @@ function doDeleteTunnel(tn: Tunnel) {
 
 <style scoped>
 .tunnels-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.tn-toolbar { display: flex; align-items: center; gap: 0.25rem; padding: 0 0.625rem 0.375rem; flex-shrink: 0; }
+.tn-toolbar { display: flex; align-items: center; gap: 0.25rem; padding: 0.625rem 0.625rem 0.375rem; flex-shrink: 0; }
 .tn-search-input { flex: 1; min-width: 0; }
 .tn-icon-btn { width: 1.625rem; height: 1.625rem; display: flex; align-items: center; justify-content: center; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); flex-shrink: 0; }
 .tn-icon-btn:hover { color: var(--text-primary); background: var(--bg-hover); }

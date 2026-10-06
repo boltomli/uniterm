@@ -37,17 +37,23 @@ type PasswordStore interface {
 	Unlocked() bool
 }
 
-// EncryptConfigFiles encrypts entire config files from srcDir into destDir.
-// kc is used to backfill legacy empty passwords from keychain before
-// encryption. ps is used to normalize enc:v1: fields to plaintext so only the
-// sync key protects the file at rest in the repo. Pass nil for either to skip
-// that step.
+// EncryptConfigFiles encrypts the full legacy syncedFiles set. Kept for
+// callers/tests outside a SyncService scope context. kc is used to backfill
+// legacy empty passwords from keychain before encryption. ps is used to
+// normalize enc:v1: fields to plaintext so only the sync key protects the
+// file at rest in the repo. Pass nil for either to skip that step.
 func EncryptConfigFiles(srcDir, destDir string, key []byte, kc *Keychain, ps PasswordStore) error {
+	return EncryptConfigFilesScoped(syncedFiles, srcDir, destDir, key, kc, ps)
+}
+
+// EncryptConfigFilesScoped encrypts exactly the given config files from
+// srcDir into destDir. files must come from EffectiveSyncFiles.
+func EncryptConfigFilesScoped(files []string, srcDir, destDir string, key []byte, kc *Keychain, ps PasswordStore) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
 
-	for _, name := range syncedFiles {
+	for _, name := range files {
 		src := filepath.Join(srcDir, name)
 		dest := filepath.Join(destDir, name)
 		var err error
@@ -274,16 +280,23 @@ func encryptTunnelsFile(src, dest string, key []byte, ps PasswordStore) error {
 	return os.WriteFile(dest, []byte(encoded), 0600)
 }
 
-// DecryptConfigFiles decrypts config files from srcDir into destDir.
-// ps is used to re-encrypt plaintext secret fields back to enc:v1: under the
-// local credential key after download. Pass nil for ps to keep fields as
-// plaintext (e.g. temporary dirs used only for comparison).
+// DecryptConfigFiles decrypts the full legacy syncedFiles set. Kept for
+// callers/tests outside a SyncService scope context. ps is used to re-encrypt
+// plaintext secret fields back to enc:v1: under the local credential key
+// after download. Pass nil for ps to keep fields as plaintext (e.g. temporary
+// dirs used only for comparison).
 func DecryptConfigFiles(srcDir, destDir string, key []byte, ps PasswordStore) error {
+	return DecryptConfigFilesScoped(syncedFiles, srcDir, destDir, key, ps)
+}
+
+// DecryptConfigFilesScoped decrypts exactly the given config files from
+// srcDir into destDir. files must come from EffectiveSyncFiles.
+func DecryptConfigFilesScoped(files []string, srcDir, destDir string, key []byte, ps PasswordStore) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
 
-	for _, name := range syncedFiles {
+	for _, name := range files {
 		src := filepath.Join(srcDir, name)
 		dest := filepath.Join(destDir, name)
 		var err error

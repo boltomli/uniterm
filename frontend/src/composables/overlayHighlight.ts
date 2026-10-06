@@ -14,9 +14,10 @@
 // output highlights first), an LRU over immutable scrollback lines, a
 // per-refresh time budget with rAF continuation, and a write debounce with a
 // max-wait escape so sustained output still gets highlighted. Matching is per
-// physical line.
+// logical line: rows the terminal soft-wrapped (isWrapped) are stitched
+// together before matching so wrapped strings highlight as one run.
 import type { Terminal as XTerm, IBufferCell, IBufferLine, ICellColorSpan, IDisposable } from '@xterm/xterm'
-import { matchTextSpans, HIGHLIGHT_RULES, type HighlightCategory } from './highlightRules'
+import { matchTextSpans, HIGHLIGHT_RULES, stitchLogicalText, splitSpansToRows, type HighlightCategory } from './highlightRules'
 import { useSettingsStore } from '../stores/settingsStore'
 
 // Category → xterm theme key, mirroring the legacy inject renderer's SGR
@@ -32,6 +33,8 @@ const CATEGORY_THEME_KEY: Record<HighlightCategory, string> = {
   warning: 'yellow',
   info: 'cyan',
   brace: 'brightMagenta',
+  keyword: 'cyan',
+  ifname: 'magenta',
 }
 
 // xterm.js default palette values, used when the active theme doesn't
@@ -110,6 +113,11 @@ const WRITE_MAX_WAIT_MS = 500
 const SCROLL_IDLE_DEBOUNCE_MS = 120
 const MAX_REFRESH_TIME_MS = 3
 const MAX_CACHED_MATCH_LINES = 3000
+// Upper bound of physical rows stitched into one logical line for matching.
+// Covers every realistic wrapped log line; beyond it rows scan standalone
+// (a construct straddling the cap seam stays unhighlighted, same as the
+// per-physical-line behavior).
+const MAX_STITCH_ROWS = 64
 
   /** Map string indices from translateToString to cell columns. Needed only
    * for lines containing wide chars (CJK), where string index ≠ cell column. */
@@ -142,6 +150,24 @@ function buildStringToCellMap(
   map.push(cellEndCol) // sentinel: end position
   return map
   }
+
+/** Walk up from lineY to the first physical row of its logical line.
+ * xterm sets isWrapped on the row wrapped TO (row N.isWrapped ⇒ N continues
+ * N-1), so the walk continues only while the CURRENT row is itself marked as
+ * a continuation — the previous row's flag says nothing about this row. */
+export function logicalLineStart(
+  getLine: (y: number) => { isWrapped: boolean } | undefined,
+  lineY: number,
+  maxStitchRows: number,
+): number {
+  let startY = lineY
+  while (startY > 0 && lineY - startY < maxStitchRows - 1) {
+    const cur = getLine(startY)
+    if (!cur || !cur.isWrapped) break
+    startY--
+  }
+  return startY
+}
 
 export class OverlayHighlighter {
   private term: XTerm
@@ -369,37 +395,60 @@ export class OverlayHighlighter {
     return false
   }
 
-  private scanPhysicalLine(
-    line: IBufferLine,
+  /** Match rules over one logical line: the physical rows [startY …] stitched
+   * together while the terminal's `isWrapped` flag says they were folded.
+   * Spans come back per physical row — clipped at the wrap seam, mapped to
+   * cell columns — ready for setCellColorOverrides. */
+  private scanLogicalLine(
+    startY: number,
     cols: number,
     scratchCell: IBufferCell,
     budget: RefreshBudget,
-  ): { spans: HighlightSpan[]; complete: boolean } {
-    const lineText = line.translateToString(true, 0, cols)
-    if (!lineText) return { spans: [], complete: true }
+  ): { perRow: Map<number, HighlightSpan[]>; complete: boolean } {
+    const buffer = this.term.buffer.active
+    const rows: IBufferLine[] = []
+    const texts: string[] = []
+    let y = startY
+    while (y < buffer.length && rows.length < MAX_STITCH_ROWS) {
+      const line = buffer.getLine(y)
+      if (!line) break
+      rows.push(line)
+      texts.push(line.translateToString(true, 0, cols))
+      const next = buffer.getLine(y + 1)
+      if (!next || !next.isWrapped) break
+      y++
+    }
 
-    const hasMultibyte = /[^\x00-\xFF]/.test(lineText)
-    const cellMap = hasMultibyte
-      ? buildStringToCellMap(line, lineText.length, cols, scratchCell)
-      : null
-
-    const result = matchTextSpans(lineText, HIGHLIGHT_RULES, {
+    const perRow = new Map<number, HighlightSpan[]>()
+    const stitched = stitchLogicalText(texts)
+    if (!stitched.text) {
+      for (let i = 0; i < rows.length; i++) perRow.set(startY + i, [])
+      return { perRow, complete: true }
+    }
+    const result = matchTextSpans(stitched.text, HIGHLIGHT_RULES, {
+      maxMatches: 120,
       shouldStop: () => this.isBudgetExhausted(budget),
     })
 
     // String index → cell column: the renderer's override consumer walks
-    // spans with a monotonic pointer, so they must be in column order
-    // (matchTextSpans already sorts by string position and the map is
-    // monotonic).
-    const spans: HighlightSpan[] = []
-    for (const span of result.spans) {
-      const cellStartCol = cellMap ? (cellMap[span.start] ?? span.start) : span.start
-      const cellEndCol = cellMap ? (cellMap[span.end] ?? span.end) : span.end
-      const cellWidth = cellEndCol - cellStartCol
-      if (cellWidth <= 0) continue
-      spans.push({ cellStartCol, cellWidth, category: span.category })
+    // spans with a monotonic pointer, so they must be in column order.
+    const perRowLocal = splitSpansToRows(result.spans, stitched.starts)
+    for (let i = 0; i < rows.length; i++) {
+      const hasMultibyte = /[^\x00-\xFF]/.test(texts[i])
+      const cellMap = hasMultibyte
+        ? buildStringToCellMap(rows[i], texts[i].length, cols, scratchCell)
+        : null
+      const spans: HighlightSpan[] = []
+      for (const s of perRowLocal[i]) {
+        const cellStartCol = cellMap ? (cellMap[s.start] ?? s.start) : s.start
+        const cellEndCol = cellMap ? (cellMap[s.end] ?? s.end) : s.end
+        const cellWidth = cellEndCol - cellStartCol
+        if (cellWidth <= 0) continue
+        spans.push({ cellStartCol, cellWidth, category: s.category })
+      }
+      perRow.set(startY + i, spans)
     }
-    return { spans, complete: result.complete }
+    return { perRow, complete: result.complete }
   }
 
   private refreshViewport(): void {
@@ -452,46 +501,67 @@ export class OverlayHighlighter {
     const scanStart = viewportY
     const scanEnd = Math.min(totalLines - 1, viewportY + rows - 1)
     const scratchCell = buffer.getNullCell()
+    // Rows whose overrides were already synced by a stitched logical-line
+    // scan during this refresh.
+    const covered = new Set<number>()
 
     for (let lineY = scanEnd; lineY >= scanStart; lineY--) {
       if (this.isBudgetExhausted(budget)) break
+      if (covered.has(lineY)) continue
       const line = buffer.getLine(lineY)
       if (!line) continue
 
-      let spans: HighlightSpan[]
-      if (lineY < screenStartY) {
+      // Walk up to the logical line's first row: continuation rows above are
+      // stitched into this scan so matches can straddle the wrap seam.
+      const startY = logicalLineStart((y) => buffer.getLine(y), lineY, MAX_STITCH_ROWS)
+
+      let spans: HighlightSpan[] | undefined
+      if (lineY < screenStartY && startY === lineY) {
+        // Standalone scrollback row: cacheable per row as before.
         const cached = this.getCachedSpans(lineY)
         if (cached !== undefined) {
           spans = cached
-        } else {
-          const result = this.scanPhysicalLine(line, cols, scratchCell, budget)
-          spans = result.spans
-          if (result.complete) this.setCachedSpans(lineY, spans)
         }
-      } else {
-        // On-screen lines can still change via escape sequences — never cache.
-        spans = this.scanPhysicalLine(line, cols, scratchCell, budget).spans
+      }
+      if (spans === undefined) {
+        const result = this.scanLogicalLine(startY, cols, scratchCell, budget)
+        for (const [y, rowSpans] of result.perRow) {
+          covered.add(y)
+          if (y < screenStartY && result.complete) this.setCachedSpans(y, rowSpans)
+          // Always sync the row's overrides: empty spans clear stale entries
+          // (e.g. a vim redraw removed the match). The store no-ops when
+          // nothing changed. Overrides for lines above the viewport are kept
+          // so scrolling back re-renders them immediately without a rescan.
+          this.setOverrides(y, rowSpans, colors)
+        }
+        lineY = startY
+        continue
       }
 
-      // Always sync the line's overrides: empty spans clear stale entries
-      // (e.g. a vim redraw removed the match). The store no-ops when nothing
-      // changed. Overrides for lines above the viewport are kept so
-      // scrolling back re-renders them immediately without a rescan.
-      this.term.setCellColorOverrides(
-        lineY,
-        spans.length > 0
-          ? spans.map((s): ICellColorSpan => ({
-              col: s.cellStartCol,
-              width: s.cellWidth,
-              color: colors[s.category],
-            }))
-          : null,
-      )
+      this.setOverrides(lineY, spans, colors)
     }
 
     if (budget.hitLimit) {
       this.triggerContinuationRefresh()
     }
+  }
+
+  /** Apply one row's spans as cell color overrides. */
+  private setOverrides(
+    lineY: number,
+    spans: HighlightSpan[],
+    colors: Record<HighlightCategory, string>,
+  ): void {
+    this.term.setCellColorOverrides(
+      lineY,
+      spans.length > 0
+        ? spans.map((s): ICellColorSpan => ({
+            col: s.cellStartCol,
+            width: s.cellWidth,
+            color: colors[s.category],
+          }))
+        : null,
+    )
   }
 }
 

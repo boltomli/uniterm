@@ -27,18 +27,17 @@
         :rows="2"
         :placeholder="t('mcp.approvalReasonPlaceholder')"
       />
-      <p class="mcp-approval-timeout">{{ t('mcp.approvalTimeoutHint', { seconds: 110 }) }}</p>
+      <p class="mcp-approval-timeout">{{ t('mcp.approvalTimeoutHint', { seconds: remaining }) }}</p>
     </div>
     <template #footer>
       <el-button @click="onDeny">{{ t('mcp.deny') }}</el-button>
-      <el-button type="danger" plain @click="onDenyWithReason">{{ t('mcp.denyWithReason') }}</el-button>
       <el-button type="primary" @click="onApprove">{{ t('mcp.approve') }}</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from '../i18n'
 import type { MCPApprovalRequest } from '../types/mcp'
 
@@ -54,19 +53,45 @@ const emit = defineEmits<{
 }>()
 
 const reason = ref('')
+// Mirrors the backend's 110s approval timeout; hitting zero resolves the
+// request as denied (matching what the backend would do anyway).
+const remaining = ref(110)
+let timer: ReturnType<typeof setInterval> | null = null
 
-watch(() => props.visible, v => { if (v) reason.value = '' })
+function stopTimer() {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+}
+
+watch(() => props.visible, v => {
+  if (v) {
+    reason.value = ''
+    remaining.value = 110
+    stopTimer()
+    timer = setInterval(() => {
+      remaining.value--
+      if (remaining.value <= 0) {
+        stopTimer()
+        emit('resolve', false, reason.value)
+      }
+    }, 1000)
+  } else {
+    stopTimer()
+  }
+})
+
+onBeforeUnmount(stopTimer)
 
 function onApprove() {
   emit('resolve', true, '')
 }
 
 function onDeny() {
-  emit('resolve', false, '')
-}
-
-function onDenyWithReason() {
-  emit('resolve', false, reason.value || t('mcp.deniedDefaultReason'))
+  // The reason textarea is the single source of truth: filled = deny with
+  // reason, empty = plain deny (backend substitutes its default text).
+  emit('resolve', false, reason.value)
 }
 </script>
 
@@ -86,9 +111,11 @@ function onDenyWithReason() {
 .mcp-approval-command pre {
   margin: 0 0 0.75rem;
   padding: 0.5rem 0.75rem;
-  background: var(--el-fill-color-dark);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  font-family: var(--el-font-family-mono, monospace);
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   white-space: pre-wrap;
   word-break: break-all;

@@ -167,6 +167,7 @@ import { useI18n } from '../i18n'
 import type { Panel, WorkspaceTab } from '../types/workspace'
 import { waitForTerminalSize } from '../services/terminalManager'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
+import { isMobilePlatform } from '../utils/platform'
 import type { ConnectionConfig } from '../types/session'
 import type { CredentialResult } from './CredentialPrompt.vue'
 import { Clipboard } from '@wailsio/runtime'
@@ -207,7 +208,9 @@ const settingsStore = useSettingsStore()
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 const panelShortcut = computed(() => {
-  // Hidden by the "show shortcut hints" toggle, same as the tab badges.
+  // Hidden on mobile (no hardware keyboard), by the "show shortcut hints"
+  // toggle, same as the tab badges.
+  if (isMobilePlatform()) return ''
   if (!settingsStore.settings.showTabShortcutHints) return ''
   if (!props.shortcutIndex || props.shortcutIndex > 9) return ''
   // Option+N on macOS / Alt+N elsewhere by default, or the user-configured
@@ -227,6 +230,7 @@ const workspaceTab = computed(() =>
 const isMaximized = computed(() => workspaceTab.value?.maximizedPanelId === props.panel.id)
 const maximizeTitle = computed(() => {
   const label = t(isMaximized.value ? 'workspace.restorePanel' : 'workspace.maximizePanel')
+  if (isMobilePlatform()) return label
   // Reactive via settingsStore, so the hint follows the user's rebind.
   const b = settingsStore.settings.keyboard.maximizePanel
   const shortcut = b ? formatKeyBinding(b, isMac) : ''

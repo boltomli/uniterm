@@ -5,7 +5,7 @@
        `shortcut` renders a muted trailing hint (keyboard shortcut / aux text);
        the `#trailing` slot hosts right-aligned content that fades in on row
        hover (e.g. a delete button) without the host hand-rolling the reveal. -->
-  <div class="menu-item" :class="{ 'has-trailing': !!$slots.trailing, 'has-shortcut': !!shortcut, iconic }">
+  <div class="menu-item" :class="{ 'has-trailing': !!$slots.trailing, 'has-shortcut': showShortcut, iconic }">
     <component
       v-if="icon"
       :is="icon"
@@ -13,16 +13,18 @@
       :size="iconSize ?? 14"
     />
     <slot />
-    <span v-if="shortcut" class="menu-shortcut">{{ shortcut }}</span>
+    <span v-if="showShortcut" class="menu-shortcut">{{ shortcut }}</span>
     <span v-if="$slots.trailing" class="menu-trailing"><slot name="trailing" /></span>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { Component } from 'vue'
+import { isMobilePlatform } from '../utils/platform'
 // inheritAttrs (default) forwards host class/:class/event listeners onto the
 // single root <div>, merged with the static "menu-item" class above.
-defineProps<{
+const props = defineProps<{
   /** Leading lucide icon, rendered before the label (usually with `iconic`
    *  so it sits on the same flex line with the label and trailing content). The
    *  host passes the imported icon component; sizing/spacing live here. */
@@ -32,9 +34,12 @@ defineProps<{
   /** Icon + label (and a trailing slot) laid out on one flex line. */
   iconic?: boolean
   /** Optional muted trailing hint (usually a keyboard shortcut). Shown only
-   *  when non-empty; always right-aligned (.has-shortcut below). */
+   *  when non-empty; always right-aligned (.has-shortcut below). Hidden
+   *  entirely on mobile, where no hardware keyboard exists. */
   shortcut?: string
 }>()
+
+const showShortcut = computed(() => !!props.shortcut && !isMobilePlatform())
 </script>
 
 <style scoped>

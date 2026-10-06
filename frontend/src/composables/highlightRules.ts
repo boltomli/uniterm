@@ -12,6 +12,7 @@
 export type HighlightCategory =
   | 'url' | 'host' | 'path' | 'datetime' | 'string'
   | 'success' | 'error' | 'warning' | 'info' | 'brace'
+  | 'keyword' | 'ifname'
 
 export interface HighlightRule {
   category: HighlightCategory
@@ -20,8 +21,29 @@ export interface HighlightRule {
 }
 
 export const HIGHLIGHT_RULES: HighlightRule[] = [
+  // Quoted strings first: a quoted run wins over any rule that would fire
+  // inside it (IPs, URLs, timestamps…), matching editor-style precedence.
+  // `*` (not `{2,}`) so EMPTY strings match too: a skipped `""` leaves both
+  // quotes in the scan and the next match steals one, shifting every pair
+  // after it — long strings further along then never match.
+  { category: 'string',  regexes: [
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
+  ]},
   { category: 'url',     regexes: [
     /https?:\/\/[A-Za-z0-9_.&?=%~#{}()@+-]+(?::?[A-Za-z0-9_./&?=%~#{}()@+-]+)?/gi,
+  ]},
+  // Network device config (Cisco IOS / Huawei VRP style; also matches the
+  // config dumps of Linux net tools like iptables-save or FRR). Keywords are
+  // multi-word command starters or distinctive single words; `interface`
+  // only counts when an interface-name-like token follows, so prose stays
+  // untouched.
+  { category: 'keyword', regexes: [
+    /(^|[^0-9a-z_&-])(interface(?=\s+(?:[a-z]*ethernet|vlan(?:if)?|eth-trunk|meth|loopback|port-channel|tunnel|console|null)\s*\d)|switchport(?:\s+(?:mode|access|trunk|native|voice))?|ip address|ipv6 address|dhcp (?:select|server|relay|enable|snooping)|port (?:link-type|trunk|hybrid|default|group)|mode lacp|access vlan|vlan batch|ip route-static|stp (?:enable|disable|mode|bpdu)|local-user|user-interface|sysname|link-type|trunk allow-pass)(?![a-z_-])/gi,
+  ]},
+  // Interface names: full vendor spellings plus Huawei abbreviations (GE…),
+  // always name+digits+slash-groups so bare words like "ethernet" never hit.
+  { category: 'ifname',  regexes: [
+    /(^|[^0-9a-z_/-])((?:(?:twentyfivegigabit|hundredgigabit|fortygigabit|tengigabit|xgigabit|gigabit|fast)?ethernet|meth|(?:x?ge))\d+(?:\/\d+)+|vlanif\d+|vlan\d+|eth-trunk\d+|loopback\d+|port-channel\d+)(?![0-9a-z_.\-/])/gi,
   ]},
   { category: 'host',    regexes: [
     // IPv4 (first octet 1-254) and IPv6 (full and ::-compressed forms)
@@ -57,7 +79,6 @@ export const HIGHLIGHT_RULES: HighlightRule[] = [
     // hex:hex:… run. The guard group is trimmed as usual (see file header).
     /(^|[^0-9a-f:])\d{2}:\d{2}:\d{2}\b(?!(?::[0-9a-f]{2}){1,3})/gi,
   ]},
-  { category: 'string',  regexes: [/"(?:[^"\\]|\\.){2,}"|'(?:[^'\\]|\\.){2,}'/g] },
   // Consecutive identical symbols (`****`, `=====`, `>>>`) match once as a
   // whole run — the capture group is a backreference anchor, not a guard,
   // hence noLeadTrim.
@@ -147,4 +168,58 @@ export function matchTextSpans(
   // If the cap fired, the text wasn't fully scanned — report incomplete so
   // callers don't cache the truncated result as final.
   return { spans, complete: spans.length < maxMatches }
+}
+
+// --- Soft-wrap stitching -----------------------------------------------------
+//
+// The xterm buffer marks rows produced by terminal auto-wrap with
+// `IBufferLine.isWrapped`, so a logical line the terminal folded onto several
+// rows can be rebuilt: concatenate the rows' text, match rules over the whole
+// logical line, then split the resulting spans back to row-local offsets.
+// This makes constructs that span a wrap seam (quoted strings, URLs,
+// interface names…) highlight as if the line were never folded, while hard
+// newlines stay separate.
+
+export interface StitchedRows {
+  text: string
+  /** Char index in `text` where each input row starts (same order/length). */
+  starts: number[]
+}
+
+/** Join the texts of rows known to belong to one logical line (the caller
+ * walks `isWrapped` to collect them). */
+export function stitchLogicalText(texts: string[]): StitchedRows {
+  const starts: number[] = []
+  let offset = 0
+  for (const text of texts) {
+    starts.push(offset)
+    offset += text.length
+  }
+  return { text: texts.join(''), starts }
+}
+
+/** Split spans over the full logical text into per-row, row-local spans.
+ * A span crossing a wrap seam is clipped into one span per row it touches.
+ * Returns one (possibly empty) span array per row, in row order. */
+export function splitSpansToRows(
+  spans: TextSpan[],
+  starts: number[],
+): TextSpan[][] {
+  const perRow: TextSpan[][] = starts.map(() => [])
+  if (spans.length === 0 || starts.length === 0) return perRow
+  // Row r covers [starts[r], starts[r + 1]); the last row extends to
+  // whatever the final span needs — its content is the tail of the text.
+  let row = 0
+  for (const span of spans) {
+    while (row + 1 < starts.length && starts[row + 1] <= span.start) row++
+    for (let r = row; r < starts.length && starts[r] < span.end; r++) {
+      const rowEnd = r + 1 < starts.length ? starts[r + 1] : span.end
+      const start = Math.max(span.start, starts[r])
+      const end = Math.min(span.end, rowEnd)
+      if (end > start) {
+        perRow[r].push({ start: start - starts[r], end: end - starts[r], category: span.category })
+      }
+    }
+  }
+  return perRow
 }

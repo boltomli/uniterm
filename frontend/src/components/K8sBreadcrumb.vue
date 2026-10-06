@@ -1,5 +1,6 @@
 <template>
   <div class="db-breadcrumb">
+    <slot name="toggle" />
     <el-select
       v-if="showNsSelect"
       :model-value="namespace"

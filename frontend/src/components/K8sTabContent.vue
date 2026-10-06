@@ -2,13 +2,29 @@
   <div class="db-tab-content">
     <div v-if="error" class="k8s-fatal">{{ error }}</div>
     <div v-else-if="!connId" class="k8s-connecting">Connecting…</div>
-    <div v-else class="db-main">
-      <div class="db-left" :style="{ width: leftWidth + 'px' }">
+    <div v-else class="db-main" :class="{ 'm-tree-host': isNarrowScreen }">
+      <div v-if="isNarrowScreen && treeOpen" class="m-tree-overlay" @click="treeOpen = false" />
+      <div
+        v-show="isNarrowScreen || treeOpen"
+        class="db-left"
+        :class="{ 'm-tree': isNarrowScreen, 'm-tree-open': isNarrowScreen && treeOpen }"
+        :style="isNarrowScreen ? {} : { width: leftWidth + 'px' }"
+      >
         <K8sTree :model-value="rootResourceKey" @update:model-value="selectResource" />
       </div>
-      <div class="db-resizer" @mousedown="onResizeStart" />
+      <div v-if="!isNarrowScreen && treeOpen" class="db-resizer" @mousedown="onResizeStart" />
       <div class="db-right">
         <template v-if="topFrame.kind === 'overview'">
+          <div class="tree-head">
+            <button
+              class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+              :title="treeOpen ? t('common.collapse') : t('common.expand')"
+              @click="treeOpen = !treeOpen"
+            >
+              <PanelLeft :size="lucideSize('0.875rem')" />
+            </button>
+            <span class="tree-head-title">{{ t('k8s.overview') }}</span>
+          </div>
           <K8sOverview :conn-id="connId" :context-name="props.connection.name" @navigate="selectResource" />
         </template>
         <template v-else>
@@ -18,7 +34,17 @@
             :namespace-options="namespaceOptions"
             @pop="popTo"
             @update:namespace="setNamespace"
-          />
+          >
+            <template #toggle>
+              <button
+                class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+                :title="treeOpen ? t('common.collapse') : t('common.expand')"
+                @click="treeOpen = !treeOpen"
+              >
+                <PanelLeft :size="lucideSize('0.875rem')" />
+              </button>
+            </template>
+          </K8sBreadcrumb>
           <div v-if="namespaceError" class="k8s-ns-warning" role="status">{{ namespaceError }}</div>
           <K8sResourceList
             :conn-id="connId"
@@ -64,6 +90,10 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { PanelLeft } from '@lucide/vue'
+import { lucideSize } from '../utils/lucideSize'
+import { isNarrowScreen } from '../utils/platform'
+import { useI18n } from '../i18n'
 import { ElMessage } from 'element-plus'
 import * as k8sClient from '../services/k8sClient'
 import { usePanelStore } from '../stores/panelStore'
@@ -84,6 +114,8 @@ import type { K8sTab, NavFrame } from '../types/k8s'
 import type { ConnectionConfig } from '../types/session'
 
 const props = defineProps<{ tab: K8sTab; connection: ConnectionConfig }>()
+
+const { t } = useI18n()
 
 const { resolveTunnelCredentials } = useTunnelCredentials()
 
@@ -141,6 +173,7 @@ const currentNamespace = computed(() => {
 })
 
 function selectResource(key: string, nameFilter?: string) {
+  closeTree()
   if (key === OVERVIEW_KEY) {
     navStack.value = [{ kind: 'overview' }]
     return
@@ -268,6 +301,13 @@ async function doExec(pod: any, container: string) {
 
 // 左侧宽度 + resizer（抄 DBTabContent）
 const leftWidth = ref(220)
+
+// Narrow screens turn the tree into an overlay drawer (closed by default);
+// wide screens keep it inline and the toggle collapses it.
+const treeOpen = ref(!isNarrowScreen.value)
+function closeTree() {
+  if (isNarrowScreen.value) treeOpen.value = false
+}
 let resizeStartX = 0
 let resizeStartWidth = 0
 let resizing = false
@@ -375,14 +415,26 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .db-resizer {
+  /* Hover area floats over the tree edge (negative margin) so it takes
+     no layout width when idle and never blanks the content side. */
   width: 0.25rem;
+  margin-left: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s ease;
 }
-.db-resizer:hover {
-  background: var(--border-subtle, #333);
+.db-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 .db-right {
   flex: 1;

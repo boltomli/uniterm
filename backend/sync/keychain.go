@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 )
 
-const keychainService = "uniTerm"
+var keychainService = "uniTerm"
 
 const (
 	pbkdf2Iterations = 600000
@@ -61,6 +61,21 @@ func (k *Keychain) SetGitToken(token string) error {
 		return k.Delete("git-token")
 	}
 	return k.Set("git-token", token)
+}
+
+func (k *Keychain) GetWebDAVPassword() (string, error) {
+	pw, err := k.Get("webdav-password")
+	if err != nil {
+		return "", nil
+	}
+	return pw, nil
+}
+
+func (k *Keychain) SetWebDAVPassword(pw string) error {
+	if pw == "" {
+		return k.Delete("webdav-password")
+	}
+	return k.Set("webdav-password", pw)
 }
 func (k *Keychain) GetModelAPIKey(modelID string) (string, error) {
 	apiKey, err := k.Get("ai-model/" + modelID)

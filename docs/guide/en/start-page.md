@@ -40,6 +40,7 @@ Connections are displayed in a card grid. Each card shows the protocol icon, con
 Two action buttons below the search box:
 
 - **New Connection** — Opens the New Connection dialog
+- **New Workspace** — Creates an empty workspace tab; drag connections from the sidebar to compose splits
 - **Local Terminal** — Dropdown to select an installed shell and start a local terminal: PowerShell / CMD / Git Bash / WSL / bash / zsh, etc. On Windows this also includes Command Prompt (Clink) and UAC-elevated administrator Command Prompt / PowerShell, with automatic detection of Cygwin, MSYS2, and Nushell
 
 ## Recent

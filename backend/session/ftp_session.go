@@ -622,6 +622,27 @@ func (s *FTPSession) mkdirAllRemote(dir string) error {
 }
 
 // CancelTransfer cancels an ongoing transfer task.
+// RetryTransfer (re)starts a transfer from a frontend-held checkpoint.
+// Get/Put resolve idempotently on the absolute paths the spec carries.
+// skipCompleted is ignored — the transfer restarts from scratch.
+func (s *FTPSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
+	if err := s.requireClient(); err != nil {
+		return "", err
+	}
+	if spec.Type == "download" {
+		return s.Get(spec.RemotePath, spec.LocalPath, spec.Recursive)
+	}
+	return s.Put(spec.LocalPath, spec.RemotePath, spec.Recursive)
+}
+
+// DismissTransfer drops a retained (failed) task from the transfers map.
+func (s *FTPSession) DismissTransfer(taskID string) error {
+	s.mu.Lock()
+	delete(s.transfers, taskID)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *FTPSession) CancelTransfer(taskID string) error {
 	s.mu.Lock()
 	task, ok := s.transfers[taskID]
@@ -742,6 +763,11 @@ func (s *FTPSession) startTransfer(task *TransferTask) {
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()

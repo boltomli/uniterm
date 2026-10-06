@@ -77,7 +77,21 @@
         />
       </div>
       <div v-if="aiStore.isRunning || aiStore.pendingCommand || aiStore.pendingQuestion" class="ai-thinking">
-        <div class="thinking-text">{{ statusText }}</div>
+        <div class="thinking-row" :title="t('ai.thinkingToggleHint')" @click="toggleThinking">
+          <div class="thinking-text">{{ statusText }}</div>
+          <ChevronDown v-if="!aiStore.thinkingExpanded" :size="lucideSize('0.75rem')" class="thinking-chevron" />
+          <ChevronUp v-else :size="lucideSize('0.75rem')" class="thinking-chevron" />
+        </div>
+        <div v-show="aiStore.thinkingExpanded" ref="thinkingPanelRef" class="thinking-panel">
+          <div class="thinking-panel-header">
+            <span class="thinking-dot" :class="aiStore.status === 'thinking' ? 'live' : 'done'">{{ aiStore.status === 'thinking' ? '○' : '●' }}</span>
+            <span class="thinking-panel-title">{{ t('ai.thoughtProcess') }}</span>
+            <span v-if="liveThinkingElapsed" class="thinking-panel-time">{{ liveThinkingElapsed }}</span>
+            <span v-if="thinkingStartLabel" class="thinking-panel-time">· {{ thinkingStartLabel }}</span>
+          </div>
+          <pre v-if="aiStore.thinkingText" class="thinking-body">{{ aiStore.thinkingText }}</pre>
+          <div v-else class="thinking-empty">{{ t('ai.noThinkingContent') }}</div>
+        </div>
       </div>
     </div>
 
@@ -279,6 +293,7 @@ import MenuItem from './MenuItem.vue'
 import { Clipboard } from '@wailsio/runtime'
 import MenuDivider from './MenuDivider.vue'
 import { writeClipboard } from '../composables/useClipboardWrite'
+import { formatClock, formatDuration } from '../utils/timeFormat'
 
 const aiStore = useAIStore()
 const settingsStore = useSettingsStore()
@@ -496,6 +511,48 @@ const statusText = computed(() => {
   const key = `ai.${aiStore.status}` as any
   return t(key) || t('ai.thinking')
 })
+
+// ── Live thinking box (click the status text to expand/collapse) ──
+const thinkingPanelRef = ref<HTMLDivElement>()
+
+function scrollThinkingToBottom() {
+  const el = thinkingPanelRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+function toggleThinking() {
+  aiStore.thinkingExpanded = !aiStore.thinkingExpanded
+  if (aiStore.thinkingExpanded) nextTick(scrollThinkingToBottom)
+}
+
+watch(() => aiStore.thinkingText, () => {
+  if (aiStore.thinkingExpanded) nextTick(scrollThinkingToBottom)
+})
+
+// 1s tick feeding the live elapsed counter while the model is thinking.
+const thinkingTick = ref(0)
+let thinkingTickTimer: ReturnType<typeof setInterval> | null = null
+watch(
+  () => aiStore.thinkingExpanded && aiStore.isRunning && aiStore.status === 'thinking',
+  (on) => {
+    if (on && thinkingTickTimer === null) {
+      thinkingTick.value = Date.now()
+      thinkingTickTimer = setInterval(() => { thinkingTick.value = Date.now() }, 1000)
+    } else if (!on && thinkingTickTimer !== null) {
+      clearInterval(thinkingTickTimer)
+      thinkingTickTimer = null
+    }
+  },
+  { immediate: true }
+)
+onUnmounted(() => { if (thinkingTickTimer !== null) clearInterval(thinkingTickTimer) })
+
+const liveThinkingElapsed = computed(() => {
+  if (aiStore.status !== 'thinking' || !aiStore.thinkingStartedAt) return ''
+  return formatDuration(Math.max(0, thinkingTick.value - aiStore.thinkingStartedAt))
+})
+
+const thinkingStartLabel = computed(() => formatClock(aiStore.thinkingStartedAt))
 
 const messagesRef = ref<HTMLDivElement>()
 const sidebarWidth = ref(360)
@@ -1683,8 +1740,18 @@ defineExpose({ focusInput })
 }
 .ai-thinking {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   padding: 0.625rem 0.875rem;
+}
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  align-self: flex-start;
+  cursor: pointer;
+}
+.thinking-row:hover .thinking-text {
+  color: var(--text-secondary);
 }
 .thinking-text {
   font-size: 0.6875rem;
@@ -1692,6 +1759,67 @@ defineExpose({ focusInput })
   color: var(--text-muted);
   font-style: italic;
   animation: status-pulse 1.2s ease-in-out infinite;
+}
+.thinking-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.thinking-panel {
+  margin-top: 0.375rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  border-left: 2px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 0.375rem 0.625rem;
+}
+.thinking-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+  user-select: none;
+}
+.thinking-dot {
+  font-size: 0.6875rem;
+  line-height: 1;
+}
+.thinking-dot.live {
+  color: var(--accent);
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+.thinking-dot.done {
+  color: var(--success);
+}
+.thinking-panel-title {
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.thinking-panel-time {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.thinking-body {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-family: var(--font-ui);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.thinking-empty {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 @keyframes status-pulse {

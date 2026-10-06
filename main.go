@@ -17,6 +17,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -206,10 +207,14 @@ func main() {
 			// Wails' disabled SmartScreen protection.
 			DisabledFeatures: []string{"AutofillAiWalletPrivatePasses"},
 		},
-		// Fixed program name so the window's WM_CLASS stays "uniterm" — the
-		// installed package's .desktop file sets StartupWMClass to the same
-		// value, which is what lets the dock/taskbar associate the running
-		// window with the app icon.
+		// Fixed program name so the window's X11 WM_CLASS stays "uniterm" —
+		// the StartupWMClass in the .desktop file matches it under X11/XWayland.
+		// NOTE: on native Wayland this does NOT control the taskbar association:
+		// the XDG app_id comes from the GtkApplication id, which Wails derives
+		// as "org.wails." + lowercase Options.Name → "org.wails.uniterm". GNOME
+		// matches Wayland windows to launchers by desktop-file filename, so the
+		// installed .desktop must be named org.wails.uniterm.desktop (see
+		// build/linux/Taskfile.yml generate:dotdesktop).
 		Linux: application.LinuxOptions{
 			ProgramName: "uniterm",
 		},
@@ -246,7 +251,7 @@ func main() {
 		Y:               savedY,
 		InitialPosition: startPos,
 		StartState:      startState,
-		MinWidth:        700,
+		MinWidth:        500,
 		MinHeight:       450,
 		// Headless local update e2e runs must not flash a window.
 		Hidden:           autotestEnabled(),
@@ -307,6 +312,24 @@ func main() {
 	app.app = w3app
 	app.window = window
 	w3app.RegisterService(application.NewService(app))
+
+	// System notification service: app_<os>.go notifyMCPApproval posts MCP
+	// approval prompts through it when the window is unfocused. Windows needs
+	// the service's Startup to run so the toast AUMID/registry side is set up;
+	// macOS needs it for UNUserNotificationCenter authorization handling.
+	//
+	// Not registered on Android: the wails notifications service has no
+	// Android backend, so on GOOS=android it compiles the linux D-Bus
+	// implementation whose Startup fails (there is no session bus) and aborts
+	// w3app.Run before platformRun signals the app ready — leaving the
+	// WebView stuck on a blank wails.localhost error page. notifyMCPApproval
+	// already handles a nil notifier.
+	var mcpNotifier *notifications.NotificationService
+	if runtime.GOOS != "android" {
+		mcpNotifier = notifications.New()
+		w3app.RegisterService(application.NewService(mcpNotifier))
+	}
+	app.notifier = mcpNotifier
 
 	// System tray (issue #982): persistent icon with left-click show/hide
 	// toggle and a menu (show / hide / reset position / settings / about /

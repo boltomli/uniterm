@@ -7,30 +7,70 @@
     @close="handleClose"
   >
     <el-form label-width="6.25rem" class="add-repo-form">
-      <el-form-item :label="t('addRepo.url')">
-        <el-input
-          v-model="repoUrl"
-          :placeholder="t('addRepo.urlPlaceholder')"
-        />
-        <div class="form-hint warning">{{ t('addRepo.urlHint') }}</div>
+      <el-form-item :label="t('addRepo.backend')">
+        <el-radio-group v-model="backendType">
+          <el-radio-button value="git">{{ t('addRepo.backendGit') }}</el-radio-button>
+          <el-radio-button value="webdav">{{ t('addRepo.backendWebDAV') }}</el-radio-button>
+        </el-radio-group>
       </el-form-item>
 
-      <el-form-item :label="t('addRepo.username')">
-        <el-input
-          v-model="username"
-          :placeholder="t('addRepo.usernamePlaceholder')"
-        />
-      </el-form-item>
+      <template v-if="backendType === 'git'">
+        <el-form-item :label="t('addRepo.url')">
+          <el-input
+            v-model="repoUrl"
+            :placeholder="t('addRepo.urlPlaceholder')"
+          />
+          <div class="form-hint warning">{{ t('addRepo.urlHint') }}</div>
+        </el-form-item>
 
-      <el-form-item :label="t('addRepo.token')">
-        <el-input
-          v-model="token"
-          type="password"
-          show-password
-          :placeholder="t('addRepo.tokenPlaceholder')"
-        />
-        <div class="form-hint">{{ t('addRepo.tokenHint') }}</div>
-      </el-form-item>
+        <el-form-item :label="t('addRepo.username')">
+          <el-input
+            v-model="username"
+            :placeholder="t('addRepo.usernamePlaceholder')"
+          />
+        </el-form-item>
+
+        <el-form-item :label="t('addRepo.token')">
+          <el-input
+            v-model="token"
+            type="password"
+            show-password
+            :placeholder="t('addRepo.tokenPlaceholder')"
+          />
+          <div class="form-hint">{{ t('addRepo.tokenHint') }}</div>
+        </el-form-item>
+      </template>
+
+      <template v-else>
+        <el-form-item :label="t('addRepo.serverUrl')">
+          <el-input
+            v-model="webdavServerUrl"
+            :placeholder="t('addRepo.serverUrlPlaceholder')"
+          />
+          <div class="form-hint">{{ t('addRepo.serverUrlHint') }}</div>
+        </el-form-item>
+
+        <el-form-item :label="t('addRepo.basePath')">
+          <el-input
+            v-model="webdavBasePath"
+            placeholder="uniTerm-sync"
+          />
+        </el-form-item>
+
+        <el-form-item :label="t('addRepo.webdavUser')">
+          <el-input
+            v-model="webdavUser"
+          />
+        </el-form-item>
+
+        <el-form-item :label="t('addRepo.webdavPassword')">
+          <el-input
+            v-model="webdavPassword"
+            type="password"
+            show-password
+          />
+        </el-form-item>
+      </template>
 
       <el-form-item :label="t('addRepo.masterPassword')">
         <el-input
@@ -40,6 +80,14 @@
           :placeholder="t('addRepo.masterPasswordPlaceholder')"
         />
         <div class="form-hint">{{ t('addRepo.masterPasswordHint') }}</div>
+      </el-form-item>
+
+      <el-form-item :label="t('importExport.confirmPassword')">
+        <el-input
+          v-model="confirmPassword"
+          type="password"
+          show-password
+        />
       </el-form-item>
     </el-form>
 
@@ -68,10 +116,16 @@ const visible = computed({
   set: (v) => { if (!v) syncStore.showAddRepo = false },
 })
 
+const backendType = ref<'git' | 'webdav'>('git')
 const repoUrl = ref('')
 const username = ref('')
 const token = ref('')
+const webdavServerUrl = ref('')
+const webdavBasePath = ref('')
+const webdavUser = ref('')
+const webdavPassword = ref('')
 const masterPassword = ref('')
+const confirmPassword = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
@@ -81,41 +135,77 @@ function handleClose() {
 }
 
 function resetForm() {
+  backendType.value = 'git'
   repoUrl.value = ''
   username.value = ''
   token.value = ''
+  webdavServerUrl.value = ''
+  webdavBasePath.value = ''
+  webdavUser.value = ''
+  webdavPassword.value = ''
   masterPassword.value = ''
+  confirmPassword.value = ''
   errorMsg.value = ''
 }
 
 async function handleSubmit() {
   errorMsg.value = ''
 
-  if (!repoUrl.value.trim()) {
-    errorMsg.value = t('addRepo.urlRequired')
-    return
-  }
-  if (!username.value.trim()) {
-    errorMsg.value = t('addRepo.usernameRequired')
-    return
-  }
-  if (!token.value.trim()) {
-    errorMsg.value = t('addRepo.tokenRequired')
-    return
+  if (backendType.value === 'git') {
+    if (!repoUrl.value.trim()) {
+      errorMsg.value = t('addRepo.urlRequired')
+      return
+    }
+    if (!username.value.trim()) {
+      errorMsg.value = t('addRepo.usernameRequired')
+      return
+    }
+    if (!token.value.trim()) {
+      errorMsg.value = t('addRepo.tokenRequired')
+      return
+    }
+  } else {
+    if (!webdavServerUrl.value.trim()) {
+      errorMsg.value = t('addRepo.webdavServerUrlRequired')
+      return
+    }
+    if (!webdavUser.value.trim()) {
+      errorMsg.value = t('addRepo.usernameRequired')
+      return
+    }
+    if (!webdavPassword.value) {
+      errorMsg.value = t('addRepo.webdavPasswordRequired')
+      return
+    }
   }
   if (!masterPassword.value) {
     errorMsg.value = t('addRepo.masterPasswordRequired')
     return
   }
+  if (confirmPassword.value !== masterPassword.value) {
+    errorMsg.value = t('importExport.passwordMismatch')
+    return
+  }
 
   submitting.value = true
   try {
-    const result = await syncStore.configureRepo(
-      repoUrl.value.trim(),
-      username.value.trim(),
-      token.value,
-      masterPassword.value
-    )
+    let result: Awaited<ReturnType<typeof syncStore.configureRepo>>
+    if (backendType.value === 'git') {
+      result = await syncStore.configureRepo(
+        repoUrl.value.trim(),
+        username.value.trim(),
+        token.value,
+        masterPassword.value
+      )
+    } else {
+      result = await syncStore.configureWebDAV(
+        webdavServerUrl.value.trim().replace(/\/+$/, ''),
+        webdavBasePath.value.trim() || 'uniTerm-sync',
+        webdavUser.value.trim(),
+        webdavPassword.value,
+        masterPassword.value
+      )
+    }
     if (result && result.direction === 3) {
       // Conflict: repo connected but data differs
       syncStore.showAddRepo = false

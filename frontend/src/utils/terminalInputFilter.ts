@@ -13,3 +13,14 @@ export function filterTerminalInput(input: string, inAlternateScreen: boolean): 
   // Normal screen only: also strip focus in/out, which a shell does not want.
   return filtered.replace(/\x1b\[(?:[?>][\d;]*|[\d;]*)([IO])/g, '')
 }
+
+// Remove xterm's auto-generated device reports (CPR `ESC[<r>;<c>R`, DSR
+// `ESC[0n`, DA `ESC[?...c`). Unlike filterTerminalInput these must NOT pass
+// through when they are stale: during a KeepAlive gap replay the visible
+// terminal re-parses queries the mirror already answered, and a second reply
+// arriving after the remote's read timed out leaks its tail into the shell
+// (the "0R" artifact). No keystroke can produce these shapes, so the strip is
+// safe even if it overlaps real typing.
+export function stripDeviceReplies(input: string): string {
+  return input.replace(/\x1b\[[0-9;?><]*[Rnc]/g, '')
+}

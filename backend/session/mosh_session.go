@@ -126,6 +126,7 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 
+	s.startEmitLoop()
 	go s.readLoop(ctx)
 	go s.runPostLoginScript(ctx, config.PostLoginScript)
 

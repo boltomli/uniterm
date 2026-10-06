@@ -1,5 +1,89 @@
 # Changelog
 
+## v1.10.0
+
+### What's Changed
+
+**New Features**
+- MCP Server: a built-in MCP (Model Context Protocol) server lets external AI agents (Claude Code, Cursor, Trae, ...) run commands on saved SSH connections and transfer files. (@surenwuyuwuqiu)
+- Android: the first Android release — touch and narrow-viewport adaptations for phone use.
+- Sync: WebDAV is now available as a sync source alongside Git — both can serve as cloud sync sources. The sync scope is now configurable.
+- Containers: a container file browser, image management and an overview page. Four runtimes are supported — Docker / Podman / nerdctl (containerd) / WSLC — with WSLC contributed by @boltomli.
+- Kubernetes: a container file browser and an overview page, with create templates completed for more resource types.
+- AI: a collapsible thinking view — the Thinking indicator is clickable and expands into a live view streaming the model's reasoning, with a status indicator and elapsed timer; completed thinking is saved with the message as a collapsed block showing duration and timestamp. (@Teejer)
+
+**Improvements**
+- UI: the dark theme palette is refreshed and corner-radius tiers unified; dialog presentation is optimized with a capped height, and hover states use native cursors.
+- Transfer: S3-compatible object storage gains streaming uploads (no whole-file buffering), listing pagination and per-file retry support.
+- Remote desktop: RDP resolution now adapts to follow the window size.
+- Connections: the login username can be overridden per connection when using identity auth, so one key works across servers with different users.
+- Terminal: tabs can be restored at startup — a prompt at launch offers to reopen the tabs from the last session, enabled by default.
+- Terminal: network-device highlighting rules — Cisco IOS / Huawei VRP interface names and config keywords are recognized in output.
+- Terminal: the right/middle click actions gain a "No action" option, so mouse-tracking apps (vim, htop, ...) keep receiving those clicks. (#1088)
+- Sync: Git sync repo history is auto-compacted to bound repo size.
+
+**Bug Fixes**
+- SSH: fixes connections failing with EOF on certain devices (dropbear on OpenWrt CPEs, for example) by detecting the shell before the shell channel opens. (@sonnartliao)
+- SSH: fixes the injected cwd hook command line occasionally flashing in the terminal after connect; injection is hardened, and a new per-connection setting can defer it until directory follow is first enabled.
+- SSH / WSL: fixes the login MOTD not displaying on SSH and WSL, and failed logins on minimal CLI-only appliances (the cwd-hook probe now uses its own short-lived connection).
+- SMB: fixes transfers plateauing around 35MB/s on a typical LAN by pipelining large concurrent chunks instead of one round trip per 64KB — the link can now be saturated.
+- FTP: fixes garbled directory listings and filenames by decoding names with the configured charset; cancelling a single-file transfer now takes effect immediately.
+- S3: fixes creating an empty file / folder failing with an error; failures now surface a clear toast instead of going unnoticed.
+- MongoDB: fixes connections failing over an SSH tunnel; a failed connect keeps the tab open with the concrete error instead of tearing it down, and the form gains default-database and extra-params fields.
+- Database: fixes the duplicated extra-params field, the unusable test-connection button (mongodb / redis / elasticsearch) and the missing API Key input in the NoSQL / Elasticsearch connection forms.
+- Containers: fixes silently failing when a container references an SSH host without saved credentials — the credential dialog now opens.
+- Terminal: fixes the app freezing when a command floods the terminal with output.
+- Terminal: fixes highlighting not applying to lines that span a soft wrap.
+- SMB: fixes a session dying silently after idle — reconnect now restores the previous directory.
+- UI: fixes progress bars and status indicators turning invisible in background-image mode.
+- Linux: fixes the running window showing as an orphan with a generic icon on GNOME Wayland — the desktop file is now named after the Wayland app_id (`org.wails.uniterm.desktop`) so the window correctly matches its launcher. (@Teejer)
+
+**Notes**
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+
+Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contributions to this release.
+
+### 更新内容
+
+**新功能**
+- MCP Server：内置 MCP（Model Context Protocol）服务器，外部 AI Agent（Claude Code、Cursor、Trae 等）可在已保存的 SSH 连接上执行命令、传输文件。(@surenwuyuwuqiu)
+- Android：新增安卓版发布——针对手机屏幕的触控与窄视口适配。
+- 同步：新增 WebDAV 作为同步源，现支持 Git、WebDAV 两种云同步源。新增支持配置同步范围。
+- 容器：新增容器文件浏览器、镜像管理和总览页。支持 Docker / Podman / nerdctl（containerd）/ WSLC 四种运行时，其中 WSLC 由 @boltomli 贡献。
+- Kubernetes：新增容器文件浏览器和总览页，补全更多资源类型的创建模板。
+- AI：新增可折叠的思考过程视图——点击"思考中"指示器可展开实时查看模型的思考内容，带状态指示与耗时计时；完成后随消息保存为可折叠的思考块，显示耗时与时间戳。(@Teejer)
+
+**改进**
+- 界面：深色主题配色焕新、圆角层级统一；对话框展示效果优化并限制最大高度，悬停使用原生光标。
+- 文件传输：S3 兼容对象存储支持流式上传（不再整文件缓冲）、列表分页和单文件重试。
+- 远程桌面：RDP 分辨率自适应窗口大小。
+- 连接：身份认证下可按连接覆盖登录用户名，一把密钥可用于多台不同用户名的服务器。
+- 终端：支持启动时恢复标签页——启动时询问是否恢复上次会话的标签，默认开启。
+- 终端：新增网络设备高亮规则——识别 Cisco IOS / 华为 VRP 的接口名与配置关键字。
+- 终端：右键、中键动作新增「无动作」选项，开启鼠标追踪的程序（vim、htop 等）可正常接收点击。(#1088)
+- 同步：Git 同步仓库历史自动压缩，避免仓库无限膨胀。
+
+**修复**
+- SSH：修复部分设备（如 OpenWrt 上的 dropbear）连接报 EOF 失败的问题，现在先探测 shell 类型再打开 shell 通道。(@sonnartliao)
+- SSH：修复连接后终端偶尔闪现 cwd 钩子注入命令行的问题；注入逻辑加固，并新增连接级设置，可选择仅在启用"目录跟随"时注入。
+- SSH / WSL：修复 SSH 和 WSL 登录 MOTD 不显示、部分 CLI-only 设备登录失败（cwd 钩子探测改走独立短连接）的问题。
+- SMB：修复传输吞吐卡在约 35MB/s 的问题，改为大块并发流水线传输、不再逐块往返等待，局域网内可跑满带宽。
+- FTP：修复服务器目录列表与文件名乱码的问题，文件名按配置的字符集解码；单文件传输的取消现在可立即生效。
+- S3：修复新建空文件 / 目录直接报错的问题，失败时也会给出明确提示，不再静默。
+- MongoDB：修复 SSH 隧道下连接失败的问题；连接失败时标签页保留并显示具体错误、不再直接关闭，表单补充默认数据库与额外参数字段。
+- 数据库：修复 NoSQL / Elasticsearch 连接表单的几处问题——额外参数字段重复显示、mongodb/redis/elasticsearch 的"测试连接"按钮不可用、API Key 输入框不出现。
+- 容器：修复引用的 SSH 主机没有保存凭据时静默失败的问题，现在会弹出凭据录入对话框。
+- 终端：修复命令大量输出时整个应用卡死的问题。
+- 终端：修复跨软换行的行高亮不生效的问题。
+- SMB：修复空闲后会话静默失效的问题——重连后恢复原目录。
+- 界面：修复背景图模式下进度条、状态指示不可见的问题。
+- Linux：修复 GNOME Wayland 下运行窗口显示为无图标孤立窗口的问题——桌面文件改为按 Wayland app_id 命名（`org.wails.uniterm.desktop`），窗口可正确关联启动器图标。(@Teejer)
+
+**说明**
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+
+感谢 @surenwuyuwuqiu、@boltomli、@Teejer 和 @sonnartliao 对本版本的贡献。
+
 ## v1.9.5
 
 ### What's Changed

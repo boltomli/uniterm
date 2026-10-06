@@ -76,6 +76,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
+import { isMobilePlatform } from '../utils/platform'
 import TabItem from './TabItem.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -89,7 +90,9 @@ const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 // " (Ctrl+Shift+N)" suffix for the new-tab tooltip, '' when unset. Reactive via
 // settingsStore, so the tooltip updates when the user rebinds the shortcut.
+// '' on mobile too — no hardware keyboard, so the hint is meaningless.
 function shortcutSuffix(action: 'newConnection'): string {
+  if (isMobilePlatform()) return ''
   const b = settingsStore.settings.keyboard[action]
   if (!b) return ''
   const key = formatKeyBinding(b, isMac)

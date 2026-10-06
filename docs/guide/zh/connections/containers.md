@@ -18,6 +18,17 @@ uniTerm 内置容器管理界面，支持 **Kubernetes** 集群管理，以及 *
 
 填写后可点击「测试连接」验证 kubeconfig 与网络是否可达。
 
+### 集群总览
+
+进入连接后默认展示集群总览，一屏掌握集群全貌：
+
+- **集群信息** — Kubernetes 版本、当前 Context、命名空间数量
+- **节点** — 节点总数与就绪状态（未就绪节点数高亮）
+- **资源概览** — 工作负载 / 网络 / 存储与配置等资源数量统计
+- **Pod 状态** — 按运行状态分布统计
+- **资源用量** — 集群 CPU / 内存的实际用量与请求量对比（需集群安装 metrics-server）
+- **最近事件** — 最近的告警事件列表，点击资源统计可直接跳转到对应资源列表
+
 ### 资源浏览
 
 左侧树形面板按类别分组展示集群资源，实时监听（watch）变更并自动刷新：
@@ -25,7 +36,7 @@ uniTerm 内置容器管理界面，支持 **Kubernetes** 集群管理，以及 *
 | 分组 | 资源 |
 |------|------|
 | Workloads | Pods、Deployments、StatefulSets、DaemonSets、ReplicaSets、Jobs、CronJobs、HPAs |
-| Network | Services、Ingresses、Endpoints、NetworkPolicies |
+| Network | Services、Ingresses、Endpoints、NetworkPolicies、Gateways、HTTPRoutes、GRPCRoutes |
 | Config | ConfigMaps、Secrets、ResourceQuotas、LimitRanges |
 | Storage | PVCs、PVs、StorageClasses |
 | RBAC | ServiceAccounts、Roles、RoleBindings、ClusterRoles、ClusterRoleBindings |
@@ -53,6 +64,10 @@ uniTerm 内置容器管理界面，支持 **Kubernetes** 集群管理，以及 *
 - **日志** — 实时跟随 Pod 日志，支持暂停/恢复、时间戳、上一个容器（previous）、自动滚动、换行、清屏
 - **终端** — 直接 exec 进入 Pod 容器，获得交互式 Shell
 
+### 容器文件浏览器
+
+对运行中的 Pod，可打开双栏文件浏览器直接浏览容器内的文件系统，支持在本地与容器之间上传 / 下载文件，传输以任务列表呈现进度（进行中 / 已完成 / 失败），无需手动执行 `kubectl cp`。
+
 ## 容器引擎
 
 ![容器管理](/imgs/container_light.webp)
@@ -70,12 +85,15 @@ uniTerm 内置容器管理界面，支持 **Kubernetes** 集群管理，以及 *
 
 ### 容器管理
 
-顶部标签切换「容器」与「镜像」两个视图。
+左侧树形面板切换「总览」「容器」「镜像」三个视图。
+
+**总览** 显示运行时与主机信息（客户端 / 服务端版本、内核、存储驱动、CPU、内存）以及容器、镜像数量统计。
 
 **容器列表** 显示名称、镜像、状态、端口映射、创建时间，提供以下操作：
 
 - **生命周期** — 启动、停止、重启、暂停、恢复
 - **Exec** — 进入容器交互式终端
+- **目录** — 打开容器文件浏览器，浏览运行中容器的文件系统并上传 / 下载文件（同 Kubernetes 的容器文件浏览器，见上文）
 - **日志** — 查看容器日志输出
 - **重命名** — 修改容器名称
 - **删除** — 确认后移除容器

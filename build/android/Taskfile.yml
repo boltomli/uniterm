@@ -142,6 +142,7 @@ tasks:
         go build -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
+      VERSION: '{{.VERSION | default ""}}'
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s{{if .VERSION}} -X main.Version={{.VERSION}}{{end}}"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
 
   compile:go:all-archs:
@@ -166,6 +167,8 @@ tasks:
           ARCH: '{{.ARCH | default "arm64"}}'
     cmds:
       - task: assemble:apk:release
+        vars:
+          VERSION: '{{.VERSION}}'
 
   package:fat:
     summary: Packages a production build for all architectures (fat APK)
@@ -179,7 +182,10 @@ tasks:
         vars:
           ARCH: amd64
           PRODUCTION: "true"
+          VERSION: '{{.VERSION}}'
       - task: assemble:apk:release
+        vars:
+          VERSION: '{{.VERSION}}'
 
   bundle:
     summary: Packages a production AAB (Android App Bundle) for Play Store submission
@@ -193,6 +199,8 @@ tasks:
           ARCH: '{{.ARCH | default "arm64"}}'
     cmds:
       - task: assemble:aab:release
+        vars:
+          VERSION: '{{.VERSION}}'
 
   bundle:fat:
     summary: Packages a production AAB for all architectures
@@ -206,7 +214,10 @@ tasks:
         vars:
           ARCH: amd64
           PRODUCTION: "true"
+          VERSION: '{{.VERSION}}'
       - task: assemble:aab:release
+        vars:
+          VERSION: '{{.VERSION}}'
 
   assemble:apk:
     summary: Assembles a debug APK using Gradle
@@ -219,9 +230,21 @@ tasks:
         # The exec bit is lost when gradlew is extracted from the embedded
         # build assets, so restore it before invoking the wrapper.
         chmod +x ./gradlew
-        ./gradlew assembleDebug
+        # Map the release tag (VERSION=v1.2.3) to versionName/versionCode
+        # (maj*10000+min*100+patch). Non-numeric dev tags keep the 1.0 default.
+        VN="1.0"; VC="1"
+        if echo "{{.VERSION}}" | grep -Eq '^v?[0-9]+(\.[0-9]+){0,2}$'; then
+          V=$(echo "{{.VERSION}}" | sed 's/^v//')
+          MAJ=$(echo "$V" | awk -F. '{print $1+0}')
+          MIN=$(echo "$V" | awk -F. '{print ($2==""?0:$2)+0}')
+          PAT=$(echo "$V" | awk -F. '{print ($3==""?0:$3)+0}')
+          VN="$V"; VC=$((MAJ*10000 + MIN*100 + PAT))
+        fi
+        ./gradlew assembleDebug -PappVersionCode=$VC -PappVersionName=$VN
         cp app/build/outputs/apk/debug/app-debug.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
         echo "APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
 
   assemble:apk:release:
     summary: Assembles a release APK using Gradle (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
@@ -234,9 +257,21 @@ tasks:
         # The exec bit is lost when gradlew is extracted from the embedded
         # build assets, so restore it before invoking the wrapper.
         chmod +x ./gradlew
-        ./gradlew assembleRelease
+        # Map the release tag (VERSION=v1.2.3) to versionName/versionCode
+        # (maj*10000+min*100+patch). Non-numeric dev tags keep the 1.0 default.
+        VN="1.0"; VC="1"
+        if echo "{{.VERSION}}" | grep -Eq '^v?[0-9]+(\.[0-9]+){0,2}$'; then
+          V=$(echo "{{.VERSION}}" | sed 's/^v//')
+          MAJ=$(echo "$V" | awk -F. '{print $1+0}')
+          MIN=$(echo "$V" | awk -F. '{print ($2==""?0:$2)+0}')
+          PAT=$(echo "$V" | awk -F. '{print ($3==""?0:$3)+0}')
+          VN="$V"; VC=$((MAJ*10000 + MIN*100 + PAT))
+        fi
+        ./gradlew assembleRelease -PappVersionCode=$VC -PappVersionName=$VN
         cp app/build/outputs/apk/release/app-release.apk "../../{{.BIN_DIR}}/{{.APP_NAME}}.apk"
         echo "Release APK created: {{.BIN_DIR}}/{{.APP_NAME}}.apk"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
 
   assemble:aab:
     summary: Assembles a debug AAB (Android App Bundle) using Gradle
@@ -249,9 +284,21 @@ tasks:
         # The exec bit is lost when gradlew is extracted from the embedded
         # build assets, so restore it before invoking the wrapper.
         chmod +x ./gradlew
-        ./gradlew bundleDebug
+        # Map the release tag (VERSION=v1.2.3) to versionName/versionCode
+        # (maj*10000+min*100+patch). Non-numeric dev tags keep the 1.0 default.
+        VN="1.0"; VC="1"
+        if echo "{{.VERSION}}" | grep -Eq '^v?[0-9]+(\.[0-9]+){0,2}$'; then
+          V=$(echo "{{.VERSION}}" | sed 's/^v//')
+          MAJ=$(echo "$V" | awk -F. '{print $1+0}')
+          MIN=$(echo "$V" | awk -F. '{print ($2==""?0:$2)+0}')
+          PAT=$(echo "$V" | awk -F. '{print ($3==""?0:$3)+0}')
+          VN="$V"; VC=$((MAJ*10000 + MIN*100 + PAT))
+        fi
+        ./gradlew bundleDebug -PappVersionCode=$VC -PappVersionName=$VN
         cp app/build/outputs/bundle/debug/app-debug.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
         echo "AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
 
   assemble:aab:release:
     summary: Assembles a release AAB for Play Store upload (signed with the debug keystore unless ANDROID_KEYSTORE_FILE is set)
@@ -273,9 +320,21 @@ tasks:
         # The exec bit is lost when gradlew is extracted from the embedded
         # build assets, so restore it before invoking the wrapper.
         chmod +x ./gradlew
-        ./gradlew bundleRelease
+        # Map the release tag (VERSION=v1.2.3) to versionName/versionCode
+        # (maj*10000+min*100+patch). Non-numeric dev tags keep the 1.0 default.
+        VN="1.0"; VC="1"
+        if echo "{{.VERSION}}" | grep -Eq '^v?[0-9]+(\.[0-9]+){0,2}$'; then
+          V=$(echo "{{.VERSION}}" | sed 's/^v//')
+          MAJ=$(echo "$V" | awk -F. '{print $1+0}')
+          MIN=$(echo "$V" | awk -F. '{print ($2==""?0:$2)+0}')
+          PAT=$(echo "$V" | awk -F. '{print ($3==""?0:$3)+0}')
+          VN="$V"; VC=$((MAJ*10000 + MIN*100 + PAT))
+        fi
+        ./gradlew bundleRelease -PappVersionCode=$VC -PappVersionName=$VN
         cp app/build/outputs/bundle/release/app-release.aab "../../{{.BIN_DIR}}/{{.APP_NAME}}.aab"
         echo "Release AAB created: {{.BIN_DIR}}/{{.APP_NAME}}.aab"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
 
   generate:android:overlay:
     internal: true

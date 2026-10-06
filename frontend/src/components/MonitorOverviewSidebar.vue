@@ -600,7 +600,8 @@ onUnmounted(() => {
 }
 
 .card {
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 0.75rem;
   display: flex;

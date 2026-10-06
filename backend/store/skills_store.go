@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 // skillsListCacheTTL bounds how long a merged List result is reused before
@@ -693,6 +695,7 @@ func (s *SkillsStore) ImportFromZip(zipPath string) (string, error) {
 	}
 
 	// 解压到临时目录，再整体拷入
+	utils.EnsureTempDir()
 	tmpDir, err := os.MkdirTemp("", "uniterm-skill-import-")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)

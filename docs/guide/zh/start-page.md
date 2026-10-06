@@ -37,9 +37,10 @@
 
 ## 快速入口
 
-搜索框下方两个操作按钮：
+搜索框下方三个操作按钮：
 
 - **新建连接** — 弹出新建连接对话框
+- **新建工作区** — 新建一个空工作区标签，可从侧边栏拖入连接组成分栏
 - **本地终端** — 下拉选择已安装的 Shell 启动本地终端：PowerShell / CMD / Git Bash / WSL / bash / zsh 等，Windows 下还支持 命令提示符（Clink）与经 UAC 提权的管理员命令提示符 / PowerShell，并自动检测 Cygwin、MSYS2、Nushell
 
 ## 最近

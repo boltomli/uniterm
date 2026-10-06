@@ -12,7 +12,7 @@ English &nbsp;|&nbsp; <a href="README_zh-CN.md">简体中文</a>
 <br>
 
 <a href="https://github.com/ys-ll/uniterm/releases/latest"><img src="https://img.shields.io/github/v/release/ys-ll/uniterm" alt="GitHub release" /></a>
-<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" /></a>
+<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue" alt="Platform" /></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/github/stars/ys-ll/uniterm?style=social" alt="GitHub stars" /></a>
 <a href="https://gitee.com/ys-l/uniterm"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fys-l%2Funiterm&query=%24.stargazers_count&label=Stars&style=social&logo=gitee" alt="Gitee stars" /></a>
@@ -55,9 +55,8 @@ Autonomous AI Agent that independently plans and executes multi-turn shell comma
 - **Autonomous Multi-Turn Execution** — The AI Agent can plan, execute, observe results, and iterate across multiple rounds of shell commands without manual intervention.
 - **LLM Integration** — Sidebar chat with Anthropic/OpenAI-compatible API, supporting Claude, GPT and other compliant models.
 - **Flexible Execution Modes** — Bypass, dangerous only, dangerous + write, or confirm all — you control how much oversight the AI Agent needs.
-- **Persistent Conversations** — Chat history is saved per session, so conversations survive app restarts.
 - **Terminal Integration** — AI commands execute directly in the active terminal tab, with optional pinning to a specific tab or following your active one. Collaborate side-by-side in split panes, each with its own terminal context.
-- **Smart Completion** — While typing in SSH terminals, get real-time suggestions from your command history and AI-powered command rewrites.
+- **MCP Server** — Built-in MCP server that lets external AI agents (Claude Code, Codex, Gemini CLI, ...) run commands and transfer files on saved connections — credentials never leave the app.
 - **Skills & Commands** — Reusable skill workflows and prompt-template commands, attached with `/` in the AI input; the AI can also save new skills itself.
 
 ### Personalization
@@ -66,7 +65,7 @@ Connection management, split panes, cloud sync, themes — your terminal, your w
 
 - **Connection Manager** — Group, quickly search, create, and batch-operate server connections.
 - **Split Panes** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
-- **Cloud Sync** — Encrypt and auto-sync settings via your own decentralized private repo on GitHub, GitLab, or Gitee — no worry about data loss or leaks, and pick up your work seamlessly across devices.
+- **Cloud Sync** — Dual-mode cloud sync via private Git repository or WebDAV — no worry about data loss or leaks, and pick up your work seamlessly across devices.
 - **Custom Keybindings** — Freely bind keyboard shortcuts for every action for full keyboard-driven operation, hands never leaving the keyboard.
 - **Themes** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image.
 - **Internationalization** — 9-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian.
@@ -154,8 +153,9 @@ Oracle Database support is implemented with a pure Go driver. uniTerm does not b
 Get the latest pre-built binaries from [GitHub Releases](https://github.com/ys-ll/uniterm/releases) or [Gitee Releases](https://gitee.com/ys-l/uniterm/releases):
 
 - **Windows** (amd64 / arm64): installer `uniterm-windows-*-installer-*.exe`, or portable `uniterm-windows-*-portable-*.zip`
-- **macOS** (Intel / Apple Silicon): Download `uniterm-darwin-*-*.dmg`
+- **macOS** (Apple Silicon arm64 / Intel amd64): Download `uniterm-darwin-*-*.dmg`
 - **Linux** (amd64 / arm64): Download `uniterm-linux-*-*.tar.gz`, `.deb`, or `.rpm`
+- **Android** (arm64): Download `uniterm-android-arm64-*.apk`
 
 > **About Windows antivirus false positives**: As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
 
@@ -182,6 +182,7 @@ sudo rpm -i uniterm.rpm
 - **Windows**: WebView2 runtime (included in Windows 10+; older versions need a one-time install)
 - **macOS**: No extra dependencies (uses the system WebKit)
 - **Linux**: `libgtk-3-0` and `libwebkit2gtk-4.1-0` (preinstalled on most desktop distros)
+- **Android**: Android 5.0+ (uses the system WebView, no extra dependencies)
 
 ## Quick Workflows
 
@@ -215,7 +216,12 @@ sudo rpm -i uniterm.rpm
 
 ## Build from Source
 
-Requires [Go](https://go.dev/dl/) 1.26+, [Node.js](https://nodejs.org/) 20+, and [wails3 CLI](https://wails.io/docs/) v3.0.0-beta.12 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.12`). Additionally, macOS needs Xcode Command Line Tools, and Linux needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`.
+- [Go](https://go.dev/dl/) 1.26+
+- [Node.js](https://nodejs.org/) 20+
+- [wails3 CLI](https://wails.io/docs/) v3.0.0-beta.27 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.27`)
+- macOS needs Xcode Command Line Tools
+- Linux needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`
+- Android builds additionally need JDK 21 and the Android SDK/NDK (`sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"`)
 
 ```bash
 git clone https://github.com/ys-ll/uniterm.git
@@ -238,7 +244,7 @@ uniTerm/
 │   ├── container/                # Docker/Podman/nerdctl container management
 │   ├── k8s/                      # Kubernetes cluster management
 │   ├── store/                    # Persistent config (connections, AI, settings)
-│   ├── sync/                     # Cloud sync (GitHub/GitLab/Gitee)
+│   ├── sync/                     # Cloud sync (Git / WebDAV)
 │   ├── update/                   # Auto-update
 │   ├── platform/                 # Platform abstraction layer
 │   └── log/                      # File-based logging
@@ -291,6 +297,7 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@feuvan](https://github.com/feuvan)
 - [@zhangsir1211](https://github.com/zhangsir1211)
 - [@sonnartliao](https://github.com/sonnartliao)
+- [@Teejer](https://github.com/Teejer)
 
 ## License
 

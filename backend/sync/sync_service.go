@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	ggittransport "github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/utils"
 )
 
@@ -58,12 +59,8 @@ type ConflictInfo struct {
 }
 
 func NewSyncService(dataDir string) (*SyncService, error) {
-	cfgDir, err := os.UserConfigDir()
+	metaDir, err := syncMetaDir()
 	if err != nil {
-		return nil, err
-	}
-	metaDir := filepath.Join(cfgDir, "uniTerm")
-	if err := os.MkdirAll(metaDir, 0755); err != nil {
 		return nil, err
 	}
 
@@ -94,12 +91,8 @@ func NewSyncServiceAsync(dataDir string) (*SyncService, context.Context) {
 	initDone, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer s.readyOnce.Do(func() { close(s.ready) })
-		cfg, err := os.UserConfigDir()
+		metaDir, err := syncMetaDir()
 		if err != nil {
-			return
-		}
-		metaDir := filepath.Join(cfg, "uniTerm")
-		if err := os.MkdirAll(metaDir, 0755); err != nil {
 			return
 		}
 		s.configDir = metaDir
@@ -160,6 +153,22 @@ func (s *SyncService) getToken() string {
 	return token
 }
 
+// effectiveFiles returns this device's resolved sync file scope.
+// A saved scope that resolves to nothing (e.g. all-invalid names from a
+// stale build) falls back to the legacy default so a broken scope list
+// can never turn sync into a silent no-op or a wholesale wipe.
+func (s *SyncService) effectiveFiles() []string {
+	config, err := s.configStore.Load()
+	if err != nil {
+		return EffectiveSyncFiles(nil)
+	}
+	files := EffectiveSyncFiles(config.SyncScope)
+	if len(files) == 0 {
+		return EffectiveSyncFiles(nil)
+	}
+	return files
+}
+
 // Sync runs a full sync cycle: clone/open → fetch → three-way content
 // analysis → commit/pull/push → decrypt.
 //
@@ -182,6 +191,14 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	if config.Backend == "webdav" {
+		if config.WebDAVServer == "" {
+			return nil, fmt.Errorf("sync not configured: webdav server not set")
+		}
+		password, _ := s.keychain.GetWebDAVPassword()
+		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		return s.syncSnapshot(backend)
+	}
 	if config.RepoURL == "" {
 		return nil, fmt.Errorf("sync not configured: repo URL not set")
 	}
@@ -193,6 +210,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 
 	username := config.Username
 	token := s.getToken()
+	files := s.effectiveFiles()
 
 	// 1. Clone or open repo.
 	repo, err := CloneOrOpen(s.repoPath, config.RepoURL, config.Branch, username, token)
@@ -237,7 +255,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
 			return nil, fmt.Errorf("reset: %w", err)
 		}
-		if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+		if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
 			return nil, fmt.Errorf("decrypt files: %w", err)
 		}
@@ -252,7 +270,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 
 	// 4. Heads in sync — only local data drift can require a push.
 	if *heads.Local == *heads.Remote {
-		same, err := s.dataMatchesCommit(repo, encKey, *heads.Local)
+		same, err := s.dataMatchesCommit(files, repo, encKey, *heads.Local)
 		if err != nil {
 			s.updateLastSyncResult("failed", err.Error())
 			return nil, err
@@ -273,25 +291,67 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 		return nil, fmt.Errorf("merge base: %w", err)
 	}
 
-	baseDir, cleanupBase, err := s.decryptCommitToDir(repo, encKey, base)
+	// History rewritten on another device (compaction force-push, manual
+	// rewrite): no common ancestor exists. Compare the two sides' contents
+	// directly — identical → silently re-anchor on the remote head;
+	// different → the conflict dialog. Either way the device re-anchors
+	// and shares history again afterwards.
+	if base == nil {
+		remoteDir, cleanupRemote, err := s.decryptCommitToDir(files, repo, encKey, heads.Remote)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
+		}
+		defer cleanupRemote()
+		same, err := compareConfigDirs(files, s.dataDir, remoteDir, s.keychain, s.passwordStore)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
+		}
+		if same {
+			if err := repo.ResetToRemote(config.Branch); err != nil {
+				s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
+				return nil, fmt.Errorf("reset: %w", err)
+			}
+			s.updateLastSyncResult("success", "")
+			return &SyncResult{Message: "已是最新"}, nil
+		}
+		localTime, err := repo.CommitTime(*heads.Local)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
+		}
+		remoteTime, err := repo.CommitTime(*heads.Remote)
+		if err != nil {
+			s.updateLastSyncResult("failed", err.Error())
+			return nil, err
+		}
+		s.updateLastSyncResult("conflict", "")
+		return &SyncResult{
+			Direction: SyncConflict,
+			Conflict:  &ConflictInfo{LocalTime: localTime, RemoteTime: remoteTime},
+		}, nil
+	}
+
+	baseDir, cleanupBase, err := s.decryptCommitToDir(files, repo, encKey, base)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
 	}
 	defer cleanupBase()
-	remoteDir, cleanupRemote, err := s.decryptCommitToDir(repo, encKey, heads.Remote)
+	remoteDir, cleanupRemote, err := s.decryptCommitToDir(files, repo, encKey, heads.Remote)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
 	}
 	defer cleanupRemote()
 
-	localChanged, err := dirsDiffer(s.dataDir, baseDir, s.keychain, s.passwordStore)
+	localChanged, err := dirsDiffer(files, s.dataDir, baseDir, s.keychain, s.passwordStore)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
 	}
-	remoteChanged, err := dirsDiffer(remoteDir, baseDir, nil, nil)
+	remoteChanged, err := dirsDiffer(files, remoteDir, baseDir, nil, nil)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
@@ -326,7 +386,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
 			return nil, fmt.Errorf("reset: %w", err)
 		}
-		if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+		if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
 			return nil, fmt.Errorf("decrypt files: %w", err)
 		}
@@ -357,14 +417,105 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 	}
 }
 
+const (
+	// compactionThreshold is the first-parent depth at which sync history
+	// is rewritten down to compactionKeep commits. Encrypted config blobs
+	// do not delta-compress, so every commit stores a near-full copy of
+	// all files and repo size grows as ≈ commits × full-size.
+	compactionThreshold = 50
+	// compactionKeep is how many recent commits survive a rewrite.
+	compactionKeep = 10
+)
+
+// maybeCompactHistory bounds the sync repo size: once the first-parent
+// depth reaches compactionThreshold, the remote history is rewritten down
+// to the most recent compactionKeep commits, force-pushed, and the local
+// clone is rebuilt (go-git cannot gc old objects, so only a fresh clone
+// sheds them).
+//
+// Best-effort by contract: any failure logs and skips the round —
+// compaction never fails or blocks the sync that triggered it. Callers
+// must hold s.mu.
+func (s *SyncService) maybeCompactHistory() {
+	config, err := s.configStore.Load()
+	if err != nil || config.RepoURL == "" {
+		return
+	}
+	username := config.Username
+	token := s.getToken()
+
+	repo, err := CloneOrOpen(s.repoPath, config.RepoURL, config.Branch, username, token)
+	if err != nil {
+		log.Writef("sync compaction: open repo: %v", err)
+		return
+	}
+	depth, err := repo.CommitDepth()
+	if err != nil {
+		log.Writef("sync compaction: depth: %v", err)
+		return
+	}
+	if depth < compactionThreshold {
+		return
+	}
+	// The force-push below replaces remote history wholesale. If another
+	// device pushed between our own push and this rewrite, force-pushing
+	// would silently orphan its commit and surface a spurious conflict
+	// there. Right after a successful push the two heads must be equal —
+	// anything else means the remote moved, so skip the round.
+	if err := repo.Fetch(username, token); err != nil && !errors.Is(err, ggittransport.ErrEmptyRemoteRepository) {
+		log.Writef("sync compaction: fetch: %v", err)
+		return
+	}
+	heads, err := repo.ResolveBranchHeads(config.Branch)
+	if err != nil {
+		log.Writef("sync compaction: resolve heads: %v", err)
+		return
+	}
+	if heads.Local == nil || heads.Remote == nil || *heads.Local != *heads.Remote {
+		log.Writef("sync compaction: remote head moved since push, skipping round")
+		return
+	}
+	// Remember the pre-rewrite head: if the force-push below fails, the
+	// branch must be restored, or local and remote are half-rewritten —
+	// no common ancestor — and the next sync surfaces a spurious conflict.
+	prevHead, err := repo.HeadRef()
+	if err != nil {
+		log.Writef("sync compaction: head: %v", err)
+		return
+	}
+	if err := repo.RewriteHistory(compactionKeep); err != nil {
+		log.Writef("sync compaction: rewrite: %v", err)
+		return
+	}
+	if err := repo.PushForce(username, token); err != nil {
+		log.Writef("sync compaction: force push: %v", err)
+		if refErr := repo.RestoreHead(prevHead.Name(), prevHead.Hash()); refErr != nil {
+			log.Writef("sync compaction: restore head: %v", refErr)
+		}
+		return
+	}
+	// Rebuild the clone from scratch — the only way to shed the old
+	// objects; go-git cannot prune them.
+	if err := os.RemoveAll(s.repoPath); err != nil {
+		log.Writef("sync compaction: remove clone: %v", err)
+		return
+	}
+	if _, err := CloneOrOpen(s.repoPath, config.RepoURL, config.Branch, username, token); err != nil {
+		log.Writef("sync compaction: re-clone: %v", err)
+		return
+	}
+	log.Writef("sync compaction: depth %d → %d commits", depth, compactionKeep)
+}
+
 // pushLocalConfig encrypts the local config into the repo, commits it on
 // top of the current HEAD and pushes.
 func (s *SyncService) pushLocalConfig(repo *GitRepo, encKey []byte, username, token string) (*SyncResult, error) {
-	if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+	files := s.effectiveFiles()
+	if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("encrypt files: %v", err))
 		return nil, fmt.Errorf("encrypt files: %w", err)
 	}
-	if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync")); err != nil {
+	if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync"), files); err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("commit: %v", err))
 		return nil, fmt.Errorf("commit: %w", err)
 	}
@@ -373,30 +524,31 @@ func (s *SyncService) pushLocalConfig(repo *GitRepo, encKey []byte, username, to
 		return nil, fmt.Errorf("push: %w", err)
 	}
 	s.updateLastSyncResult("success", "")
+	s.maybeCompactHistory()
 	return &SyncResult{Direction: SyncPush, Message: "配置已上传"}, nil
 }
 
 // dataMatchesCommit compares the local config dir with the config as
-// committed at hash. A decrypt error is surfaced, not swallowed
-// (SYNC-P1-11).
-func (s *SyncService) dataMatchesCommit(repo *GitRepo, encKey []byte, hash plumbing.Hash) (bool, error) {
-	dir, cleanup, err := s.decryptCommitToDir(repo, encKey, &hash)
+// committed at hash over the given files. A decrypt error is surfaced, not
+// swallowed (SYNC-P1-11).
+func (s *SyncService) dataMatchesCommit(files []string, repo *GitRepo, encKey []byte, hash plumbing.Hash) (bool, error) {
+	dir, cleanup, err := s.decryptCommitToDir(files, repo, encKey, &hash)
 	if err != nil {
 		return false, err
 	}
 	defer cleanup()
-	same, err := compareConfigDirs(s.dataDir, dir, s.keychain, s.passwordStore)
+	same, err := compareConfigDirs(files, s.dataDir, dir, s.keychain, s.passwordStore)
 	if err != nil {
 		return false, err
 	}
 	return same, nil
 }
 
-// decryptCommitToDir extracts the synced files as committed at hash and
+// decryptCommitToDir extracts the given files as committed at hash and
 // decrypts them into a fresh temp dir. A nil hash yields an empty dir
 // (nothing committed at that side). The caller owns cleanup via the
 // returned function.
-func (s *SyncService) decryptCommitToDir(repo *GitRepo, encKey []byte, hash *plumbing.Hash) (string, func(), error) {
+func (s *SyncService) decryptCommitToDir(files []string, repo *GitRepo, encKey []byte, hash *plumbing.Hash) (string, func(), error) {
 	cipherDir, err := os.MkdirTemp("", "sync-cipher-")
 	if err != nil {
 		return "", nil, err
@@ -411,11 +563,11 @@ func (s *SyncService) decryptCommitToDir(repo *GitRepo, encKey []byte, hash *plu
 		os.RemoveAll(plainDir)
 	}
 	if hash != nil {
-		if err := repo.ExtractCommitFiles(*hash, cipherDir); err != nil {
+		if err := repo.ExtractCommitFilesIn(*hash, files, cipherDir); err != nil {
 			cleanup()
 			return "", nil, err
 		}
-		if err := DecryptConfigFiles(cipherDir, plainDir, encKey, nil); err != nil {
+		if err := DecryptConfigFilesScoped(files, cipherDir, plainDir, encKey, nil); err != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("decrypt commit: %w", err)
 		}
@@ -423,9 +575,10 @@ func (s *SyncService) decryptCommitToDir(repo *GitRepo, encKey []byte, hash *plu
 	return plainDir, cleanup, nil
 }
 
-// dirsDiffer reports whether the two decrypted config directories differ.
-func dirsDiffer(a, b string, kc *Keychain, ps PasswordStore) (bool, error) {
-	same, err := compareConfigDirs(a, b, kc, ps)
+// dirsDiffer reports whether the two decrypted config directories differ
+// over the given files.
+func dirsDiffer(files []string, a, b string, kc *Keychain, ps PasswordStore) (bool, error) {
+	same, err := compareConfigDirs(files, a, b, kc, ps)
 	if err != nil {
 		return false, err
 	}
@@ -445,8 +598,17 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	if config.Backend == "webdav" {
+		if config.WebDAVServer == "" {
+			return nil, fmt.Errorf("sync not configured: webdav server not set")
+		}
+		password, _ := s.keychain.GetWebDAVPassword()
+		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		return s.resolveConflictSnapshot(backend, useLocal)
+	}
 	username := config.Username
 	token := s.getToken()
+	files := s.effectiveFiles()
 
 	repo, err := CloneOrOpen(s.repoPath, config.RepoURL, config.Branch, username, token)
 	if err != nil {
@@ -489,16 +651,17 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 				return nil, fmt.Errorf("reset: %w", err)
 			}
 		}
-		if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+		if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
 			return nil, fmt.Errorf("encrypt files: %w", err)
 		}
-		if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync (resolve conflict)")); err != nil {
+		if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync (resolve conflict)"), files); err != nil {
 			return nil, fmt.Errorf("commit: %w", err)
 		}
 		if err := repo.Push(username, token); err != nil {
 			return nil, fmt.Errorf("push: %w", err)
 		}
 		s.updateLastSyncResult("success", "")
+		s.maybeCompactHistory()
 		return &SyncResult{Direction: SyncPush, Message: "已用本地配置覆盖远端"}, nil
 	}
 
@@ -507,7 +670,7 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 			return nil, fmt.Errorf("reset: %w", err)
 		}
 	}
-	if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+	if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 		return nil, fmt.Errorf("decrypt files: %w", err)
 	}
 
@@ -515,11 +678,19 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 	return &SyncResult{Direction: SyncPull, Message: "已用远端配置覆盖本地"}, nil
 }
 
-// TestConnection verifies the repo is reachable with stored credentials.
+// TestConnection verifies the sync backend is reachable with stored credentials.
 func (s *SyncService) TestConnection() error {
 	config, err := s.configStore.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if config.Backend == "webdav" {
+		if config.WebDAVServer == "" {
+			return utils.UserErr("repo_not_configured")
+		}
+		password, _ := s.keychain.GetWebDAVPassword()
+		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		return backend.Probe()
 	}
 	if config.RepoURL == "" {
 		return utils.UserErr("repo_not_configured")
@@ -537,10 +708,11 @@ func (s *SyncService) updateLastSyncResult(status string, errMsg string) {
 	_ = s.configStore.Save(config)
 }
 
-// IsAutoSyncEnabled returns whether auto sync is enabled and configured.
+// IsAutoSyncEnabled returns whether auto sync is enabled and configured
+// for the active backend (git repo URL, or a WebDAV server in webdav mode).
 func (s *SyncService) IsAutoSyncEnabled() bool {
 	config, _ := s.configStore.Load()
-	return config.AutoSync && config.RepoURL != ""
+	return config.AutoSync && (config.RepoURL != "" || (config.Backend == "webdav" && config.WebDAVServer != ""))
 }
 
 // RepoPath returns the local git repo path.
@@ -566,6 +738,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 	if err != nil {
 		return nil, fmt.Errorf("clone/open repo: %w", err)
 	}
+	files := s.effectiveFiles()
 
 	// Check if remote has .sync-salt
 	salt, err := ReadSaltFile(s.repoPath)
@@ -592,22 +765,27 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		}
 		defer os.RemoveAll(tmpDir)
 
-		if err := DecryptConfigFiles(s.repoPath, tmpDir, encKey, nil); err != nil {
+		if err := DecryptConfigFilesScoped(files, s.repoPath, tmpDir, encKey, nil); err != nil {
 			return nil, fmt.Errorf("decrypt remote for comparison: %w", err)
 		}
 
-		localEmpty := isConfigDirEmpty(s.dataDir)
-		remoteEmpty := isConfigDirEmpty(tmpDir)
+		localEmpty := isConfigDirEmpty(files, s.dataDir)
+		remoteEmpty := isConfigDirEmpty(files, tmpDir)
 
 		if localEmpty {
 			// Local has no config — pull remote to local
-			if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+			if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 				return nil, fmt.Errorf("decrypt files: %w", err)
 			}
+			// Carry over device-local fields: re-configuring the repo must
+			// not wipe this device's sync scope or auto-sync setting.
+			prev, _ := s.configStore.Load()
 			cfg := SyncConfig{
-				RepoURL:  repoURL,
-				Branch:   "main",
-				Username: username,
+				RepoURL:   repoURL,
+				Branch:    "main",
+				Username:  username,
+				AutoSync:  prev.AutoSync,
+				SyncScope: prev.SyncScope,
 			}
 			if token != "" {
 				_ = s.keychain.SetGitToken(token)
@@ -618,15 +796,20 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		}
 		if !remoteEmpty {
 			// Both have data — compare
-			same, err := compareConfigDirs(s.dataDir, tmpDir, s.keychain, s.passwordStore)
+			same, err := compareConfigDirs(files, s.dataDir, tmpDir, s.keychain, s.passwordStore)
 			if err != nil {
 				return nil, fmt.Errorf("compare configs: %w", err)
 			}
 			if !same {
+				// Carry over device-local fields: re-configuring the repo
+				// must not wipe this device's sync scope or auto-sync setting.
+				prev, _ := s.configStore.Load()
 				cfg := SyncConfig{
-					RepoURL:  repoURL,
-					Branch:   "main",
-					Username: username,
+					RepoURL:   repoURL,
+					Branch:    "main",
+					Username:  username,
+					AutoSync:  prev.AutoSync,
+					SyncScope: prev.SyncScope,
 				}
 				if token != "" {
 					_ = s.keychain.SetGitToken(token)
@@ -645,16 +828,21 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 				}, nil
 			}
 			// Same — save config then return, no need to re-encrypt/push
+			// Carry over device-local fields: re-configuring the repo must
+			// not wipe this device's sync scope or auto-sync setting.
+			prev, _ := s.configStore.Load()
 			cfg := SyncConfig{
-				RepoURL:  repoURL,
-				Branch:   "main",
-				Username: username,
+				RepoURL:   repoURL,
+				Branch:    "main",
+				Username:  username,
+				AutoSync:  prev.AutoSync,
+				SyncScope: prev.SyncScope,
 			}
 			if token != "" {
 				_ = s.keychain.SetGitToken(token)
 			}
 			_ = s.configStore.Save(cfg)
-			if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+			if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 				return nil, fmt.Errorf("decrypt files: %w", err)
 			}
 			s.updateLastSyncResult("success", "")
@@ -678,11 +866,11 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 	}
 
 	// Encrypt and push local config
-	if err := EncryptConfigFiles(s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+	if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
 		return nil, fmt.Errorf("encrypt files: %w", err)
 	}
 
-	if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync")); err != nil {
+	if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync"), files); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
@@ -697,10 +885,15 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		}
 	}
 
+	// Carry over device-local fields: re-configuring the repo must not
+	// wipe this device's sync scope or auto-sync setting.
+	prev, _ := s.configStore.Load()
 	cfg := SyncConfig{
-		RepoURL:  repoURL,
-		Branch:   "main",
-		Username: username,
+		RepoURL:   repoURL,
+		Branch:    "main",
+		Username:  username,
+		AutoSync:  prev.AutoSync,
+		SyncScope: prev.SyncScope,
 	}
 	if token != "" {
 		if err := s.keychain.SetGitToken(token); err != nil {
@@ -712,9 +905,13 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 	}
 
 	// Decrypt remote files to local
-	if err := DecryptConfigFiles(s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+	if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
 		return nil, fmt.Errorf("decrypt files: %w", err)
 	}
+
+	// Compaction deletes and re-clones s.repoPath best-effort, so it must
+	// run after the last use of that directory in this function.
+	s.maybeCompactHistory()
 
 	s.updateLastSyncResult("success", "")
 	return &SyncResult{Direction: SyncPush, Message: "仓库配置成功"}, nil
@@ -735,16 +932,17 @@ func getConfigModTime(dir string) time.Time {
 	return latest
 }
 
-// isConfigDirEmpty returns true if the config dir has no meaningful data.
-// Counts every synced JSON — not only connections — so a user with settings
+// isConfigDirEmpty returns true if the config dir has no meaningful data
+// over the given files. Counts every file in the list — not only connections —
+// so a user with settings
 // / quick-commands but no connections is not treated as "empty" and silently
-// overwritten on first sync (SYNC-P0-1). Uses syncedFiles rather than every
-// persisted JSON: ai-sessions.json / skills.json are local-only and never
+// overwritten on first sync (SYNC-P0-1). Uses the given file list rather than
+// every persisted JSON: ai-sessions.json / skills.json are local-only and never
 // synced, so their presence must not block a first-sync add-and-pull
 // (their files are not touched by decrypt either). favorites.json is an
 // array file: only a non-empty array counts as data.
-func isConfigDirEmpty(dir string) bool {
-	for _, name := range syncedFiles {
+func isConfigDirEmpty(files []string, dir string) bool {
+	for _, name := range files {
 		v, err := readJSONValue(filepath.Join(dir, name))
 		if err != nil {
 			// Unparseable or unreadable — treat as non-empty so the
@@ -758,13 +956,13 @@ func isConfigDirEmpty(dir string) bool {
 	return true
 }
 
-// compareConfigDirs compares two decrypted config directories.
+// compareConfigDirs compares two decrypted config directories over the given files.
 // localDir is the local config directory; remoteDir is the decrypted remote copy.
 // Legacy empty passwords are backfilled from keychain and enc:v1: fields are
 // normalized to plaintext on the local side before comparison so both sides
 // are comparable.
-func compareConfigDirs(localDir, remoteDir string, kc *Keychain, ps PasswordStore) (bool, error) {
-	for _, name := range syncedFiles {
+func compareConfigDirs(files []string, localDir, remoteDir string, kc *Keychain, ps PasswordStore) (bool, error) {
+	for _, name := range files {
 		same, err := compareConfigFiles(filepath.Join(localDir, name), filepath.Join(remoteDir, name), kc, ps)
 		if err != nil {
 			return false, err
@@ -933,12 +1131,30 @@ func (s *SyncService) VerifySyncPassword(password, username, token string) error
 		key = DeriveKey(password, salt)
 	}
 
-	encrypted, err := repo.ReadRemoteFile(config.Branch, "connections.json")
-	if err != nil {
-		encrypted, err = os.ReadFile(filepath.Join(s.repoPath, "connections.json"))
-		if err != nil {
-			return ErrWrongSyncPassword
+	// Try each scoped file on the remote, then the local mirror — the
+	// scope may legitimately exclude any specific file.
+	files := s.effectiveFiles()
+	var encrypted []byte
+	for _, name := range files {
+		data, rerr := repo.ReadRemoteFile(config.Branch, name)
+		if rerr == nil && len(data) > 0 {
+			encrypted = data
+			break
 		}
+	}
+	if encrypted == nil {
+		for _, name := range files {
+			data, rerr := os.ReadFile(filepath.Join(s.repoPath, name))
+			if rerr == nil && len(data) > 0 {
+				encrypted = data
+				break
+			}
+		}
+	}
+	if encrypted == nil {
+		// No scoped ciphertext on the remote or local mirror — an empty
+		// repo also lands here (pre-existing semantics).
+		return ErrWrongSyncPassword
 	}
 
 	if _, err := decryptBytes(string(encrypted), key, "connections.json"); err != nil {
@@ -947,8 +1163,11 @@ func (s *SyncService) VerifySyncPassword(password, username, token string) error
 	return nil
 }
 
-// ChangePassword re-encrypts all synced files with a new master password
-// and a fresh random salt. A new salt is required so PBKDF2 work cannot be
+// ChangePassword re-encrypts every ciphertext file present in the repo
+// with a new master password and a fresh random salt. The rotation is
+// repo-global because the salt is repo-global: every device derives its
+// key from the same salt, so no ciphertext may survive under the old key.
+// A new salt is required so PBKDF2 work cannot be
 // amortized across old and new passwords (SYNC-P1-6). The repo's existing
 // ciphertext is decrypted with the old key and re-encrypted with the new
 // key via a temp-then-rename pattern, so a crash mid-rotation leaves the
@@ -960,6 +1179,9 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 	config, err := s.configStore.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if config.Backend == "webdav" {
+		return s.changePasswordSnapshot(oldPassword, newPassword)
 	}
 	if config.RepoURL == "" {
 		return fmt.Errorf("no repo configured")
@@ -989,10 +1211,20 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 		return fmt.Errorf("store new encryption key: %w", err)
 	}
 
+	// Rotate every ciphertext present in the repo, not just the local
+	// scope: the new salt changes every device's derived key, so any
+	// file left under the old key would permanently break their sync.
+	var files []string
+	for _, name := range syncableFiles {
+		if _, err := os.Stat(filepath.Join(s.repoPath, name)); err == nil {
+			files = append(files, name)
+		}
+	}
+
 	// Re-encrypt every existing repo ciphertext: decrypt with oldKey,
 	// re-encrypt with newKey, atomic rename. A crash before the rename
 	// leaves the original ciphertext intact and decryptable with oldKey.
-	for _, name := range syncedFiles {
+	for _, name := range files {
 		srcPath := filepath.Join(s.repoPath, name)
 		ciphertext, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -1040,13 +1272,15 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 		return fmt.Errorf("open repo: %w", err)
 	}
 
-	if _, err := repo.StageAndCommit(commitMsg("uniTerm config sync (change password)")); err != nil {
+	if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync (change password)"), files); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 
 	if err := repo.Push(username, token); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
+
+	s.maybeCompactHistory()
 
 	return nil
 }
@@ -1062,6 +1296,7 @@ func (s *SyncService) DeleteRepo() error {
 
 	_ = s.keychain.Delete("encryption-key")
 	_ = s.keychain.Delete("git-token")
+	_ = s.keychain.Delete("webdav-password")
 
 	return s.configStore.Save(SyncConfig{Branch: "main"})
 }

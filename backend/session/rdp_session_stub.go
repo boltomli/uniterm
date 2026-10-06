@@ -48,6 +48,8 @@ func (s *RDPSession) SetFullScreen(_ bool) {}
 
 func (s *RDPSession) SetOnFullScreenExit(_ func()) {}
 
+func (s *RDPSession) SetOnAdaptiveEvent(_ func(event, snapshot string)) {}
+
 func (s *RDPSession) Invalidate() {}
 
 func (s *RDPSession) Refresh() {}

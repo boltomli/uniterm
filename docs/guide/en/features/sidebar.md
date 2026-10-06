@@ -156,6 +156,6 @@ The **Open Full Monitor** button at the bottom opens the full monitor tab with [
 ::: tip Related
 - [SSH Tunnel](/en/features/ssh-tunnel) — Full description of the Tunnels tab
 - [Server Monitor](/en/connections/server-monitor) — The full monitor tab
-- [Tabs and Workspace](/en/features/workspace) — Tab and panel management
+- [Workspace](/en/connections/workspace) — Tab and panel management
 - [Remote Terminal](/en/connections/remote-terminal) — Completion suggestions for terminal input
 :::

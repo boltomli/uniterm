@@ -12,12 +12,12 @@
     @contextmenu="onContextMenu"
   >
     <button
-      v-if="!tabCloseRight && hovered && !tab.locked"
+      v-if="!tabCloseRight && (hovered || isTouch) && !tab.locked"
       class="tab-close"
       @click.stop="$emit('close', tab.id)"
     ><X /></button>
     <span
-      v-if="tabCloseRight || !hovered || tab.locked"
+      v-if="tabCloseRight || (!hovered && !isTouch) || tab.locked"
       class="tab-icon-wrapper"
     >
       <component
@@ -65,7 +65,7 @@
     <button
       v-if="tabCloseRight && !showBroadcastIcon"
       class="tab-close tab-close-right"
-      :class="{ 'tab-close-right-ghost': !hovered || tab.locked }"
+      :class="{ 'tab-close-right-ghost': (!hovered && !isTouch) || tab.locked }"
       @click.stop="$emit('close', tab.id)"
     ><X /></button>
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible">
@@ -164,6 +164,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import { Clipboard } from '@wailsio/runtime'
+import { isMobilePlatform } from '../utils/platform'
 import { SquareTerminal, FolderUp, X, ArrowDownUp, Lock, Radio } from '@lucide/vue'
 
 const props = defineProps<{
@@ -201,6 +202,8 @@ const { t } = useI18n()
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 const tabShortcut = computed(() => {
+  // No hardware keyboard on mobile — the badge would advertise a dead binding.
+  if (isMobilePlatform()) return ''
   if (!props.shortcutIndex || props.shortcutIndex > 9) return ''
   // Cmd+N on macOS / Ctrl+N elsewhere by default, or the user-configured
   // keyboard.tabSwitchModifier combo — always the real binding.
@@ -216,6 +219,12 @@ function menuShortcut(action: ShortcutAction): string {
   if (!b) return ''
   return formatKeyBinding(b, isMac)
 }
+
+// Touch (coarse pointer) devices have no hover: the tab is treated as hovered
+// so the close button stays reachable.
+const isTouch =
+  typeof window !== 'undefined' &&
+  window.matchMedia('(pointer: coarse)').matches
 
 const hovered = ref(false)
 const ctxMenuVisible = ref(false)
@@ -285,7 +294,7 @@ const isBroadcastTarget = computed(() =>
 const showBroadcastIcon = computed(() =>
   canBroadcast.value &&
   isBroadcastTarget.value &&
-  !(tabCloseRight.value && hovered.value && !props.tab.locked)
+  !(tabCloseRight.value && (hovered.value || isTouch) && !props.tab.locked)
 )
 
 

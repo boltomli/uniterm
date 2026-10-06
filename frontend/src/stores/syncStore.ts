@@ -8,6 +8,7 @@ import {
   SyncResolveConflict,
   SyncTestConnection,
   SyncConfigureRepo,
+  SyncConfigureRepoWebDAV,
   SyncChangePassword,
   SyncDeleteRepo,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -21,14 +22,33 @@ let unsubSyncConflict: (() => void) | null = null
 let unsubSyncCompleted: (() => void) | null = null
 
 export interface SyncConfig {
+  backend: string
   repoUrl: string
   branch: string
   username: string
   autoSync: boolean
+  syncScope: string[] | null
+  webdavServer: string
+  webdavPath: string
+  webdavUser: string
+  lastSyncedHash: string
   lastSyncAt: string
   lastSyncStatus: string
   lastSyncError: string
 }
+
+// Mirrors backend syncableFiles; label reuses the app's existing i18n keys
+// for each data category instead of new sync-specific strings.
+export const SYNC_FILE_ITEMS: { file: string; label: string }[] = [
+  { file: 'connections.json', label: 'startTab.connections' },
+  { file: 'favorites.json', label: 'sidebar.favorites' },
+  { file: 'ai.json', label: 'settings.ai' },
+  { file: 'quickCommands.json', label: 'quickCommands.quickCommandsTab' },
+  { file: 'tunnels.json', label: 'settings.tunnels' },
+  { file: 'identities.json', label: 'settings.identities' },
+  { file: 'proxies.json', label: 'settings.proxies' },
+  { file: 'settings.json', label: 'settings.basic' },
+]
 
 export interface SyncResult {
   direction: number // 0=none, 1=push, 2=pull, 3=conflict
@@ -44,10 +64,16 @@ export interface SyncConflict {
 export const useSyncStore = defineStore('sync', () => {
   const { t } = useI18n()
   const config = ref<SyncConfig>({
+    backend: 'git',
     repoUrl: '',
     branch: 'main',
     username: '',
     autoSync: false,
+    syncScope: null,
+    webdavServer: '',
+    webdavPath: '',
+    webdavUser: '',
+    lastSyncedHash: '',
     lastSyncAt: '',
     lastSyncStatus: '',
     lastSyncError: '',
@@ -67,10 +93,16 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       const cfg = await SyncGetConfig()
       config.value = {
+        backend: cfg.backend ?? (cfg as any).Backend ?? 'git',
         repoUrl: cfg.repoUrl || '',
         branch: cfg.branch || 'main',
         username: cfg.username || '',
         autoSync: cfg.autoSync || false,
+        syncScope: cfg.syncScope ?? null,
+        webdavServer: cfg.webdavServer ?? (cfg as any).WebDAVServer ?? '',
+        webdavPath: cfg.webdavPath ?? (cfg as any).WebDAVPath ?? '',
+        webdavUser: cfg.webdavUser ?? (cfg as any).WebDAVUser ?? '',
+        lastSyncedHash: cfg.lastSyncedHash ?? (cfg as any).LastSyncedHash ?? '',
         lastSyncAt: cfg.lastSyncAt || '',
         lastSyncStatus: cfg.lastSyncStatus || '',
         lastSyncError: cfg.lastSyncError || '',
@@ -83,10 +115,16 @@ export const useSyncStore = defineStore('sync', () => {
   async function saveConfig(token: string = '') {
     try {
       const cfg = new SyncConfig()
+      cfg.backend = config.value.backend
       cfg.repoUrl = config.value.repoUrl
       cfg.branch = config.value.branch
       cfg.username = config.value.username
       cfg.autoSync = config.value.autoSync
+      cfg.syncScope = config.value.syncScope ?? undefined
+      cfg.webdavServer = config.value.webdavServer
+      cfg.webdavPath = config.value.webdavPath
+      cfg.webdavUser = config.value.webdavUser
+      cfg.lastSyncedHash = config.value.lastSyncedHash
       cfg.lastSyncAt = config.value.lastSyncAt
       cfg.lastSyncStatus = config.value.lastSyncStatus
       cfg.lastSyncError = config.value.lastSyncError
@@ -185,6 +223,37 @@ export const useSyncStore = defineStore('sync', () => {
     }
   }
 
+  async function configureWebDAV(
+    serverUrl: string,
+    basePath: string,
+    username: string,
+    password: string,
+    masterPassword: string
+  ): Promise<SyncResult | null> {
+    syncing.value = true
+    try {
+      const result = await SyncConfigureRepoWebDAV(serverUrl, basePath, username, password, masterPassword)
+      await loadConfig()
+      const direction = result.direction ?? (result as any).Direction ?? 0
+      if (direction === 3) {
+        conflict.value = result.conflict
+          ? { localTime: result.conflict.localTime ?? (result.conflict as any).LocalTime ?? '',
+              remoteTime: result.conflict.remoteTime ?? (result.conflict as any).RemoteTime ?? '' }
+          : (result as any).Conflict
+            ? { localTime: (result as any).Conflict.LocalTime ?? '', remoteTime: (result as any).Conflict.RemoteTime ?? '' }
+            : { localTime: '', remoteTime: '' }
+      }
+      return {
+        direction,
+        message: result.message ?? (result as any).Message ?? '',
+      }
+    } catch (e: any) {
+      throw e
+    } finally {
+      syncing.value = false
+    }
+  }
+
   async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
     try {
       await SyncChangePassword(oldPassword, newPassword)
@@ -250,6 +319,7 @@ export const useSyncStore = defineStore('sync', () => {
     resolveConflict,
     testConnection,
     configureRepo,
+    configureWebDAV,
     changePassword,
     deleteRepo,
     formatSyncTime,

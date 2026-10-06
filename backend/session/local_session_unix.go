@@ -146,6 +146,7 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		_ = pty.Setsize(s.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	}
 
+	s.startEmitLoop()
 	go s.readLoop()
 	go s.runPostLoginScript(config.PostLoginScript)
 

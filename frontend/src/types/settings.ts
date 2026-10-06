@@ -1,5 +1,3 @@
-import type { MCPSettings } from './mcp'
-import { DEFAULT_MCP_SETTINGS } from './mcp'
 
 export const SUPPORTED_LOCALES = [
   'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'de', 'es', 'fr', 'ru'
@@ -72,8 +70,8 @@ export interface TerminalSettings {
   fontWeight: number
   fontSize: number
   selectionAction: 'none' | 'copy'
-  rightClickAction: 'menu' | 'paste'
-  middleClickAction: 'paste' | 'menu'
+  rightClickAction: 'none' | 'menu' | 'paste'
+  middleClickAction: 'none' | 'paste' | 'menu'
   // Ctrl/Cmd + mouse wheel zooms the terminal font. Can be turned off (issue
   // #671) for scroll-sensitive mice; defaults to enabled.
   ctrlWheelZoom?: boolean
@@ -277,6 +275,9 @@ export interface AppSettings {
   updateSource: 'auto' | 'github' | 'gitee'
   closeTabPrompt: boolean
   closeAppPrompt: boolean
+  // Startup prompt to reopen the tabs that were open when the app last quit
+  // (issue #937). The snapshot is always recorded either way.
+  restoreTabsPrompt: boolean
   sftpBookmarks: SFTPBookmarks
   // Whether the dual-pane SFTP tab's transfer panel starts out visible.
   // The panel auto-pops on every new transfer task regardless of this flag;
@@ -296,9 +297,6 @@ export interface AppSettings {
   // Which connection-sidebar tab icons are visible, keyed by view id.
   // Missing keys fall back to SIDEBAR_TAB_DEFAULTS.
   sidebarTabs: Record<string, boolean>
-  // MCP server for external AI agents. Mirrors the Go AppSettings.MCP
-  // pointer: absent in older settings.json = feature off.
-  mcp?: MCPSettings
 }
 
 // Default visibility per sidebar view. "connections" is the primary view and
@@ -378,6 +376,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updateSource: 'auto',
   closeTabPrompt: true,
   closeAppPrompt: true,
+  restoreTabsPrompt: true,
   sftpBookmarks: {
     localPaths: [],
     remotePaths: []
@@ -388,8 +387,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tabCloseButton: 'left',
   showTabShortcutHints: true,
   hostListMenuStyle: 'button',
-  sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS },
-  mcp: { ...DEFAULT_MCP_SETTINGS, tools: { ...DEFAULT_MCP_SETTINGS.tools } }
+  sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS }
 }
 
 export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light' }
@@ -472,7 +470,8 @@ export const CURSOR_STYLES: { labelKey: string; value: TerminalSettings['cursorS
 
 export const RIGHT_CLICK_ACTIONS: { label: string; value: TerminalSettings['rightClickAction'] }[] = [
   { label: 'Show context menu', value: 'menu' },
-  { label: 'Paste from clipboard', value: 'paste' }
+  { label: 'Paste from clipboard', value: 'paste' },
+  { label: 'No action', value: 'none' }
 ]
 
 export const LANGUAGE_OPTIONS: { value: Locale; label: string; native: string }[] = [

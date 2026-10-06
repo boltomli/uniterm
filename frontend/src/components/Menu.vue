@@ -4,10 +4,11 @@
       v-show="visible"
       ref="menuEl"
       class="conn-context-menu"
-      :class="[{ 'mirror-left': mirrorLeft, overflow: overflow }, rootClass]"
+      :class="[{ overflow: overflow }, rootClass]"
       :style="menuStyle"
       @mouseover="onInnerMouseOver"
-      @mouseleave="submenu.active = ''"
+      @mouseleave="onRootLeave"
+      @scroll="submenu.active = ''"
       @contextmenu.stop
     >
       <slot :current="current" />
@@ -95,10 +96,13 @@ function deactivate(m: ActiveMenu) {
 
 // Bubble-phase outside-click close. Trigger buttons use @click.stop so their own
 // click only runs toggle(); anything that bubbles past the open menu closes it.
+// Clicks inside a teleported flyout (see MenuSubmenu) live outside the menu root
+// in the DOM but must count as inside.
 function onDocClick(e: MouseEvent) {
   if (!active) return
+  const t = e.target as HTMLElement
   const el = active.el()
-  if (el && !el.contains(e.target as Node)) active.close()
+  if (el && !el.contains(t) && !t.closest('.menu-submenu')) active.close()
 }
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') active?.close()
@@ -117,13 +121,11 @@ const emit = defineEmits<{
 
 const menuEl = ref<HTMLElement | null>(null)
 const menuStyle = ref({ top: '-9999px', left: '-9999px' })
-// Submenu fly direction is computed per-position from the window edges (which
-// side has more room), not from the static align. See position().
-const mirrorLeft = ref(false)
 // True when the menu is taller than the viewport: scroll inside the container
 // instead of letting the window clip the bottom. Only set in that state —
-// overflow != visible would clip the absolutely positioned submenu flyouts
-// even when nothing actually overflows, so menus that fit must stay untouched.
+// overflow != visible would clip content even when nothing actually overflows.
+// Submenu flyouts are teleported to <body> (see MenuSubmenu), so this does NOT
+// clip them.
 const overflow = ref(false)
 const current = ref<unknown>()
 // Writable submenu state shared with descendant <MenuSubmenu> rows via provide;
@@ -134,7 +136,7 @@ provide('menuSubmenu', submenu)
 const closeFn = () => emit('update:visible', false)
 const menuController: ActiveMenu = { el: () => menuEl.value, close: closeFn }
 
-function position(x: number, y: number) {
+async function position(x: number, y: number) {
   const m = menuEl.value
   if (!m) return
   const mr = m.getBoundingClientRect()
@@ -143,24 +145,15 @@ function position(x: number, y: number) {
     left: Math.max(4, Math.min(x, window.innerWidth - mr.width - 4)) + 'px',
     top: Math.max(4, Math.min(y, window.innerHeight - mr.height - 4)) + 'px',
   }
-  // Seed the submenu fly side with the menu's own width as a stand-in for the
-  // projected flyout width; refiners the exact fit once a flyout actually opens
-  // (see the submenu.active watcher below). The rule: fly RIGHT by default, and
-  // only mirror LEFT when the right side cannot fit the flyout but the left can.
-  // In overflow mode always fly LEFT over the parent menu: a rightward flyout
-  // would be clipped by the scroll container's overflow-x.
-  const placed = m.getBoundingClientRect()
-  mirrorLeft.value = overflow.value || shouldMirror(placed, placed.width)
 }
 
-// Decide whether a flyout must open leftward instead of the default rightward:
-// fit on the right first; fall back to the left only if the right doesn't have
-// room but the left does. Never mirrors just because one side has "more" room.
-function shouldMirror(placed: DOMRect, flyoutWidth: number): boolean {
-  const edge = 4
-  const fitsRight = placed.right + flyoutWidth <= window.innerWidth - edge
-  const fitsLeft = placed.left - flyoutWidth >= edge
-  return !fitsRight && fitsLeft
+// Mouse leaving the menu root collapses the open flyout — unless the pointer
+// moved into a teleported flyout (a sibling of the menu root in the DOM, so
+// leaving the root to reach it must not count as leaving the menu).
+function onRootLeave(e: MouseEvent) {
+  const rt = e.relatedTarget as HTMLElement | null
+  if (rt && rt.closest('.menu-submenu')) return
+  submenu.active = ''
 }
 
 // Flat menu anchored below a trigger button.
@@ -219,19 +212,6 @@ function onInnerMouseOver(e: MouseEvent) {
   }
 }
 
-// When a flyout actually opens, refine the fly side with its real width instead
-// of the parent-width estimate used in position().
-watch(() => submenu.active, (key) => {
-  if (!key) return
-  nextTick(() => {
-    const m = menuEl.value
-    const fly = m?.querySelector('.menu-submenu') as HTMLElement | null
-    if (!m || !fly) return
-    const fw = fly.getBoundingClientRect().width
-    if (fw) mirrorLeft.value = overflow.value || shouldMirror(m.getBoundingClientRect(), fw)
-  })
-})
-
 watch(() => props.visible, (v) => {
   if (v) {
     activate(menuController)
@@ -258,22 +238,17 @@ watch(() => props.visible, (v) => {
    - .conn-context-menu          → a top-level menu (this component's root),
      teleported to <body> and positioned with screen coordinates (fixed).
    - .menu-submenu               → a nested flyout / submenu. It reuses the
-     same surface and row styling as the parent, but is positioned relative
-     to an open, hoverable anchor — drop it on any flyout and the look is
-     identical without writing extra CSS.
+     same surface and row styling as the parent; MenuSubmenu teleports it to
+     <body> and fixed-positions it beside its row against the window edges.
 
    Modifiers / building blocks (all defined once here):
    - .conn-context-menu.anchored → absolute, anchored to a relatively
      positioned parent (e.g. an inline "⋯" button) instead of fixed.
-   - .conn-context-menu.mirror-  → the container is shifted left via
-       left                        translateX(-100%); the flyout side is decided
-                                   per-position against the window edges.
    - .menu-item.active           → selected / highlighted row (accent).
    - .menu-item.iconic           → row with a leading icon; keeps icon+label
                                    and a trailing slot aligned on one line.
-   - .menu-item.submenu-wrap     → row that hosts a nested .menu-submenu
-                                   (gets position:relative so the flyout can
-                                   anchor to it).
+   - .menu-item.submenu-wrap     → row that owns a nested .menu-submenu
+                                   flyout (see MenuSubmenu.vue).
    - .menu-item.mono             → monospaced path / label row (SFTP drives,
                                    bookmarks).
    - .menu-divider               → separator line between groups.
@@ -296,15 +271,6 @@ watch(() => props.visible, (v) => {
   position: absolute;
   top: 100%;
   right: 0;
-}
-/* Flyout flip is per-flyout: each .menu-submenu anchors absolutely to its own
-   .submenu-wrap row, so flipping its side must never move the parent menu.
-   (A prior version translated the whole container with translateX(-100%), which
-   made hovering a submenu-wrapped row jump the entire top-level menu sideways —
-   e.g. the AppHeader settings menu hopping left. Removed: only the flyout's
-   left/right flips.) */
-.conn-context-menu.mirror-left {
-  /* intentionally empty — kept for the descendant selector below */
 }
 /* Too tall for the window: scroll inside the container instead of being cut
    off by the window edge. Toggled only when the measured height exceeds the
@@ -357,7 +323,10 @@ watch(() => props.visible, (v) => {
 .conn-context-menu .menu-item.submenu-wrap {
   position: relative;
 }
-.conn-context-menu .menu-divider {
+/* Standalone (not nested under .conn-context-menu): MenuDivider is also
+   rendered inside teleported .menu-submenu flyouts, which live at <body>. */
+.conn-context-menu .menu-divider,
+.menu-submenu .menu-divider {
   height: 1px;
   background: var(--border-subtle);
   margin: 0.25rem 0.375rem;
@@ -370,16 +339,17 @@ watch(() => props.visible, (v) => {
   font-size: 0.8125rem;
   color: var(--text-tertiary);
 }
-/* Nested flyout / submenu surface — inherits the same surface skin. Position
-   it relative to a .menu-item.submenu-wrap; the skin and rows reuse everything
-   above. Flyout direction is decided per-position by Menu.vue against the
-   window edges (`mirror-left` flips it leftward when the right side can't fit
-   it). Hosts just write `menu-submenu` and never pick a side. Each overlaps 0.1875rem
-   onto its parent row so the parent→flyout mouse path never crosses a dead gap
-   (which would close the flyout). */
-.conn-context-menu .menu-submenu {
-  position: absolute;
-  z-index: 10001;
+/* Nested flyout / submenu surface — inherits the same surface skin. Teleported
+   to <body> and fixed-positioned by MenuSubmenu (so a scrollable overflow root
+   menu can never clip it), each flyout is placed beside its .submenu-wrap row
+   against the window edges: right by default, flipped left only when the right
+   side can't fit it, vertically clamped so its scrollbar stays on screen.
+   The 0.1875rem placement overlap onto the parent row keeps the parent→flyout
+   mouse path free of a dead gap (which would close the flyout). */
+.menu-submenu {
+  position: fixed;
+  /* above the root menu (z-index 99999): the placement overlap paints over it */
+  z-index: 100000;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -387,22 +357,9 @@ watch(() => props.visible, (v) => {
   min-width: 8.75rem;
   padding: 0.25rem;
   backdrop-filter: blur(0.5rem);
-  /* default: fly right of the parent row */
-  left: calc(100% - 0.1875rem);
-  top: -0.25rem;
-  /* A long flyout (e.g. the language list) scrolls instead of running past
-     the window bottom. Safe here: flyouts contain plain rows only, no
-     absolutely positioned descendants to clip. */
-  max-height: calc(100vh - 0.5rem);
   overflow-y: auto;
 }
-/* mirror-left container → submenus fly left */
-.conn-context-menu.mirror-left .menu-submenu {
-  left: auto;
-  right: calc(100% - 0.1875rem);
-  top: -0.25rem;
-}
-.conn-context-menu .menu-submenu .menu-item {
+.menu-submenu .menu-item {
   padding: 0.4375rem 0.75rem;
   font-size: 0.75rem;
   font-family: var(--font-ui);
@@ -412,11 +369,11 @@ watch(() => props.visible, (v) => {
   border-radius: var(--radius-sm);
   transition: all 0.1s ease;
 }
-.conn-context-menu .menu-submenu .menu-item:hover {
+.menu-submenu .menu-item:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-.conn-context-menu .menu-submenu .menu-item.active {
+.menu-submenu .menu-item.active {
   color: var(--accent);
   font-weight: 500;
 }

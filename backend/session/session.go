@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
 type SessionStatus string
@@ -97,6 +99,11 @@ type ConnectionConfig struct {
 	KeyContent string  `json:"keyContent,omitempty"`
 	GroupId    *string `json:"groupId,omitempty"`
 	// RDP-specific fields
+	// RdpFixedWidth/Height carry the requested desktop size, or a sentinel:
+	// -1 = follow the primary monitor on connect (the "full screen" option),
+	// -2 = adaptive: the desktop size follows the .rdp-area window size — when
+	// the window size stays stable for a short delay, the session reconnects
+	// with the new size so the server renders at the window's resolution.
 	RdpFixedWidth  int  `json:"rdpFixedWidth,omitempty"`
 	RdpFixedHeight int  `json:"rdpFixedHeight,omitempty"`
 	RdpSmartSizing bool `json:"rdpSmartSizing"`
@@ -359,6 +366,11 @@ type baseSession struct {
 	onDataCallback   func([]byte)
 	onBinaryCallback func([]byte)
 	onStatusCallback func(SessionStatus)
+	// statusListeners are ADDITIONAL status observers (AddStatusListener),
+	// fired after onStatusCallback. Cross-cutting concerns (the Android
+	// foreground-keepalive counter) register here so they survive the App
+	// layer re-registering onStatusCallback via SetOnStatusChangeCallback.
+	statusListeners []func(SessionStatus)
 	mu               sync.RWMutex
 	pendingCols      int
 	pendingRows      int
@@ -385,7 +397,47 @@ type baseSession struct {
 	// baseSession constructor.
 	idleSignal     chan struct{}
 	idleSignalOnce sync.Once
+	// Async emit machinery (issue #1053). Terminal sessions call
+	// startEmitLoop so emitData hands chunks to the emitLoop goroutine
+	// instead of invoking the (synchronous) Wails event callback inline —
+	// a cat of a binary file used to back-pressure the PTY readLoop
+	// through the frontend and froze the whole app. Sessions that never
+	// call startEmitLoop (zero-value test sessions, monitor JSON
+	// consumers) keep the synchronous path. Guarded by emitMu.
+	emitMu      sync.Mutex
+	emitCond    *sync.Cond
+	emitQueue   [][]byte
+	emitDropped int
+	emitClosing bool
+	// emitQuit is closed (and emitCond broadcast) once by stopEmitLoop;
+	// emitDone is closed by emitLoop when it has fully exited. nil until
+	// startEmitLoop runs.
+	emitQuit chan struct{}
+	emitDone chan struct{}
+	emitOnce sync.Once
 }
+
+const (
+	// emitQueueCapacity bounds the pending chunk queue. When the consumer
+	// (frontend) falls behind, the OLDEST chunks are dropped — mirroring
+	// Alacritty/WezTerm, where fresher output matters more than stale
+	// bytes. Losing stale `cat` output is cosmetic; blocking the readLoop
+	// freezes the whole app.
+	emitQueueCapacity = 64
+)
+
+var (
+	// emitFlushInterval coalesces high-frequency chunks into one IPC
+	// event per window, cutting Wails emit count 10-100x under load.
+	// Package-level var so tests can shorten it.
+	emitFlushInterval = 16 * time.Millisecond
+)
+
+const (
+	// emitStopWait bounds how long stopEmitLoop waits for the final
+	// flush. If the consumer is wedged, disconnect must not hang on it.
+	emitStopWait = 2 * time.Second
+)
 
 func (s *baseSession) ID() string            { return s.id }
 func (s *baseSession) Type() string          { return s.sessionType }
@@ -404,13 +456,68 @@ func (s *baseSession) SetOnStatusChangeCallback(cb func(SessionStatus)) {
 	s.onStatusCallback = cb
 }
 
+// AddStatusListener registers an ADDITIONAL status observer. Unlike
+// SetOnStatusChangeCallback (single slot, owned by the App layer and
+// overwritten on re-register), listeners accumulate — used by cross-cutting
+// concerns like the Android foreground-keepalive tracker that must survive
+// the app layer re-registering its own callback.
+func (s *baseSession) AddStatusListener(cb func(SessionStatus)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusListeners = append(s.statusListeners, cb)
+}
+
 func (s *baseSession) setStatus(st SessionStatus) {
 	s.mu.Lock()
 	s.status = st
 	cb := s.onStatusCallback
+	listeners := make([]func(SessionStatus), len(s.statusListeners))
+	copy(listeners, s.statusListeners)
 	s.mu.Unlock()
+	if st == StatusDisconnected || st == StatusError {
+		// Terminal output is over; flush anything still queued (e.g. the
+		// disconnect notice emitted right before Disconnect) and release
+		// the emitLoop goroutine. emitData falls back to the synchronous
+		// path afterwards.
+		s.stopEmitLoop()
+	}
 	if cb != nil {
 		cb(st)
+	}
+	for _, l := range listeners {
+		l(st)
+	}
+}
+
+// startEmitLoop enables the async, bounded emit path for this session.
+// Called by terminal session types from Connect. Idempotent.
+func (s *baseSession) startEmitLoop() {
+	s.emitOnce.Do(func() {
+		s.emitQuit = make(chan struct{})
+		s.emitDone = make(chan struct{})
+		s.emitCond = sync.NewCond(&s.emitMu)
+		go s.emitLoop()
+	})
+}
+
+// stopEmitLoop shuts the emit loop down, flushing everything still queued
+// so the tail of the output (e.g. a disconnect notice queued right before
+// Disconnect) is never lost. After it returns, emitData falls back to the
+// synchronous path. Safe to call multiple times and when never started.
+func (s *baseSession) stopEmitLoop() {
+	s.emitMu.Lock()
+	if s.emitQuit == nil || s.emitClosing {
+		s.emitMu.Unlock()
+		return
+	}
+	s.emitClosing = true
+	s.emitMu.Unlock()
+	close(s.emitQuit)
+	s.emitCond.Broadcast()
+	select {
+	case <-s.emitDone:
+	case <-time.After(emitStopWait):
+		log.Writef("session %s: emitLoop did not exit within %s during stop", s.id, emitStopWait)
 	}
 }
 
@@ -422,8 +529,109 @@ func (s *baseSession) emitData(data []byte) {
 	if w != nil {
 		w(data)
 	}
-	if cb != nil {
-		cb(data)
+	if cb == nil {
+		return
+	}
+	if s.queueEmit(data) {
+		return
+	}
+	// Synchronous path: emit loop never started (zero-value sessions and
+	// tests), already stopped, or a zmodem transfer is in progress — file
+	// transfer bytes must never be dropped or delayed.
+	cb(data)
+}
+
+// queueEmit hands data to the emit loop. Returns false when the caller must
+// emit synchronously instead. Copies the bytes: readLoops reuse their read
+// buffer across iterations.
+func (s *baseSession) queueEmit(data []byte) bool {
+	if s.IsZmodemMode() {
+		return false
+	}
+	s.emitMu.Lock()
+	defer s.emitMu.Unlock()
+	if s.emitQuit == nil || s.emitClosing {
+		return false
+	}
+	if len(s.emitQueue) >= emitQueueCapacity {
+		// Drop-oldest keeps the readLoop unblocked and the terminal
+		// showing the freshest output.
+		s.emitQueue = s.emitQueue[1:]
+		s.emitDropped++
+	}
+	s.emitQueue = append(s.emitQueue, append([]byte(nil), data...))
+	s.emitCond.Signal()
+	return true
+}
+
+// drainEmitQueue returns all currently queued chunks under one lock.
+func (s *baseSession) drainEmitQueue() [][]byte {
+	s.emitMu.Lock()
+	chunks := s.emitQueue
+	s.emitQueue = nil
+	dropped := s.emitDropped
+	s.emitDropped = 0
+	s.emitMu.Unlock()
+	if dropped > 0 {
+		log.Writef("session %s: emit queue overflow, dropped %d stale chunk(s)", s.id, dropped)
+	}
+	return chunks
+}
+
+// flushEmitChunks coalesces chunks into a single callback invocation so a
+// flood of output costs one IPC event per flush window, not one per chunk.
+func (s *baseSession) flushEmitChunks(chunks [][]byte) {
+	s.mu.RLock()
+	cb := s.onDataCallback
+	s.mu.RUnlock()
+	if cb == nil || len(chunks) == 0 {
+		return
+	}
+	if len(chunks) == 1 {
+		cb(chunks[0])
+		return
+	}
+	total := 0
+	for _, c := range chunks {
+		total += len(c)
+	}
+	joined := make([]byte, 0, total)
+	for _, c := range chunks {
+		joined = append(joined, c...)
+	}
+	cb(joined)
+}
+
+func (s *baseSession) emitLoop() {
+	defer close(s.emitDone)
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	for {
+		// Sleep until data arrives or shutdown is requested.
+		s.emitMu.Lock()
+		for len(s.emitQueue) == 0 && !s.emitClosing {
+			s.emitCond.Wait()
+		}
+		s.emitMu.Unlock()
+
+		for {
+			// Batch window: give the producer a beat to accumulate more
+			// chunks before flushing.
+			timer.Reset(emitFlushInterval)
+			select {
+			case <-s.emitQuit:
+				s.flushEmitChunks(s.drainEmitQueue())
+				return
+			case <-timer.C:
+			}
+			chunks := s.drainEmitQueue()
+			if len(chunks) == 0 {
+				break
+			}
+			s.flushEmitChunks(chunks)
+		}
 	}
 }
 

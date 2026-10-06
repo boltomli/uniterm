@@ -56,13 +56,12 @@ Companion panels for Files, Monitor, Tunnels, Quick Commands, and more stay alon
 
 uniTerm ships with a built-in autonomous AI Agent that can independently plan and execute multi-round shell commands in the terminal.
 
-- **Autonomous Multi-Round Execution** — The AI Agent plans, executes, observes results, and iterates across multiple rounds without human intervention.
-- **LLM Integration** — The sidebar chat supports Anthropic/OpenAI-compatible APIs, so you can use Claude, GPT, and other compatible models.
-- **Flexible Execution Modes** — Confirm all, confirm write commands, confirm dangerous commands, or confirm nothing — you control the level of supervision over the AI Agent.
-- **Persistent Conversations** — Conversation history is saved per session and survives application restarts; sessions can be renamed and exported as Markdown.
-- **In-Terminal Integration** — AI commands run directly in the active terminal tab, either pinned to a specific terminal or always following the active tab.
-- **Skills & Commands** — Capture reusable workflows as **skills** (which the AI can invoke on its own) and parameterized prompts as **commands**, invoked quickly in the conversation via `/name`.
-- **Smart Completion** — Receive real-time suggestions from command history and AI while typing in SSH terminals.
+- **Autonomous Multi-Turn Execution** — The AI Agent can plan, execute, observe results, and iterate across multiple rounds of shell commands without manual intervention.
+- **LLM Integration** — Sidebar chat with Anthropic/OpenAI-compatible API, supporting Claude, GPT and other compliant models.
+- **Flexible Execution Modes** — Bypass, dangerous only, dangerous + write, or confirm all — you control how much oversight the AI Agent needs.
+- **Terminal Integration** — AI commands execute directly in the active terminal tab, with optional pinning to a specific tab or following your active one. Collaborate side-by-side in split panes, each with its own terminal context.
+- **MCP Server** — Built-in MCP server that lets external AI agents (Claude Code, Codex, Gemini CLI, ...) run commands and transfer files on saved connections — credentials never leave the app.
+- **Skills & Commands** — Reusable skill workflows and prompt-template commands, attached with `/` in the AI input; the AI can also save new skills itself.
 
 ![AI Assistant](/imgs/ai_assistant_light.webp)
 
@@ -85,7 +84,7 @@ Drag and drop terminal tabs into the content area to freely split panes and comb
 
 #### Cloud Sync
 
-Encrypted sync of connections, favorites, and AI settings via your own GitHub / GitLab / Gitee private repository — no worries about data loss or leaks, seamlessly transition across devices.
+Dual-mode cloud sync over **Git or WebDAV**: encrypted sync of connections, favorites, and AI settings via your own GitHub / GitLab / Gitee private repository or a WebDAV service — no worries about data loss or leaks, seamlessly transition across devices.
 
 ![Cloud Sync](/imgs/cloud_sync_light.webp)
 

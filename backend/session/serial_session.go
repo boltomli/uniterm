@@ -80,6 +80,7 @@ func (s *SerialSession) Connect(config ConnectionConfig) error {
 	s.port = port
 	s.setStatus(StatusConnected)
 
+	s.startEmitLoop()
 	go s.readLoop()
 	return nil
 }

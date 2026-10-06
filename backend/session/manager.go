@@ -97,14 +97,36 @@ func (sm *SessionManager) Create(sessionType string, config ConnectionConfig) (S
 		return nil, fmt.Errorf("unsupported session type: %s", sessionType)
 	}
 
+	// trackKeepalive promotes the app to an Android foreground service while
+	// any session is connected (see keepalive.go). AddStatusListener (not
+	// SetOnStatusChangeCallback) so the App layer's own callback wiring can
+	// never overwrite it. All session types embed baseSession.
+	trackKeepalive := func(s Session) {
+		if l, ok := s.(interface {
+			AddStatusListener(func(SessionStatus))
+		}); ok {
+			l.AddStatusListener(func(st SessionStatus) {
+				onSessionStatus(s.ID(), st)
+			})
+		}
+	}
+
 	sm.sessions[config.ID] = s
+	trackKeepalive(s)
 	return s, nil
 }
 
 func (sm *SessionManager) Add(s Session) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.sessions[s.ID()] = s
+	sm.mu.Unlock()
+	if l, ok := s.(interface {
+		AddStatusListener(func(SessionStatus))
+	}); ok {
+		l.AddStatusListener(func(st SessionStatus) {
+			onSessionStatus(s.ID(), st)
+		})
+	}
 }
 
 // Init evicts dead sessions from the map at startup. A previous run may

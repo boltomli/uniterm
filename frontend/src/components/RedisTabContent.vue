@@ -1,8 +1,14 @@
 <template>
   <div class="redis-tab-content">
-    <div class="redis-main">
+    <div class="redis-main" :class="{ 'm-tree-host': isNarrowScreen }">
       <!-- Left Panel: Key List -->
-      <div class="redis-left" :style="{ width: leftWidth + 'px' }">
+      <div v-if="isNarrowScreen && treeOpen" class="m-tree-overlay" @click="treeOpen = false" />
+      <div
+        v-show="isNarrowScreen || treeOpen"
+        class="redis-left"
+        :class="{ 'm-tree': isNarrowScreen, 'm-tree-open': isNarrowScreen && treeOpen }"
+        :style="isNarrowScreen ? {} : { width: leftWidth + 'px' }"
+      >
         <!-- Controls row -->
         <div class="redis-toolbar">
           <el-select v-model="currentDb" size="small" style="width: 5.625rem; flex-shrink: 0" @change="onSwitchDB">
@@ -80,12 +86,19 @@
       </div>
 
       <!-- Resizer -->
-      <div class="redis-resizer" @mousedown="onResizeStart" />
+      <div v-if="!isNarrowScreen && treeOpen" class="redis-resizer" @mousedown="onResizeStart" />
 
       <!-- Right Panel: Value Editor -->
       <div class="redis-right">
         <template v-if="selectedKey">
           <div class="key-meta">
+            <button
+              class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+              :title="treeOpen ? t('common.collapse') : t('common.expand')"
+              @click="treeOpen = !treeOpen"
+            >
+              <PanelLeft :size="lucideSize('0.875rem')" />
+            </button>
             <div class="meta-row"><span class="meta-label">{{ t('redis.keyName') }}</span><span class="meta-value">{{ selectedKey }}</span></div>
             <div class="meta-row"><span class="meta-label">{{ t('redis.type') }}</span><span class="meta-value">{{ selectedKeyInfo?.type || '-' }}</span></div>
             <div class="meta-row">
@@ -199,7 +212,16 @@
             </div>
           </div>
         </template>
-        <div v-else class="redis-placeholder full">{{ t('redis.selectKey') }}</div>
+        <div v-else class="redis-placeholder full">
+          <button
+            class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+            :title="treeOpen ? t('common.collapse') : t('common.expand')"
+            @click="treeOpen = !treeOpen"
+          >
+            <PanelLeft :size="lucideSize('0.875rem')" />
+          </button>
+          {{ t('redis.selectKey') }}
+        </div>
       </div>
     </div>
 
@@ -309,7 +331,8 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, watch, computed, onUnmounted } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { msg } from '../services/message'
-import { Trash2, Plus, GripVertical, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, Folder, FolderTree, List, Type, TableProperties, ListMinus, ListOrdered } from '@lucide/vue'
+import { Trash2, Plus, GripVertical, RefreshCw, ChevronLeft, ChevronRight, ChevronDown, Folder, FolderTree, List, Type, TableProperties, ListMinus, ListOrdered, PanelLeft } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { useI18n } from '../i18n'
 import { uiPx } from '../utils/uiScale'
 import {
@@ -416,6 +439,7 @@ function onToggleFolder(id: string) {
 }
 
 function onSelectTreeKey(node: KeyNode) {
+  closeTree()
   if (node.keyName) {
     onSelectKey({ name: node.keyName, type: node.keyType || 'string', ttl: -1 } as RedisKeyInfo)
   }
@@ -459,6 +483,13 @@ function typeIcon(type?: RedisKeyInfo['type']) {
 
 // --- Resize ---
 const leftWidth = ref(280)
+
+// Narrow screens turn the key tree into an overlay drawer (closed by
+// default); wide screens keep it inline and the toggle collapses it.
+const treeOpen = ref(!isNarrowScreen.value)
+function closeTree() {
+  if (isNarrowScreen.value) treeOpen.value = false
+}
 const resizing = ref(false)
 let resizeStartX = 0
 let resizeStartWidth = 0
@@ -606,6 +637,7 @@ async function onSwitchDB(idx: number) {
 
 // --- Key selection ---
 async function onSelectKey(info: RedisKeyInfo) {
+  closeTree()
   selectedKey.value = info.name
   keyLoading.value = true
   try {
@@ -800,14 +832,26 @@ watch(() => props.sessionId, async (newId) => {
   overflow: hidden;
 }
 .redis-resizer {
+  /* Hover area floats over the tree edge (negative margin) so it takes
+     no layout width when idle and never blanks the content side. */
   width: 0.25rem;
+  margin-left: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s ease;
 }
-.redis-resizer:hover {
-  background: var(--border-subtle);
+.redis-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 .redis-right {
   flex: 1;
@@ -935,11 +979,19 @@ watch(() => props.sessionId, async (newId) => {
   text-align: center;
 }
 .key-meta {
-  padding: 0.5rem 0.75rem 0.75rem;
+  padding: 0.5rem 0.75rem 0.75rem 2.5rem;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
   font-family: var(--font-ui);
   font-size: 0.75rem;
+  position: relative;
+}
+/* Tree toggle lives at the far left of the key-meta block. */
+.key-meta .m-tree-toggle {
+  position: absolute;
+  top: 0.375rem;
+  left: 0.375rem;
+  margin-right: 0;
 }
 .meta-row {
   display: flex;
@@ -984,6 +1036,15 @@ watch(() => props.sessionId, async (newId) => {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+/* Empty state keeps the toggle reachable at the same top-left spot the
+   key-meta block occupies once a key is selected. */
+.redis-placeholder .m-tree-toggle {
+  position: absolute;
+  top: 0.25rem;
+  left: 0.25rem;
+  margin-right: 0;
 }
 /* .btn.btn-ghost.btn-icon(.danger) now supplies the base look; keep only
    Redis-specific overrides here (font-size for icon glyphs, table-cell reset). */

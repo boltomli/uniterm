@@ -55,30 +55,25 @@ function collectSavedLeafIds(node: SavedWorkspaceLayoutNode): string[] {
   return (node.children ?? []).flatMap(collectSavedLeafIds)
 }
 
-// Save a live workspace tab as / into a `type: "workspace"` connection.
-// Always prompts for the name (pre-filled): same name → overwrite in place,
-// new name → 另存为 a new record and re-link the tab to it.
-// Returns the connection id of the record, or null when cancelled/empty.
-export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<string | null> {
+// Serialize a live workspace tab into the saved-workspace shape (members +
+// pruned layout). Shared by「保存工作区」and the restart tab-snapshot so both
+// persist the same member/layout policy: hosts by connectionId, local/wsl by
+// type+shellPath, transient panels skipped. Returns null when nothing
+// meaningful survives (every member skipped / layout pruned to nothing).
+export function serializeWorkspaceState(tab: WorkspaceTab): { members: SavedWorkspaceMember[]; layout: SavedWorkspaceLayoutNode } | null {
   const panelStore = usePanelStore()
-  const connectionStore = useConnectionStore()
-  const tabStore = useTabStore()
 
   // Collect members in visual order. Saved hosts persist by connectionId;
   // local/wsl persist by type+shellPath (self-contained); anything else is
   // transient and skipped.
   const members: SavedWorkspaceMember[] = []
   const memberByPanel = new Map<string, string>()
-  const skipped: string[] = []
   for (const panelId of tab.panelIds) {
     const p = panelStore.getPanel(panelId)
     if (!p) continue
     const connId = p.config?.id || ''
     const selfContained = p.type === 'local' || p.type === 'wsl'
-    if (!connId && !selfContained) {
-      skipped.push(p.title)
-      continue
-    }
+    if (!connId && !selfContained) continue
     members.push({
       id: panelId,
       connectionId: connId,
@@ -88,18 +83,29 @@ export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<str
     })
     memberByPanel.set(panelId, panelId)
   }
-  if (members.length === 0) {
-    msg.warning(t('workspace.saveEmpty'))
-    return null
-  }
+  if (members.length === 0) return null
 
   const layout = pruneEmpty(toSavedLayout(tab.layout.root, memberByPanel))
   // Safety net: a layout that pruned to nothing means every member was
   // skipped — nothing meaningful to persist.
-  if (collectSavedLeafIds(layout).length === 0) {
+  if (collectSavedLeafIds(layout).length === 0) return null
+  return { members, layout }
+}
+
+// Save a live workspace tab as / into a `type: "workspace"` connection.
+// Always prompts for the name (pre-filled): same name → overwrite in place,
+// new name → 另存为 a new record and re-link the tab to it.
+// Returns the connection id of the record, or null when cancelled/empty.
+export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<string | null> {
+  const connectionStore = useConnectionStore()
+  const tabStore = useTabStore()
+
+  const serialized = serializeWorkspaceState(tab)
+  if (!serialized) {
     msg.warning(t('workspace.saveEmpty'))
     return null
   }
+  const { members, layout } = serialized
 
   const existing = tab.savedWorkspaceId
     ? connectionStore.connections.find(c => c.id === tab.savedWorkspaceId)

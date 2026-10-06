@@ -76,7 +76,36 @@ func (s *SMBSession) Connect(config ConnectionConfig) error {
 	s.conn = smbConn
 	s.cwd = "/"
 	s.setStatus(StatusConnected)
+	go s.startKeepAlive()
 	return nil
+}
+
+// smbKeepAliveInterval keeps NAT/firewall mappings alive and doubles as a
+// death probe. SMB has no client.Wait() equivalent (unlike the SSH-based file
+// sessions), so a dead TCP link used to leave the session reporting
+// "connected" forever and no operation could trigger the reconnect flow.
+const smbKeepAliveInterval = 60 * time.Second
+
+func (s *SMBSession) startKeepAlive() {
+	ticker := time.NewTicker(smbKeepAliveInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if s.Status() != StatusConnected {
+			return
+		}
+		s.mu.RLock()
+		conn := s.conn
+		s.mu.RUnlock()
+		if conn == nil {
+			return
+		}
+		if err := conn.Echo(); err != nil {
+			// Link is dead: mark the session disconnected so the frontend's
+			// status check (not just error wording) sees the loss.
+			s.Disconnect()
+			return
+		}
+	}
 }
 
 func (s *SMBSession) Write(data []byte) error  { return nil }
@@ -245,21 +274,43 @@ func (s *SMBSession) ListRemote(dir string) (FileListResult, error) {
 }
 
 func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
-	// No share mounted yet: navigating into a share name mounts it
+	// No share mounted yet: navigating into a share name mounts it. A deeper
+	// path ("/share/sub/dir") mounts the share and lands directly in the
+	// subdirectory, so a post-reconnect re-navigate with the previous cwd
+	// restores the location in one step.
 	if s.share == nil {
 		if s.conn == nil {
 			return FileListResult{}, fmt.Errorf("SMB session not connected")
 		}
-		shareName := strings.TrimPrefix(dir, "/")
-		if shareName == "" || shareName == "/" {
+		sharePath := strings.TrimPrefix(dir, "/")
+		if sharePath == "" || sharePath == "/" {
 			return s.listShares()
+		}
+		shareName, subDir := sharePath, ""
+		if idx := strings.Index(sharePath, "/"); idx >= 0 {
+			shareName, subDir = sharePath[:idx], sharePath[idx+1:]
 		}
 		share, err := s.conn.Mount(shareName)
 		if err != nil {
 			return FileListResult{}, fmt.Errorf("smb mount share %s: %w", shareName, err)
 		}
 		s.share = share
-		s.cwd = "/" + shareName
+		s.cwd = "/" + sharePath
+		if subDir != "" {
+			fi, err := share.Stat(subDir)
+			if err != nil {
+				share.Umount()
+				s.share = nil
+				s.cwd = "/"
+				return FileListResult{}, fmt.Errorf("no such directory: %s: %w", dir, err)
+			}
+			if !fi.IsDir() {
+				share.Umount()
+				s.share = nil
+				s.cwd = "/"
+				return FileListResult{}, fmt.Errorf("not a directory: %s", dir)
+			}
+		}
 		return s.ListRemote("")
 	}
 
@@ -303,7 +354,10 @@ func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 	if internal != "" {
 		fi, err := s.share.Stat(internal)
 		if err != nil {
-			return FileListResult{}, fmt.Errorf("no such directory: %s", target)
+			// Wrap the underlying error: a dead link surfaces here as Stat
+			// failure, and the frontend's reconnect detection matches on the
+			// transport wording (broken pipe / connection reset / ...).
+			return FileListResult{}, fmt.Errorf("no such directory: %s: %w", target, err)
 		}
 		if !fi.IsDir() {
 			return FileListResult{}, fmt.Errorf("not a directory: %s", target)
@@ -487,6 +541,11 @@ func (s *SMBSession) Get(remotePath, localPath string, recursive bool) (string, 
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -498,6 +557,12 @@ func (s *SMBSession) Get(remotePath, localPath string, recursive bool) (string, 
 			err = s.downloadFile(task, rp, lp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -535,6 +600,11 @@ func (s *SMBSession) Put(localPath, remotePath string, recursive bool) (string, 
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -546,6 +616,12 @@ func (s *SMBSession) Put(localPath, remotePath string, recursive bool) (string, 
 			err = s.uploadFile(task, lp, rp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -565,6 +641,81 @@ func (s *SMBSession) CancelTransfer(taskID string) error {
 	if task.cancel != nil {
 		task.cancel()
 	}
+	return nil
+}
+
+// RetryTransfer (re)starts a transfer from a frontend-held checkpoint. The
+// task is re-created directly instead of going through Get/Put: the spec
+// carries the already-resolved internal remote path from the original task,
+// and smbInternal's share-name stripping is not idempotent. skipCompleted is
+// ignored — the transfer restarts from scratch.
+func (s *SMBSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
+	if err := s.requireShare(); err != nil {
+		return "", err
+	}
+	tfType := spec.Type
+	prefix := "dl"
+	if tfType != "download" {
+		tfType = "upload"
+		prefix = "ul"
+	}
+	task := &TransferTask{
+		ID:         s.nextTaskID(prefix),
+		Type:       tfType,
+		LocalPath:  spec.LocalPath,
+		RemotePath: spec.RemotePath,
+		Status:     "running",
+	}
+	task.start()
+	s.mu.Lock()
+	s.transfers[task.ID] = task
+	s.mu.Unlock()
+	s.emitTransferStart(task)
+	go func() {
+		defer func() {
+			task.done()
+			if task.Status == "error" {
+				return // retained for retry
+			}
+			s.mu.Lock()
+			delete(s.transfers, task.ID)
+			s.mu.Unlock()
+		}()
+		var err error
+		if spec.Recursive {
+			if tfType == "download" {
+				err = s.downloadDir(spec.RemotePath, spec.LocalPath, task)
+			} else {
+				err = s.uploadDir(spec.LocalPath, spec.RemotePath, task)
+			}
+		} else {
+			if tfType == "download" {
+				err = s.downloadFile(task, spec.RemotePath, spec.LocalPath)
+			} else {
+				err = s.uploadFile(task, spec.LocalPath, spec.RemotePath)
+			}
+		}
+		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
+			s.emitTransferEvent(task, err)
+			return
+		}
+		task.Status = "done"
+		s.emitTransferComplete(task)
+	}()
+	return task.ID, nil
+}
+
+// DismissTransfer drops a retained (failed) task from the transfers map.
+func (s *SMBSession) DismissTransfer(taskID string) error {
+	s.mu.Lock()
+	delete(s.transfers, taskID)
+	s.mu.Unlock()
 	return nil
 }
 

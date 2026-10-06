@@ -2,7 +2,11 @@
 
 package store
 
-import "github.com/wailsapp/wails/v3/pkg/application"
+import (
+	"github.com/wailsapp/wails/v3/pkg/application"
+
+	"github.com/ys-ll/uniterm/backend/utils"
+)
 
 // androidFilesDir is a var so device tests can stub the bridge call. The real
 // implementation asks the wails Android bridge for the app's private internal
@@ -24,6 +28,10 @@ func DefaultDataDir() (string, error) {
 // no first-run/upgrade probing. The dir is created eagerly by
 // resolveAndroidDataDir so store constructors can rely on it.
 func ResolveDataDir() (DataDir, error) {
+	// Bridge-attached checkpoint at app startup: TMPDIR can be pinned here,
+	// before any os.MkdirTemp/os.TempDir consumer runs (app log, session
+	// logs, sync temp dirs, skill imports).
+	utils.EnsureTempDir()
 	return resolveAndroidDataDir(androidFilesDir())
 }
 

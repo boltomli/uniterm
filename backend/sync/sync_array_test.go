@@ -78,12 +78,12 @@ func TestIsConfigDirEmptyArrayFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	writeFileSync(t, dir, "favorites.json", `[]`)
-	if !isConfigDirEmpty(dir) {
+	if !isConfigDirEmpty(syncedFiles, dir) {
 		t.Fatal("dir with only an empty favorites array should be empty")
 	}
 
 	writeFileSync(t, dir, "favorites.json", `["conn-1"]`)
-	if isConfigDirEmpty(dir) {
+	if isConfigDirEmpty(syncedFiles, dir) {
 		t.Fatal("dir with a non-empty favorites array should not be empty")
 	}
 }

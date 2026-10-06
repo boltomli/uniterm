@@ -52,11 +52,17 @@ const wailsWriter: ClipboardWriter = async (text) => {
 }
 
 const isApplePlatform = () => /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+const isAndroidPlatform = () => /Android/.test(navigator.userAgent)
 
 export const writeClipboard: ClipboardWriter = typeof Clipboard.SetText !== 'function'
   ? browserWriter // standalone path when Wails is absent (dev outside the runtime)
   : async (text) => {
-      if (isApplePlatform()) return wailsWriter(text)
+      // Wails must go first on macOS (#827, see above) and on Android: the
+      // WebView's navigator.clipboard.writeText resolves successfully there but
+      // only writes the renderer-internal clipboard — the system ClipboardManager
+      // (what Wails reads, and what every other app sees) stays untouched, so a
+      // browser-first copy lands nowhere. Verified in-device on an emulator.
+      if (isApplePlatform() || isAndroidPlatform()) return wailsWriter(text)
       return (await browserWriter(text)) || wailsWriter(text)
     }
 

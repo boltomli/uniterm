@@ -179,3 +179,54 @@ func TestStageAndCommitIgnoresUnknownDirEntries(t *testing.T) {
 		t.Errorf("nested stray file subdir/evil.pem was committed — whitelist is too wide")
 	}
 }
+
+// TestStageAndCommitFilesScopedWhitelist verifies that StageAndCommitFiles
+// stages exactly the given scope plus repo metadata: an out-of-scope
+// syncable file (settings.json) sitting in the worktree must NOT be
+// committed, while .sync-salt stays whitelisted.
+func TestStageAndCommitFilesScopedWhitelist(t *testing.T) {
+	repoPath := t.TempDir()
+	g := initTestRepo(t, repoPath)
+
+	if err := os.WriteFile(filepath.Join(repoPath, "connections.json"), []byte(`{"c":[]}`), 0600); err != nil {
+		t.Fatalf("write connections: %v", err)
+	}
+	// Out of scope but present in the worktree — must not be committed.
+	if err := os.WriteFile(filepath.Join(repoPath, "settings.json"), []byte(`{"theme":"dark"}`), 0600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	// Repo metadata — always whitelisted by StageAndCommitFiles.
+	if err := os.WriteFile(filepath.Join(repoPath, ".sync-salt"), []byte("aabbccdd"), 0600); err != nil {
+		t.Fatalf("write salt: %v", err)
+	}
+
+	committed, err := g.StageAndCommitFiles("scoped commit", []string{"connections.json"})
+	if err != nil {
+		t.Fatalf("StageAndCommitFiles: %v", err)
+	}
+	if !committed {
+		t.Fatalf("expected commit=true (scoped whitelist present)")
+	}
+
+	head, err := g.repo.Head()
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	commit, err := g.repo.CommitObject(head.Hash())
+	if err != nil {
+		t.Fatalf("commit object: %v", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	if _, err := tree.File("connections.json"); err != nil {
+		t.Errorf("scoped file connections.json missing from commit")
+	}
+	if _, err := tree.File(".sync-salt"); err != nil {
+		t.Errorf("repo metadata .sync-salt missing from commit")
+	}
+	if _, err := tree.File("settings.json"); err == nil {
+		t.Errorf("out-of-scope file settings.json was committed — scope leaked into the whitelist")
+	}
+}

@@ -6,6 +6,8 @@ export interface UseTerminalMenuOptions {
   getSelection: () => string
   onPaste: (text: string) => Promise<void> | void
   onAskAI?: (text: string) => void
+  /** Select the entire scrollback buffer. Host wires it to term.selectAll(). */
+  onSelectAll?: () => void
   /** Position + open the actual menu. The host wires this to its <Menu>
    *  instance (openAt), so the composable stays decoupled from the component
    *  and its viewport clamping lives in Menu. */
@@ -19,6 +21,7 @@ export interface UseTerminalMenuReturn {
   openMenu: (e: MouseEvent) => void
   closeMenu: () => void
   copySelection: () => void
+  selectAll: () => void
   copyAndPaste: () => Promise<void>
   pasteFromClipboard: () => Promise<void>
   askAI: () => void
@@ -41,6 +44,13 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
     // Either modifier is accepted so the intent reads the same on macOS (Cmd)
     // and Windows/Linux (Ctrl).
     const forceMenu = e.ctrlKey || e.metaKey
+    if (rightClickAction === 'none' && !forceMenu) {
+      // Issue #1088: leave the click to mouse-tracking terminal apps, but still
+      // swallow the event so the WebView's own context menu doesn't appear.
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     if (rightClickAction === 'paste' && !forceMenu) {
       e.preventDefault()
       e.stopPropagation()
@@ -70,6 +80,11 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
     if (text) {
       writeClipboard(text)
     }
+    closeMenu()
+  }
+
+  function selectAll() {
+    options.onSelectAll?.()
     closeMenu()
   }
 
@@ -112,6 +127,7 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
     openMenu,
     closeMenu,
     copySelection,
+    selectAll,
     copyAndPaste,
     pasteFromClipboard,
     askAI,

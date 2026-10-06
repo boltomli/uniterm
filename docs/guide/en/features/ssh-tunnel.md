@@ -62,6 +62,6 @@ When auto-start is enabled, the tunnel will automatically connect when uniTerm s
 
 ::: tip Related
 - [Remote Terminal](/en/connections/remote-terminal) — SSH connection configuration
-- [Tabs and Workspace](/en/features/workspace) — Sidebar tab management
+- [Workspace](/en/connections/workspace) — Sidebar tab management
 - [Server Monitor](/en/connections/server-monitor) — Real-time server monitoring via SSH
 :::

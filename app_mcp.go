@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/session"
@@ -55,7 +56,6 @@ func (a *App) ensureMCPServer() *mcp.Server {
 			Connect:          a.mcpConnect,
 			Approve:          a.mcpApprove,
 			Audit:            a.mcpAudit,
-			ToolsEnabled:     a.mcpToolsEnabled,
 			Policy:           a.mcpPolicy,
 			ResolveToken:     a.mcpResolveToken,
 			FileSession:      a.mcpFileSession,
@@ -66,19 +66,19 @@ func (a *App) ensureMCPServer() *mcp.Server {
 	return a.mcpServer
 }
 
-// StartMCP brings the MCP endpoint up per settings and installs the active
-// token set. Called from initStores (auto-start) and from SaveSettings when
-// the user toggles the switch.
+// StartMCP brings the MCP endpoint up per local state and installs the
+// active token set. Called from initStores (auto-start) and from
+// SaveLocalState when the user toggles the switch.
 func (a *App) StartMCP() error {
-	if a.settingsStore == nil {
-		return fmt.Errorf("settings store not initialized")
+	if a.localStateStore == nil {
+		return fmt.Errorf("local state store not initialized")
 	}
 	srv := a.ensureMCPServer()
-	settings, err := a.settingsStore.Load()
+	state, err := a.localStateStore.Load()
 	if err != nil {
 		return err
 	}
-	cfg := settings.MCP
+	cfg := state.MCP
 	if cfg == nil || !cfg.Enabled {
 		srv.Stop()
 		return nil
@@ -478,6 +478,42 @@ func (a *App) mcpConnect(connectionID string) (string, error) {
 
 // ── Approval bridge ──────────────────────────────────────────────
 
+// mcpConnectionLabel resolves the approval request's raw target — a session
+// ID for the exec/file tools, a connection-profile ID for the connect tool —
+// into a human-readable "tab title · host" label for the approval dialog.
+// Falls back to the raw ID when neither registry knows it.
+func (a *App) mcpConnectionLabel(target string) string {
+	if target == "" {
+		return ""
+	}
+	// Session target: tab title plus the host recorded at creation.
+	if s, ok := a.sessionManager.Get(target); ok {
+		title := s.Title()
+		label := title
+		if li, ok := s.(interface{ LogIdentity() (name, host string) }); ok {
+			if _, host := li.LogIdentity(); host != "" && host != title {
+				label = title + " · " + host
+			}
+		}
+		return label
+	}
+	// Connection-profile target (connect tool): profile name + host:port.
+	if a.connectionStore != nil {
+		if data, err := a.connectionStore.Load(); err == nil {
+			for _, c := range data.Connections {
+				if c.ID == target {
+					label := c.Name
+					if c.Host != "" && c.Host != c.Name {
+						label = c.Name + " · " + c.Host
+					}
+					return label
+				}
+			}
+		}
+	}
+	return target
+}
+
 // mcpApprove emits mcp:approval-request and blocks for the verdict via
 // ResolveMCPApproval (frontend dialog) or the timeout.
 func (a *App) mcpApprove(req mcp.ApprovalRequest) error {
@@ -494,18 +530,16 @@ func (a *App) mcpApprove(req mcp.ApprovalRequest) error {
 	a.emit("mcp:approval-request", map[string]interface{}{
 		"id":         req.ID,
 		"client":     req.Client,
-		"connection": req.Connection,
+		"connection": a.mcpConnectionLabel(req.Connection),
 		"command":    req.Command,
 		"createdAt":  req.CreatedAt,
 	})
 
-	// High-priority surface: the dialog lives in the app window, so when the
-	// app is in the background the request would sit invisible until the 110s
-	// timeout denies it. Escalate to the OS instead: system notification +
-	// attention request (Dock bounce / taskbar flash) + window raise.
-	if !a.foreground.Load() {
-		a.notifyMCPApproval(req)
-	}
+	// High-priority surface: the dialog lives in the app window, but a
+	// pending request is easy to miss (another app focused, another tab
+	// active). Escalate to the OS on every request regardless of foreground
+	// state: system notification + window raise.
+	a.notifyMCPApproval(req)
 
 	// No-window guard: if the frontend never answers (window closed), the
 	// timeout below denies. Frontend dialogs auto-dismiss on timeout too.
@@ -564,32 +598,127 @@ func (a *App) mcpAudit(entry mcp.AuditEntry) {
 	_, _ = f.Write(append(buf, '\n'))
 }
 
-// ── Settings-backed callbacks ────────────────────────────────────
+// ── Local-state-backed callbacks ─────────────────────────────────
 
 func (a *App) mcpSettings() store.MCPSettings {
-	if a.settingsStore == nil {
+	if a.localStateStore == nil {
 		return store.DefaultMCPSettings()
 	}
-	settings, err := a.settingsStore.Load()
+	state, err := a.localStateStore.Load()
 	if err != nil {
 		return store.DefaultMCPSettings()
 	}
-	if settings.MCP == nil {
+	if state.MCP == nil {
 		return store.DefaultMCPSettings()
 	}
-	return *settings.MCP
-}
-
-func (a *App) mcpToolsEnabled() mcp.ToolGroups {
-	cfg := a.mcpSettings()
-	return mcp.ToolGroups{
-		Discovery: true,
-		Exec:      cfg.Tools.Exec,
-		Terminal:  cfg.Tools.Terminal,
-		Files:     cfg.Tools.Files,
-	}
+	return *state.MCP
 }
 
 func (a *App) mcpPolicy() mcp.Policy {
 	return mcp.Policy(a.mcpSettings().Policy)
+}
+
+// ── Approval notification strings ───────────────────────────────
+// MCP approval notification strings per UI language, mirroring the
+// trayLabels table in main.go: the Go side can't use the frontend's i18n
+// bundles, so the strings live here keyed by the settings language code;
+// unknown or "system" falls back to English. The per-platform notification
+// implementations (app_darwin.go / app_linux.go / app_windows.go) share
+// this table.
+
+type mcpNotifyStrings struct {
+	Title       string // notification title
+	BodyExec    string // body: command execution request (%s = client label)
+	BodyConnect string // body: new connection request (%s = client label)
+}
+
+var mcpNotifyLabels = map[string]mcpNotifyStrings{
+	"en":    {"uniTerm · MCP approval request", "%s requests to run a command — confirm in uniTerm", "%s requests a new connection — confirm in uniTerm"},
+	"zh-CN": {"uniTerm · MCP 审批请求", "%s 请求执行命令,请在 uniTerm 中确认", "%s 请求建立新连接,请在 uniTerm 中确认"},
+	"zh-TW": {"uniTerm · MCP 審批請求", "%s 請求執行命令,請在 uniTerm 中確認", "%s 請求建立新連線,請在 uniTerm 中確認"},
+	"ja":    {"uniTerm · MCP承認リクエスト", "%s がコマンド実行を要求しています。uniTerm で確認してください", "%s が新しい接続を要求しています。uniTerm で確認してください"},
+	"ko":    {"uniTerm · MCP 승인 요청", "%s이(가) 명령 실행을 요청했습니다. uniTerm에서 확인해 주세요", "%s이(가) 새 연결을 요청했습니다. uniTerm에서 확인해 주세요"},
+	"de":    {"uniTerm · MCP-Freigabe-Anfrage", "%s möchte einen Befehl ausführen — in uniTerm bestätigen", "%s möchte eine neue Verbindung öffnen — in uniTerm bestätigen"},
+	"es":    {"uniTerm · Solicitud de aprobación MCP", "%s solicita ejecutar un comando; confírmalo en uniTerm", "%s solicita una nueva conexión; confírmalo en uniTerm"},
+	"fr":    {"uniTerm · Demande d'approbation MCP", "%s demande à exécuter une commande — à confirmer dans uniTerm", "%s demande une nouvelle connexion — à confirmer dans uniTerm"},
+	"ru":    {"uniTerm · запрос на одобрение MCP", "%s запрашивает выполнение команды — подтвердите в uniTerm", "%s запрашивает новое подключение — подтвердите в uniTerm"},
+}
+
+// mcpNotifyStringsFor returns the string set for lang, English fallback.
+func mcpNotifyStringsFor(lang string) mcpNotifyStrings {
+	if s, ok := mcpNotifyLabels[lang]; ok {
+		return s
+	}
+	return mcpNotifyLabels["en"]
+}
+
+// mcpNotifyBody renders the notification body: inline command preview for
+// short commands, truncated preview for long ones, the connect template when
+// no command is involved.
+func mcpNotifyBody(s mcpNotifyStrings, client, command string) string {
+	switch {
+	case command == "":
+		return fmt.Sprintf(s.BodyConnect, client)
+	case len(command) <= 60:
+		return fmt.Sprintf("%s: %s", client, command)
+	default:
+		return fmt.Sprintf("%s: %s…", client, command[:57])
+	}
+}
+
+// mcpNotifyLanguage resolves the UI language for notifications. Load errors
+// and the "system" sentinel fall back to English (same as the tray menu).
+func (a *App) mcpNotifyLanguage() string {
+	if a.settingsStore == nil {
+		return "en"
+	}
+	settings, err := a.settingsStore.Load()
+	if err != nil {
+		return "en"
+	}
+	return settings.Language
+}
+
+// ── Approval notification (all platforms) ───────────────────────
+
+// notifyMCPApproval surfaces a pending MCP approval through the Wails
+// notifications service when the window is unfocused, and brings the window
+// forward (Focus/Show → Dock bounce on macOS, taskbar attention elsewhere).
+// Platform backends live inside the service: UNUserNotificationCenter on
+// macOS, wintoast on Windows, D-Bus org.freedesktop.Notifications on Linux
+// (requires a running notification daemon). Strings come from
+// mcpNotifyLabels above.
+func (a *App) notifyMCPApproval(req mcp.ApprovalRequest) {
+	if a.notifier == nil {
+		log.Writef("mcp: notification skipped: notifications service unavailable")
+	} else {
+		strs := mcpNotifyStringsFor(a.mcpNotifyLanguage())
+		body := mcpNotifyBody(strs, req.Client, req.Command)
+		// First line: which tab/host the request targets (session title ·
+		// host for exec/file tools, connection name · host for connect).
+		if target := a.mcpConnectionLabel(req.Connection); target != "" {
+			body = target + "\n" + body
+		}
+		// First-run authorization (macOS only; always granted on the other
+		// platforms). Safe to call on every request.
+		if ok, err := a.notifier.CheckNotificationAuthorization(); err == nil && !ok {
+			if _, err := a.notifier.RequestNotificationAuthorization(); err != nil {
+				log.Writef("mcp: notification authorization failed: %v", err)
+			}
+		}
+		if err := a.notifier.SendNotification(notifications.NotificationOptions{
+			ID:    "mcp-approval",
+			Title: strs.Title,
+			Body:  body,
+		}); err != nil {
+			log.Writef("mcp: notification failed: %v", err)
+		}
+	}
+
+	// Bring the window forward so the approval dialog is directly in front
+	// of the user.
+	if a.window != nil {
+		a.window.Focus()
+		a.window.Show()
+	}
 }

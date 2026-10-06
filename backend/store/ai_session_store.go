@@ -14,26 +14,29 @@ const (
 )
 
 type AISessionData struct {
-	Sessions        []AISessionEntry `json:"sessions"`
-	CurrentSessionID string          `json:"currentSessionId"`
+	Sessions         []AISessionEntry `json:"sessions"`
+	CurrentSessionID string           `json:"currentSessionId"`
 }
 
 type AISessionEntry struct {
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
-	CreatedAt int64               `json:"createdAt"`
-	UpdatedAt int64               `json:"updatedAt"`
-	Messages  []AIMessageEntry    `json:"messages"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	CreatedAt int64            `json:"createdAt"`
+	UpdatedAt int64            `json:"updatedAt"`
+	Messages  []AIMessageEntry `json:"messages"`
 }
 
 type AIMessageEntry struct {
-	ID          string           `json:"id"`
-	Role        string           `json:"role"`
-	Content     string           `json:"content"`
-	ToolCallID  string           `json:"tool_call_id,omitempty"`
-	ToolCalls   []interface{}    `json:"tool_calls,omitempty"`
-	PendingTools []interface{}   `json:"pendingTools,omitempty"`
-	RawAPIMsg   string           `json:"_rawApiMsg,omitempty"`
+	ID            string        `json:"id"`
+	Role          string        `json:"role"`
+	Content       string        `json:"content"`
+	Thinking      string        `json:"thinking,omitempty"`
+	CreatedAt     int64         `json:"createdAt,omitempty"`
+	ThinkingDurMs int64         `json:"thinkingDurationMs,omitempty"`
+	ToolCallID    string        `json:"tool_call_id,omitempty"`
+	ToolCalls     []interface{} `json:"tool_calls,omitempty"`
+	PendingTools  []interface{} `json:"pendingTools,omitempty"`
+	RawAPIMsg     string        `json:"_rawApiMsg,omitempty"`
 }
 
 type AISessionStore struct {

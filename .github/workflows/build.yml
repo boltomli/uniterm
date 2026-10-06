@@ -26,10 +26,10 @@ jobs:
             slug: linux-amd64
           - os: ubuntu-24.04-arm
             slug: linux-arm64
-          # Kylin/RHEL webkit40+glibc2.28 builds: use workflow build-linux-webkit40.yml
-          # (Ubuntu runners link glibc 2.34 and will not run on Kylin V10.)
           - os: macos-latest
             slug: darwin
+          - os: ubuntu-latest
+            slug: android
 
     runs-on: ${{ matrix.os }}
 
@@ -83,15 +83,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev upx pkg-config
 
+      - name: Install dependencies (Android)
+        if: matrix.slug == 'android'
+        run: |
+          # Same GTK packages as the desktop Linux build: only needed to
+          # compile the wails3 CLI (it just orchestrates the gradle/NDK build).
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config \
+            openjdk-21-jdk-headless
+          # Gradle needs JAVA_HOME; resolve it from the javac we just installed.
+          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
+          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          java -version
+          # GitHub runners ship the Android SDK with cmdline-tools; accept the
+          # licenses and add the components the gradle/NDK build needs.
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          sdkmanager --version
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"
+
       - name: Install Wails CLI (wails3)
         shell: bash
         run: |
+          # setup-go does not add GOPATH/bin to PATH; wails3 (and the
+          # overlay:gen / generate bindings calls inside the tasks) live there.
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           # On Linux, wails3 defaults to the WebKitGTK 6.0 (GTK4) pkg-config
           # stack, which ubuntu-24.04 does not ship. Build the CLI (and later the
-          # app) with the legacy -tags gtk3 contract (WebKit2GTK 4.1).
+          # app) with the legacy -tags gtk3 contract (WebKit2GTK 4.1). The CLI
+          # only orchestrates the gradle/NDK android build, so the tag choice
+          # does not affect the APK.
           TAGS=""
-          if [[ "${{ matrix.slug }}" == linux* ]]; then TAGS="-tags gtk3"; fi
-          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.12
+          if [[ "${{ matrix.slug }}" == linux* || "${{ matrix.slug }}" == "android" ]]; then TAGS="-tags gtk3"; fi
+          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.27
 
       - name: Set version
         shell: bash
@@ -110,9 +136,10 @@ jobs:
 
       # Regenerate the gitignored build assets (build/windows/info.json +
       # manifest, darwin Info.plist, linux nfpm.yaml) from build/config.yml.
-      # A fresh checkout has only icon.ico/uniterm.desktop committed, and
+      # A fresh checkout has only icon.ico/org.wails.uniterm.desktop committed, and
       # generate:syso + app-bundle/nfpm all need these.
       - name: Update build assets
+        if: matrix.slug != 'android'
         shell: bash
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
@@ -167,6 +194,44 @@ jobs:
               "bin/uniTerm-${arch}.app/Contents/MacOS/uniTerm"
           done
           ls -la uniterm-darwin-*.zip
+
+      - name: Build (Android)
+        if: matrix.slug == 'android'
+        shell: bash
+        env:
+          # Release keystore as base64; decoded below. Without it gradle
+          # signs with the per-runner debug keystore, whose signature is
+          # different on every ephemeral runner and blocks upgrade installs.
+          ANDROID_KEYSTORE_FILE_B64: ${{ secrets.ANDROID_KEYSTORE_FILE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # main.go embeds all:frontend/dist; neither dist nor the generated
+          # bindings are committed, so build the frontend first (this also
+          # covers the embed needed by android:package below).
+          wails3 task common:build:frontend
+          # arm64 covers virtually all real devices; amd64 is only useful for
+          # local emulator builds, so CI always packages arm64.
+          # PRODUCTION must be passed explicitly: android:package declares
+          # PRODUCTION=true on its internal build dep, but the value is lost
+          # on the build -> compile:go:shared hop, silently producing a
+          # -tags android,debug library (broken WebView asset serving).
+          if [ -n "${ANDROID_KEYSTORE_FILE_B64:-}" ]; then
+            KS="$GITHUB_WORKSPACE/uniterm-release.keystore"
+            echo "$ANDROID_KEYSTORE_FILE_B64" | base64 -d > "$KS"
+            export ANDROID_KEYSTORE_FILE="$KS"
+            echo "Signing with release keystore (alias: $ANDROID_KEY_ALIAS)"
+          else
+            echo "WARNING: no ANDROID_KEYSTORE_FILE secret — falling back to the runner debug keystore"
+          fi
+          wails3 task android:package PRODUCTION=true
+          # Match the desktop convention: uniterm-<os>-<arch>-<version>.apk.
+          # Stage at the workspace root: the Upload artifact step globs
+          # uniterm-*.apk there, so a copy left under bin/ matches nothing
+          # and no artifact gets uploaded (only a warning is emitted).
+          mv bin/uniTerm.apk "uniterm-android-arm64-${VERSION}.apk"
+          ls -la uniterm-android-*.apk
 
       - name: Package (macOS)
         if: matrix.slug == 'darwin'
@@ -307,8 +372,8 @@ jobs:
           contents:
             - src: bin/uniTerm
               dst: /usr/bin/uniterm
-            - src: build/linux/uniTerm.desktop
-              dst: /usr/share/applications/uniterm.desktop
+            - src: build/linux/org.wails.uniterm.desktop
+              dst: /usr/share/applications/org.wails.uniterm.desktop
             - src: build/linux/icons/hicolor
               dst: /usr/share/icons/hicolor
           EOF
@@ -322,6 +387,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: uniTerm-${{ matrix.slug }}
+          # Fail loudly instead of silently uploading nothing when the
+          # globs below miss (an empty artifact previously hid a lost APK).
+          if-no-files-found: error
           path: |
             uniterm-*.zip
             uniterm-*.tar.gz
@@ -329,6 +397,7 @@ jobs:
             uniterm-*.dmg
             uniterm-*.deb
             uniterm-*.rpm
+            uniterm-*.apk
 
   release:
     needs: build
@@ -348,7 +417,7 @@ jobs:
 
       - name: Collect release files
         run: |
-          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' \) -exec mv {} . \;
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.apk' \) -exec mv {} . \;
           ls -la uniterm-*
           # checksums.txt powers the in-app updater's SHA256 verification.
           # sync-gitee.yml mirrors it to Gitee together with the assets.
@@ -420,6 +489,7 @@ jobs:
             uniterm-*.dmg
             uniterm-*.deb
             uniterm-*.rpm
+            uniterm-*.apk
             checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}

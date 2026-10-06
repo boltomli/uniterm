@@ -362,6 +362,7 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     updateSource: loaded.updateSource ?? DEFAULT_SETTINGS.updateSource,
     closeTabPrompt: loaded.closeTabPrompt ?? DEFAULT_SETTINGS.closeTabPrompt,
     closeAppPrompt: loaded.closeAppPrompt ?? DEFAULT_SETTINGS.closeAppPrompt,
+    restoreTabsPrompt: loaded.restoreTabsPrompt ?? DEFAULT_SETTINGS.restoreTabsPrompt,
     sftpBookmarks: {
       localPaths: loaded.sftpBookmarks?.localPaths || [],
       remotePaths: loaded.sftpBookmarks?.remotePaths || []
@@ -377,12 +378,6 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     sidebarTabs: {
       ...DEFAULT_SETTINGS.sidebarTabs,
       ...(loaded.sidebarTabs || {})
-    },
-    // MCP block: pass through as-is when present (older settings.json has
-    // none and falls back to the defaults); tools merge per-key so a file
-    // written before a group existed still gets that group's default.
-    mcp: loaded.mcp
-      ? { ...loaded.mcp, tools: { ...DEFAULT_SETTINGS.mcp!.tools, ...loaded.mcp.tools } }
-      : undefined
+    }
   }
 }

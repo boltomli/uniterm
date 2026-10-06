@@ -42,11 +42,12 @@ export function asSshTerminalConfig<T extends { type?: string }>(config: T): T {
 
 // True when an operation failed because the transport died rather than because
 // the remote side rejected the request. Covers pkg/sftp's "connection lost"
-// (SFTP/SCP), crypto/ssh and net package wording, and the HTTP transport
-// errors surfaced by WebDAV/S3. A matching error means retrying on a fresh
-// connection may succeed — anything else (e.g. "no such directory") would
-// fail again, so callers can skip the reconnect.
+// (SFTP/SCP), crypto/ssh and net package wording (SMB's Stat path wraps the
+// raw net error), and the HTTP transport errors surfaced by WebDAV/S3. A
+// matching error means retrying on a fresh connection may succeed — anything
+// else (e.g. "no such directory") would fail again, so callers can skip the
+// reconnect.
 export function isConnectionLostError(err?: string | null): boolean {
   if (!err) return false
-  return /connection lost|not connected|use of closed network connection|broken pipe|connection reset|connection refused|unexpected eof|\beof\b|already closed|ssh: disconnected/i.test(err)
+  return /connection lost|not connected|use of closed network connection|broken pipe|connection reset|connection refused|unexpected eof|\beof\b|already closed|ssh: disconnected|i\/o timeout|connection timed out/i.test(err)
 }

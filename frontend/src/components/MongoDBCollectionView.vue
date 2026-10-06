@@ -12,7 +12,7 @@
 
     <!-- Query sub-tab -->
     <div v-if="activeSubTab === 'query'" class="query-section">
-      <div class="editor-top" :style="{ height: topHeight + 'px' }">
+      <div class="editor-top" :style="editorCollapsed ? {} : { height: topHeight + 'px' }">
         <div class="editor-toolbar">
           <input
             v-model="nlInput"
@@ -25,8 +25,16 @@
             {{ aiGenerating ? '...' : 'AI' }}
           </button>
           <button class="btn btn-primary btn-sm" title="Ctrl+Enter" @click="onExecute">{{ t('mongodb.executeQuery') }}</button>
+          <button
+            class="btn btn-ghost btn-icon btn-sm editor-collapse-btn"
+            :title="editorCollapsed ? t('common.expand') : t('common.collapse')"
+            @click="editorCollapsed = !editorCollapsed"
+          >
+            <ChevronDown v-if="editorCollapsed" :size="lucideSize('0.875rem')" />
+            <ChevronUp v-else :size="lucideSize('0.875rem')" />
+          </button>
         </div>
-        <div class="filter-editor-wrap">
+        <div v-show="!editorCollapsed" class="filter-editor-wrap">
           <SyntaxEditor
             v-model="filterText"
             lang="json"
@@ -36,7 +44,7 @@
         </div>
       </div>
 
-      <div class="editor-resizer" @mousedown="onTopResizeStart" />
+      <div v-show="!editorCollapsed" class="editor-resizer" @mousedown="onTopResizeStart" />
 
       <div class="editor-bottom">
         <div v-if="queryError" class="error-msg">{{ queryError }}</div>
@@ -202,7 +210,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { Pencil, Trash2, Sparkles, Plus } from '@lucide/vue'
+import { Pencil, Trash2, Sparkles, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -231,7 +240,11 @@ const props = defineProps<{
 }>()
 
 // ── Editor resize state ──
-const topHeight = ref(200)
+// Collapsed shows only the toolbar so the result grid gets the height; on
+// narrow screens (phone or small window) start collapsed. All platforms
+// get the toggle button.
+const editorCollapsed = ref(isNarrowScreen.value)
+const topHeight = ref(isNarrowScreen.value ? 140 : 200)
 let topResizeStartY = 0
 let topResizeStartHeight = 0
 let topResizing = false
@@ -637,14 +650,25 @@ watch(() => [props.dbName, props.collectionName], () => {
 .result-filter:focus { border-color: var(--accent); }
 
 .editor-resizer {
+  /* Hover accent floats over the editor's bottom edge (negative margin)
+     so it takes no layout height when idle - matches the tree resizers. */
   height: 0.25rem;
+  margin-top: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: row-resize;
   background: transparent;
   flex-shrink: 0;
-  transition: background 0.15s ease;
 }
-.editor-resizer:hover {
-  background: var(--border-subtle);
+.editor-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 
 .editor-bottom {

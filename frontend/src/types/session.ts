@@ -46,6 +46,9 @@ export interface ConnectionConfig {
   fileTransferProto?: 'sftp' | 'scp'
   groupId?: string
   // RDP-specific
+  // Desktop size, or a sentinel: -1 = follow the primary monitor
+  // ("full screen" option), -2 = adaptive (desktop follows the window size;
+  // the backend reconnects with the new size after it stays stable).
   rdpFixedWidth?: number
   rdpFixedHeight?: number
   rdpSmartSizing?: boolean

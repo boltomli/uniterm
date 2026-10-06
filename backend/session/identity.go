@@ -22,7 +22,9 @@ type IdentityStoreData struct {
 type IdentityResolver func(id string) (Identity, bool)
 
 // MaterializeIdentity 把「引用身份」的连接物化为普通 password/key 配置：
-// 覆盖用户名、解密凭据。非 identity 连接原样返回。
+// 解密凭据并回填用户名。连接配置里非空的 User 优先（issue #959：同一密钥
+// 多台服务器共用时，连接上覆盖密钥库的用户名），为空才用密钥库的。
+// 非 identity 连接原样返回。
 func MaterializeIdentity(config ConnectionConfig, resolve IdentityResolver) (ConnectionConfig, error) {
 	if config.AuthType != "identity" {
 		return config, nil
@@ -31,7 +33,9 @@ func MaterializeIdentity(config ConnectionConfig, resolve IdentityResolver) (Con
 	if !ok {
 		return config, fmt.Errorf("referenced identity not found: %s", config.IdentityId)
 	}
-	config.User = id.Username
+	if config.User == "" {
+		config.User = id.Username
+	}
 	switch id.AuthType {
 	case "password":
 		config.AuthType = "password"

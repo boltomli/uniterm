@@ -53,8 +53,8 @@ type downloadOut struct {
 	Bytes int64 `json:"bytes"`
 }
 
-// registerFileTools installs the file group (gated by ToolsEnabled().Files
-// per call so toggling the group in settings takes effect without restart).
+// registerFileTools installs the file tools (read-only listing/reading plus
+// policy-gated transfers — upload/download go through gateExec as write risk).
 func (s *Server) registerFileTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_remote_dir",
@@ -78,9 +78,6 @@ func (s *Server) registerFileTools(srv *mcp.Server) {
 }
 
 func (s *Server) toolListRemoteDir(ctx context.Context, req *mcp.CallToolRequest, in listDirIn) (*mcp.CallToolResult, listDirOut, error) {
-	if !s.env.envFilesEnabled() {
-		return nil, listDirOut{}, fmt.Errorf("file tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.SessionID) == "" {
 		return nil, listDirOut{}, fmt.Errorf("sessionId is required")
 	}
@@ -98,9 +95,6 @@ func (s *Server) toolListRemoteDir(ctx context.Context, req *mcp.CallToolRequest
 }
 
 func (s *Server) toolReadRemoteFile(ctx context.Context, req *mcp.CallToolRequest, in readFileIn) (*mcp.CallToolResult, readFileOut, error) {
-	if !s.env.envFilesEnabled() {
-		return nil, readFileOut{}, fmt.Errorf("file tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.SessionID) == "" {
 		return nil, readFileOut{}, fmt.Errorf("sessionId is required")
 	}
@@ -123,9 +117,6 @@ func (s *Server) toolReadRemoteFile(ctx context.Context, req *mcp.CallToolReques
 }
 
 func (s *Server) toolUploadFile(ctx context.Context, req *mcp.CallToolRequest, in uploadIn) (*mcp.CallToolResult, uploadOut, error) {
-	if !s.env.envFilesEnabled() {
-		return nil, uploadOut{}, fmt.Errorf("file tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.SessionID) == "" {
 		return nil, uploadOut{}, fmt.Errorf("sessionId is required")
 	}
@@ -150,9 +141,6 @@ func (s *Server) toolUploadFile(ctx context.Context, req *mcp.CallToolRequest, i
 }
 
 func (s *Server) toolDownloadFile(ctx context.Context, req *mcp.CallToolRequest, in downloadIn) (*mcp.CallToolResult, downloadOut, error) {
-	if !s.env.envFilesEnabled() {
-		return nil, downloadOut{}, fmt.Errorf("file tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.SessionID) == "" {
 		return nil, downloadOut{}, fmt.Errorf("sessionId is required")
 	}
@@ -170,13 +158,4 @@ func (s *Server) toolDownloadFile(ctx context.Context, req *mcp.CallToolRequest,
 	n, err := fe.MCPReadRemoteToFile(in.RemotePath, resolved)
 	s.audit(ctx, req, "download_file", in.SessionID, in.RemotePath+" → "+in.LocalPath, nil, err)
 	return nil, downloadOut{Bytes: n}, err
-}
-
-// envFilesEnabled mirrors Env.ToolsEnabled().Files with a nil-safe default
-// (off) so a partially-wired Env cannot accidentally enable transfers.
-func (e Env) envFilesEnabled() bool {
-	if e.ToolsEnabled == nil {
-		return false
-	}
-	return e.ToolsEnabled().Files
 }

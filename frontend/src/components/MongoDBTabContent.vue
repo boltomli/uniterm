@@ -1,8 +1,14 @@
 <template>
   <div class="mongodb-tab-content">
-    <div class="mongo-main">
+    <div class="mongo-main" :class="{ 'm-tree-host': isNarrowScreen }">
       <!-- Left tree panel -->
-      <div class="mongo-left" :style="{ width: leftWidth + 'px' }">
+      <div v-if="isNarrowScreen && treeOpen" class="m-tree-overlay" @click="treeOpen = false" />
+      <div
+        v-show="isNarrowScreen || treeOpen"
+        class="mongo-left"
+        :class="{ 'm-tree': isNarrowScreen, 'm-tree-open': isNarrowScreen && treeOpen }"
+        :style="isNarrowScreen ? {} : { width: leftWidth + 'px' }"
+      >
         <div class="search-wrap">
           <input
             v-model="treeSearchQuery"
@@ -64,13 +70,20 @@
       </div>
 
       <!-- Resizer -->
-      <div class="mongo-resizer" @mousedown="onResizeStart" />
+      <div v-if="!isNarrowScreen && treeOpen" class="mongo-resizer" @mousedown="onResizeStart" />
 
       <!-- Right content area -->
       <div class="mongo-right">
         <template v-if="tabs.length">
           <!-- Tab bar -->
           <div class="mongo-tab-bar">
+            <button
+              class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+              :title="treeOpen ? t('common.collapse') : t('common.expand')"
+              @click="treeOpen = !treeOpen"
+            >
+              <PanelLeft :size="lucideSize('0.875rem')" />
+            </button>
             <div ref="tabScrollRef" class="mongo-tab-scroll" @wheel="onTabsWheel">
               <template v-for="(tab, index) in tabs" :key="tab.id">
                 <div
@@ -180,6 +193,13 @@
           </div>
         </template>
         <div v-else class="db-placeholder">
+          <button
+            class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+            :title="treeOpen ? t('common.collapse') : t('common.expand')"
+            @click="treeOpen = !treeOpen"
+          >
+            <PanelLeft :size="lucideSize('0.875rem')" />
+          </button>
           <span>{{ t('mongodb.selectHint') }}</span>
         </div>
       </div>
@@ -268,7 +288,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, nextTick, onMounted, onUnmounted } from 'vue'
-import { Database, Layers, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal, Plus, Trash2 } from '@lucide/vue'
+import { Database, Layers, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal, Plus, Trash2, PanelLeft } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -295,6 +316,13 @@ const props = defineProps<{
 
 // ── Resize state ──
 const leftWidth = ref(220)
+
+// Narrow screens turn the tree into an overlay drawer (closed by default);
+// wide screens keep it inline and the toggle collapses it.
+const treeOpen = ref(!isNarrowScreen.value)
+function closeTree() {
+  if (isNarrowScreen.value) treeOpen.value = false
+}
 let resizeStartX = 0
 let resizeStartWidth = 0
 let resizing = false
@@ -354,6 +382,7 @@ function activateTab(id: number) {
 }
 
 function openObjectsTab(dbName: string) {
+  closeTree()
   const existing = tabs.value.find(x => x.kind === 'objects' && x.dbName === dbName)
   if (existing) {
     activeTabId.value = existing.id
@@ -370,6 +399,7 @@ function onObjectsNewCollection(dbName: string) {
 }
 
 function openCollectionTab(dbName: string, collectionName: string) {
+  closeTree()
   const existing = tabs.value.find(t => t.kind === 'collection' && t.dbName === dbName && t.collectionName === collectionName)
   if (existing) {
     activeTabId.value = existing.id
@@ -816,14 +846,26 @@ watch(() => props.sessionId, () => {
 }
 
 .mongo-resizer {
+  /* Hover area floats over the tree edge (negative margin) so it takes
+     no layout width when idle and never blanks the content side. */
   width: 0.25rem;
+  margin-left: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
   transition: background 0.15s ease;
 }
-.mongo-resizer:hover {
-  background: var(--border-subtle);
+.mongo-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 
 .mongo-right {
@@ -1103,8 +1145,17 @@ watch(() => props.sessionId, () => {
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
+  position: relative;
   font-family: var(--font-ui);
   font-size: 0.875rem;
+}
+/* Empty-state keeps the tree toggle reachable at the same top-left spot
+   the tab bar occupies once tabs exist. */
+.db-placeholder .m-tree-toggle {
+  position: absolute;
+  top: 0.25rem;
+  left: 0.25rem;
+  margin-right: 0;
 }
 
 </style>

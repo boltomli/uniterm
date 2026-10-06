@@ -15,6 +15,21 @@
     </div>
 
     <div class="content" v-if="!message.skillName && !message.commandName">
+      <!-- Thought process (reasoning models): full-width block above the
+           answer, collapsed by default. Rendered inside .content so it flows
+           as a block instead of competing with it in the flex row.
+           Icon: pulsing outline circle while streaming, filled circle once done. -->
+      <div v-if="message.role === 'assistant' && message.thinking" class="thinking-block">
+        <div class="thinking-header" @click="thinkingShown = !thinkingShown">
+          <span class="thinking-dot" :class="thinkingLive ? 'live' : 'done'">{{ thinkingLive ? '○' : '●' }}</span>
+          <span class="thinking-label">{{ t('ai.thoughtProcess') }}</span>
+          <span v-if="thinkingDurationLabel" class="thinking-meta">· {{ thinkingDurationLabel }}</span>
+          <span v-if="createdAtLabel" class="thinking-meta">· {{ createdAtLabel }}</span>
+          <span class="toggle-icon">{{ thinkingShown ? '▼' : '▶' }}</span>
+        </div>
+        <pre v-show="thinkingShown" class="thinking-content">{{ message.thinking }}</pre>
+      </div>
+
       <div class="text" v-html="renderedContent" @click="onTextClick" />
 
       <div v-if="message.role === 'assistant' && message.content?.trim()" class="copy-action">
@@ -126,17 +141,21 @@
           <el-button @click="handleDismiss">{{ t('ai.skip') }}</el-button>
         </div>
       </div>
+
+      <!-- Message timestamp (user questions and assistant answers only) -->
+      <div v-if="createdAtLabel && message.role !== 'tool'" class="msg-meta">{{ createdAtLabel }}</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { Copy, Check, BookOpen, Terminal } from '@lucide/vue'
 import { useAIStore } from '../stores/aiStore'
 import { useI18n } from '../i18n'
 import { sanitizeRenderedHtml, escapeHtml as escapeHtmlBase } from '../utils/markdown'
+import { formatClock, formatDuration } from '../utils/timeFormat'
 import type { AIMessage } from '../types/ai'
 
 const props = defineProps<{ message: AIMessage; searchText?: string }>()
@@ -235,6 +254,42 @@ const aiStore = useAIStore()
 const { t } = useI18n()
 const inExpanded = ref(true)
 const outExpanded = ref(false)
+const thinkingShown = ref(false)
+
+// ── Timestamps & thinking status ──
+const createdAtLabel = computed(() => formatClock(props.message.createdAt))
+
+// Duration label: prefer the stored measurement; while the current turn is
+// still thinking, tick live off the store start time.
+const liveNow = ref(0)
+let liveTimer: ReturnType<typeof setInterval> | null = null
+function ensureLiveTimer(on: boolean) {
+  if (on && liveTimer === null) {
+    liveNow.value = Date.now()
+    liveTimer = setInterval(() => { liveNow.value = Date.now() }, 1000)
+  } else if (!on && liveTimer !== null) {
+    clearInterval(liveTimer)
+    liveTimer = null
+  }
+}
+
+// True only for the message currently receiving a thinking stream (drives the
+// pulsing open circle); every other block shows the finished filled circle.
+const thinkingLive = computed(() =>
+  aiStore.isRunning
+  && aiStore.status === 'thinking'
+  && !!props.message.thinking
+  && !props.message.thinkingDurationMs
+)
+
+const thinkingDurationLabel = computed(() => {
+  if (props.message.thinkingDurationMs) return formatDuration(props.message.thinkingDurationMs)
+  if (thinkingLive.value && aiStore.thinkingStartedAt) return formatDuration(liveNow.value - aiStore.thinkingStartedAt)
+  return ''
+})
+
+watch(thinkingLive, (on) => ensureLiveTimer(on), { immediate: true })
+onUnmounted(() => ensureLiveTimer(false))
 const copyMdLabel = ref(t('ai.copyMarkdown'))
 
 const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="0.75rem" height="0.75rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
@@ -857,6 +912,77 @@ function escapeHtml(text: string): string {
 .toggle-icon {
   color: var(--text-muted);
   font-size: 0.625rem;
+}
+
+/* Thought process (reasoning models) */
+.thinking-block {
+  margin: 0 0 0.375rem 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.thinking-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.25rem;
+  cursor: pointer;
+  user-select: none;
+}
+.thinking-header:hover .thinking-label {
+  color: var(--text-secondary);
+}
+.thinking-dot {
+  font-size: 0.75rem;
+  line-height: 1;
+}
+.thinking-dot.live {
+  color: var(--accent);
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.thinking-dot.done {
+  color: var(--success);
+}
+.thinking-label {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.thinking-meta {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+.msg-meta {
+  margin-top: 0.25rem;
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  opacity: 0.75;
+  user-select: none;
+}
+.ai-message.user .msg-meta {
+  text-align: right;
+}
+.thinking-content {
+  margin: 0.25rem 0 0 0;
+  padding: 0.375rem 0.625rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  border-left: 2px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-family: var(--font-ui);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .tool-copy-btn {
   background: none;

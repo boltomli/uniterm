@@ -28,6 +28,17 @@ Download the installer for your platform from [GitHub Releases](https://github.c
   ./uniterm
   ```
 
+### Android
+
+- Download `uniterm-android-arm64-<version>.apk` and install it directly on your phone
+
+### Runtime Dependencies
+
+- **Windows**: WebView2 Runtime (built into Windows 10+; older systems need to install it)
+- **macOS**: No extra dependencies (uses the system WebKit)
+- **Linux**: `libgtk-3-0` and `libwebkit2gtk-4.1-0` (preinstalled on most desktop distros)
+- **Android**: Android 5.0+ (uses the system WebView, no extra dependencies)
+
 
 ## Creating Your First Connection
 

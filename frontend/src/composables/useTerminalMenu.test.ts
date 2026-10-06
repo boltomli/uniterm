@@ -140,6 +140,24 @@ describe('useTerminalMenu.writeClipboard', () => {
     expect(m.menuVisible.value).toBe(false)
   })
 
+  it('does nothing when rightClickAction is "none" (issue #1088)', () => {
+    mockSettingsStore.settings.terminal.rightClickAction = 'none'
+    const paste = vi.fn()
+    const m = useTerminalMenu({ getSelection: () => 'selected-text', onPaste: paste })
+    m.onContextMenu(new FakeMouseEvent() as any)
+    expect(m.menuVisible.value).toBe(false)
+    expect(paste).not.toHaveBeenCalled()
+  })
+
+  it('opens the menu on Ctrl + right-click even when rightClickAction is "none"', () => {
+    mockSettingsStore.settings.terminal.rightClickAction = 'none'
+    const m = buildMenu(() => 'selected-text')
+    const ev = new FakeMouseEvent()
+    ev.ctrlKey = true
+    m.onContextMenu(ev as any)
+    expect(m.menuVisible.value).toBe(true)
+  })
+
   // Ctrl/Cmd + right-click is the escape hatch when right-click is bound to
   // paste: either modifier forces the context menu open.
   it.each([
@@ -164,6 +182,16 @@ describe('useTerminalMenu.writeClipboard', () => {
     m.openMenu(new FakeMouseEvent() as any)
     expect(m.menuVisible.value).toBe(true)
     expect(paste).not.toHaveBeenCalled()
+  })
+
+  it('selectAll invokes onSelectAll and closes the menu', () => {
+    const onSelectAll = vi.fn()
+    const m = useTerminalMenu({ getSelection: () => '', onPaste: vi.fn(), onSelectAll })
+    m.onContextMenu(new FakeMouseEvent() as any)
+    expect(m.menuVisible.value).toBe(true)
+    m.selectAll()
+    expect(onSelectAll).toHaveBeenCalledOnce()
+    expect(m.menuVisible.value).toBe(false)
   })
 })
 

@@ -26,16 +26,17 @@ const sidebarZh = [
       { text: '本地和串口连接', link: '/zh/connections/local' },
       { text: '文件传输', link: '/zh/connections/file-transfer' },
       { text: '远程桌面', link: '/zh/connections/remote-desktop' },
-      { text: '服务器监控', link: '/zh/connections/server-monitor' },
       { text: '数据库', link: '/zh/connections/databases' },
-      { text: '容器', link: '/zh/connections/containers' }
+      { text: '容器', link: '/zh/connections/containers' },
+      { text: '服务器监控', link: '/zh/connections/server-monitor' },
+      { text: '工作区', link: '/zh/connections/workspace' }
     ]
   },
   {
     text: '功能指南',
     items: [
       { text: 'AI 助理', link: '/zh/features/ai-assistant' },
-      { text: '标签和工作区', link: '/zh/features/workspace' },
+      { text: 'MCP 服务器', link: '/zh/features/mcp-server' },
       { text: '边栏', link: '/zh/features/sidebar' },
       { text: 'SSH 隧道', link: '/zh/features/ssh-tunnel' },
       { text: '密钥库', link: '/zh/features/keystore' },
@@ -74,16 +75,17 @@ const sidebarEn = [
       { text: 'Local', link: '/en/connections/local' },
       { text: 'File Transfer', link: '/en/connections/file-transfer' },
       { text: 'Remote Desktop', link: '/en/connections/remote-desktop' },
-      { text: 'Server Monitor', link: '/en/connections/server-monitor' },
       { text: 'Databases', link: '/en/connections/databases' },
-      { text: 'Containers', link: '/en/connections/containers' }
+      { text: 'Containers', link: '/en/connections/containers' },
+      { text: 'Server Monitor', link: '/en/connections/server-monitor' },
+      { text: 'Workspace', link: '/en/connections/workspace' }
     ]
   },
   {
     text: 'Features',
     items: [
       { text: 'AI Assistant', link: '/en/features/ai-assistant' },
-      { text: 'Workspace', link: '/en/features/workspace' },
+      { text: 'MCP Server', link: '/en/features/mcp-server' },
       { text: 'Sidebar', link: '/en/features/sidebar' },
       { text: 'SSH Tunnel', link: '/en/features/ssh-tunnel' },
       { text: 'Keystore', link: '/en/features/keystore' },

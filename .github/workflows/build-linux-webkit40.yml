@@ -135,8 +135,8 @@ jobs:
           contents:
             - src: bin/uniTerm
               dst: /usr/bin/uniterm
-            - src: build/linux/uniTerm.desktop
-              dst: /usr/share/applications/uniterm.desktop
+            - src: build/linux/org.wails.uniterm.desktop
+              dst: /usr/share/applications/org.wails.uniterm.desktop
             - src: build/linux/icons/hicolor
               dst: /usr/share/icons/hicolor
           EOF

@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,9 +12,42 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rhnvrm/simples3"
 )
+
+const (
+	// Files smaller than this upload via a single PUT; multipart
+	// bookkeeping (init/parts/complete) would only add round-trips.
+	s3MultipartThreshold = 16 * 1024 * 1024
+	// Concurrent workers for multipart parts, directory transfers and
+	// batch server-side copies.
+	s3TransferConcurrency = 4
+	// Retries per multipart part with exponential backoff (100 ms base).
+	s3PartRetries = 3
+	// Progress is reported per completed part, so small parts mean smooth
+	// progress. 5 MB is the S3 protocol floor (simples3.MinPartSize); the
+	// size grows adaptively only when a huge upload would exceed the
+	// 10000-part limit (headroom at 9000).
+	s3MinPartSize = simples3.MinPartSize
+	s3MaxPartSize = 5 * 1024 * 1024 * 1024
+	s3MaxParts    = 9000
+)
+
+// s3PartSizeFor picks the multipart part size for an upload: 5 MB wherever
+// possible so progress advances per 5 MB, growing only for uploads whose
+// part count would otherwise exceed the protocol limit.
+func s3PartSizeFor(size int64) int64 {
+	partSize := (size + s3MaxParts - 1) / s3MaxParts
+	if partSize < s3MinPartSize {
+		partSize = s3MinPartSize
+	}
+	if partSize > s3MaxPartSize {
+		partSize = s3MaxPartSize
+	}
+	return partSize
+}
 
 type S3Session struct {
 	baseSession
@@ -149,20 +183,15 @@ func (s *S3Session) ListRemote(dir string) (FileListResult, error) {
 		prefix += "/"
 	}
 
-	input := simples3.ListInput{
-		Bucket:    s.bucket,
-		Prefix:    prefix,
-		Delimiter: "/",
-	}
-	resp, err := s.s3.List(input)
+	objects, commonPrefixes, err := s.listAllPaged(prefix, "/")
 	if err != nil {
 		return FileListResult{}, err
 	}
 
-	files := make([]FileItem, 0, len(resp.Objects)+len(resp.CommonPrefixes))
+	files := make([]FileItem, 0, len(objects)+len(commonPrefixes))
 
 	// Process common prefixes (directories)
-	for _, pfx := range resp.CommonPrefixes {
+	for _, pfx := range commonPrefixes {
 		name := strings.TrimPrefix(pfx, prefix)
 		name = strings.TrimSuffix(name, "/")
 		if name == "" {
@@ -178,7 +207,7 @@ func (s *S3Session) ListRemote(dir string) (FileListResult, error) {
 	}
 
 	// Process objects (files and directory markers)
-	for _, obj := range resp.Objects {
+	for _, obj := range objects {
 		name := strings.TrimPrefix(obj.Key, prefix)
 		if name == "" || strings.HasSuffix(name, "/") {
 			// Skip the directory itself or directory marker objects
@@ -313,40 +342,28 @@ func (s *S3Session) Remove(p string, recursive bool) error {
 	key := s.s3Key(target)
 
 	if recursive {
-		// List all objects with this prefix and delete them
+		// List all objects with this prefix (paginated) and delete them in
+		// batches of up to 1000 keys per DeleteObjects request. S3 treats
+		// already-absent keys as successfully deleted, so the prefix and
+		// directory marker objects can join the same batch.
 		prefix := key
 		if prefix != "" && !strings.HasSuffix(prefix, "/") {
 			prefix += "/"
 		}
-		input := simples3.ListInput{
-			Bucket: s.bucket,
-			Prefix: prefix,
-		}
-		resp, err := s.s3.List(input)
+		objects, _, err := s.listAllPaged(prefix, "")
 		if err != nil {
 			return err
 		}
-		for _, obj := range resp.Objects {
-			if err := s.s3.FileDelete(simples3.DeleteInput{
-				Bucket:    s.bucket,
-				ObjectKey: obj.Key,
-			}); err != nil {
-				return err
-			}
+		keys := make([]string, 0, len(objects)+2)
+		for _, obj := range objects {
+			keys = append(keys, obj.Key)
 		}
-		// Also delete the prefix marker object if it exists
-		s.s3.FileDelete(simples3.DeleteInput{
-			Bucket:    s.bucket,
-			ObjectKey: key,
-		})
-		// And the directory marker
+		// The prefix and directory marker objects can join the same batch:
+		// S3 treats already-absent keys as successfully deleted.
 		if key != "" {
-			s.s3.FileDelete(simples3.DeleteInput{
-				Bucket:    s.bucket,
-				ObjectKey: key + "/",
-			})
+			keys = append(keys, key, key+"/")
 		}
-		return nil
+		return s.deleteBatch(keys)
 	}
 
 	// Non-recursive: try file first, then directory marker
@@ -427,12 +444,9 @@ func (s *S3Session) Rename(oldName, newName string) error {
 	}
 
 	if isDir {
-		// Rename all objects with this prefix
-		listInput := simples3.ListInput{
-			Bucket: s.bucket,
-			Prefix: prefix,
-		}
-		listResp, err := s.s3.List(listInput)
+		// Rename all objects with this prefix: concurrent server-side copies,
+		// then a batched delete of the sources once every copy succeeded.
+		listResp, _, err := s.listAllPaged(prefix, "")
 		if err != nil {
 			return err
 		}
@@ -440,28 +454,31 @@ func (s *S3Session) Rename(oldName, newName string) error {
 		if newPrefix != "" && !strings.HasSuffix(newPrefix, "/") {
 			newPrefix += "/"
 		}
-		for _, obj := range listResp.Objects {
+		type mvItem struct{ src, dst string }
+		items := make([]mvItem, 0, len(listResp))
+		for _, obj := range listResp {
 			suffix := strings.TrimPrefix(obj.Key, oldKey)
 			if strings.HasPrefix(suffix, "/") {
 				suffix = strings.TrimPrefix(suffix, "/")
 			}
-			newObjKey := newPrefix + suffix
-			if _, err := s.s3.CopyObject(simples3.CopyObjectInput{
-				SourceBucket: s.bucket,
-				SourceKey:    obj.Key,
-				DestBucket:   s.bucket,
-				DestKey:      newObjKey,
-			}); err != nil {
-				return err
-			}
-			if err := s.s3.FileDelete(simples3.DeleteInput{
-				Bucket:    s.bucket,
-				ObjectKey: obj.Key,
-			}); err != nil {
-				return err
-			}
+			items = append(items, mvItem{obj.Key, newPrefix + suffix})
 		}
-		return nil
+		if err := runPool(context.Background(), len(items), s3TransferConcurrency, func(i int) error {
+			_, err := s.s3.CopyObject(simples3.CopyObjectInput{
+				SourceBucket: s.bucket,
+				SourceKey:    items[i].src,
+				DestBucket:   s.bucket,
+				DestKey:      items[i].dst,
+			})
+			return err
+		}); err != nil {
+			return err
+		}
+		srcKeys := make([]string, len(items))
+		for i, it := range items {
+			srcKeys[i] = it.src
+		}
+		return s.deleteBatch(srcKeys)
 	}
 
 	// File rename: copy + delete
@@ -519,12 +536,8 @@ func (s *S3Session) Copy(oldPath, newPath string) error {
 	}
 
 	if isDir {
-		// Copy all objects with this prefix
-		listInput := simples3.ListInput{
-			Bucket: s.bucket,
-			Prefix: prefix,
-		}
-		listResp, err := s.s3.List(listInput)
+		// Copy all objects with this prefix, concurrently server-side.
+		listResp, _, err := s.listAllPaged(prefix, "")
 		if err != nil {
 			return err
 		}
@@ -532,22 +545,24 @@ func (s *S3Session) Copy(oldPath, newPath string) error {
 		if newPrefix != "" && !strings.HasSuffix(newPrefix, "/") {
 			newPrefix += "/"
 		}
-		for _, obj := range listResp.Objects {
+		type cpItem struct{ src, dst string }
+		items := make([]cpItem, 0, len(listResp))
+		for _, obj := range listResp {
 			suffix := strings.TrimPrefix(obj.Key, oldKey)
 			if strings.HasPrefix(suffix, "/") {
 				suffix = strings.TrimPrefix(suffix, "/")
 			}
-			newObjKey := newPrefix + suffix
-			if _, err := s.s3.CopyObject(simples3.CopyObjectInput{
-				SourceBucket: s.bucket,
-				SourceKey:    obj.Key,
-				DestBucket:   s.bucket,
-				DestKey:      newObjKey,
-			}); err != nil {
-				return err
-			}
+			items = append(items, cpItem{obj.Key, newPrefix + suffix})
 		}
-		return nil
+		return runPool(context.Background(), len(items), s3TransferConcurrency, func(i int) error {
+			_, err := s.s3.CopyObject(simples3.CopyObjectInput{
+				SourceBucket: s.bucket,
+				SourceKey:    items[i].src,
+				DestBucket:   s.bucket,
+				DestKey:      items[i].dst,
+			})
+			return err
+		})
 	}
 
 	_, err = s.s3.CopyObject(simples3.CopyObjectInput{
@@ -627,6 +642,11 @@ func (s *S3Session) Get(remotePath, localPath string, recursive bool) (string, e
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -638,6 +658,12 @@ func (s *S3Session) Get(remotePath, localPath string, recursive bool) (string, e
 			err = s.downloadFile(task, rp, lp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -674,6 +700,11 @@ func (s *S3Session) Put(localPath, remotePath string, recursive bool) (string, e
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -685,6 +716,12 @@ func (s *S3Session) Put(localPath, remotePath string, recursive bool) (string, e
 			err = s.uploadFile(task, lp, rp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -707,6 +744,84 @@ func (s *S3Session) CancelTransfer(taskID string) error {
 	return nil
 }
 
+// RetryTransfer (re)starts a transfer from a frontend-held checkpoint. For
+// recursive transfers, files listed in skipCompleted (paths relative to the
+// transfer root, '/'-separated) are counted as done without re-transferring.
+// The task is re-created directly (not via Get/Put) because the spec carries
+// the already-resolved remote path from the original task.
+func (s *S3Session) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
+	if err := s.requireClient(); err != nil {
+		return "", err
+	}
+	tfType := spec.Type
+	prefix := "dl"
+	if tfType != "download" {
+		tfType = "upload"
+		prefix = "ul"
+	}
+	task := &TransferTask{
+		ID:         s.nextTaskID(prefix),
+		Type:       tfType,
+		LocalPath:  spec.LocalPath,
+		RemotePath: spec.RemotePath,
+		Status:     "running",
+	}
+	if spec.Recursive && len(skipCompleted) > 0 {
+		task.SetSkip(skipCompleted)
+	}
+	task.start()
+	s.mu.Lock()
+	s.transfers[task.ID] = task
+	s.mu.Unlock()
+	s.emitTransferStart(task)
+	go func() {
+		defer func() {
+			task.done()
+			if task.Status == "error" {
+				return // retained for retry
+			}
+			s.mu.Lock()
+			delete(s.transfers, task.ID)
+			s.mu.Unlock()
+		}()
+		var err error
+		if spec.Recursive {
+			if tfType == "download" {
+				err = s.downloadDir(spec.RemotePath, spec.LocalPath, task)
+			} else {
+				err = s.uploadDir(spec.LocalPath, spec.RemotePath, task)
+			}
+		} else {
+			if tfType == "download" {
+				err = s.downloadFile(task, spec.RemotePath, spec.LocalPath)
+			} else {
+				err = s.uploadFile(task, spec.LocalPath, spec.RemotePath)
+			}
+		}
+		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
+			s.emitTransferEvent(task, err)
+			return
+		}
+		task.Status = "done"
+		s.emitTransferComplete(task)
+	}()
+	return task.ID, nil
+}
+
+// DismissTransfer drops a retained (failed) task from the transfers map.
+func (s *S3Session) DismissTransfer(taskID string) error {
+	s.mu.Lock()
+	delete(s.transfers, taskID)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *S3Session) PauseTransfer(taskID string) error {
 	s.mu.Lock()
 	task, ok := s.transfers[taskID]
@@ -716,7 +831,7 @@ func (s *S3Session) PauseTransfer(taskID string) error {
 	}
 	task.setPaused(true)
 	task.Status = "paused"
-	s.emitTransferComplete(task)
+	s.emitTransferPaused(task)
 	return nil
 }
 
@@ -731,79 +846,152 @@ func (s *S3Session) ResumeTransfer(taskID string) error {
 	task.Status = "running"
 	close(task.pauseCh)
 	task.pauseCh = make(chan struct{})
-	s.emitTransferStart(task)
+	s.emitTransferResumed(task)
 	return nil
 }
 
-// calcRemoteDirSize recursively sums up all object sizes under a remote directory prefix.
-func (s *S3Session) calcRemoteDirSize(remoteDir string) (int64, error) {
-	var total int64
-	prefix := s.s3Key(remoteDir)
-	if prefix != "" && !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-	input := simples3.ListInput{
-		Bucket:    s.bucket,
-		Prefix:    prefix,
-		Delimiter: "/",
-	}
-	resp, err := s.s3.List(input)
-	if err != nil {
-		return 0, err
-	}
-	for _, obj := range resp.Objects {
-		name := strings.TrimPrefix(obj.Key, prefix)
-		if name == "" || strings.HasSuffix(name, "/") {
-			continue
+// listAllPaged lists every object and common prefix under a prefix, following
+// continuation tokens. S3 caps each response at 1000 keys; without pagination
+// large trees were silently truncated.
+func (s *S3Session) listAllPaged(prefix, delimiter string) ([]simples3.Object, []string, error) {
+	var objects []simples3.Object
+	var prefixes []string
+	token := ""
+	for {
+		input := simples3.ListInput{
+			Bucket:    s.bucket,
+			Prefix:    prefix,
+			Delimiter: delimiter,
 		}
-		total += obj.Size
-	}
-	for _, pfx := range resp.CommonPrefixes {
-		dirName := strings.TrimPrefix(pfx, prefix)
-		dirName = strings.TrimSuffix(dirName, "/")
-		subSize, err := s.calcRemoteDirSize(path.Join(remoteDir, dirName))
+		if token != "" {
+			input.ContinuationToken = token
+		}
+		resp, err := s.s3.List(input)
 		if err != nil {
-			return 0, err
+			return nil, nil, err
 		}
-		total += subSize
+		objects = append(objects, resp.Objects...)
+		prefixes = append(prefixes, resp.CommonPrefixes...)
+		if !resp.IsTruncated || resp.NextContinuationToken == "" {
+			return objects, prefixes, nil
+		}
+		token = resp.NextContinuationToken
 	}
-	return total, nil
 }
 
-// calcLocalDirSize recursively sums up all file sizes under a local directory.
-func calcLocalDirSize(localDir string) (int64, error) {
-	var total int64
-	entries, err := os.ReadDir(localDir)
-	if err != nil {
-		return 0, err
-	}
-	for _, entry := range entries {
-		lp := filepath.Join(localDir, entry.Name())
-		if entry.IsDir() {
-			subSize, err := calcLocalDirSize(lp)
-			if err != nil {
-				return 0, err
-			}
-			total += subSize
-		} else {
-			fi, err := entry.Info()
-			if err != nil {
-				return 0, err
-			}
-			total += fi.Size()
+// deleteBatch removes keys with DeleteObjects requests, up to 1000 keys each,
+// instead of one request per object. S3 treats absent keys as deleted.
+func (s *S3Session) deleteBatch(keys []string) error {
+	const batchSize = 1000
+	for start := 0; start < len(keys); start += batchSize {
+		end := start + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		if _, err := s.s3.DeleteObjects(simples3.DeleteObjectsInput{
+			Bucket:  s.bucket,
+			Objects: keys[start:end],
+			Quiet:   true,
+		}); err != nil {
+			return err
 		}
 	}
-	return total, nil
+	return nil
+}
+
+// runPool runs fn(i) for i in [0, count) across up to workers goroutines.
+// Workers stop early when ctx is cancelled or fn reports an error; the first
+// error (or ctx.Err()) is returned. Callers that want per-item failures to
+// not abort the batch handle them inside fn and return nil.
+func runPool(ctx context.Context, count, workers int, fn func(i int) error) error {
+	if count <= 0 {
+		return nil
+	}
+	if workers > count {
+		workers = count
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	idx := make(chan int)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range idx {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := fn(i); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+feed:
+	for i := 0; i < count; i++ {
+		select {
+		case idx <- i:
+		case err := <-errCh:
+			// Buffer the error back and stop feeding; workers drain idx.
+			errCh <- err
+			break feed
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(idx)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+// s3ContentType picks a content type from a file extension.
+func s3ContentType(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".txt":
+		return "text/plain"
+	case ".html", ".htm":
+		return "text/html"
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".xml":
+		return "application/xml"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".pdf":
+		return "application/pdf"
+	case ".zip":
+		return "application/zip"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) error {
-	// Calculate total size for progress tracking
-	if task.loadTotal() <= 0 {
-		if total, err := s.calcRemoteDirSize(remoteDir); err == nil {
-			task.setTotal(total)
-		}
-	}
-
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return err
 	}
@@ -812,58 +1000,64 @@ func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) 
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	input := simples3.ListInput{
-		Bucket:    s.bucket,
-		Prefix:    prefix,
-		Delimiter: "/",
-	}
-	resp, err := s.s3.List(input)
+	// One flat paginated listing serves both the progress total and the work
+	// list; a delimiter walk would only see the first 1000 keys per level.
+	objects, _, err := s.listAllPaged(prefix, "")
 	if err != nil {
 		return err
 	}
-
-	// Download files
-	for _, obj := range resp.Objects {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
-		}
-		name := strings.TrimPrefix(obj.Key, prefix)
-		if name == "" || strings.HasSuffix(name, "/") {
-			continue
-		}
-		lp := filepath.Join(localDir, name)
-		if err := s.downloadFile(task, path.Join(remoteDir, name), lp); err != nil {
-			return err
-		}
+	type dlItem struct {
+		key, rel string
+		size     int64
 	}
-
-	// Recurse into common prefixes
-	for _, pfx := range resp.CommonPrefixes {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
+	items := make([]dlItem, 0, len(objects))
+	var total int64
+	for _, obj := range objects {
+		rel := strings.TrimPrefix(obj.Key, prefix)
+		if rel == "" || strings.HasSuffix(rel, "/") {
+			continue // directory markers
 		}
-		dirName := strings.TrimPrefix(pfx, prefix)
-		dirName = strings.TrimSuffix(dirName, "/")
-		rp := path.Join(remoteDir, dirName)
-		lp := filepath.Join(localDir, dirName)
-		if err := s.downloadDir(rp, lp, task); err != nil {
-			return err
-		}
+		items = append(items, dlItem{obj.Key, rel, obj.Size})
+		total += obj.Size
 	}
+	if task.loadTotal() <= 0 {
+		task.setTotal(total)
+	}
+	task.setFileCount(len(items))
 
-	return nil
+	return runPool(task.ctx, len(items), s3TransferConcurrency, func(i int) error {
+		item := items[i]
+		if task.shouldSkip(item.rel) {
+			// Retry checkpoint: transferred in a previous attempt.
+			task.addProgress(item.size)
+			task.beginFile(item.rel)
+			task.finishFile(item.rel)
+			return nil
+		}
+		lp := filepath.Join(localDir, filepath.FromSlash(item.rel))
+		task.beginFile(item.rel)
+		s.emitFileStart(task, item.rel, filepath.Base(lp))
+		if err := s.downloadObject(task, item.key, lp); err != nil {
+			if task.ctx.Err() != nil {
+				return err // cancelled: stop the whole transfer
+			}
+			task.failFile(item.rel, err)
+			s.emitFileFailed(task, item.rel, err)
+			return nil
+		}
+		task.finishFile(item.rel)
+		s.emitFileDone(task, item.rel)
+		return nil
+	})
 }
 
 func (s *S3Session) downloadFile(task *TransferTask, remotePath, localPath string) error {
+	key := s.s3Key(remotePath)
 	// Get file size first for progress tracking
 	if task.loadTotal() <= 0 {
 		details, err := s.s3.FileDetails(simples3.DetailsInput{
 			Bucket:    s.bucket,
-			ObjectKey: s.s3Key(remotePath),
+			ObjectKey: key,
 		})
 		if err == nil && details.ContentLength != "" {
 			if size, parseErr := strconv.ParseInt(details.ContentLength, 10, 64); parseErr == nil {
@@ -871,10 +1065,14 @@ func (s *S3Session) downloadFile(task *TransferTask, remotePath, localPath strin
 			}
 		}
 	}
+	return s.downloadObject(task, key, localPath)
+}
 
+// downloadObject streams one object to disk by its raw S3 key.
+func (s *S3Session) downloadObject(task *TransferTask, key, localPath string) error {
 	rc, err := s.s3.FileDownload(simples3.DownloadInput{
 		Bucket:    s.bucket,
-		ObjectKey: s.s3Key(remotePath),
+		ObjectKey: key,
 	})
 	if err != nil {
 		return err
@@ -911,86 +1109,213 @@ func (s *S3Session) downloadFile(task *TransferTask, remotePath, localPath strin
 }
 
 func (s *S3Session) uploadDir(localDir, remoteDir string, task *TransferTask) error {
-	// Calculate total size for progress tracking
-	if task.loadTotal() <= 0 {
-		if total, err := calcLocalDirSize(localDir); err == nil {
-			task.setTotal(total)
-		}
+	type ulItem struct {
+		lp, rp, rel string
+		size        int64
 	}
-
-	entries, err := os.ReadDir(localDir)
+	var items []ulItem
+	var total int64
+	err := filepath.WalkDir(localDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(localDir, p)
+		if err != nil {
+			return err
+		}
+		var size int64
+		if info, err := d.Info(); err == nil {
+			size = info.Size()
+			total += size
+		}
+		items = append(items, ulItem{p, path.Join(remoteDir, filepath.ToSlash(rel)), rel, size})
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
+	if task.loadTotal() <= 0 {
+		task.setTotal(total)
+	}
+	task.setFileCount(len(items))
+
+	return runPool(task.ctx, len(items), s3TransferConcurrency, func(i int) error {
+		item := items[i]
+		if task.shouldSkip(item.rel) {
+			// Retry checkpoint: transferred in a previous attempt.
+			task.addProgress(item.size)
+			task.beginFile(item.rel)
+			task.finishFile(item.rel)
+			return nil
 		}
-		lp := filepath.Join(localDir, entry.Name())
-		rp := path.Join(remoteDir, entry.Name())
-		if entry.IsDir() {
-			if err := s.uploadDir(lp, rp, task); err != nil {
-				return err
+		task.beginFile(item.rel)
+		s.emitFileStart(task, item.rel, filepath.Base(item.lp))
+		if err := s.uploadFile(task, item.lp, item.rp); err != nil {
+			if task.ctx.Err() != nil {
+				return err // cancelled: stop the whole transfer
 			}
-		} else {
-			if err := s.uploadFile(task, lp, rp); err != nil {
-				return err
+			task.failFile(item.rel, err)
+			s.emitFileFailed(task, item.rel, err)
+			return nil
+		}
+		task.finishFile(item.rel)
+		s.emitFileDone(task, item.rel)
+		return nil
+	})
+}
+
+// uploadFile streams a local file to S3. Large files go through concurrent
+// multipart parts read straight from disk (io.SectionReader), so memory stays
+// bounded no matter the file size; small ones use a single PUT.
+func (s *S3Session) uploadFile(task *TransferTask, localPath, remotePath string) error {
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if task.loadTotal() <= 0 {
+		task.setTotal(fi.Size())
+	}
+	key := s.s3Key(remotePath)
+	contentType := s3ContentType(filepath.Ext(localPath))
+
+	if fi.Size() < s3MultipartThreshold {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return err
+		}
+		_, err = s.s3.FilePut(simples3.UploadInput{
+			Bucket:      s.bucket,
+			ObjectKey:   key,
+			ContentType: contentType,
+			Body:        bytes.NewReader(data),
+		})
+		if err == nil {
+			task.addProgress(fi.Size())
+			s.emitTransferProgress(task)
+		}
+		return err
+	}
+	return s.uploadMultipart(task, key, contentType, f, fi.Size())
+}
+
+// uploadMultipart streams a large file as concurrent parts. Each worker reads
+// its own s3PartSize window straight from disk, so the whole file never
+// enters memory at once.
+func (s *S3Session) uploadMultipart(task *TransferTask, key, contentType string, f *os.File, size int64) error {
+	initOut, err := s.s3.InitiateMultipartUpload(simples3.InitiateMultipartUploadInput{
+		Bucket:      s.bucket,
+		ObjectKey:   key,
+		ContentType: contentType,
+	})
+	if err != nil {
+		return err
+	}
+	partSize := s3PartSizeFor(size)
+	totalParts := int((size + partSize - 1) / partSize)
+	parts := make([]simples3.CompletedPart, totalParts)
+
+	err = runPool(task.ctx, totalParts, s3TransferConcurrency, func(i int) error {
+		partNum := i + 1
+		start := int64(i) * partSize
+		end := start + partSize
+		if end > size {
+			end = size
+		}
+		// Stagger the first round of parts so concurrent workers don't
+		// complete in lockstep; progress then advances in even intervals
+		// instead of jumping a whole cluster at once.
+		if partNum <= s3TransferConcurrency {
+			select {
+			case <-time.After(time.Duration(partNum-1) * 250 * time.Millisecond):
+			case <-task.ctx.Done():
+				return task.ctx.Err()
 			}
 		}
+		out, err := s.uploadPartWithRetry(task, key, initOut.UploadID, f, start, end, partNum)
+		if err != nil {
+			return err
+		}
+		parts[i] = simples3.CompletedPart{PartNumber: out.PartNumber, ETag: out.ETag}
+		task.addProgress(end - start)
+		s.emitTransferProgress(task)
+		return nil
+	})
+	if err != nil {
+		// Abandon the server-side upload so orphaned parts don't linger.
+		_ = s.abortMultipart(key, initOut.UploadID)
+		return err
+	}
+	if _, err := s.s3.CompleteMultipartUpload(simples3.CompleteMultipartUploadInput{
+		Bucket:    s.bucket,
+		ObjectKey: key,
+		UploadID:  initOut.UploadID,
+		Parts:     parts,
+	}); err != nil {
+		_ = s.abortMultipart(key, initOut.UploadID)
+		return err
 	}
 	return nil
 }
 
-func (s *S3Session) uploadFile(task *TransferTask, localPath, remotePath string) error {
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return err
-	}
-
-	// Detect content type from extension
-	contentType := "application/octet-stream"
-	switch strings.ToLower(filepath.Ext(localPath)) {
-	case ".txt":
-		contentType = "text/plain"
-	case ".html", ".htm":
-		contentType = "text/html"
-	case ".css":
-		contentType = "text/css"
-	case ".js":
-		contentType = "application/javascript"
-	case ".json":
-		contentType = "application/json"
-	case ".xml":
-		contentType = "application/xml"
-	case ".png":
-		contentType = "image/png"
-	case ".jpg", ".jpeg":
-		contentType = "image/jpeg"
-	case ".gif":
-		contentType = "image/gif"
-	case ".svg":
-		contentType = "image/svg+xml"
-	case ".pdf":
-		contentType = "application/pdf"
-	case ".zip":
-		contentType = "application/zip"
-	}
-
-	_, err = s.s3.FilePut(simples3.UploadInput{
-		Bucket:      s.bucket,
-		ObjectKey:   s.s3Key(remotePath),
-		ContentType: contentType,
-		Body:        bytes.NewReader(data),
+func (s *S3Session) abortMultipart(key, uploadID string) error {
+	return s.s3.AbortMultipartUpload(simples3.AbortMultipartUploadInput{
+		Bucket:    s.bucket,
+		ObjectKey: key,
+		UploadID:  uploadID,
 	})
-	if err == nil {
-		task.addProgress(int64(len(data)))
-		if task.loadTotal() == 0 {
-			task.setTotal(int64(len(data)))
+}
+
+// uploadPartWithRetry uploads one part with retries; each attempt re-creates
+// the section reader so a consumed stream never poisons a retry.
+func (s *S3Session) uploadPartWithRetry(task *TransferTask, key, uploadID string, f *os.File, start, end int64, partNum int) (simples3.UploadPartOutput, error) {
+	var lastErr error
+	for attempt := 0; attempt <= s3PartRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond):
+			case <-task.ctx.Done():
+				return simples3.UploadPartOutput{}, task.ctx.Err()
+			}
 		}
-		s.emitTransferProgress(task)
+		task.waitIfPaused()
+		out, err := s.s3.UploadPart(simples3.UploadPartInput{
+			Bucket:     s.bucket,
+			ObjectKey:  key,
+			UploadID:   uploadID,
+			PartNumber: partNum,
+			Body:       io.NewSectionReader(f, start, end-start),
+			Size:       end - start,
+		})
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !isS3Retryable(err) {
+			return simples3.UploadPartOutput{}, err
+		}
 	}
-	return err
+	return simples3.UploadPartOutput{}, lastErr
+}
+
+// isS3Retryable matches the transient faults worth retrying: 5xx responses,
+// timeouts, connection resets and EOF.
+func isS3Retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status code: 5") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF")
 }
 

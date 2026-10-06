@@ -80,19 +80,13 @@
                 <el-radio-button value="password">{{ t('conn.password') }}</el-radio-button>
                 <el-radio-button v-if="form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop'" value="key">{{ t('conn.keyPath') }}</el-radio-button>
                 <el-radio-button v-if="form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop'" value="keyText">{{ t('conn.keyText') }}</el-radio-button>
-                <el-radio-button v-if="form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop'" value="kerberos">{{ t('conn.kerberos') }}</el-radio-button>
+                <el-radio-button v-if="(form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop') && !isMobilePlatform()" value="kerberos">{{ t('conn.kerberos') }}</el-radio-button>
                 <el-radio-button v-if="(isWindows || isMac) && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" value="agent">{{ t('conn.sshAgent') }}</el-radio-button>
                 <el-radio-button v-if="isElasticsearch" value="apikey">{{ t('conn.esAuthApiKey') }}</el-radio-button>
               </el-radio-group>
             </el-form-item>
-            <el-form-item v-if="form.authType !== 'identity' && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.type === 's3' ? 'Access Key' : t('conn.user')">
-              <el-input v-model="form.user" :placeholder="form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder')" />
-            </el-form-item>
-            <el-form-item v-if="form.type === 'rdp' && isWindows && form.authType !== 'identity'" :label="t('conn.rdpDomain')">
-              <el-input v-model="form.rdpDomain" placeholder="e.g. WORKGROUP or WIN-ABC123" />
-            </el-form-item>
             <el-form-item
-              v-if="form.authType === 'identity' && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')"
+              v-if="form.authType === 'identity' && isSSHAlgoType"
               :label="t('conn.identity')"
             >
               <div class="inline-add-row">
@@ -103,6 +97,12 @@
                   <Plus :size="lucideSize('0.875rem')" />
                 </el-button>
               </div>
+            </el-form-item>
+            <el-form-item v-if="(form.authType !== 'identity' || isSSHAlgoType) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
+              <el-input v-model="form.user" :placeholder="form.authType === 'identity' ? t('conn.identityUserOverrideHint') : (form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder'))" />
+            </el-form-item>
+            <el-form-item v-if="form.type === 'rdp' && isWindows && form.authType !== 'identity'" :label="t('conn.rdpDomain')">
+              <el-input v-model="form.rdpDomain" placeholder="e.g. WORKGROUP or WIN-ABC123" />
             </el-form-item>
             <template v-if="form.type === 'rdp' && isWindows">
               <el-form-item :label="t('conn.rdpEnableNLA')">
@@ -115,10 +115,10 @@
             <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : '')" />
             </el-form-item>
-            <el-form-item v-if="form.authType === 'kerberos'" :label="t('conn.kerberos')">
+            <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
               <div class="field-hint">{{ t('conn.kerberosHint') }}</div>
             </el-form-item>
-            <el-form-item v-if="form.authType === 'kerberos'" :label="t('conn.kerberosRealm')">
+            <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberosRealm')">
               <el-input v-model="form.kerberosRealm" :placeholder="t('conn.kerberosRealmPlaceholder')" />
               <div class="field-hint">{{ t('conn.kerberosRealmHint') }}</div>
             </el-form-item>
@@ -730,6 +730,7 @@ import { isSqlDbType } from '../utils/quickConnect'
 import { CATEGORY_META, CATEGORY_ORDER, CONNECTION_TYPES, connectionTypeFormLabel, connectionTypeInfo, defaultPortFor } from '../utils/connectionTypes'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import { backendErrorText } from '../utils/backendError'
+import { isMobilePlatform } from '../utils/platform'
 import type { Identity } from '../types/identity'
 import type { Proxy } from '../types/proxy'
 
@@ -800,6 +801,10 @@ const allSubTypes = computed((): Record<string, SubTypeInfo[]> => {
     // form-visible entry always carries a ConnectionConfig type; the check
     // narrows info.type for the card.
     if (!isConnectionKind(info.type)) continue
+    // Local terminals spawn a host shell, which does not exist on android/ios
+    // (same rule as StartTabContent's hidden local-terminal button). Only when
+    // creating: an existing local connection must still show its active tile.
+    if (info.type === 'local' && isMobilePlatform() && !isEdit.value) continue
     groups[info.category].push({
       type: info.type,
       dbType: info.dbType,
@@ -1051,8 +1056,8 @@ const form = reactive<ConnectionConfig>({
   keyPath: '',
   keyContent: '',
   groupId: undefined,
-  rdpFixedWidth: -1,
-  rdpFixedHeight: -1,
+  rdpFixedWidth: -2,
+  rdpFixedHeight: -2,
   rdpSmartSizing: false,
   rdpEnableNLA: true,
   rdpDomain: '',
@@ -1132,6 +1137,7 @@ function onSSHAlgoSaved(config: SSHAlgoConfig) {
   form.sshAlgorithms = config
 }
 
+const RDP_ADAPTIVE_RESOLUTION = 'adaptive'
 const RDP_CUSTOM_RESOLUTION = 'custom'
 
 // Default preset list (mstsc-style), plus a "custom" entry that reveals
@@ -1156,6 +1162,7 @@ const rdpResolutions = [
 ]
 
 const rdpResolutionOptions = [
+  { value: 'adaptive', label: t('rdp.adaptive') },
   { value: 'fullscreen', label: t('rdp.fullscreen') },
   ...rdpResolutions.map(r => ({ value: `${r.w}x${r.h}`, label: r.label })),
   { value: RDP_CUSTOM_RESOLUTION, label: t('rdp.customResolution') },
@@ -1167,15 +1174,18 @@ function rdpResolutionKey(w?: number, h?: number): string {
   return match ? `${match.w}x${match.h}` : RDP_CUSTOM_RESOLUTION
 }
 
-const rdpResolution = ref('fullscreen')
+const rdpResolution = ref(RDP_ADAPTIVE_RESOLUTION)
 const rdpCustomWidth = ref(1360)
 const rdpCustomHeight = ref(768)
 
 // Keep the form's fixed size fields in sync with the resolution picker.
 watch(rdpResolution, (val) => {
-  if (val === 'fullscreen') {
-    form.rdpFixedWidth = -1
-    form.rdpFixedHeight = -1
+  if (val === RDP_ADAPTIVE_RESOLUTION || val === 'fullscreen') {
+    // Adaptive (-2) seeds the desktop from the window size (backend),
+    // fullscreen (-1) follows the primary monitor — both are sentinels.
+    const sentinel = val === RDP_ADAPTIVE_RESOLUTION ? -2 : -1
+    form.rdpFixedWidth = sentinel
+    form.rdpFixedHeight = sentinel
   } else if (val === RDP_CUSTOM_RESOLUTION) {
     form.rdpFixedWidth = rdpCustomWidth.value
     form.rdpFixedHeight = rdpCustomHeight.value
@@ -1331,7 +1341,12 @@ watch(() => props.editConfig, (config) => {
     // Sync resolution picker to the config's fixed size. Sizes outside the
     // preset list fall back to the custom inputs so they stay visible and
     // editable.
-    rdpResolution.value = rdpResolutionKey(config.rdpFixedWidth, config.rdpFixedHeight)
+    rdpResolution.value =
+      config.rdpFixedWidth === -2
+        ? RDP_ADAPTIVE_RESOLUTION
+        : config.rdpFixedWidth === -1
+          ? 'fullscreen'
+          : rdpResolutionKey(config.rdpFixedWidth, config.rdpFixedHeight)
     if (rdpResolution.value === RDP_CUSTOM_RESOLUTION) {
       rdpCustomWidth.value = config.rdpFixedWidth ?? 1360
       rdpCustomHeight.value = config.rdpFixedHeight ?? 768
@@ -1425,8 +1440,8 @@ function resetForm() {
   form.keyContent = ''
   form.identityId = ''
   form.groupId = undefined
-  form.rdpFixedWidth = -1
-  form.rdpFixedHeight = -1
+  form.rdpFixedWidth = -2
+  form.rdpFixedHeight = -2
   form.rdpSmartSizing = false
   form.rdpEnableNLA = true
   form.rdpDomain = ''
@@ -1486,7 +1501,7 @@ function resetForm() {
   k8sContexts.value = []
   k8sContextsLoading.value = false
   k8sContextsError.value = ''
-  rdpResolution.value = 'fullscreen'
+  rdpResolution.value = RDP_ADAPTIVE_RESOLUTION
   form.x11DesktopDesktopType = 'gnome'
   form.x11DesktopCustomCmd = ''
   selectedGroupId.value = undefined
@@ -1660,14 +1675,15 @@ function normalizeForm(): ConnectionConfig {
       throw new Error(t('conn.sshAlgoEmptyList'))
     }
   }
-  // Identity (密钥库) 的用户名与凭据完全由所引用的 identity 提供，连接时
-  // MaterializeIdentity 会以 identity 的 username/password 覆盖本字段。
+  // Identity (密钥库) 的凭据完全由所引用的 identity 提供，连接时
+  // MaterializeIdentity 会以 identity 的 password 覆盖本字段。
   // 从别的认证方式切到 identity 时，旧字段若残留 enc:v1: 密文，会被
   // 云同步原样带进仓库（同步规范化只处理 authType=="password" 的连接），
-  // 导致他机显示字面量 enc:v1:xxx（issue #711）。保存时清掉两者以绝后患。
+  // 导致他机显示字面量 enc:v1:xxx（issue #711）。保存时清掉以绝后患。
+  // User 不清：identity 认证下它是表单里显式填写的覆盖用户名
+  // （issue #959），连接时非空则覆盖密钥库的用户名，为空则回退。
   if (normalized.authType === 'identity') {
     normalized.password = ''
-    normalized.user = ''
   }
   // Directory-follow hook: SSH and WSL carry it; "startup" is the default and
   // is stored as empty so old connection JSON stays clean.
@@ -1906,6 +1922,11 @@ function onConnect() {
   flex-shrink: 0;
   padding: 0.5rem 0.625rem;
   border-right: 1px solid var(--border-subtle);
+  /* Scroll the category list inside the rail when the dialog is too short;
+     the rail (and its divider) stays put. min-height: 0 lets the rail shrink
+     below its content height as a flex item of .conn-layout. */
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .cat-item {
@@ -1914,6 +1935,7 @@ function onConnect() {
   align-items: center;
   justify-content: center;
   gap: 0.25rem;
+  min-width: 3.75rem;
   padding: 0.75rem 0.25rem;
   border-radius: var(--radius-sm);
   user-select: none;

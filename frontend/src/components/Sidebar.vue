@@ -444,6 +444,7 @@ import { useTerminalThemeOptions } from '../composables/useTerminalThemeOptions'
 import { GetAllFonts } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
+import { isMobilePlatform } from '../utils/platform'
 
 defineProps<{
   visible: boolean
@@ -460,9 +461,12 @@ const companionStore = useCompanionStore()
 const { t } = useI18n()
 const isMacPlatform = /Mac|iPhone|iPad/.test(navigator.userAgent)
 const quickCommandsTitle = computed(() => {
+  const label = t('quickCommands.quickCommandsTab')
+  // No hardware keyboard on mobile — the shortcut hint is meaningless there.
+  if (isMobilePlatform()) return label
   const binding = settingsStore.settings.keyboard.openQuickCommands
   const shortcut = binding ? formatKeyBinding(binding, isMacPlatform) : ''
-  return shortcut ? `${t('quickCommands.quickCommandsTab')} (${shortcut})` : t('quickCommands.quickCommandsTab')
+  return shortcut ? `${label} (${shortcut})` : label
 })
 // Connection ids that currently have an open panel/session (panel.config.id).
 // Reactive over the panelStore map, so it updates as panels open/close.
@@ -1718,7 +1722,8 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
   display: flex;
   align-items: center;
   gap: 0.125rem;
-  padding: 0.625rem 0.875rem;
+  /* 下 padding 由各面板顶部工具栏的上 padding 承担，避免间隔叠加 */
+  padding: 0.625rem 0.875rem 0;
   flex-shrink: 0;
 }
 
@@ -1794,7 +1799,7 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0 0.625rem 0.375rem;
+  padding: 0.625rem 0.625rem 0.375rem;
   flex-shrink: 0;
 }
 

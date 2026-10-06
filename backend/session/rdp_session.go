@@ -114,6 +114,57 @@ const (
 	sampleThumbH = 36
 )
 
+const (
+	// Delay after the last window-size change before applying the new desktop
+	// size (adaptive resolution). Avoids reconnect storms while the user drags
+	// the window edge.
+	adaptiveResizeDelay = 1200 * time.Millisecond
+	// Smallest change (in either dimension) that is worth a reconnect. Below
+	// this the existing desktop is kept and merely clipped/scaled by the
+	// control window.
+	adaptiveResizeThreshold = 16
+	// RDP desktop size limits for adaptive mode.
+	adaptiveMinWidth  = 640
+	adaptiveMinHeight = 480
+	adaptiveMaxWidth  = 7680
+	adaptiveMaxHeight = 4320
+	// Grace window after a Reconnect during which the pump's "connection lost"
+	// detection is suppressed: the Connected property transiently reads 0
+	// while the control renegotiates.
+	adaptiveReconnectGrace = 15 * time.Second
+	// Minimum spacing between two adaptive reconnects.
+	adaptiveMinInterval = 3 * time.Second
+	// An A→B→A request within this window after a reconnect completes is
+	// treated as a machine-driven resize feedback loop: a human cannot act
+	// within 2 seconds of a ~5s disconnect/reconnect cycle finishing, but a
+	// layout feedback loop fires almost immediately. Legitimate maximize/
+	// restore toggling (5s+ between actions) must NOT trip this.
+	adaptiveLoopWindow = 2 * time.Second
+	// When a suspected feedback loop is detected, adaptive resize pauses for
+	// this long instead of being disabled for the session; a real loop keeps
+	// re-triggering the cooldown (effectively suppressed), while occasional
+	// false positives self-heal.
+	adaptiveCooldown = 10 * time.Second
+	// Timeouts for the adaptive resize phases: disconnect-wait and
+	// reconnect-wait (the pump drives both, see stepAdaptiveResize).
+	adaptivePhase1Timeout = 5 * time.Second
+	adaptivePhase2Timeout = 30 * time.Second
+	// Connected must stay 1 this long before the reconnect counts as
+	// established: the property flips to 1 immediately after Connect() (it
+	// reflects the requested state, not an established session), and acting
+	// on it too early — e.g. toggling the deferred full screen — makes the
+	// control bail back to windowed mode.
+	adaptivePhase2Settle = 2 * time.Second
+	// RdpFixedWidth/Height sentinels (see ConnectionConfig).
+	rdpSizeFullscreen = -1 // follow the primary monitor on connect
+	rdpSizeAdaptive   = -2 // desktop follows the .rdp-area window size
+	// Layout reserves used both when placing the RDP child window and when
+	// estimating the .rdp-area size for the initial adaptive desktop size.
+	rdpTopReserve    = 80
+	rdpBottomReserve = 32
+	rdpSideMargin    = 4
+)
+
 type RDPSession struct {
 	baseSession
 	parentHwnd uintptr
@@ -142,6 +193,30 @@ type RDPSession struct {
 	// Manual refresh request (frontend "refresh" button), applied on the COM
 	// STA thread by the message pump for the same reason as fsRequested.
 	resyncRequested bool
+	// Adaptive resize lifecycle notifications, so the frontend can freeze the
+	// last frame over .rdp-area during the disconnect/reconnect cycle.
+	// event is "start" (snapshot carries a frozen PNG, base64) or "end".
+	onAdaptiveEvent func(event, snapshot string)
+	// Adaptive mode: a FullScreen=true toggle deferred until the desktop has
+	// been resized to the monitor resolution (see runMessagePump).
+	fsAfterResize bool
+
+	// Adaptive desktop resize: when config.RdpFixedWidth == rdpSizeAdaptive, SetPosition
+	// tracks the .rdp-area size and, once it stays stable, the message pump
+	// runs a disconnect → resize → reconnect cycle (IMsRdpClient8::Reconnect
+	// on a live session never completes its renegotiation; the explicit
+	// disconnect/reconnect cycle is what mstsc itself does when resizing).
+	rsW, rsH                   int // pending request, normalized (even, clamped)
+	rsAt                       time.Time
+	rsReq                      bool
+	rsPhase                    int       // 0 idle, 1 disconnect-wait, 2 reconnect-wait
+	rsDeadline                 time.Time // phase timeout
+	rsUpSince                  time.Time // phase 2: when Connected first read 1 (settle timer)
+	desktopW, desktopH         int       // desktop size currently in effect
+	prevDesktopW, prevDesktopH int       // desktop size before the last reconnect
+	rsAppliedAt                time.Time // when the last reconnect was applied
+	rsGraceUntil               time.Time // suppress disconnect detection until this time
+	rsCooldownUntil            time.Time // adaptive resize paused (suspected feedback loop)
 }
 
 // SetOnFullScreenExit registers a callback fired when the user exits the
@@ -150,6 +225,24 @@ func (s *RDPSession) SetOnFullScreenExit(cb func()) {
 	s.mu.Lock()
 	s.onFsExit = cb
 	s.mu.Unlock()
+}
+
+// SetOnAdaptiveEvent registers a callback fired at the start and end of each
+// adaptive resize cycle ("start" carries a frozen frame; "end" none).
+func (s *RDPSession) SetOnAdaptiveEvent(cb func(event, snapshot string)) {
+	s.mu.Lock()
+	s.onAdaptiveEvent = cb
+	s.mu.Unlock()
+}
+
+// emitAdaptive delivers an adaptive resize lifecycle event to the host.
+func (s *RDPSession) emitAdaptive(event, snapshot string) {
+	s.mu.Lock()
+	cb := s.onAdaptiveEvent
+	s.mu.Unlock()
+	if cb != nil {
+		cb(event, snapshot)
+	}
 }
 
 func NewRDPSession(id string) *RDPSession {
@@ -339,6 +432,20 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 	if height <= 0 {
 		height = 600
 	}
+
+	// Adaptive resolution: seed the desktop with the current .rdp-area estimate
+	// so the initial session roughly matches the window; the frontend position
+	// sync keeps refining it from there (see requestAdaptiveResize).
+	if config.RdpFixedWidth == rdpSizeAdaptive {
+		if w, h, ok := s.overlaySizeEstimate(); ok {
+			width, height = w, h
+		}
+	}
+
+	s.mu.Lock()
+	s.desktopW, s.desktopH = width, height
+	s.mu.Unlock()
+	log.Writef("[RDP] config: adaptive=%v fixed=%dx%d initial=%dx%d", config.RdpFixedWidth == rdpSizeAdaptive, config.RdpFixedWidth, config.RdpFixedHeight, width, height)
 
 	dispatch, hwnd, err := hostRdpControl(s.parentHwnd, width, height)
 	if err != nil {
@@ -612,13 +719,55 @@ func (s *RDPSession) runMessagePump() {
 			s.fsRequested = false
 			full := s.fsValue
 			rdp := s.rdp
-			s.fsActive = full
+			// Adaptive mode: entering full screen needs the desktop at the
+			// monitor resolution FIRST — toggle FullScreen only after the
+			// resize cycle completes (fsAfterResize), otherwise the desktop
+			// stays at the windowed size and merely gets stretched.
+			deferred := false
+			if full && rdp != nil && s.config.RdpFixedWidth == rdpSizeAdaptive && time.Now().After(s.rsCooldownUntil) && s.rsPhase == 0 {
+				sw, _, _ := procGetSystemMetrics.Call(uintptr(SM_CXSCREEN))
+				sh, _, _ := procGetSystemMetrics.Call(uintptr(SM_CYSCREEN))
+				mw, mh := clampDesktopWidth(int(sw)), clampDesktopHeight(int(sh))
+				if mw != s.desktopW || mh != s.desktopH {
+					deferred = true
+					s.fsAfterResize = true
+					s.rsW, s.rsH = mw, mh
+					s.rsAt = time.Now()
+					s.rsReq = true
+				}
+			}
+			if !deferred {
+				s.fsActive = full
+			}
+			if !full {
+				// Exiting full screen: cancel any pending deferred enter.
+				s.fsAfterResize = false
+			}
 			s.mu.Unlock()
-			if rdp != nil {
+			if rdp != nil && !deferred {
 				rdp.PutProperty("FullScreen", full)
 			}
 		} else {
 			s.mu.Unlock()
+		}
+
+		// Apply a settled adaptive desktop resize on THIS (COM STA) thread.
+		// applyDesktopResize keeps rsReq set when rate-limited so the request
+		// is retried on a later pump iteration.
+		s.mu.Lock()
+		rsReq := s.rsReq
+		rsW, rsH, rsAt := s.rsW, s.rsH, s.rsAt
+		s.mu.Unlock()
+		if rsReq && time.Since(rsAt) >= adaptiveResizeDelay {
+			s.applyDesktopResize(rsW, rsH)
+		}
+
+		// Drive an in-flight adaptive resize (disconnect → reconnect phases).
+		s.mu.Lock()
+		rsPhase := s.rsPhase
+		s.mu.Unlock()
+		if rsPhase != 0 {
+			s.stepAdaptiveResize()
 		}
 
 		ret, _, _ := procPeekMessage.Call(
@@ -662,6 +811,10 @@ func (s *RDPSession) runMessagePump() {
 						if !stillFull {
 							s.mu.Lock()
 							s.fsActive = false
+							// Reset the oscillation baseline: the windowed-size
+							// resize the frontend requests after exiting full
+							// screen is a legitimate cycle, not a loop.
+							s.prevDesktopW, s.prevDesktopH = 0, 0
 							cb := s.onFsExit
 							s.mu.Unlock()
 							if cb != nil {
@@ -677,9 +830,17 @@ func (s *RDPSession) runMessagePump() {
 				// When the remote side drops or the connection is lost, this transitions
 				// to 0 while the ActiveX window is still alive.
 				if !disconnectLogged {
+					// Skip liveness polling during the adaptive-reconnect grace
+					// window: Connected transiently reads 0 mid-renegotiation.
 					s.mu.Lock()
-					rdp := s.rdp
+					grace := time.Now().Before(s.rsGraceUntil)
 					s.mu.Unlock()
+					rdp := (*ole.IDispatch)(nil)
+					if !grace {
+						s.mu.Lock()
+						rdp = s.rdp
+						s.mu.Unlock()
+					}
 					if rdp != nil {
 						connected, err := rdp.GetProperty("Connected")
 						if err == nil && connected != nil {
@@ -1013,14 +1174,10 @@ func (s *RDPSession) positionFromMainWindow(width, height int) {
 	// space, so these are used directly by placeAtChild — no screen conversion
 	// or owner-origin addition is needed, and the window follows the parent
 	// automatically when it moves.
-	topReserve := 80
-	bottomReserve := 32
-	sideMargin := 4
-
-	x := sideMargin
-	y := topReserve
-	w := clientWidth - sideMargin*2
-	h := clientHeight - topReserve - bottomReserve
+	x := rdpSideMargin
+	y := rdpTopReserve
+	w := clientWidth - rdpSideMargin*2
+	h := clientHeight - rdpTopReserve - rdpBottomReserve
 
 	s.shown = true
 	s.placeAtChild(x, y, w, h, SWP_SHOWWINDOW|SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS)
@@ -1029,6 +1186,301 @@ func (s *RDPSession) positionFromMainWindow(width, height int) {
 	s.trackY = y
 	s.trackW = w
 	s.trackH = h
+}
+
+// overlaySizeEstimate estimates the .rdp-area size (physical pixels) the same
+// way positionFromMainWindow computes the initial child window placement: the
+// parent client area minus the layout reserves. Returns ok=false when the
+// parent window is not available yet.
+func (s *RDPSession) overlaySizeEstimate() (w, h int, ok bool) {
+	if s.parentHwnd == 0 {
+		return 0, 0, false
+	}
+	var cr rect
+	if ret, _, _ := procGetClientRect.Call(s.parentHwnd, uintptr(unsafe.Pointer(&cr))); ret == 0 {
+		return 0, 0, false
+	}
+	cw := int(cr.Right-cr.Left) - rdpSideMargin*2
+	ch := int(cr.Bottom-cr.Top) - rdpTopReserve - rdpBottomReserve
+	if cw < adaptiveMinWidth || ch < adaptiveMinHeight {
+		// Degenerate layout (e.g. connect while minimized): fall back to the
+		// monitor-based default chosen by the caller.
+		return 0, 0, false
+	}
+	return cw, ch, true
+}
+
+// adaptiveMode reports whether the session was configured with the adaptive
+// resolution option (rdpFixedWidth/Height == rdpSizeAdaptive).
+func (s *RDPSession) adaptiveMode() bool {
+	return s.config.RdpFixedWidth == rdpSizeAdaptive
+}
+
+// requestAdaptiveResize records a pending desktop-size request from a
+// SetPosition sync. The message pump applies it (see applyDesktopResize) once
+// the size has stayed stable for adaptiveResizeDelay.
+func (s *RDPSession) requestAdaptiveResize(w, h int) {
+	w = clampDesktopWidth(w)
+	h = clampDesktopHeight(h)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.adaptiveMode() || time.Now().Before(s.rsCooldownUntil) {
+		return
+	}
+	if w == s.desktopW && h == s.desktopH {
+		// Back at the current desktop size: drop any stale pending request.
+		s.rsReq = false
+		return
+	}
+	// Ignore sub-threshold changes: a reconnect is not worth a few pixels.
+	dw := w - s.desktopW
+	if dw < 0 {
+		dw = -dw
+	}
+	dh := h - s.desktopH
+	if dh < 0 {
+		dh = -dh
+	}
+	if dw < adaptiveResizeThreshold && dh < adaptiveResizeThreshold {
+		// Same reasoning as above: the window converged back near the current
+		// desktop size, so a stale pending request must not fire later.
+		s.rsReq = false
+		return
+	}
+	// Oscillation guard: requesting the size that was in effect BEFORE the last
+	// reconnect (A→B→A) almost immediately after that reconnect means the resize
+	// feedback is fighting itself (e.g. the control or layout reacting to the
+	// reconnect). Pause adaptive resize instead of reconnect-storming the server
+	// into dropping the session; the cooldown self-heals, a real loop keeps
+	// re-triggering it.
+	if !s.rsAppliedAt.IsZero() && time.Since(s.rsAppliedAt) < adaptiveLoopWindow &&
+		w == s.prevDesktopW && h == s.prevDesktopH {
+		s.rsCooldownUntil = time.Now().Add(adaptiveCooldown)
+		s.rsReq = false
+		log.Writef("[RDP] adaptive resize: oscillation detected (%dx%d↔%dx%d), pausing for %s", w, h, s.desktopW, s.desktopH, adaptiveCooldown)
+		return
+	}
+	// Only restart the stability timer when the pending size actually changed;
+	// repeated syncs with the same size must not postpone the reconnect.
+	if w != s.rsW || h != s.rsH {
+		s.rsW, s.rsH = w, h
+		s.rsAt = time.Now()
+		log.Writef("[RDP] adaptive resize requested: %dx%d (current %dx%d)", w, h, s.desktopW, s.desktopH)
+	}
+	s.rsReq = true
+}
+
+// clampDesktopWidth/Height normalize a requested desktop dimension: even
+// number (protocol requirement), clamped to the adaptive size limits.
+func clampDesktopWidth(w int) int {
+	if w < adaptiveMinWidth {
+		return adaptiveMinWidth
+	}
+	if w > adaptiveMaxWidth {
+		return adaptiveMaxWidth
+	}
+	return w &^ 1
+}
+
+func clampDesktopHeight(h int) int {
+	if h < adaptiveMinHeight {
+		return adaptiveMinHeight
+	}
+	if h > adaptiveMaxHeight {
+		return adaptiveMaxHeight
+	}
+	return h &^ 1
+}
+
+// applyDesktopResize starts the adaptive resize: a control-level Disconnect
+// followed by a Connect with the new desktop dimensions — the same sequence
+// mstsc runs when the desktop size changes. IMsRdpClient8::Reconnect was
+// tried first, but on a live session its renegotiation never completes
+// (Connected stays 0, screen stays blank), so the explicit cycle is used
+// instead. The server keeps the session either way, so running programs are
+// unaffected. The pump drives the phases (see stepAdaptiveResize); must run
+// on the COM STA thread.
+func (s *RDPSession) applyDesktopResize(w, h int) {
+	// Even dimensions only (protocol requirement).
+	w = clampDesktopWidth(w)
+	h = clampDesktopHeight(h)
+	s.mu.Lock()
+	if w == s.desktopW && h == s.desktopH {
+		// Already applied (e.g. a duplicate pending request): consume it.
+		s.rsReq = false
+		s.mu.Unlock()
+		return
+	}
+	if time.Now().Before(s.rsCooldownUntil) {
+		// Suspended (suspected feedback loop): discard stale pending requests;
+		// the next SetPosition sync re-requests after the cooldown lifts.
+		s.rsReq = false
+		s.mu.Unlock()
+		return
+	}
+	// Rate limit: at most one reconnect per adaptiveMinInterval. Keep the
+	// request pending so the pump retries after the interval.
+	if !s.rsAppliedAt.IsZero() && time.Since(s.rsAppliedAt) < adaptiveMinInterval {
+		s.mu.Unlock()
+		return
+	}
+	rdp := s.rdp
+	full := s.fsActive
+	phase := s.rsPhase
+	s.mu.Unlock()
+	if rdp == nil || full || phase != 0 {
+		// A resize cycle is already in flight (or no control / full screen):
+		// leave the request pending for a later pump iteration.
+		return
+	}
+	s.mu.Lock()
+	s.rsReq = false
+	s.rsPhase = 1
+	s.rsDeadline = time.Now().Add(adaptivePhase1Timeout)
+	s.rsGraceUntil = time.Now().Add(adaptiveReconnectGrace)
+	s.mu.Unlock()
+	log.Writef("[RDP] adaptive resize: disconnecting to resize desktop %dx%d → %dx%d", s.desktopW, s.desktopH, w, h)
+
+	// Hand the frontend a frozen frame of the current desktop so the resize
+	// cycle shows a still image over .rdp-area instead of a blank/logon flash.
+	// Captured here on the pump thread right before the disconnect — the last
+	// good frame.
+	snap, _ := s.Snapshot()
+	s.emitAdaptive("start", snap)
+	// Give the frontend a moment to decode and layer the frozen frame over
+	// .rdp-area before the live window goes blank underneath.
+	time.Sleep(250 * time.Millisecond)
+
+	rdp.CallMethod("Disconnect")
+}
+
+// stepAdaptiveResize advances the adaptive resize state machine. Called on
+// the COM STA thread (message pump) once per pump iteration while a resize
+// cycle is in flight; never blocks, so window messages keep being pumped.
+func (s *RDPSession) stepAdaptiveResize() {
+	s.mu.Lock()
+	phase := s.rsPhase
+	deadline := s.rsDeadline
+	w, h := s.rsW, s.rsH
+	rdp := s.rdp
+	s.mu.Unlock()
+	if rdp == nil {
+		s.mu.Lock()
+		s.rsPhase = 0
+		s.mu.Unlock()
+		return
+	}
+	if time.Now().After(deadline) {
+		log.Writef("[RDP] adaptive resize: phase %d timed out, aborting", phase)
+		s.mu.Lock()
+		s.rsPhase = 0
+		s.rsAppliedAt = time.Now() // rate-limit the next attempt
+		s.fsAfterResize = false    // a deferred full-screen enter is lost
+		s.mu.Unlock()
+		s.emitAdaptive("end", "")
+		return
+	}
+
+	connected, err := rdp.GetProperty("Connected")
+	if err != nil || connected == nil {
+		return // transient; retry on the next pump iteration
+	}
+	isUp := !connectedPropZero(connected.Value())
+
+	if phase == 1 && !isUp {
+		// Control is fully disconnected: apply the new desktop size and
+		// reconnect (the server keeps the existing session).
+		rdp.PutProperty("DesktopWidth", w)
+		rdp.PutProperty("DesktopHeight", h)
+		if _, err := rdp.CallMethod("Connect"); err != nil {
+			log.Writef("[RDP] adaptive resize: Connect(%d,%d) failed: %v", w, h, err)
+			s.mu.Lock()
+			s.rsPhase = 0
+			s.rsAppliedAt = time.Now()
+			s.fsAfterResize = false
+			s.mu.Unlock()
+			s.emitAdaptive("end", "")
+			return
+		}
+		s.mu.Lock()
+		s.rsPhase = 2
+		s.rsDeadline = time.Now().Add(adaptivePhase2Timeout)
+		s.rsGraceUntil = s.rsDeadline
+		s.mu.Unlock()
+		log.Writef("[RDP] adaptive resize: reconnecting at %dx%d", w, h)
+		return
+	}
+
+	if phase == 2 && !isUp {
+		// Dropped again during the settle window: restart the settle timer.
+		s.mu.Lock()
+		s.rsUpSince = time.Time{}
+		s.mu.Unlock()
+		return
+	}
+
+	if phase == 2 && isUp {
+		// The Connected property reads 1 immediately after Connect() — wait
+		// for it to hold steadily before treating the session as established
+		// (a deferred full-screen toggle fires on this success path).
+		s.mu.Lock()
+		if s.rsUpSince.IsZero() {
+			s.rsUpSince = time.Now()
+			s.mu.Unlock()
+			return
+		}
+		settled := time.Since(s.rsUpSince) >= adaptivePhase2Settle
+		s.mu.Unlock()
+		if !settled {
+			return
+		}
+
+		s.mu.Lock()
+		s.rsPhase = 0
+		s.rsUpSince = time.Time{}
+		s.prevDesktopW, s.prevDesktopH = s.desktopW, s.desktopH
+		s.desktopW, s.desktopH = w, h
+		s.rsAppliedAt = time.Now()
+		enterFs := s.fsAfterResize
+		s.fsAfterResize = false
+		x, y, tw, th := s.trackX, s.trackY, s.trackW, s.trackH
+		s.mu.Unlock()
+		log.Writef("[RDP] adaptive resize: desktop now %dx%d", w, h)
+		s.emitAdaptive("end", "")
+
+		// The control may have resized its own window to the new desktop
+		// size; snap it back to the tracked .rdp-area rect. Safe here:
+		// SetWindowPos with ASYNCWINDOWPOS does not block the COM STA thread.
+		s.placeAtChild(x, y, tw, th, SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS)
+
+		if enterFs {
+			// Deferred full-screen toggle: the desktop now matches the
+			// monitor, so let the control take over. Reset the oscillation
+			// baseline first — the coming fullscreen-exit resize back to the
+			// windowed size is a legitimate cycle, not a feedback loop.
+			s.mu.Lock()
+			s.prevDesktopW, s.prevDesktopH = 0, 0
+			s.fsActive = true
+			rdp := s.rdp
+			s.mu.Unlock()
+			if rdp != nil {
+				rdp.PutProperty("FullScreen", true)
+			}
+		}
+	}
+}
+
+// connectedPropZero interprets the ActiveX "Connected" property value:
+// false, or a zero number, means disconnected.
+func connectedPropZero(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return !t
+	case nil:
+		return true
+	default:
+		return v == int16(0) || v == int32(0) || v == 0
+	}
 }
 
 // placeAtChild positions the RDP CHILD window at the given parent-client-
@@ -1076,6 +1528,10 @@ func (s *RDPSession) SetPosition(x, y, w, h int) {
 		lparam := uintptr(h<<16 | w&0xFFFF)
 		procPostMessageW.Call(hwnd, WM_SIZE, 0, lparam)
 	}
+
+	// Adaptive resolution: a stable .rdp-area size change triggers a reconnect
+	// with the new desktop size (applied by the message pump on the STA thread).
+	s.requestAdaptiveResize(w, h)
 }
 
 // SetFullScreen toggles the ActiveX control's built-in full-screen mode.

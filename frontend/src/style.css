@@ -315,6 +315,13 @@
   box-sizing: border-box;
 }
 
+/* Global monospace baseline: pre/code/kbd/samp would otherwise render in the
+   browser's default mono stack, bypassing JetBrains Mono. Components with
+   their own rules override this as usual. */
+pre, code, kbd, samp {
+  font-family: var(--font-mono);
+}
+
 /* Root rem baseline. All UI lengths are rem-based with 1rem = 16px (the
    browser UA default; 16 = 2^4, so every integer px value converts to an
    exact decimal). index.html tags <html class="mac"> on macOS, where the
@@ -441,7 +448,7 @@ body::before {
    不改 .scrollbar 容器自身的 0.875rem 宽度：FitAddon 也按 0.875rem 预留水平空间，
    点击轨道翻页的热区也是它，改窄会留下 0.375rem 死区。 */
 
-/* 轨道保持透明。轨道现在贴容器右缘，但顶/底仍被 .xterm 的 0.25rem padding 挤在
+/* 轨道保持透明。轨道现在贴容器右缘，但顶/底仍被 .xterm 的 0.375rem padding 挤在
    内侧，一旦上色就会把那圈 padding 显成边线。对比度全交给滑块承担。 */
 .xterm .xterm-scrollable-element > .scrollbar.vertical {
   background: transparent !important;
@@ -493,6 +500,11 @@ body::before {
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 3rem - 50px);
+  /* Dialogs declare fixed rem widths (e.g. the connection dialog's 43.75rem
+     = 700px); between that width and the 640px stacking breakpoint the fixed
+     width exceeds the window and puts a horizontal scrollbar on the viewport.
+     Cap every dialog to the viewport so it shrinks instead of overflowing. */
+  max-width: calc(100vw - 1rem);
 }
 .el-dialog__header,
 .el-message-box__header {
@@ -645,6 +657,17 @@ body::before {
   background: var(--bg-surface);
   /* Keep the command bar pinned while the body scrolls */
   flex-shrink: 0;
+  /* Buttons wrap onto a second row at narrow widths: inline flow packs the
+     rows tight. Flex-wrap + gap separates both rows and columns; flex-end
+     keeps EP's right-aligned footer, and the button margin is zeroed so
+     spacing stays uniform via gap alone. */
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.el-dialog__footer .el-button + .el-button {
+  margin-left: 0;
 }
 /* Connection dialog: padding-less flex body so the category rail divider
    spans header-to-footer and the rail stays fixed while the right column
@@ -656,6 +679,11 @@ body::before {
 .conn-dialog .el-dialog__body {
   padding: 0;
   display: flex;
+  /* The body itself never scrolls: each column scrolls its own content
+     instead (the rail scrolls its category list, .conn-main the form). With
+     the body scrollable the scrollbar sits on the far right of the whole
+     dialog and the category rail scrolls away with the form. */
+  overflow: hidden;
 }
 
 /* Message box (ElMessageBox.confirm/prompt) — mirror .el-dialog above so k8s
@@ -1391,7 +1419,8 @@ button:not(:disabled),
 .el-dialog__headerbtn,
 .el-message-box__headerbtn,
 .el-color-picker__trigger,
-.el-backtop {
+.el-backtop,
+.el-scrollbar__thumb {
   cursor: default !important;
 }
 
@@ -1408,4 +1437,216 @@ button:disabled,
 .el-cascader-node.is-disabled,
 .el-time-spinner__item.is-disabled {
   cursor: not-allowed !important;
+}
+
+/* ── Narrow-viewport fallbacks (phones, and desktop windows resized narrow).
+   Viewport-based, NOT platform-based: a tablet or a desktop window wider
+   than 640px keeps the desktop layout. ── */
+@media (max-width: 640px) {
+  /* EP writes the width prop as inline `--el-dialog-width`; a stylesheet
+     !important custom property overrides it without touching components. */
+  .el-dialog {
+    --el-dialog-width: calc(100vw - 1rem) !important;
+    margin: 0.5rem auto !important;
+    max-height: calc(100vh - 1rem) !important;
+  }
+  .el-message-box {
+    width: calc(100vw - 1.5rem) !important;
+    max-width: calc(100vw - 1.5rem) !important;
+  }
+  /* Defensive for future EP drawer usage — the app currently renders no
+     el-drawers (its drawers are custom .detail-drawer divs). Horizontal
+     drawers get inline width from EP; vertical ones would be unaffected. */
+  .el-drawer {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  /* ConnectionForm: left category rail becomes a horizontal scroller on top,
+     and the fixed 5.625rem label column collapses to auto so labels stop
+     being truncated. Scoped to .conn-dialog; other dialogs are plain forms.
+     The .el-dialog prefix bumps specificity past App.vue's scoped styles so
+     the rules stay order-independent. */
+  .el-dialog.conn-dialog .conn-layout {
+    flex-direction: column;
+    /* As a flex item of .el-dialog__body its automatic minimum size resolves
+       to min-content, which nowrap descendants (e.g. the Auth Type radio
+       group) push to ~485px — stretching the whole form and putting a
+       horizontal scrollbar on the dialog body. min-width: 0 lets it shrink
+       to the viewport; children clip/scroll instead (verified in-device). */
+    min-width: 0;
+  }
+  .el-dialog.conn-dialog .conn-categories {
+    flex-direction: row;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    overflow-x: auto;
+    /* Center the tiles when they fit; `safe` falls back to start alignment
+       once they overflow, so the leftmost items stay reachable by scroll. */
+    justify-content: safe center;
+  }
+  /* Form rows inside dialogs stack label-over-control on narrow viewports
+     (mirrors SettingsTab's narrow card stacking). The global .el-form-item
+     rule forces a flex row with centered items; switch to column so the
+     fixed-width label stops squeezing fields. Covers el-dialogs, message
+     boxes and the app's hand-rolled .detail-drawer divs. */
+  .el-dialog .el-form-item,
+  .el-message-box .el-form-item,
+  .detail-drawer .el-form-item {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .el-dialog .el-form-item__label,
+  .el-message-box .el-form-item__label,
+  .detail-drawer .el-form-item__label {
+    width: auto !important;
+    text-align: left;
+    /* EP's label is itself a flex element with justify-content:flex-end for
+       right-position labels; text-align alone doesn't move flex content. */
+    justify-content: flex-start !important;
+  }
+  .conn-dialog .cat-item {
+    flex-shrink: 0;
+  }
+  /* conn-main's overflow-y:auto computes overflow-x to auto too; without
+     clipping X here the subtype row's horizontal overflow leaks to the
+     whole form. Scrolling stays scoped to the subtype row. */
+  .el-dialog.conn-dialog .conn-main {
+    overflow-x: hidden;
+  }
+  /* Sub-type tiles match the category rail: one horizontal scroller, no
+     wrapping to a second row. The scrollbar stays visible in its own row
+     (hidden scrollbars read as "the form is cut off" here). */
+  .conn-dialog .subtype-grid {
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+    /* Centered when the tiles fit; `safe` drops to start alignment on
+       overflow so scrolling can still reach the leftmost tiles. */
+    justify-content: safe center;
+    overflow-x: auto;
+  }
+  .conn-dialog .subtype-btn {
+    flex-shrink: 0;
+  }
+  /* conn-main is a flex column with overflow-y:auto; without flex-shrink:0
+     its children compress (overflow!=visible zeroes their automatic minimum
+     size) instead of the area scrolling. min-width:0/max-width:100% let the
+     fields fit the width instead of being clipped by overflow-x:hidden. */
+  .conn-dialog .conn-fields {
+    flex-shrink: 0;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .conn-dialog .conn-fields .el-form-item__content {
+    min-width: 0;
+  }
+  /* Name + group select + button flow onto a second line when tight. */
+  .conn-dialog .name-group-row {
+    flex-wrap: wrap;
+  }
+  /* Fixed-minimum grid columns (sum ≈ 20.6rem) overflow at phone widths;
+     shrink the flexible columns' minimums so the row fits. */
+  .conn-dialog .expect-row {
+    grid-template-columns: 1.625rem minmax(3rem, 1fr) minmax(3rem, 1fr) minmax(2.5rem, 4rem) minmax(1.5rem, 2.5rem) 1.875rem;
+  }
+  /* Phone mode: the connection sidebar and the AI panel float fullscreen over
+     the content (same treatment as the AI panel's own "maximized" state)
+     instead of squeezing the terminal column. :not(.collapsed) leaves closed
+     panels as the in-flow zero-width stub; width !important beats the inline
+     resize width, and the .main-content prefix out-specifies the components'
+     scoped position: relative. */
+  .main-content .sidebar:not(.collapsed),
+  .main-content .ai-sidebar:not(.collapsed) {
+    position: absolute;
+    inset: 0;
+    width: 100% !important;
+    max-width: 100%;
+    z-index: 100;
+  }
+  /* Column-resize makes no sense on a fullscreen overlay. */
+  .main-content .sidebar .resize-handle,
+  .main-content .ai-sidebar .resize-handle {
+    display: none;
+  }
+}
+
+/* ── Touch input: hover-gated controls must be always reachable. Uses
+   pointer:coarse (input modality), not platform — a touch tablet needs
+   this exactly as much as a phone, and a mouse desktop never matches. ── */
+@media (pointer: coarse) {
+  .connection-item .conn-more-btn {
+    display: flex !important;   /* Sidebar.vue + GroupTreeItem.vue hide it behind :hover */
+  }
+  .connection-item .conn-fav-btn {
+    opacity: 1 !important;      /* favorite star */
+    pointer-events: auto !important;
+  }
+  .tool-copy-btn {
+    opacity: 1 !important;      /* AIMessage.vue copy button */
+  }
+}
+
+/* ── Narrow-screen tree drawer (DB/Redis/Mongo/ES/Container/K8s panels).
+   Below 640px the fixed left tree would eat most of the viewport, so it
+   becomes a slide-in overlay; the toggle button lives at the top-left of
+   the right pane. Positioned ancestors are marked with .m-tree-host and
+   the drawer with .m-tree from each tab content component. !important
+   beats the per-component scoped styles that also target these nodes. ── */
+.m-tree-host { position: relative; }
+.m-tree-overlay {
+  position: absolute !important;
+  inset: 0;
+  z-index: 40;
+  background: var(--scrim);
+}
+.m-tree {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(70vw, 18rem) !important;
+  z-index: 41;
+  background: var(--bg-elevated) !important;
+  transform: translateX(-100%);
+  transition: transform 0.18s ease;
+  box-shadow: 0.25rem 0 0.75rem rgba(0, 0, 0, 0.3);
+}
+.m-tree-open { transform: translateX(0); }
+/* Toggle sits inline at the left edge of the right pane's tab bar (or a
+   dedicated .tree-head title bar when the panel has no tab bar). Tab bars
+   use align-items:stretch, so stretch too and drop the fixed .btn height
+   to line up flush with the tab items. */
+.m-tree-toggle {
+  flex-shrink: 0;
+  margin-right: 0.25rem;
+}
+/* Triple-class so it beats .btn-sm.btn-icon's fixed height: tab bars use
+   align-items:stretch, so stretch and line up flush with the tab items. */
+.btn.btn-sm.m-tree-toggle {
+  align-self: stretch;
+  height: auto;
+}
+/* Title bar for panels whose right side has no tab bar (Redis / Container /
+   K8s): toggle button on the left, panel title next to it. */
+.tree-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  min-width: 0;
+}
+.tree-head-title {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Compact query editors on narrow screens: less reserved editor height. */
+@media (max-width: 640px) {
+  .sql-editor-wrap { min-height: 4rem !important; }
 }

@@ -481,6 +481,9 @@ onBeforeUnmount(() => {
   padding: 0.3125rem 0.375rem;
   border-radius: var(--radius-sm);
 }
+.ov-clickable {
+  cursor: pointer;
+}
 .ov-clickable:hover {
   background: var(--bg-hover);
 }

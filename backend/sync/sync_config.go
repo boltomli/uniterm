@@ -10,10 +10,23 @@ import (
 const syncConfigFileName = "sync-config.json"
 
 type SyncConfig struct {
-	RepoURL        string    `json:"repoUrl"`
-	Branch         string    `json:"branch"`
-	Username       string    `json:"username"`
-	AutoSync       bool      `json:"autoSync"`
+	RepoURL  string `json:"repoUrl"`
+	Branch   string `json:"branch"`
+	Username string `json:"username"`
+	AutoSync bool   `json:"autoSync"`
+	// SyncScope is this device's per-file sync selection over syncableFiles.
+	// nil/empty keeps the legacy default (the original syncedFiles set).
+	SyncScope []string `json:"syncScope,omitempty"`
+	// Backend selects the sync transport: "git" (default, private git repo)
+	// or "webdav" (snapshot over a WebDAV share).
+	Backend      string `json:"backend,omitempty"`
+	WebDAVServer string `json:"webdavServer,omitempty"`
+	WebDAVPath   string `json:"webdavPath,omitempty"`
+	WebDAVUser   string `json:"webdavUser,omitempty"`
+	// LastSyncedHash is the aggregate content hash both sides agreed on at
+	// the last successful snapshot sync (three-way base for WebDAV mode).
+	LastSyncedHash string `json:"lastSyncedHash,omitempty"`
+
 	LastSyncAt     time.Time `json:"lastSyncAt"`
 	LastSyncStatus string    `json:"lastSyncStatus"`
 	LastSyncError  string    `json:"lastSyncError"`

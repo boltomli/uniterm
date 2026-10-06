@@ -288,6 +288,11 @@ func (s *WebDAVSession) Get(remotePath, localPath string, recursive bool) (strin
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -299,6 +304,12 @@ func (s *WebDAVSession) Get(remotePath, localPath string, recursive bool) (strin
 			err = s.downloadFile(task, rp, lp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -335,6 +346,11 @@ func (s *WebDAVSession) Put(localPath, remotePath string, recursive bool) (strin
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
@@ -346,6 +362,12 @@ func (s *WebDAVSession) Put(localPath, remotePath string, recursive bool) (strin
 			err = s.uploadFile(task, lp, rp)
 		}
 		if err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -353,6 +375,28 @@ func (s *WebDAVSession) Put(localPath, remotePath string, recursive bool) (strin
 		s.emitTransferComplete(task)
 	}()
 	return task.ID, nil
+}
+
+// RetryTransfer (re)starts a transfer from a frontend-held checkpoint.
+// resolveRemote is idempotent on the resolved paths the spec carries, so the
+// retry goes through Get/Put like the original request. skipCompleted is
+// ignored — the transfer restarts from scratch.
+func (s *WebDAVSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
+	if err := s.requireClient(); err != nil {
+		return "", err
+	}
+	if spec.Type == "download" {
+		return s.Get(spec.RemotePath, spec.LocalPath, spec.Recursive)
+	}
+	return s.Put(spec.LocalPath, spec.RemotePath, spec.Recursive)
+}
+
+// DismissTransfer drops a retained (failed) task from the transfers map.
+func (s *WebDAVSession) DismissTransfer(taskID string) error {
+	s.mu.Lock()
+	delete(s.transfers, taskID)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *WebDAVSession) CancelTransfer(taskID string) error {

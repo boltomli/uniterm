@@ -726,11 +726,22 @@ func (s *WSLFileSession) startLocalTransfer(tfType, local, remote string) (strin
 	go func() {
 		defer func() {
 			task.done()
+			if task.Status == "error" {
+				// Retained in s.transfers for retry; the frontend drops it
+				// via DismissTransfer.
+				return
+			}
 			s.mu.Lock()
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
 		}()
 		if err := copyPath(src, dst, task); err != nil {
+			if task.ctx.Err() != nil {
+				// cancelled mid-transfer: not a transfer error
+				task.Status = "cancelled"
+				s.emitTransferComplete(task)
+				return
+			}
 			s.emitTransferEvent(task, err)
 			return
 		}
@@ -835,6 +846,25 @@ func copyFile(src, dst string, task *TransferTask) error {
 		}
 	}
 	return out.Close()
+}
+
+// RetryTransfer (re)starts a transfer from a frontend-held checkpoint.
+// resolveLocal/resolveRemote are idempotent on the resolved paths the spec
+// carries, so the retry goes through Get/Put like the original request.
+// skipCompleted is ignored — the transfer restarts from scratch.
+func (s *WSLFileSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
+	if spec.Type == "download" {
+		return s.Get(spec.RemotePath, spec.LocalPath, spec.Recursive)
+	}
+	return s.Put(spec.LocalPath, spec.RemotePath, spec.Recursive)
+}
+
+// DismissTransfer drops a retained (failed) task from the transfers map.
+func (s *WSLFileSession) DismissTransfer(taskID string) error {
+	s.mu.Lock()
+	delete(s.transfers, taskID)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *WSLFileSession) CancelTransfer(taskID string) error {

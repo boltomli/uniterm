@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { HIGHLIGHT_RULES, matchTextSpans, type HighlightCategory } from './highlightRules'
+import { HIGHLIGHT_RULES, matchTextSpans, stitchLogicalText, splitSpansToRows, type HighlightCategory, type TextSpan } from './highlightRules'
 
 /** Match one line of plain text and flatten the spans to text+category. */
 function spans(text: string): Array<{ text: string; category: HighlightCategory }> {
@@ -156,6 +156,68 @@ describe('matchTextSpans — retained rules', () => {
   })
 })
 
+describe('matchTextSpans — network device config rules', () => {
+  it('highlights Cisco interface names as ifname', () => {
+    expect(find('interface FastEthernet0/1\n', 'FastEthernet0/1', 'ifname')).toBe(true)
+    expect(find('interface GigabitEthernet0/0/1\n', 'GigabitEthernet0/0/1', 'ifname')).toBe(true)
+    expect(find('interface TenGigabitEthernet1/0/1\n', 'TenGigabitEthernet1/0/1', 'ifname')).toBe(true)
+    expect(find('interface Port-channel1\n', 'Port-channel1', 'ifname')).toBe(true)
+  })
+
+  it('highlights Huawei interface names as ifname', () => {
+    expect(find('interface Vlanif204\n', 'Vlanif204', 'ifname')).toBe(true)
+    expect(find('interface Eth-Trunk3\n', 'Eth-Trunk3', 'ifname')).toBe(true)
+    expect(find('interface MEth0/0/1\n', 'MEth0/0/1', 'ifname')).toBe(true)
+    expect(find('interface LoopBack0\n', 'LoopBack0', 'ifname')).toBe(true)
+    expect(find('interface GE1/0/1\n', 'GE1/0/1', 'ifname')).toBe(true)
+  })
+
+  it('highlights ifnames without the interface keyword too', () => {
+    expect(find('port trunk allow-pass vlan 10 17 135 on GigabitEthernet0/0/1\n', 'GigabitEthernet0/0/1', 'ifname')).toBe(true)
+  })
+
+  it('does not highlight lookalike words as ifname', () => {
+    expect(noSpanOf('page1/2 of the report\n', 'ifname')).toBe(true)
+    expect(noSpanOf('the ethernet cable is unplugged\n', 'ifname')).toBe(true)
+    expect(noSpanOf('revisions 3vlan4 mixed\n', 'ifname')).toBe(true)
+  })
+
+  it('highlights device config keywords as keyword', () => {
+    expect(find(' switchport access vlan 135\n', 'switchport access', 'keyword')).toBe(true)
+    expect(find(' ip address 192.168.1.253 255.255.255.0\n', 'ip address', 'keyword')).toBe(true)
+    expect(find(' port link-type trunk\n', 'port link-type', 'keyword')).toBe(true)
+    expect(find(' port trunk allow-pass vlan 10 17 135\n', 'port trunk', 'keyword')).toBe(true)
+    expect(find(' dhcp server dns-list 192.168.1.12\n', 'dhcp server', 'keyword')).toBe(true)
+    expect(find(' dhcp select interface\n', 'dhcp select', 'keyword')).toBe(true)
+    expect(find(' mode lacp\n', 'mode lacp', 'keyword')).toBe(true)
+    expect(find(' vlan batch 10 20\n', 'vlan batch', 'keyword')).toBe(true)
+    expect(find(' ip route-static 0.0.0.0 0 192.168.1.1\n', 'ip route-static', 'keyword')).toBe(true)
+  })
+
+  it('highlights the interface keyword only before an interface name', () => {
+    expect(find('interface GigabitEthernet0/0/1\n', 'interface', 'keyword')).toBe(true)
+    expect(find('interface Vlanif204\n', 'interface', 'keyword')).toBe(true)
+    expect(find('interface Vlan10\n', 'interface', 'keyword')).toBe(true)
+    expect(find('interface LoopBack0\n', 'interface', 'keyword')).toBe(true)
+    // Prose and non-device contexts stay untouched.
+    expect(noSpanOf('the network interface card is fine\n', 'keyword')).toBe(true)
+    expect(noSpanOf('no such interface\n', 'keyword')).toBe(true)
+  })
+
+  it('does not highlight keyword lookalikes', () => {
+    expect(noSpanOf('switchports available\n', 'keyword')).toBe(true)
+    expect(noSpanOf('trip addresses\n', 'keyword')).toBe(true)
+  })
+
+  it('keeps IP highlighting alongside keywords', () => {
+    const line = ' ip address 192.168.1.253 255.255.255.0\n'
+    expect(find(line, 'ip address', 'keyword')).toBe(true)
+    expect(find(line, '192.168.1.253', 'host')).toBe(true)
+    // 255.x netmasks stay uncolored: the host rule intentionally restricts
+    // the first octet to 1-254 (see the keyword-rule suite above).
+  })
+})
+
 describe('matchTextSpans — span mechanics', () => {
   it('matches a run of consecutive identical brace symbols once', () => {
     const runs = spans('a **** b ===== c >>> d')
@@ -202,5 +264,92 @@ describe('matchTextSpans — span mechanics', () => {
     const result = matchTextSpans(input, HIGHLIGHT_RULES, { maxMatches: 3 })
     expect(result.spans.length).toBe(3)
     expect(result.complete).toBe(false)
+  })
+})
+
+describe('stitchLogicalText / splitSpansToRows — soft-wrap stitching', () => {
+  it('joins wrapped rows and records each row start offset', () => {
+    const { text, starts } = stitchLogicalText(['abc', 'def', 'gh'])
+    expect(text).toBe('abcdefgh')
+    expect(starts).toEqual([0, 3, 6])
+  })
+
+  it('handles empty rows and a single row', () => {
+    expect(stitchLogicalText(['']).text).toBe('')
+    const single = stitchLogicalText(['abc'])
+    expect(single).toEqual({ text: 'abc', starts: [0] })
+  })
+
+  it('clips a span crossing the row seam into two row-local spans', () => {
+    // 'bond-business' straddles the seam after 'bond-bus' (row width 8)
+    const spans: TextSpan[] = [{ start: 4, end: 17, category: 'string' }]
+    const perRow = splitSpansToRows(spans, [0, 13])
+    expect(perRow[0]).toEqual([{ start: 4, end: 13, category: 'string' }])
+    expect(perRow[1]).toEqual([{ start: 0, end: 4, category: 'string' }])
+  })
+
+  it('keeps a span inside one row untouched and distributes many spans', () => {
+    const spans: TextSpan[] = [
+      { start: 0, end: 2, category: 'datetime' },
+      { start: 3, end: 5, category: 'host' },
+      { start: 15, end: 18, category: 'string' },
+    ]
+    const perRow = splitSpansToRows(spans, [0, 10, 20])
+    expect(perRow[0]).toEqual([
+      { start: 0, end: 2, category: 'datetime' },
+      { start: 3, end: 5, category: 'host' },
+    ])
+    expect(perRow[1]).toEqual([{ start: 5, end: 8, category: 'string' }])
+    expect(perRow[2]).toEqual([])
+  })
+
+  it('splits a span reaching into the shorter last row', () => {
+    const spans: TextSpan[] = [{ start: 8, end: 15, category: 'string' }]
+    const perRow = splitSpansToRows(spans, [0, 10])
+    expect(perRow[0]).toEqual([{ start: 8, end: 10, category: 'string' }])
+    expect(perRow[1]).toEqual([{ start: 0, end: 5, category: 'string' }])
+  })
+
+  it('returns empty arrays for no spans', () => {
+    expect(splitSpansToRows([], [0, 5])).toEqual([[], []])
+  })
+})
+
+describe('matchTextSpans — string priority', () => {
+  it('quoted strings win over every later rule (host, url, datetime, brace)', () => {
+    // With the string rule first, a quoted IP/datetime/URL is one string
+    // span; later rules must not carve matches out of it.
+    const cases = [
+      ['addr "192.168.10.3" ok', '192.168.10.3'],
+      ['at 2026-05-18 09:10:36 done', '2026-05-18 09:10:36'],
+      ['see https://example.com/a?b=c end', 'https://example.com/a?b=c'],
+    ]
+    for (const [input] of cases) {
+      const result = matchTextSpans(`'${input}'`)
+      expect(result.spans.length).toBe(1)
+      expect(result.spans[0].category).toBe('string')
+    }
+  })
+})
+
+describe('matchTextSpans — quote pairing across empty strings', () => {
+  it('keeps pairing aligned when an empty string appears before a longer one', () => {
+    // Regression: `{2,}` skipped `""`, but its two quotes stayed in the scan
+    // and the next match stole the closing one — every pair after it shifted,
+    // and the long string below (holding an IP) never matched.
+    const input = '"stderr": "", "stdout": "VIP: 100.126.255.250"'
+    const result = matchTextSpans(input)
+    const bigStart = input.indexOf('"VIP')
+    const big = result.spans.find((s) => s.category === 'string' && s.start === bigStart)
+    expect(big).toBeDefined()
+    expect(input.slice(big!.start, big!.end)).toBe('"VIP: 100.126.255.250"')
+    // and the IP is string, not host
+    const ipAt = input.indexOf('100.126.255.250')
+    expect(result.spans.some((s) => s.category === 'string' && s.start <= ipAt && ipAt < s.end)).toBe(true)
+  })
+
+  it('matches an empty string as a 2-char span', () => {
+    const result = matchTextSpans('a "" b')
+    expect(result.spans.some((s) => s.category === 'string' && s.start === 2 && s.end === 4)).toBe(true)
   })
 })

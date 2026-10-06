@@ -1,6 +1,6 @@
 <template>
   <div class="settings-tab" ref="settingsTabRef" :class="{ narrow: isNarrow }">
-    <div class="settings-sidebar" :class="{ collapsed: sidebarCollapsed }">
+    <div class="settings-sidebar" :class="{ collapsed: sidebarCollapsed, 'no-anim': !sidebarAnimReady }">
       <button
         class="sidebar-collapse-btn"
         :title="t('settings.toggleSidebar')"
@@ -248,6 +248,17 @@
             </div>
             <div class="setting-control">
               <el-switch v-model="settingsStore.settings.closeAppPrompt" @change="settingsStore.save()" />
+            </div>
+          </div>
+
+          <!-- Reopen last session's tabs at startup (issue #937) -->
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.restoreTabsPrompt') }}</div>
+              <div class="setting-desc">{{ t('settings.restoreTabsPromptDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch v-model="settingsStore.settings.restoreTabsPrompt" @change="settingsStore.save()" />
             </div>
           </div>
 
@@ -571,6 +582,7 @@
               <el-select v-model="settingsStore.settings.terminal.rightClickAction" @change="settingsStore.save()">
                 <el-option :label="t('settings.rightClickMenu')" value="menu" />
                 <el-option :label="t('settings.rightClickPaste')" value="paste" />
+                <el-option :label="t('settings.selectionNone')" value="none" />
               </el-select>
             </div>
           </div>
@@ -584,6 +596,7 @@
               <el-select v-model="settingsStore.settings.terminal.middleClickAction" @change="settingsStore.save()">
                 <el-option :label="t('settings.rightClickPaste')" value="paste" />
                 <el-option :label="t('settings.rightClickMenu')" value="menu" />
+                <el-option :label="t('settings.selectionNone')" value="none" />
               </el-select>
             </div>
           </div>
@@ -740,7 +753,7 @@
         <p class="section-desc">{{ t('settings.syncDesc') }}</p>
 
         <!-- Empty state: no repo configured -->
-        <div v-if="!syncStore.config.repoUrl" class="sync-card">
+        <div v-if="!isSyncConfigured" class="sync-card">
           <div class="sync-card-header">{{ t('settings.syncRepoCard') }}</div>
           <div class="sync-card-body empty-state">
             <p class="empty-text">{{ t('settings.syncEmptyDesc') }}</p>
@@ -761,12 +774,12 @@
             <div class="sync-card-body">
               <div class="repo-info">
                 <div class="repo-info-row">
-                  <span class="repo-label">{{ t('settings.syncRepoUrl') }}</span>
-                  <span class="repo-value">{{ syncStore.config.repoUrl }}</span>
+                  <span class="repo-label">{{ syncStore.config.backend === 'webdav' ? t('addRepo.serverUrl') : t('settings.syncRepoUrl') }}</span>
+                  <span class="repo-value">{{ syncStore.config.backend === 'webdav' ? syncStore.config.webdavServer : syncStore.config.repoUrl }}</span>
                 </div>
                 <div class="repo-info-row">
                   <span class="repo-label">{{ t('settings.syncUsername') }}</span>
-                  <span class="repo-value">{{ syncStore.config.username }}</span>
+                  <span class="repo-value">{{ syncStore.config.backend === 'webdav' ? syncStore.config.webdavUser : syncStore.config.username }}</span>
                 </div>
               </div>
               <div class="repo-actions">
@@ -805,6 +818,21 @@
                 <span class="sync-auto-label">{{ t('settings.syncAuto') }}</span>
                 <span class="sync-auto-desc">{{ t('settings.syncAutoDesc') }}</span>
                 <el-switch v-model="syncStore.config.autoSync" @change="handleAutoSyncToggle" />
+              </div>
+              <div class="sync-scope-row">
+                <div class="sync-scope-header">
+                  <span class="sync-auto-label">{{ t('settings.syncScope') }}</span>
+                  <span class="scope-hint">{{ t('settings.syncScopeHint') }}</span>
+                </div>
+                <el-checkbox-group
+                  v-model="syncScopeModel"
+                  :disabled="syncStore.syncing"
+                  @change="handleScopeChange"
+                >
+                  <el-checkbox v-for="item in SYNC_FILE_ITEMS" :key="item.file" :value="item.file">
+                    {{ t(item.label) }}
+                  </el-checkbox>
+                </el-checkbox-group>
               </div>
             </div>
           </div>
@@ -1186,8 +1214,10 @@
             </div>
           </div>
         </div>
+      </div>
 
-        <!-- MCP server (external AI agents) -->
+      <!-- MCP 服务器(外部 AI agent) — 无 Android 后端,移动端隐藏 -->
+      <div v-if="settingsStore.activeCategory === 'mcp' && !isMobile" class="settings-section">
         <h2 class="section-title">{{ t('settings.mcpSection') }}</h2>
         <p class="section-desc">{{ t('settings.mcpSectionDesc') }}</p>
 
@@ -1204,7 +1234,7 @@
             </div>
           </div>
 
-          <div v-if="mcp.enabled" class="setting-card">
+          <div class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.mcpPort') }}</div>
             </div>
@@ -1213,7 +1243,7 @@
             </div>
           </div>
 
-          <div v-if="mcp.enabled" class="setting-card">
+          <div class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.mcpPolicy') }}</div>
               <div class="setting-desc">{{ t('settings.mcpPolicyDesc') }}</div>
@@ -1227,22 +1257,15 @@
               </el-select>
             </div>
           </div>
+        </div>
 
-          <div v-if="mcp.enabled" class="setting-card">
-            <div class="setting-info">
-              <div class="setting-title">{{ t('settings.mcpTools') }}</div>
-              <div class="setting-desc">{{ t('settings.mcpToolsDesc') }}</div>
-            </div>
-            <div class="setting-control">
-              <el-checkbox v-model="mcp.tools.exec" :label="t('settings.mcpToolExec')" @change="saveMcp()" />
-              <el-checkbox v-model="mcp.tools.files" :label="t('settings.mcpToolFiles')" @change="saveMcp()" />
-            </div>
-          </div>
+        <h2 class="section-title">{{ t('settings.mcpClientTokens') }}</h2>
+        <p class="section-desc">{{ t('settings.mcpTokensDesc') }}</p>
 
-          <div v-if="mcp.enabled" class="setting-card">
+        <div class="settings-group">
+          <div class="setting-card">
             <div class="setting-info">
-              <div class="setting-title">{{ t('settings.mcpTokens') }}</div>
-              <div class="setting-desc">{{ t('settings.mcpTokensDesc') }}</div>
+              <div class="setting-title">{{ t('settings.mcpGenerateToken') }}</div>
             </div>
             <div class="setting-control mcp-token-controls">
               <el-input v-model="newTokenName" :placeholder="t('settings.mcpTokenName')" style="width: 10rem" />
@@ -1255,14 +1278,11 @@
             :key="name"
             class="model-card"
           >
-            <div class="model-main">
+            <div class="model-main mcp-token-main">
               <el-icon class="mcp-token-icon"><Key :size="lucideSize('0.875rem')" /></el-icon>
               <span class="model-name">{{ name }}</span>
             </div>
             <div class="model-actions">
-              <el-button link @click="reopenSetup(name)">
-                <el-icon><Copy :size="lucideSize('0.875rem')" /></el-icon>
-              </el-button>
               <el-button link type="danger" @click="revokeToken(name)">
                 <el-icon><Trash2 :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
@@ -1434,12 +1454,12 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, reactive, watch, computed, onMounted, onUnmounted } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Copy } from '@lucide/vue'
+import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated } from 'vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Plug } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useSyncStore } from '../stores/syncStore'
+import { useSyncStore, SYNC_FILE_ITEMS } from '../stores/syncStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { useI18n, locale } from '../i18n'
@@ -1620,6 +1640,13 @@ function openEditRepo() {
   syncStore.showEditRepo = true
 }
 
+// WebDAV configure leaves repoUrl empty, so "configured" depends on backend.
+const isSyncConfigured = computed(() =>
+  syncStore.config.backend === 'webdav'
+    ? !!syncStore.config.webdavServer
+    : !!syncStore.config.repoUrl
+)
+
 async function handleSyncNow() {
   const result = await syncStore.doSync()
   if (!result) {
@@ -1637,6 +1664,38 @@ async function handleAutoSyncToggle() {
     await syncStore.saveConfig()
   } catch (e) {
     console.error('Failed to save auto sync toggle:', e)
+  }
+}
+
+// nil scope = legacy default: settings.json unchecked, everything else checked.
+const LEGACY_SCOPE = SYNC_FILE_ITEMS.filter(i => i.file !== 'settings.json').map(i => i.file)
+
+const syncScopeModel = computed<string[]>({
+  get: () => syncStore.config.syncScope ?? LEGACY_SCOPE,
+  set: (v) => { syncStore.config.syncScope = v },
+})
+
+// An empty selection would persist as [] which the backend resolves back to
+// the legacy default — the UI would show nothing syncing while the device
+// syncs all legacy files. Keep the last non-empty selection instead.
+const lastValidScope = ref<string[]>([...syncScopeModel.value])
+// Track the store reactively: loadConfig (and any future store reset) replaces
+// config.value asynchronously after setup, so a one-time snapshot could go stale.
+watch(() => syncStore.config.syncScope, (v) => {
+  if (v && v.length) lastValidScope.value = [...v]
+})
+
+async function handleScopeChange(v: string[]) {
+  if (v.length === 0) {
+    syncStore.config.syncScope = [...lastValidScope.value]
+    msg.warning(t('settings.syncScopeEmpty'))
+    return
+  }
+  lastValidScope.value = [...v]
+  try {
+    await syncStore.saveConfig()
+  } catch (e) {
+    console.error('Failed to save sync scope:', e)
   }
 }
 
@@ -1683,7 +1742,16 @@ function openThemeEditor(sourceThemeId?: string) {
 // where the expanded layout stops fitting; the button toggles it manually
 // and the auto rule re-applies whenever the window crosses the threshold.
 const settingsTabRef = ref<HTMLElement | null>(null)
-const sidebarCollapsed = ref(false)
+// Estimate the collapse decision from the window width so the very first
+// paint is already correct — the element itself is not measurable before
+// mount, and a post-mount correction is what reads as a "slide-in".
+const sidebarCollapsed = ref(
+  window.innerWidth < 42 * parseFloat(getComputedStyle(document.documentElement).fontSize)
+)
+// Suppress the width transition until the first post-mount correction has
+// landed, covering the case where the estimate above was off (docked
+// sidebars make the tab narrower than the window).
+const sidebarAnimReady = ref(false)
 // Below the same threshold the side-by-side setting cards (info + fixed-width
 // control) cannot fit either, so the panel stacks them vertically.
 const isNarrow = ref(false)
@@ -1701,6 +1769,9 @@ let sidebarResizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   updateSidebarCollapse()
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => sidebarAnimReady.value = true)
+  })
   if (settingsTabRef.value) {
     sidebarResizeObserver = new ResizeObserver(updateSidebarCollapse)
     sidebarResizeObserver.observe(settingsTabRef.value)
@@ -1712,12 +1783,25 @@ onUnmounted(() => {
   sidebarResizeObserver = null
 })
 
+// The tab lives inside <KeepAlive>: re-opening it re-attaches the DOM, which
+// fires the ResizeObserver and can flip the collapsed decision while the
+// width transition is already enabled. Re-suppress the transition across
+// each re-activation so the correction lands instantly, without sliding.
+onActivated(() => {
+  sidebarAnimReady.value = false
+  updateSidebarCollapse()
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => sidebarAnimReady.value = true)
+  })
+})
+
 // ── MCP server (external AI agents) ─────────────────────────────
-// Settings round-trip through settingsStore.settings.mcp (Go struct
-// AppSettings.MCP); tokens live in mcp.json via the app bindings.
-// Token creation opens the setup wizard dialog (token + per-client
-// onboarding snippets) instead of expanding blocks inline.
-const mcp = reactive({ ...DEFAULT_MCP_SETTINGS, tools: { ...DEFAULT_MCP_SETTINGS.tools } })
+// Config round-trips through localStateStore.state.mcp (Go struct
+// store.LocalState.MCP) — per device, never synced; tokens live in
+// mcp.json via the app bindings. Token creation opens the setup wizard
+// dialog (token + per-client onboarding snippets) instead of expanding
+// blocks inline.
+const mcp = reactive({ ...DEFAULT_MCP_SETTINGS })
 const mcpPort = ref(DEFAULT_MCP_SETTINGS.port || 61207)
 const mcpStatus = ref<MCPStatus>({ running: false, port: 0 })
 const mcpTokens = ref<string[]>([])
@@ -1726,10 +1810,9 @@ const mcpTokenCreated = ref('')
 const mcpSetupVisible = ref(false)
 
 // Mirror persisted settings into the reactive form once loaded.
-watch(() => settingsStore.settings.mcp, (v) => {
+watch(() => localStateStore.state.mcp, (v) => {
   if (v) {
     Object.assign(mcp, v)
-    mcp.tools = { ...v.tools }
     mcpPort.value = v.port || 61207
   }
 }, { immediate: true })
@@ -1740,13 +1823,13 @@ async function refreshMcpState() {
 }
 
 async function saveMcp() {
-  settingsStore.settings.mcp = {
-    enabled: mcp.enabled,
-    port: mcpPort.value,
-    policy: mcp.policy,
-    tools: { ...mcp.tools },
-  }
-  await settingsStore.save()
+  await localStateStore.update({
+    mcp: {
+      enabled: mcp.enabled,
+      port: mcpPort.value,
+      policy: mcp.policy,
+    },
+  })
   refreshMcpState()
 }
 
@@ -1766,21 +1849,20 @@ async function generateToken() {
 
 // A token's plaintext exists only until the setup dialog closes; the wizard
 // cannot be reopened for an old token (hash-only storage) — regenerate it.
-function reopenSetup(name: string) {
-  newTokenName.value = name
-  ElMessageBox.confirm(
-    t('mcp.regenerateHint', { name }),
-    t('settings.mcpTokens'),
-    { confirmButtonText: t('mcp.regenerate'), cancelButtonText: t('common.cancel'), type: 'warning' },
-  ).then(() => generateToken()).catch(() => {})
-}
-
 function onMcpSetupClose() {
   mcpSetupVisible.value = false
   mcpTokenCreated.value = ''
 }
 
 async function revokeToken(name: string) {
+  try {
+    await ElMessageBox.confirm(
+      t('settings.mcpRevokeConfirm', { name }),
+      t('settings.mcpRevoke')
+    )
+  } catch {
+    return // user cancelled
+  }
   try {
     await RevokeMCPToken(name)
     if (mcpTokens.value.length === 1 && mcpTokens.value[0] === name) mcpTokenCreated.value = ''
@@ -2285,6 +2367,7 @@ const categories = computed(() => {
     // rebinding UI is desktop-only and hidden from the category list there.
     ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard }] : []),
     { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore },
+    { key: 'mcp', label: t('settings.mcp'), icon: Plug },
     { key: 'skills', label: t('settings.skillsAndCommands'), icon: Wrench },
     { key: 'identities', label: t('settings.identities'), icon: Key },
     { key: 'proxies', label: t('settings.proxies'), icon: Network },
@@ -2638,6 +2721,12 @@ async function onToggleSystemTitleBar(v: boolean) {
 }
 
 /* Collapsed: icons only, centered */
+.settings-sidebar.no-anim,
+.settings-sidebar.no-anim .settings-category,
+.settings-sidebar.no-anim .sidebar-collapse-btn {
+  transition: none;
+}
+
 .settings-sidebar.collapsed {
   width: 3.5rem;
   margin-left: 0.625rem;
@@ -2742,7 +2831,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 0.875rem 1.125rem;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   transition: all 0.12s ease;
   backdrop-filter: blur(0.5rem);
 }
@@ -2893,6 +2982,13 @@ async function onToggleSystemTitleBar(v: boolean) {
   color: var(--text-muted);
 }
 
+/* Token cards reuse .model-main (column layout for AI models); force the
+   icon and name onto one row. */
+.mcp-token-main {
+  flex-direction: row;
+  align-items: center;
+}
+
 .about-content {
   text-align: left;
   padding: 1.25rem 0;
@@ -2944,7 +3040,7 @@ async function onToggleSystemTitleBar(v: boolean) {
 .section-desc {
   font-size: 0.8125rem;
   color: var(--text-secondary);
-  margin: 0;
+  margin: 0.75rem 0;
   line-height: 1.5;
 }
 
@@ -3098,6 +3194,7 @@ async function onToggleSystemTitleBar(v: boolean) {
   align-items: center;
   gap: 0.625rem;
   padding-top: 0.875rem;
+  padding-bottom: 0.875rem;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -3111,6 +3208,33 @@ async function onToggleSystemTitleBar(v: boolean) {
   font-size: 0.75rem;
   color: var(--text-muted);
   flex: 1;
+}
+
+.sync-scope-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sync-scope-row :deep(.el-checkbox-group) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.sync-scope-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.scope-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .model-fetch-row {

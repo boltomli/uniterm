@@ -140,9 +140,6 @@ func newTestServerWithPolicy(t *testing.T, policy Policy) (url, token string) {
 		Connect: func(id string) (string, error) { return "s-new", nil },
 		Approve: func(req ApprovalRequest) error { return nil },
 		Audit:   func(entry AuditEntry) {},
-		ToolsEnabled: func() ToolGroups {
-			return ToolGroups{Discovery: true, Exec: true}
-		},
 		Policy: func() Policy { return policy },
 	}
 	srv := NewServer(env)
@@ -251,7 +248,7 @@ func TestDeniedApprovalBlocksExec(t *testing.T) {
 		Sessions:     func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
 		ListSessions: func() []SessionSummary { return []SessionSummary{{ID: "s1", Type: "ssh", Status: "connected"}} },
 		Approve:      func(req ApprovalRequest) error { return fmt.Errorf("denied by user: no") },
-		ToolsEnabled: func() ToolGroups { return ToolGroups{Discovery: true, Exec: true} },
+		Audit: func(entry AuditEntry) {},
 		Policy:       func() Policy { return PolicyConfirmAll },
 	}
 	srv := NewServer(env)
@@ -344,7 +341,6 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 		ListSessions: func() []SessionSummary { return []SessionSummary{{ID: "s1", Type: "ssh", Status: "connected"}} },
 		Approve:      func(req ApprovalRequest) error { return nil },
 		Audit:        func(entry AuditEntry) {},
-		ToolsEnabled: func() ToolGroups { return ToolGroups{Discovery: true, Exec: true, Files: true} },
 		Policy:       func() Policy { return PolicyConfirmAll },
 		ResolveLocalPath: func(p string) (string, error) {
 			return session.ResolveMcpLocalPath(p, []string{inside})

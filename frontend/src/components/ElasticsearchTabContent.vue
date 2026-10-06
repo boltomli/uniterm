@@ -1,8 +1,14 @@
 <template>
   <div class="es-tab-content">
-    <div class="es-main">
+    <div class="es-main" :class="{ 'm-tree-host': isNarrowScreen }">
       <!-- Left: index tree -->
-      <div class="es-left" :style="{ width: leftWidth + 'px' }">
+      <div v-if="isNarrowScreen && treeOpen" class="m-tree-overlay" @click="treeOpen = false" />
+      <div
+        v-show="isNarrowScreen || treeOpen"
+        class="es-left"
+        :class="{ 'm-tree': isNarrowScreen, 'm-tree-open': isNarrowScreen && treeOpen }"
+        :style="isNarrowScreen ? {} : { width: leftWidth + 'px' }"
+      >
         <div class="search-wrap">
           <input v-model="treeSearchQuery" class="search-input" :placeholder="t('es.searchIndices')" />
           <button class="btn btn-ghost btn-icon btn-sm" :title="t('es.refresh')" @click="loadIndices">
@@ -51,11 +57,18 @@
         </div>
       </div>
 
-      <div class="es-resizer" @mousedown="onResizeStart" />
+      <div v-if="!isNarrowScreen && treeOpen" class="es-resizer" @mousedown="onResizeStart" />
 
       <!-- Right content -->
       <div class="es-right">
         <div class="es-tab-bar">
+          <button
+            class="btn btn-ghost btn-icon btn-sm m-tree-toggle"
+            :title="treeOpen ? t('common.collapse') : t('common.expand')"
+            @click="treeOpen = !treeOpen"
+          >
+            <PanelLeft :size="lucideSize('0.875rem')" />
+          </button>
           <div ref="tabScrollRef" class="es-tab-scroll" @wheel="onTabsWheel">
             <template v-for="(tab, index) in tabs" :key="tab.id">
               <div
@@ -294,7 +307,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { RefreshCw, Layers, MoreHorizontal, ChevronRight, ChevronDown, Database, Plus, Trash2 } from '@lucide/vue'
+import { RefreshCw, Layers, MoreHorizontal, ChevronRight, ChevronDown, Database, Plus, Trash2, PanelLeft } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
@@ -320,6 +334,13 @@ const props = defineProps<{ sessionId: string }>()
 const { t } = useI18n()
 
 const leftWidth = ref(220)
+
+// Narrow screens turn the index tree into an overlay drawer (closed by
+// default); wide screens keep it inline and the toggle collapses it.
+const treeOpen = ref(!isNarrowScreen.value)
+function closeTree() {
+  if (isNarrowScreen.value) treeOpen.value = false
+}
 const treeLoading = ref(false)
 const treeSearchQuery = ref('')
 const hideSystemIndices = ref(true)
@@ -422,6 +443,7 @@ function tabTitle(tab: EsTab): string {
 }
 
 function openIndexTab(name: string) {
+  closeTree()
   const existing = tabs.value.find(x => x.kind === 'index' && x.indexName === name)
   if (existing) {
     activeTabId.value = existing.id
@@ -433,6 +455,7 @@ function openIndexTab(name: string) {
 }
 
 function openClusterTab() {
+  closeTree()
   const existing = tabs.value.find(x => x.kind === 'cluster')
   if (existing) {
     activeTabId.value = existing.id
@@ -902,12 +925,26 @@ function onResizeStart(e: MouseEvent) {
   text-align: center;
 }
 .es-resizer {
+  /* Hover area floats over the tree edge (negative margin) so it takes
+     no layout width when idle and never blanks the content side. */
   width: 0.25rem;
+  margin-left: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
 }
-.es-resizer:hover { background: var(--border-subtle); }
+.es-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
+}
 
 .es-right {
   flex: 1;

@@ -536,13 +536,18 @@ defineExpose({ open })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  /* Narrow windows: the opts row drops the action buttons onto a clean
+     second line (right-aligned via margin-left:auto below) instead of
+     squeezing/overflowing them. */
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
   width: 100%;
 }
 .editor-buttons {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  margin-left: auto;
 }
 /* el-button adds a default 0.75rem left margin between siblings; drop it so the
    buttons sit at the flex gap instead of 0.5rem+0.75rem. */
@@ -552,7 +557,12 @@ defineExpose({ open })
 .editor-opts {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  /* Shrinkable: selectors wrap among themselves before the action buttons
+     are pushed off the footer's first line. */
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.5rem 0.75rem;
 }
 /* Encoding menu trigger, styled to sit next to the el-selects like a select. */
 .editor-encoding-btn {

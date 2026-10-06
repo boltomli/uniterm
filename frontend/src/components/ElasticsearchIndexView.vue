@@ -15,15 +15,23 @@
 
     <!-- Documents -->
     <div v-if="activeSubTab === 'docs'" class="docs-section">
-      <div class="editor-top" :style="{ height: topHeight + 'px' }">
+      <div class="editor-top" :style="editorCollapsed ? {} : { height: topHeight + 'px' }">
         <div class="editor-toolbar">
           <el-radio-group v-model="queryMode" size="small">
             <el-radio-button value="simple">{{ t('es.querySimple') }}</el-radio-button>
             <el-radio-button value="dsl">{{ t('es.queryDsl') }}</el-radio-button>
           </el-radio-group>
           <button class="btn btn-primary btn-sm search-btn" title="Ctrl+Enter" @click="runSearch">{{ t('es.search') }}</button>
+          <button
+            class="btn btn-ghost btn-icon btn-sm editor-collapse-btn"
+            :title="editorCollapsed ? t('common.expand') : t('common.collapse')"
+            @click="editorCollapsed = !editorCollapsed"
+          >
+            <ChevronDown v-if="editorCollapsed" :size="lucideSize('0.875rem')" />
+            <ChevronUp v-else :size="lucideSize('0.875rem')" />
+          </button>
         </div>
-        <div v-if="queryMode === 'simple'" class="simple-query-wrap">
+        <div v-if="queryMode === 'simple' && !editorCollapsed" class="simple-query-wrap">
           <input
             v-model="simpleQuery"
             class="search-input"
@@ -31,7 +39,7 @@
             @keydown.enter="runSearch"
           />
         </div>
-        <div v-else class="query-editor-wrap">
+        <div v-else-if="!editorCollapsed" class="query-editor-wrap">
           <SyntaxEditor
             v-model="dslBody"
             lang="json"
@@ -41,7 +49,7 @@
         </div>
       </div>
 
-      <div class="editor-resizer" @mousedown="onTopResizeStart" />
+      <div v-show="!editorCollapsed" class="editor-resizer" @mousedown="onTopResizeStart" />
 
       <div class="editor-bottom">
         <div v-if="queryError" class="error-msg">{{ queryError }}</div>
@@ -163,7 +171,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted } from 'vue'
-import { Pencil, Trash2, Plus } from '@lucide/vue'
+import { Pencil, Trash2, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
+import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -188,7 +197,11 @@ const props = defineProps<{
   indexName: string
 }>()
 
-const topHeight = ref(200)
+// Collapsed shows only the toolbar so the result grid gets the height; on
+// narrow screens (phone or small window) start collapsed. All platforms
+// get the toggle button.
+const editorCollapsed = ref(isNarrowScreen.value)
+const topHeight = ref(isNarrowScreen.value ? 140 : 200)
 const activeSubTab = ref<'docs' | 'mapping' | 'settings'>('docs')
 
 const queryMode = ref<'simple' | 'dsl'>('simple')
@@ -511,11 +524,26 @@ function onTopResizeStart(e: MouseEvent) {
 }
 .result-filter:focus { border-color: var(--accent); }
 .editor-resizer {
+  /* Hover accent floats over the editor's bottom edge (negative margin)
+     so it takes no layout height when idle - matches the tree resizers. */
   height: 0.25rem;
+  margin-top: -0.25rem;
+  position: relative;
+  z-index: 1;
   cursor: row-resize;
+  background: transparent;
   flex-shrink: 0;
 }
-.editor-resizer:hover { background: var(--border-subtle); }
+.editor-resizer:hover::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0.1875rem;
+  background: var(--accent);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
+}
 .editor-bottom {
   flex: 1;
   min-height: 0;

@@ -108,6 +108,7 @@ func (s *TelnetSession) Connect(config ConnectionConfig) error {
 		}
 	}
 
+	s.startEmitLoop()
 	go s.readLoop(ctx)
 	go s.runPostLoginScript(ctx, config.PostLoginScript)
 

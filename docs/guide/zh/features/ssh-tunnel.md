@@ -62,6 +62,6 @@ SSH 隧道在侧边栏独立标签页中管理，也可在「设置 → 隧道�
 
 ::: tip 相关内容
 - [远程终端](/zh/connections/remote-terminal) —— SSH 连接配置
-- [标签和工作区](/zh/features/workspace) —— 侧边栏标签页管理
+- [工作区](/zh/connections/workspace) —— 侧边栏标签页管理
 - [服务器监控](/zh/connections/server-monitor) —— 通过 SSH 实时监控服务器
 :::

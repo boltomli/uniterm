@@ -168,6 +168,16 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		rdp.SetOnFullScreenExit(func() {
 			a.emit("rdp:fullscreen-exit", s.ID())
 		})
+		// Adaptive resize lifecycle: the frontend freezes the last frame over
+		// .rdp-area ("start", snapshot included) and restores the live window
+		// afterwards ("end"), so the disconnect/reconnect cycle doesn't flash.
+		rdp.SetOnAdaptiveEvent(func(event, snapshot string) {
+			a.emit("rdp:adaptive", map[string]interface{}{
+				"id":       s.ID(),
+				"event":    event,
+				"snapshot": snapshot,
+			})
+		})
 	}
 
 	s.SetOnDataCallback(func(data []byte) {

@@ -314,7 +314,13 @@ async function onRemoteListError(err: string): Promise<boolean> {
   }
   try {
     const newId = await reconnectFileTransferPanel(props.panelId)
-    if (newId) onRefreshRemote()
+    if (newId) {
+      // A fresh session starts at the root; re-navigate to the directory the
+      // pane was in instead of dumping the user back at the top (SMB mounts
+      // share + subpath in one change-dir step, so this restores the spot).
+      const prev = cwd.value || '/'
+      await onRemoteNavigate(prev)
+    }
     else msg.error(t('tab.reconnectFailed'))
   } catch (e: any) {
     msg.error(`${t('tab.reconnectFailed')}: ${e?.message || String(e)}`)

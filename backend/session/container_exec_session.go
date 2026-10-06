@@ -30,6 +30,7 @@ func NewContainerExecSession(id string, pty ExecPTY) *ContainerExecSession {
 		baseSession: baseSession{id: id, sessionType: "container-exec", status: StatusConnected},
 		pty:         pty,
 	}
+	s.startEmitLoop()
 	go s.readLoop()
 	return s
 }

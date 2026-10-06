@@ -14,6 +14,7 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useZmodemStore } from '../stores/zmodemStore'
+import { queuedSessionWrite } from './sessionWriter'
 import type { CustomTerminalTheme } from '../types/settings'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { installImeCompatibilityPatch } from '../utils/xtermImeCompatibility'
@@ -101,18 +102,25 @@ interface TerminalMirror {
   lineOffset: number
   trimDispose: { dispose(): void } | null
   resizeDispose: { dispose(): void } | null
+  /** Inactive-window device-query responder (responder handoff). */
+  replyDispose: { dispose(): void } | null
   unsub: () => void
 }
 
 const mirrors = new Map<string, TerminalMirror>()
 
 function createMirror(sessionId: string, options: TerminalOptions, source: Terminal): TerminalMirror {
-  // SINGLE-RESPONDER RULE: this mirror must never bind an onData handler (or
-  // otherwise feed back into SessionWrite). It parses the same output stream
-  // as the visible terminal, so any device query (DA, CPR/ESC[6n, DSR…) would
-  // make xterm generate a SECOND reply — the "stray CSI response" class that
-  // corrupts remote apps. The visible terminal's reply is the only one the
-  // remote should ever receive.
+  // RESPONDER HANDOFF (refined single-responder rule): exactly one parser may
+  // answer device queries (DA, CPR/ESC[6n, DSR…). While the visible panel is
+  // ACTIVE, that is the visible terminal — this mirror must stay silent, or a
+  // second reply corrupts remote apps. While the panel is INACTIVE its buffer
+  // freezes and its onData handlers are unbound, so a query would never be
+  // answered: the remote's read times out, and the stale reply the visible
+  // terminal emits during the reactivation gap replay leaks into the shell —
+  // the "0R" artifact after switching back to a background-opened SSH tab.
+  // During that window the mirror is the stream's only parser, so it takes
+  // over answering (queuedSessionWrite feeds the reply straight to the PTY);
+  // the visible terminal suppresses its own stale replies during the replay.
   const terminal = new Terminal({
     // Unicode11Addon needs the proposed API (unicode.activeVersion), same as
     // the visible terminal's constructor.
@@ -131,6 +139,7 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
     lineOffset: 0,
     trimDispose: null,
     resizeDispose: null,
+    replyDispose: null,
     unsub: () => {},
   }
   // Mirror grid must match the PTY size the visible terminal negotiated:
@@ -163,6 +172,14 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
     } catch { /* pinia not installed yet */ }
     mirror.terminal.write(payload.data)
   })
+  // Inactive-window responder (see the handoff comment above): the activity
+  // check runs at reply-generation time, so a query answered just as the
+  // panel reactivates falls back to the visible terminal — worst case the
+  // remote's read falls back on its own timeout, same as before the handoff.
+  mirror.replyDispose = terminal.onData((data) => {
+    if (isTerminalActive(sessionId)) return
+    if (data) queuedSessionWrite(sessionId, data)
+  })
   return mirror
 }
 
@@ -173,6 +190,7 @@ function disposeMirror(sessionId: string): void {
   mirror.unsub()
   mirror.trimDispose?.dispose()
   mirror.resizeDispose?.dispose()
+  mirror.replyDispose?.dispose()
   mirror.terminal.dispose()
 }
 

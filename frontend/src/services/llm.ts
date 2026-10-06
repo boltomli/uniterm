@@ -124,10 +124,14 @@ export async function chat(options: ChatOptions): Promise<void> {
 
   // Dispatch text and tool_use blocks.
   let finalText = ''
+  let finalThinking = ''
   for (const block of rawContent) {
     switch (block.type) {
       case 'text':
         finalText += block.text || ''
+        break
+      case 'thinking':
+        finalThinking += block.thinking || ''
         break
       case 'tool_use':
         options.onToolUse?.({
@@ -138,6 +142,9 @@ export async function chat(options: ChatOptions): Promise<void> {
         break
     }
   }
+  // Thinking/reasoning text collected from the final payload (fallback when
+  // the live ai:thinking stream events were missed); consumed by agent.ts.
+  ;(options as any)._thinkingText = finalThinking
   const textOut = finalText || streamedText
   if (textOut) {
     options.onChunk?.(textOut)

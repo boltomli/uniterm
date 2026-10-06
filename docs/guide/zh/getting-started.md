@@ -28,6 +28,17 @@
   ./uniterm
   ```
 
+### Android
+
+- 下载 `uniterm-android-arm64-<版本>.apk`，在手机上直接安装
+
+### 运行依赖
+
+- **Windows**：WebView2 运行时（Windows 10+ 已内置，更老的系统需安装）
+- **macOS**：无需额外依赖（使用系统自带 WebKit）
+- **Linux**：`libgtk-3-0` 与 `libwebkit2gtk-4.1-0`（多数桌面发行版已自带）
+- **Android**：Android 5.0+（使用系统自带 WebView，无需额外依赖）
+
 
 ## 创建第一个连接
 

@@ -1,6 +1,6 @@
 # Cloud Sync
 
-Encrypted synchronization of uniTerm settings through your own private Git repository — no centralized server required, and your data security is fully under your control.
+Supports **dual-mode cloud sync over Git or WebDAV** with encrypted synchronization of uniTerm settings: the Git mode uses your own private repository (GitHub / GitLab / Gitee), while the WebDAV mode works with any standard WebDAV service. Your data security stays fully under your control.
 
 ![Cloud Sync](/imgs/cloud_sync_light.webp)
 
@@ -34,12 +34,20 @@ Encrypted synchronization of uniTerm settings through your own private Git repos
 - Check **user_info** and **projects** permissions
 - Copy the token after generation (it is shown only once)
 
+#### WebDAV
+
+The WebDAV mode needs no repository — just prepare a WebDAV service:
+
+- **Server URL**: works with WebDAV-capable clouds (Nextcloud, Jianguoyun, InfiniCloud, ...) or a self-hosted service; the URL must include protocol and port
+- **Account**: the username and password (app password) of that service
+
 ### 2. Configure uniTerm
 
-1. Open Settings → Cloud Sync and click "Add Repository"
-2. Enter the repository URL, username (optional), and access token
-3. Set a **master password** (used to encrypt data; it is not uploaded to the repository)
+1. Open Settings → Cloud Sync and click "Add Repository", choosing **Git** or **WebDAV** as the sync source
+2. Git: enter the repository URL, username (optional), and access token; WebDAV: enter the server URL (with protocol and port), username, and password
+3. Set a **master password** (used to encrypt data; it is not uploaded to the repository or cloud drive)
 4. Click OK, and uniTerm will automatically complete the initial synchronization
+5. Tick the data to sync under "Sync Scope" as needed
 
 ::: warning Note
 - Keep your token and master password safe. The token is shown only once

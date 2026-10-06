@@ -13,21 +13,15 @@ export interface MCPStatus {
   port: number
 }
 
-export interface MCPTools {
-  exec: boolean
-  terminal: boolean
-  files: boolean
-}
-
+// Mirrors Go store.MCPSettings — lives in local_state.json (per device),
+// never in synced settings.
 export interface MCPSettings {
   enabled: boolean
   port?: number
   policy?: string
-  tools: MCPTools
 }
 
 export const DEFAULT_MCP_SETTINGS: MCPSettings = {
   enabled: false,
   policy: 'confirm_all',
-  tools: { exec: true, terminal: false, files: false },
 }

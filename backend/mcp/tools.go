@@ -10,9 +10,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// registerTools installs the four tool groups on the SDK server. Group
-// membership is decided per call from Env.ToolsEnabled so toggling a group
-// in settings takes effect without a restart.
+// registerTools installs the four tool groups on the SDK server. All groups
+// are always available; side effects are governed by the approval policy
+// (gateExec) and every call is audited.
 func (s *Server) registerTools(srv *mcp.Server) {
 	// ── Discovery group ─────────────────────────────────────────────
 	mcp.AddTool(srv, &mcp.Tool{
@@ -109,9 +109,6 @@ type interruptOut struct{}
 // ── Handlers ─────────────────────────────────────────────────────
 
 func (s *Server) toolListConnections(ctx context.Context, req *mcp.CallToolRequest, _ listConnectionsIn) (*mcp.CallToolResult, listConnectionsOut, error) {
-	if !s.env.ToolsEnabled().Discovery {
-		return nil, listConnectionsOut{}, fmt.Errorf("discovery tools are disabled in uniTerm settings")
-	}
 	conns := s.env.ListConnections()
 	if conns == nil {
 		conns = []ConnectionSummary{}
@@ -121,9 +118,6 @@ func (s *Server) toolListConnections(ctx context.Context, req *mcp.CallToolReque
 }
 
 func (s *Server) toolListSessions(ctx context.Context, req *mcp.CallToolRequest, _ listSessionsIn) (*mcp.CallToolResult, listSessionsOut, error) {
-	if !s.env.ToolsEnabled().Discovery {
-		return nil, listSessionsOut{}, fmt.Errorf("discovery tools are disabled in uniTerm settings")
-	}
 	sessions := s.env.ListSessions()
 	if sessions == nil {
 		sessions = []SessionSummary{}
@@ -133,9 +127,6 @@ func (s *Server) toolListSessions(ctx context.Context, req *mcp.CallToolRequest,
 }
 
 func (s *Server) toolConnect(ctx context.Context, req *mcp.CallToolRequest, in connectIn) (*mcp.CallToolResult, connectOut, error) {
-	if !s.env.ToolsEnabled().Exec {
-		return nil, connectOut{}, fmt.Errorf("exec tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.ConnectionID) == "" {
 		return nil, connectOut{}, fmt.Errorf("connectionId is required")
 	}
@@ -152,9 +143,6 @@ func (s *Server) toolConnect(ctx context.Context, req *mcp.CallToolRequest, in c
 }
 
 func (s *Server) toolExecCommand(ctx context.Context, req *mcp.CallToolRequest, in execIn) (*mcp.CallToolResult, execOut, error) {
-	if !s.env.ToolsEnabled().Exec {
-		return nil, execOut{}, fmt.Errorf("exec tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.SessionID) == "" {
 		return nil, execOut{}, fmt.Errorf("sessionId is required")
 	}
@@ -204,9 +192,6 @@ func (s *Server) toolExecCommand(ctx context.Context, req *mcp.CallToolRequest, 
 }
 
 func (s *Server) toolGetCommandOutput(ctx context.Context, req *mcp.CallToolRequest, in getOutputIn) (*mcp.CallToolResult, getOutputOut, error) {
-	if !s.env.ToolsEnabled().Exec {
-		return nil, getOutputOut{}, fmt.Errorf("exec tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.CommandID) == "" {
 		return nil, getOutputOut{}, fmt.Errorf("commandId is required")
 	}
@@ -230,9 +215,6 @@ func (s *Server) toolGetCommandOutput(ctx context.Context, req *mcp.CallToolRequ
 }
 
 func (s *Server) toolInterruptCommand(ctx context.Context, req *mcp.CallToolRequest, in interruptIn) (*mcp.CallToolResult, interruptOut, error) {
-	if !s.env.ToolsEnabled().Exec {
-		return nil, interruptOut{}, fmt.Errorf("exec tools are disabled in uniTerm settings")
-	}
 	if strings.TrimSpace(in.CommandID) == "" {
 		return nil, interruptOut{}, fmt.Errorf("commandId is required")
 	}

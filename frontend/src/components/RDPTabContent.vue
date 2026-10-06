@@ -63,6 +63,9 @@ const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('conne
 const currentSessionId = ref<string | null>(props.sessionId)
 const errorMessage = ref<string>('')
 const statusResolution = computed(() => {
+  if (props.config?.rdpFixedWidth === -2) {
+    return t('rdp.adaptive')
+  }
   if (props.config?.rdpFixedWidth === -1 || props.config?.rdpFixedHeight === -1) {
     return t('rdp.fullscreen')
   }

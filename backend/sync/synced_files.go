@@ -24,3 +24,35 @@ var syncedFiles = []string{
 	"identities.json",
 	"proxies.json",
 }
+
+// settingsJSON is the device-leaning settings file (theme, shells, paths,
+// keybindings, SFTP bookmarks). It is syncable but opt-in: the scope picker
+// persists an explicit list once the user touches it, and a nil scope keeps
+// the legacy syncedFiles default so upgrading devices see no behavior change.
+const settingsJSON = "settings.json"
+
+// syncableFiles is the full menu offered by the sync-scope picker: the
+// always-on legacy set plus the opt-in settings.json.
+var syncableFiles = append(append([]string{}, syncedFiles...), settingsJSON)
+
+// EffectiveSyncFiles resolves the user's scope against syncableFiles.
+// A nil/empty scope returns a copy of the legacy syncedFiles set.
+// Unknown names are dropped so a stale scope list from an older or newer
+// build can never smuggle an unintended file into the repo.
+func EffectiveSyncFiles(scope []string) []string {
+	if len(scope) == 0 {
+		return append([]string{}, syncedFiles...)
+	}
+	valid := make(map[string]bool, len(syncableFiles))
+	for _, name := range syncableFiles {
+		valid[name] = true
+	}
+	out := make([]string, 0, len(scope))
+	for _, name := range scope {
+		if valid[name] {
+			delete(valid, name)
+			out = append(out, name)
+		}
+	}
+	return out
+}

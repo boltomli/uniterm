@@ -75,6 +75,7 @@ func (s *TCPSession) Connect(config ConnectionConfig) error {
 	s.conn = conn
 	s.setStatus(StatusConnected)
 
+	s.startEmitLoop()
 	go s.readLoop()
 	return nil
 }

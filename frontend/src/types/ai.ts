@@ -28,6 +28,9 @@ export interface AIMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   content: string
+  thinking?: string   // reasoning/thinking text streamed by the model (collapsible in UI)
+  createdAt?: number           // epoch ms when the message was created
+  thinkingDurationMs?: number  // how long the model's thinking lasted (assistant)
   _rawApiMsg?: Record<string, unknown>  // exact message from API, passed back verbatim
   _contextHeader?: string  // dynamic context prepended in API requests but hidden in UI
   tool_calls?: ToolCall[]

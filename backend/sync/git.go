@@ -107,8 +107,16 @@ func initEmpty(repoPath, repoURL string) (*GitRepo, error) {
 	return &GitRepo{repo: repo, repoPath: repoPath}, nil
 }
 
-// StageAndCommit stages all files and creates a commit. Returns true if committed.
+// StageAndCommit stages the legacy syncedFiles whitelist plus repo metadata.
+// Returns true if committed.
 func (g *GitRepo) StageAndCommit(msg string) (bool, error) {
+	return g.StageAndCommitFiles(msg, syncedFiles)
+}
+
+// StageAndCommitFiles stages exactly files plus ".sync-salt"/"README.md".
+// Whitelisting keeps stray files (e.g. an SSH key) out of the repo (SYNC-P1-9).
+// files must come from EffectiveSyncFiles; arbitrary lists weaken the SYNC-P1-9 stray-file whitelist.
+func (g *GitRepo) StageAndCommitFiles(msg string, files []string) (bool, error) {
 	wt, err := g.repo.Worktree()
 	if err != nil {
 		return false, fmt.Errorf("worktree: %w", err)
@@ -126,7 +134,7 @@ func (g *GitRepo) StageAndCommit(msg string) (bool, error) {
 	// synced_files.go) plus repo metadata, so stray files dropped in
 	// the sync repo (e.g. an SSH key) are NOT committed plaintext
 	// (SYNC-P1-9).
-	commitWhitelist := append(syncedFiles[:len(syncedFiles):len(syncedFiles)], ".sync-salt", "README.md")
+	commitWhitelist := append(files[:len(files):len(files)], ".sync-salt", "README.md")
 	for _, name := range commitWhitelist {
 		if _, err := os.Stat(filepath.Join(g.repoPath, name)); err != nil {
 			continue
@@ -155,6 +163,141 @@ func (g *GitRepo) Push(username, token string) error {
 		return nil
 	}
 	return err
+}
+
+// depthScanCap bounds the CommitDepth walk so a large existing repo is not
+// traversed fully on every sync — anything at or beyond the cap triggers
+// compaction anyway.
+const depthScanCap = 60
+
+// CommitDepth counts commits along first-parent from HEAD. The clone is
+// single-branch, so HEAD is always the sync branch. An unborn HEAD (no
+// commits yet) counts as 0. The result is capped at depthScanCap.
+func (g *GitRepo) CommitDepth() (int, error) {
+	head, err := g.repo.Head()
+	if err != nil {
+		if err == plumbing.ErrReferenceNotFound {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("head: %w", err)
+	}
+	depth := 0
+	h := head.Hash()
+	for depth < depthScanCap {
+		commit, err := g.repo.CommitObject(h)
+		if err != nil {
+			return depth, fmt.Errorf("commit %s: %w", h, err)
+		}
+		depth++
+		parents := commit.ParentHashes
+		if len(parents) == 0 {
+			break
+		}
+		h = parents[0] // first-parent only
+	}
+	return depth, nil
+}
+
+// RewriteHistory rebuilds the branch history keeping only the most recent
+// keep commits, cutting everything older. Each rebuilt commit preserves the
+// original tree, author, committer, message and timestamps; the new root
+// has no parent. When the existing depth is within keep, the rebuild
+// reproduces byte-identical commit objects (same hashes) and is a no-op.
+//
+// Rebuilt hashes differ from the originals once history is actually cut, so
+// other devices lose their merge base against the rewritten chain — Sync
+// must treat a nil merge base explicitly. Only the local branch is
+// repointed; call PushForce to publish the rewritten chain. The remote
+// tracking ref (refs/remotes/origin/...) is NOT updated — it stays stale
+// until the next fetch or a re-clone, which is what the compaction caller
+// does. Merge commits inside the kept window lose their second parent, so
+// even a depth ≤ keep rebuild is only byte-identical for linear history.
+func (g *GitRepo) RewriteHistory(keep int) error {
+	if keep < 1 {
+		return fmt.Errorf("keep must be >= 1, got %d", keep)
+	}
+	head, err := g.repo.Head()
+	if err != nil {
+		return fmt.Errorf("head: %w", err)
+	}
+
+	type snapshot struct {
+		tree      plumbing.Hash
+		author    object.Signature
+		committer object.Signature
+		message   string
+	}
+	var chain []snapshot
+	h := head.Hash()
+	for len(chain) < keep {
+		commit, err := g.repo.CommitObject(h)
+		if err != nil {
+			return fmt.Errorf("commit %s: %w", h, err)
+		}
+		chain = append(chain, snapshot{
+			tree:      commit.TreeHash,
+			author:    commit.Author,
+			committer: commit.Committer,
+			message:   commit.Message,
+		})
+		parents := commit.ParentHashes
+		if len(parents) == 0 {
+			break
+		}
+		h = parents[0] // first-parent only
+	}
+
+	// Rebuild oldest → newest. The last object written is the new head.
+	newHead := head.Hash()
+	for i := len(chain) - 1; i >= 0; i-- {
+		c := chain[i]
+		var parents []plumbing.Hash
+		if i < len(chain)-1 {
+			parents = []plumbing.Hash{newHead}
+		}
+		nc := &object.Commit{
+			TreeHash:     c.tree,
+			Author:       c.author,
+			Committer:    c.committer,
+			Message:      c.message,
+			ParentHashes: parents,
+		}
+		obj := g.repo.Storer.NewEncodedObject()
+		if err := nc.Encode(obj); err != nil {
+			return fmt.Errorf("encode commit: %w", err)
+		}
+		newHead, err = g.repo.Storer.SetEncodedObject(obj)
+		if err != nil {
+			return fmt.Errorf("store commit: %w", err)
+		}
+	}
+
+	// Repoint the branch at the new head; HEAD is symbolic and follows.
+	return g.repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), newHead))
+}
+
+// PushForce force-pushes HEAD to its upstream, replacing remote history.
+// Other devices lose their merge base against the new head — Sync handles
+// that explicitly (nil merge base → direct content comparison).
+func (g *GitRepo) PushForce(username, token string) error {
+	err := g.repo.Push(&git.PushOptions{Auth: buildAuth(username, token), Force: true})
+	if errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return nil
+	}
+	return err
+}
+
+// HeadRef returns the resolved HEAD branch reference (name and hash), so
+// callers can remember the pre-mutation head and restore it if a later
+// step fails.
+func (g *GitRepo) HeadRef() (*plumbing.Reference, error) {
+	return g.repo.Head()
+}
+
+// RestoreHead repoints the branch reference at hash — the rollback for a
+// history rewrite whose force-push failed.
+func (g *GitRepo) RestoreHead(refName plumbing.ReferenceName, hash plumbing.Hash) error {
+	return g.repo.Storer.SetReference(plumbing.NewHashReference(refName, hash))
 }
 
 func (g *GitRepo) Pull(username, token string) error {
@@ -270,10 +413,17 @@ func (g *GitRepo) CommitTime(h plumbing.Hash) (time.Time, error) {
 	return commit.Committer.When, nil
 }
 
-// ExtractCommitFiles writes the synced config files as committed at hash
+// ExtractCommitFiles writes the legacy syncedFiles set as committed at hash
 // into destDir. The extracted files are still encrypted — the caller
 // decrypts them. Files absent from that commit's tree are skipped.
 func (g *GitRepo) ExtractCommitFiles(hash plumbing.Hash, destDir string) error {
+	return g.ExtractCommitFilesIn(hash, syncedFiles, destDir)
+}
+
+// ExtractCommitFilesIn writes exactly files as committed at hash into destDir
+// (still encrypted). Files absent from the tree are skipped.
+// files must come from EffectiveSyncFiles.
+func (g *GitRepo) ExtractCommitFilesIn(hash plumbing.Hash, files []string, destDir string) error {
 	commit, err := g.repo.CommitObject(hash)
 	if err != nil {
 		return fmt.Errorf("commit %s: %w", hash, err)
@@ -285,7 +435,7 @@ func (g *GitRepo) ExtractCommitFiles(hash plumbing.Hash, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
-	for _, name := range syncedFiles {
+	for _, name := range files {
 		file, err := tree.File(name)
 		if err != nil {
 			// Not present in this commit (e.g. the merge base predates

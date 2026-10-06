@@ -83,8 +83,6 @@ type Env struct {
 	Approve func(req ApprovalRequest) error
 	// Audit appends one JSONL entry.
 	Audit func(entry AuditEntry)
-	// ToolsEnabled mirrors the per-group toggles from settings.
-	ToolsEnabled func() ToolGroups
 	// Policy returns the active approval policy.
 	Policy func() Policy
 	// ResolveToken resolves a token hash to its client name, re-reading
@@ -141,14 +139,6 @@ type FileExecutor interface {
 	MCPReadFile(remotePath string, offset int64, max int) (data []byte, truncated bool, err error)
 	MCPWriteFile(localPath, remotePath string) (bytes int64, err error)
 	MCPReadRemoteToFile(remotePath, localPath string) (bytes int64, err error)
-}
-
-// ToolGroups are the per-group tool toggles.
-type ToolGroups struct {
-	Discovery bool
-	Exec      bool
-	Terminal  bool
-	Files     bool
 }
 
 // Policy is the approval policy for exec calls.

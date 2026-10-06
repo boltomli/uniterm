@@ -604,6 +604,7 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		s.Disconnect()
 	}()
 
+	s.startEmitLoop()
 	go s.readLoop()
 	go s.readStderr()
 	go s.startKeepAlive()

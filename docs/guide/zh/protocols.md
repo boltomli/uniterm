@@ -39,7 +39,6 @@ uniTerm 支持 30+ 种连接协议，覆盖远程终端、远程桌面、文件�
 | WebDAV | 80 / 443 | 基于 HTTP 的文件管理 |
 | S3 | 自定义 | 兼容 S3 API 的对象存储 |
 | Zmodem | -（SSH 终端内） | SSH 终端内 `rz`/`sz` 传输，支持默认下载目录 |
-| WSL 文件 | //wsl.localhost | 浏览与管理 Windows WSL 发行版文件 |
 
 ## 服务器监控
 

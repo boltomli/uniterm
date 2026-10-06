@@ -12,7 +12,7 @@
 <br>
 
 <a href="https://github.com/ys-ll/uniterm/releases/latest"><img src="https://img.shields.io/github/v/release/ys-ll/uniterm" alt="GitHub release" /></a>
-<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" /></a>
+<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue" alt="Platform" /></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/github/stars/ys-ll/uniterm?style=social" alt="GitHub stars" /></a>
 <a href="https://gitee.com/ys-l/uniterm"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fys-l%2Funiterm&query=%24.stargazers_count&label=Stars&style=social&logo=gitee" alt="Gitee stars" /></a>
@@ -55,9 +55,8 @@
 - **自主多轮执行** — AI Agent 能够自主规划、执行、观察结果并迭代，在多轮 Shell 命令中无需人工干预即可完成复杂操作。
 - **大模型集成** — 侧边栏对话，兼容 Anthropic / OpenAI 协议，支持 Claude、GPT 及其他兼容模型。
 - **灵活的执行模式** — 提供免确认、仅高危确认、写操作确认、全部确认四种模式，自主权由你掌控。
-- **对话持久化** — 会话聊天记录按标签页保存，重新打开应用后历史记录仍然保留。
 - **终端智能协作** — AI 命令直接在当前终端标签页中执行，支持固定到指定标签页或跟随当前激活终端。分屏中人与 AI 各司其职，同屏协作互不干扰。
-- **智能补全** — SSH 终端输入时，根据历史命令和 AI 能力实时提供命令补全建议。
+- **MCP Server** — 内置 MCP 服务器，Claude Code、Codex、Gemini CLI 等外部 AI Agent 可安全地在已保存的连接上执行命令、传输文件，凭据不出应用。
 - **技能与命令** — 可复用的 Skill 工作流与 Prompt 命令模板，输入 `/` 即可挂载触发，AI 也可自行沉淀新技能。
 
 ### 个性化能力
@@ -66,9 +65,9 @@
 
 - **连接管理器** — 分组管理服务器连接，快速搜索、一键新建连接，支持批量操作。
 - **自由分屏** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
-- **云端同步** — 基于 GitHub、GitLab、Gitee 去中心化个人私有仓库加密自动同步配置，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
+- **云端同步** — 支持私有 Git 仓库/WebDAV 双模式云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
 - **自定义快捷键** — 自由绑定各项操作的键盘快捷键，实现全键盘操作，双手不离键盘。
-- **主题** — 28 款终端主题、3 款界面主题（暗色 / 深蓝 / 浅色）、自定义背景图片。
+- **主题** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片。
 - **国际化** — 支持简中、繁中、英、日、韩、德、西、法、俄等 9 种语言界面。
 
 ## 支持的协议
@@ -154,8 +153,9 @@ Oracle Database 支持基于纯 Go 驱动实现。uniTerm 不随安装包分发 
 前往 [GitHub Releases](https://github.com/ys-ll/uniterm/releases) 或 [Gitee Releases](https://gitee.com/ys-l/uniterm/releases) 下载最新版本：
 
 - **Windows** (amd64 / arm64): 安装包 `uniterm-windows-*-installer-*.exe`，或便携版 `uniterm-windows-*-portable-*.zip`
-- **macOS** (Intel / Apple Silicon): 下载 `uniterm-darwin-*-*.dmg`
+- **macOS** (Apple Silicon arm64 / Intel amd64): 下载 `uniterm-darwin-*-*.dmg`
 - **Linux** (amd64 / arm64): 下载 `uniterm-linux-*-*.tar.gz`、`.deb` 或 `.rpm`
+- **Android** (arm64): 下载 `uniterm-android-arm64-*.apk`
 
 > **关于 Windows 杀软误报**：由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
 
@@ -182,6 +182,7 @@ sudo rpm -i uniterm.rpm
 - **Windows**: WebView2 运行时（Windows 10+ 已内置，更老的系统需安装）
 - **macOS**: 无需额外依赖（使用系统自带 WebKit）
 - **Linux**: `libgtk-3-0` 与 `libwebkit2gtk-4.1-0`（多数桌面发行版已自带）
+- **Android**: Android 5.0+（使用系统自带 WebView，无需额外依赖）
 
 ## 使用流程
 
@@ -215,7 +216,12 @@ sudo rpm -i uniterm.rpm
 
 ## 从源码构建
 
-需要 [Go](https://go.dev/dl/) 1.26+、[Node.js](https://nodejs.org/) 20+ 和 [wails3 CLI](https://wails.io/docs/) v3.0.0-beta.12（安装：`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.12`）。此外，macOS 需 Xcode Command Line Tools，Linux 需 `libgtk-3-dev` 与 `libwebkit2gtk-4.1-dev`。
+- [Go](https://go.dev/dl/) 1.26+
+- [Node.js](https://nodejs.org/) 20+
+- [wails3 CLI](https://wails.io/docs/) v3.0.0-beta.27（安装：`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.27`）
+- macOS 需 Xcode Command Line Tools
+- Linux 需 `libgtk-3-dev` 与 `libwebkit2gtk-4.1-dev`
+- Android 构建另需 JDK 21 与 Android SDK/NDK（`sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"`）
 
 ```bash
 git clone https://github.com/ys-ll/uniterm.git
@@ -291,6 +297,7 @@ uniTerm/
 - [@feuvan](https://github.com/feuvan)
 - [@zhangsir1211](https://github.com/zhangsir1211)
 - [@sonnartliao](https://github.com/sonnartliao)
+- [@Teejer](https://github.com/Teejer)
 
 ## 开源协议
 

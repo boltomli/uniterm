@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterTerminalInput } from './terminalInputFilter'
+import { filterTerminalInput, stripDeviceReplies } from './terminalInputFilter'
 
 describe('filterTerminalInput()', () => {
   it('preserves primary and secondary Device Attributes responses', () => {
@@ -31,5 +31,27 @@ describe('filterTerminalInput()', () => {
 
   it('preserves ordinary keyboard input around filtered responses', () => {
     expect(filterTerminalInput('hello\x1b[I world', false)).toBe('hello world')
+  })
+})
+
+describe('stripDeviceReplies()', () => {
+  it('drops the CPR reply a stale ESC[6n query re-parses during gap replay', () => {
+    expect(stripDeviceReplies('\x1b[24;80R')).toBe('')
+    expect(stripDeviceReplies('\x1b[1;1R')).toBe('')
+  })
+
+  it('drops DSR and DA reports too', () => {
+    expect(stripDeviceReplies('\x1b[0n')).toBe('')
+    expect(stripDeviceReplies('\x1b[?1;2c')).toBe('')
+    expect(stripDeviceReplies('\x1b[>0;276;0c')).toBe('')
+  })
+
+  it('keeps ordinary keystrokes untouched', () => {
+    expect(stripDeviceReplies('ls -la\r')).toBe('ls -la\r')
+    expect(stripDeviceReplies('\x1b[A\x1b[B')).toBe('\x1b[A\x1b[B')
+  })
+
+  it('keeps the non-report remainder of mixed input', () => {
+    expect(stripDeviceReplies('\x1b[24;80Rls')).toBe('ls')
   })
 })

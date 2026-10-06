@@ -7,6 +7,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { SessionResize } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { queuedSessionWrite } from '../services/sessionWriter'
+import { writeClipboard } from './useClipboardWrite'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -653,7 +654,10 @@ export function useTerminal(
       if (settingsStore.settings.terminal.selectionAction === 'copy') {
         const text = terminal?.getSelection()
         if (text && text !== selectionStartText) {
-          navigator.clipboard.writeText(text)
+          // writeClipboard, not navigator.clipboard directly — the browser path
+          // alone never reaches the system clipboard on Android (see
+          // useClipboardWrite.ts), and the platform ordering lives there.
+          writeClipboard(text)
         }
       }
     }

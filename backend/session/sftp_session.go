@@ -399,6 +399,32 @@ func (t *TransferTask) start() {
 	t.pauseCh = make(chan struct{})
 }
 
+// calcLocalDirSize recursively sums up all file sizes under a local directory.
+func calcLocalDirSize(localDir string) (int64, error) {
+	var total int64
+	entries, err := os.ReadDir(localDir)
+	if err != nil {
+		return 0, err
+	}
+	for _, entry := range entries {
+		lp := filepath.Join(localDir, entry.Name())
+		if entry.IsDir() {
+			subSize, err := calcLocalDirSize(lp)
+			if err != nil {
+				return 0, err
+			}
+			total += subSize
+		} else {
+			fi, err := entry.Info()
+			if err != nil {
+				return 0, err
+			}
+			total += fi.Size()
+		}
+	}
+	return total, nil
+}
+
 func (t *TransferTask) done() {
 	if t.cancel != nil {
 		t.cancel()

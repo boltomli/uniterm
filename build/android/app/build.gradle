@@ -14,8 +14,10 @@ android {
         applicationId "com.wails.app"
         minSdk 21
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        // App version comes from the build chain (Taskfile passes -P
+        // properties derived from the release tag); dev builds keep 1.0.
+        versionCode project.findProperty("appVersionCode")?.toInteger() ?: 1
+        versionName project.findProperty("appVersionName") ?: "1.0"
 
         // Configure supported ABIs
         ndk {
