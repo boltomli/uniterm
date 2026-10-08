@@ -143,6 +143,14 @@ export const useSettingsStore = defineStore('settings', () => {
     setLocale(settings.value.language)
   }
 
+  async function refreshAvailableShells() {
+    try {
+      availableShells.value = await GetAvailableShells()
+    } catch {
+      availableShells.value = []
+    }
+  }
+
   async function save() {
     try {
       await SaveSettings(settings.value)
@@ -310,6 +318,7 @@ export const useSettingsStore = defineStore('settings', () => {
     settings,
     loaded,
     availableShells,
+    refreshAvailableShells,
     theme,
     resolvedAppTheme,
     language,
@@ -370,6 +379,7 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     sftpTransferPanelVisible: loaded.sftpTransferPanelVisible ?? DEFAULT_SETTINGS.sftpTransferPanelVisible,
     customTerminalThemes: loaded.customTerminalThemes || [],
     defaultLocalShell: loaded.defaultLocalShell ?? DEFAULT_SETTINGS.defaultLocalShell,
+    gitBashPath: loaded.gitBashPath ?? DEFAULT_SETTINGS.gitBashPath,
     tabCloseButton: loaded.tabCloseButton || DEFAULT_SETTINGS.tabCloseButton,
     showTabShortcutHints: loaded.showTabShortcutHints ?? DEFAULT_SETTINGS.showTabShortcutHints,
     hostListMenuStyle: loaded.hostListMenuStyle || DEFAULT_SETTINGS.hostListMenuStyle,

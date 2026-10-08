@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed, reactive, watch } from 'vue'
-import type { AIMessage, ExecutionMode, AISession, AIAgentStatus } from '../types/ai'
+import type { AIAttachment, AIMessage, ExecutionMode, AISession, AIAgentStatus } from '../types/ai'
 import { SaveAISessions, LoadAISessions } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { buildUserContent, redactAttachmentsForLog } from '../services/attachments'
 import { useLocalStateStore } from './localStateStore'
 import { isMobilePlatform } from '../utils/platform'
 import { t } from '../i18n'
@@ -138,6 +139,9 @@ async function loadSessionsFromBackend(): Promise<{ sessions: AISession[], curre
         tool_call_id: m.tool_call_id,
         tool_calls: m.tool_calls || [],
         pendingTools: m.pendingTools || [],
+        // Sessions written before attachments existed simply lack the field;
+        // defaulting to undefined keeps those messages working unchanged.
+        attachments: Array.isArray(m.attachments) && m.attachments.length ? m.attachments : undefined,
         _rawApiMsg: m._rawApiMsg ? JSON.parse(m._rawApiMsg) : undefined,
       }))
     }))
@@ -186,21 +190,23 @@ export const useAIStore = defineStore('ai', () => {
     multiSelect: boolean
   } | null>(null)
   const lastPanelContext = ref<{ panelId: string; shellPath: string } | null>(null)
-  const queuedMessages = ref<{ id: string; content: string; skillName?: string; skillBody?: string; commandBody?: string }[]>([])
+  const queuedMessages = ref<{ id: string; content: string; skillName?: string; skillBody?: string; commandBody?: string; attachments?: AIAttachment[] }[]>([])
 
   function setLastPanelContext(panelId: string, shellPath: string) {
     lastPanelContext.value = { panelId, shellPath }
   }
 
-  function enqueueMessage(content: string, skillName?: string, skillBody?: string, commandBody?: string) {
+  function enqueueMessage(content: string, skillName?: string, skillBody?: string, commandBody?: string, attachments?: AIAttachment[]) {
     const trimmed = content.trim()
-    if (!trimmed && !commandBody && !skillName) return
+    const hasAttachments = !!attachments?.length
+    if (!trimmed && !commandBody && !skillName && !hasAttachments) return
     queuedMessages.value.push({
       id: `q-${Date.now()}-${queuedMessages.value.length}`,
       content: trimmed,
       skillName,
       skillBody,
       commandBody,
+      attachments: hasAttachments ? attachments : undefined,
     })
   }
 
@@ -227,8 +233,10 @@ export const useAIStore = defineStore('ai', () => {
 
   function setDebugInfo(request: unknown, error: string) {
     try {
+      // Attachment bytes are stripped before the request is dumped: the debug
+      // panel must never hold a multi-megabyte base64 image.
       lastDebugInfo.value = {
-        request: JSON.stringify(request, null, 2),
+        request: JSON.stringify(redactAttachmentsForLog(request), null, 2),
         error
       }
     } catch {
@@ -398,6 +406,7 @@ export const useAIStore = defineStore('ai', () => {
             tool_call_id: m.tool_call_id || '',
             tool_calls: m.tool_calls || [],
             pendingTools: m.pendingTools || [],
+            attachments: m.attachments?.length ? m.attachments : undefined,
             _rawApiMsg: m._rawApiMsg ? JSON.stringify(m._rawApiMsg) : '',
           }))
         })),
@@ -574,7 +583,8 @@ export const useAIStore = defineStore('ai', () => {
       // skill/command cards are UI-only markers; never send them to the API
       if ((m.skillName || m.commandName) && !m.content) continue
       // restored/legacy empty user messages produce invalid empty text blocks
-      if (m.role === 'user' && !m.content && !m._contextHeader) continue
+      // (a message carrying attachments is valid even with no text)
+      if (m.role === 'user' && !m.content && !m._contextHeader && !m.attachments?.length) continue
 
       // Tool messages: ones with tool_call_id are real tool_results for the API;
       // ones without are display-only system errors and must not be sent.
@@ -634,9 +644,12 @@ export const useAIStore = defineStore('ai', () => {
       if (m.role === 'assistant' && !m.content && !(m.pendingTools?.length || pendingCommand.value?.messageId === m.id)) continue
 
       // Inject dynamic context header into user messages for the API
-      // (hidden from UI, stored in _contextHeader)
-      if (m.role === 'user' && m._contextHeader) {
-        result.push({ role: m.role, content: m._contextHeader + '\n\n' + m.content })
+      // (hidden from UI, stored in _contextHeader). Attachments turn the
+      // message into an ordered content-block array; without them the payload
+      // stays exactly what it was before attachments existed.
+      if (m.role === 'user') {
+        const text = m._contextHeader ? `${m._contextHeader}\n\n${m.content}` : m.content
+        result.push({ role: m.role, content: buildUserContent(text, m.attachments) })
       } else {
         result.push({ role: m.role || 'user', content: m.content })
       }

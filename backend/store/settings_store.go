@@ -197,6 +197,10 @@ type AppSettings struct {
 	SftpTransferPanelVisible *bool                 `json:"sftpTransferPanelVisible,omitempty"`
 	CustomTerminalThemes     []CustomTerminalTheme `json:"customTerminalThemes"`
 	DefaultLocalShell        string                `json:"defaultLocalShell"`
+	// GitBashPath is an optional user-supplied Git for Windows location (the
+	// install directory or bash.exe itself, e.g. a scoop install). Resolved on
+	// Windows when listing the available local shells.
+	GitBashPath string `json:"gitBashPath,omitempty"`
 	TabCloseButton           string                `json:"tabCloseButton"`
 	// ShowTabShortcutHints toggles the per-tab numeric shortcut hint
 	// (e.g. Ctrl+1) on the tab itself. Pointer + omitempty so settings.json

@@ -32,6 +32,16 @@
 | 21 | `background_image.webp` | — | Terminal background image showcase |
 | 22 | `x11_forward.webp` | `x11_forward_light.webp` | X11 forwarding — remote Linux GUI app displayed locally |
 | 23 | `x11_desktop.webp` | `x11_desktop_light.webp` | X11 desktop — full Linux desktop environment over SSH |
+| 24 | `ai_generate_sql.webp` | `ai_generate_sql_light.webp` | AI natural-language to SQL generation in database browser |
+| 25 | `elasticsearch.webp` | `elasticsearch_light.webp` | Elasticsearch index browser / query |
+| 26 | `identities.webp` | `identities_light.webp` | Identity (credentials) management |
+| 27 | `mcp_server.webp` | `mcp_server_light.webp` | MCP server configuration for external AI agents |
+| 28 | `monitor.webp` | `monitor_light.webp` | System monitor panel |
+| 29 | `proxies.webp` | `proxies_light.webp` | Proxy management |
+| 30 | `settings.webp` | `settings_light.webp` | General settings page |
+| 31 | `sidebar_connection.webp` | `sidebar_connection_light.webp` | Sidebar — connection list |
+| 32 | `sidebar_file.webp` | `sidebar_file_light.webp` | Sidebar — SFTP file panel |
+| 33 | `sidebar_monitor.webp` | `sidebar_monitor_light.webp` | Sidebar — monitoring panel |
 
 ## Static assets
 

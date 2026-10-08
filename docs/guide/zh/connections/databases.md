@@ -62,6 +62,8 @@ uniTerm 内置数据库客户端，支持主流关系型数据库、Redis、Mong
 - **导出结果** — 查询结果可导出为 CSV / TXT / JSON
 - **筛选与分页** — 结果工具栏可实时筛选；数据浏览模式支持分页（每页 100 / 200 / 500）
 
+![AI 生成 SQL](/imgs/ai_generate_sql_light.webp)
+
 ### 运行 SQL 文件
 
 库名右键「运行 SQL 文件」可选择 `.sql` 脚本批量执行：成功时提示执行条数与累计影响行数；失败时提示出错的行号、错误详情与失败语句。
@@ -165,6 +167,8 @@ MongoDB 提供文档数据库浏览、查询和行内文档编辑功能。
 ## Elasticsearch
 
 Elasticsearch 提供集群、索引与文档的浏览和管理功能。
+
+![Elasticsearch](/imgs/elasticsearch_light.webp)
 
 ### 集群浏览
 

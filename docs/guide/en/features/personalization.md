@@ -4,6 +4,8 @@ uniTerm provides rich personalization options to make the terminal fit your work
 
 ## Application Settings
 
+![Application Settings](/imgs/settings_light.webp)
+
 ### Interface Theme
 
 | Theme | Description |

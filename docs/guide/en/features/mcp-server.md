@@ -33,6 +33,8 @@ Settings (`⌘,`) → **MCP Server**:
 
 All tools are available by default; side effects are governed entirely by the approval policy.
 
+![MCP Server Settings](/imgs/mcp_server_light.webp)
+
 ### 2. Generate a token and connect a client
 
 1. Enter a recognizable token name (e.g. `claude-code`) → click "Generate token"

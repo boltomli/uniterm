@@ -29,7 +29,9 @@ export function getShellLabel(path: string, emptyFallback = ''): string {
   if (lower.includes('bash')) {
     // Git for Windows lives under a `git` path segment (Program Files, scoop,
     // chocolatey), Cygwin under `cygwin*`, MSYS2 under `msys*`.
-    if (/[\\/]git[\\/]/i.test(path)) return 'Git Bash'
+    // Scoop installs are tagged so they stay distinguishable from a system-wide
+    // Git for Windows listed next to them.
+    if (/[\\/]git[\\/]/i.test(path)) return /[\\/]scoop[\\/]/i.test(path) ? 'Git Bash (Scoop)' : 'Git Bash'
     // The chocolatey shim directory carries no `git` segment, but its
     // bash.exe comes from the git package.
     if (lower.includes('chocolatey')) return 'Git Bash'

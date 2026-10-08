@@ -123,6 +123,10 @@ func parsePrivateKeyFile(path, passphrase string) (ssh.Signer, bool) {
 // parsePrivateKey parses a private key from raw bytes, using passphrase when
 // the key is encrypted. Returns (nil, false) on any error.
 func parsePrivateKey(key []byte, passphrase string) (ssh.Signer, bool) {
+	if isPPK(key) {
+		signer, err := parsePPK(key, passphrase)
+		return signer, err == nil
+	}
 	if passphrase != "" {
 		signer, err := ssh.ParsePrivateKeyWithPassphrase(key, []byte(passphrase))
 		if err != nil {

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="build/appicon.png" alt="uniTerm" width="128" height="128" />
   <h1>uniTerm</h1>
-  <p>A lightweight all-in-one terminal with 30+ protocols — SSH, RDP, SFTP, databases, Kubernetes and more<br>With a built-in autonomous AI Agent that plans and runs multi-turn shell commands</p>
+  <p>All-in-one terminal covering 30+ protocols — SSH, RDP, SFTP, databases, Kubernetes and more<br>With a built-in AI Agent that runs multi-turn shell commands autonomously</p>
   <p><a href="https://uniterm.net">🌐 Homepage</a> &nbsp;|&nbsp; <a href="https://uniterm.net/guide/en/introduction">📖 User Guide</a> &nbsp;|&nbsp; <a href="https://github.com/ys-ll/uniterm">💻 GitHub</a> &nbsp;|&nbsp; <a href="https://gitee.com/ys-l/uniterm">💻 Gitee</a></p>
 </div>
 
@@ -44,31 +44,30 @@ Remote terminal, local & serial terminal, file transfer, remote desktop, databas
 - **Local & Serial Terminal** — PowerShell / CMD / Git Bash / WSL plus serial connections with configurable baud rate, data bits, stop bits, parity, and local echo.
 - **File Transfer** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem with dual-pane browsing and `rz`/`sz` support in SSH terminals.
 - **Remote Desktop** — RDP (Windows Remote Desktop), VNC (Linux remote control), SPICE (KVM/QEMU VMs), X11 (X Window forwarding)
-- **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch.
-- **Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC
+- **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch, with AI-powered natural-language queries and data-row editing.
+- **Kubernetes & Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, with cluster resource & image management, Pod logs and exec terminals, and CPU/memory metrics.
 - **Server Monitor** — Real-time CPU, memory, disk, network, processes, ports, and network interfaces.
 
-### AI Assistant
+### AI Agent
 
 Autonomous AI Agent that independently plans and executes multi-turn shell commands directly in your terminal.
 
-- **Autonomous Multi-Turn Execution** — The AI Agent can plan, execute, observe results, and iterate across multiple rounds of shell commands without manual intervention.
-- **LLM Integration** — Sidebar chat with Anthropic/OpenAI-compatible API, supporting Claude, GPT and other compliant models.
+- **Autonomous AI Agent** — The AI Agent can plan, execute, observe results, and iterate across multiple rounds of shell commands without manual intervention; sidebar chat with Anthropic/OpenAI-compatible API, supporting Claude, GPT and other compliant models.
 - **Flexible Execution Modes** — Bypass, dangerous only, dangerous + write, or confirm all — you control how much oversight the AI Agent needs.
 - **Terminal Integration** — AI commands execute directly in the active terminal tab, with optional pinning to a specific tab or following your active one. Collaborate side-by-side in split panes, each with its own terminal context.
 - **MCP Server** — Built-in MCP server that lets external AI agents (Claude Code, Codex, Gemini CLI, ...) run commands and transfer files on saved connections — credentials never leave the app.
 - **Skills & Commands** — Reusable skill workflows and prompt-template commands, attached with `/` in the AI input; the AI can also save new skills itself.
+- **Smart Completion** — Real-time completion while typing, based on command history and AI capabilities.
 
 ### Personalization
 
-Connection management, split panes, cloud sync, themes — your terminal, your way.
+Connection management, split panes, cloud sync, themes & i18n — your terminal, your way.
 
 - **Connection Manager** — Group, quickly search, create, and batch-operate server connections.
-- **Split Panes** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
+- **Workspace** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
 - **Cloud Sync** — Dual-mode cloud sync via private Git repository or WebDAV — no worry about data loss or leaks, and pick up your work seamlessly across devices.
 - **Custom Keybindings** — Freely bind keyboard shortcuts for every action for full keyboard-driven operation, hands never leaving the keyboard.
-- **Themes** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image.
-- **Internationalization** — 9-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian.
+- **Themes & Internationalization** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image; 9-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian.
 
 ## Supported Protocols
 
@@ -192,7 +191,7 @@ sudo rpm -i uniterm.rpm
 2. Fill in host, port, and authentication (password or private key)
 3. Click **Connect** to open an SSH terminal session
 
-### AI Assistant
+### AI Agent
 
 1. Go to Settings and configure your **AI provider** (API endpoint, model, and key)
 2. Open a terminal tab (SSH or local)
@@ -298,6 +297,9 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@zhangsir1211](https://github.com/zhangsir1211)
 - [@sonnartliao](https://github.com/sonnartliao)
 - [@Teejer](https://github.com/Teejer)
+- [@IBRAHIMELAMRABET](https://github.com/IBRAHIMELAMRABET)
+- [@chris-edstrom](https://github.com/chris-edstrom)
+- [@andreafunicelli](https://github.com/andreafunicelli)
 
 ## License
 

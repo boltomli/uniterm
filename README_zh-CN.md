@@ -1,7 +1,7 @@
 <div align="center">
   <img src="build/appicon.png" alt="uniTerm" width="128" height="128" />
   <h1>uniTerm</h1>
-  <p>一款轻量级一站式终端软件，支持 SSH、RDP、VNC、SFTP、数据库、Kubernetes 等 30 余种协议<br>内置可自主执行的 AI Agent，规划并执行多轮 Shell 命令</p>
+  <p>一站式终端，覆盖 SSH、RDP、VNC、SFTP、数据库、Kubernetes 等 30 余种协议<br>内置自主执行多轮命令的 AI Agent</p>
   <p><a href="https://uniterm.net">🌐 软件首页</a> &nbsp;|&nbsp; <a href="https://uniterm.net/guide/zh/introduction">📖 用户手册</a> &nbsp;|&nbsp; <a href="https://github.com/ys-ll/uniterm">💻 GitHub</a> &nbsp;|&nbsp; <a href="https://gitee.com/ys-l/uniterm">💻 Gitee</a></p>
 </div>
 
@@ -44,31 +44,30 @@
 - **本地 & 串口终端** — PowerShell / CMD / Git Bash / WSL，以及串口连接（波特率等参数、本地回显）
 - **文件传输** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem，双栏浏览、鼠标拖拽上传下载，SSH 内 `rz`/`sz`
 - **远程桌面** — RDP（Windows 远程桌面）、VNC（Linux 远程控制）、SPICE（KVM/QEMU 虚拟机）、X11（X Window 图形界面转发）
-- **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch
-- **容器** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC
+- **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch，支持 AI 自然语言生成查询与数据行编辑
+- **Kubernetes & 容器** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC，集群资源与容器镜像管理、Pod 日志与 exec 终端、CPU/内存指标
 - **服务器监控** — CPU/内存/磁盘/网络、进程、端口、网卡实时监控
 
-### AI 助理
+### AI Agent
 
 自主执行的 AI Agent，独立规划并执行多轮 Shell 命令，直接在终端中完成复杂任务。
 
-- **自主多轮执行** — AI Agent 能够自主规划、执行、观察结果并迭代，在多轮 Shell 命令中无需人工干预即可完成复杂操作。
-- **大模型集成** — 侧边栏对话，兼容 Anthropic / OpenAI 协议，支持 Claude、GPT 及其他兼容模型。
+- **AI Agent 自主执行** — AI Agent 自主规划、执行、观察结果并迭代，在多轮 Shell 命令中无需人工干预即可完成复杂操作；侧边栏对话，兼容 Anthropic / OpenAI 协议，支持 Claude、GPT 及其他兼容模型。
 - **灵活的执行模式** — 提供免确认、仅高危确认、写操作确认、全部确认四种模式，自主权由你掌控。
 - **终端智能协作** — AI 命令直接在当前终端标签页中执行，支持固定到指定标签页或跟随当前激活终端。分屏中人与 AI 各司其职，同屏协作互不干扰。
 - **MCP Server** — 内置 MCP 服务器，Claude Code、Codex、Gemini CLI 等外部 AI Agent 可安全地在已保存的连接上执行命令、传输文件，凭据不出应用。
 - **技能与命令** — 可复用的 Skill 工作流与 Prompt 命令模板，输入 `/` 即可挂载触发，AI 也可自行沉淀新技能。
+- **智能提示** — 输入时按历史命令与 AI 能力实时补全。
 
 ### 个性化能力
 
-连接管理、自由分屏、云端同步、主题定制 —— 你的终端由你掌控。
+连接管理、自由分屏、云端同步、主题与国际化 —— 你的终端由你掌控。
 
 - **连接管理器** — 分组管理服务器连接，快速搜索、一键新建连接，支持批量操作。
-- **自由分屏** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
+- **工作区** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
 - **云端同步** — 支持私有 Git 仓库/WebDAV 双模式云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
 - **自定义快捷键** — 自由绑定各项操作的键盘快捷键，实现全键盘操作，双手不离键盘。
-- **主题** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片。
-- **国际化** — 支持简中、繁中、英、日、韩、德、西、法、俄等 9 种语言界面。
+- **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄等 9 种语言界面。
 
 ## 支持的协议
 
@@ -192,7 +191,7 @@ sudo rpm -i uniterm.rpm
 2. 填入主机、端口和认证信息（密码或私钥）
 3. 点击**连接**打开 SSH 终端会话
 
-### AI 助理
+### AI Agent
 
 1. 进入设置页面，配置你的 **AI 大模型**（API 地址、模型和密钥）
 2. 打开一个终端标签页（SSH 或本地）
@@ -298,6 +297,9 @@ uniTerm/
 - [@zhangsir1211](https://github.com/zhangsir1211)
 - [@sonnartliao](https://github.com/sonnartliao)
 - [@Teejer](https://github.com/Teejer)
+- [@IBRAHIMELAMRABET](https://github.com/IBRAHIMELAMRABET)
+- [@chris-edstrom](https://github.com/chris-edstrom)
+- [@andreafunicelli](https://github.com/andreafunicelli)
 
 ## 开源协议
 

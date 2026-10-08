@@ -285,6 +285,7 @@ export interface AppSettings {
   sftpTransferPanelVisible: boolean
   customTerminalThemes: CustomTerminalTheme[]
   defaultLocalShell: string
+  gitBashPath: string
   // Which side of the tab the close (X) button sits on.
   tabCloseButton: 'left' | 'right'
   // Whether the per-tab numeric shortcut hint (e.g. Ctrl+1) is drawn on the
@@ -384,6 +385,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sftpTransferPanelVisible: false,
   customTerminalThemes: [],
   defaultLocalShell: '',
+  gitBashPath: '',
   tabCloseButton: 'left',
   showTabShortcutHints: true,
   hostListMenuStyle: 'button',

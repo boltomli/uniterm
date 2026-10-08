@@ -37,6 +37,12 @@ type AIMessageEntry struct {
 	ToolCalls     []interface{} `json:"tool_calls,omitempty"`
 	PendingTools  []interface{} `json:"pendingTools,omitempty"`
 	RawAPIMsg     string        `json:"_rawApiMsg,omitempty"`
+	// Attachments carries the user message's image / text-file attachments
+	// (see frontend AIAttachment). Omitted entirely for the overwhelming
+	// majority of messages, and absent from sessions written before the
+	// feature existed — decoding simply leaves it nil, so old files load
+	// unchanged.
+	Attachments []interface{} `json:"attachments,omitempty"`
 }
 
 type AISessionStore struct {

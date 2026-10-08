@@ -6,6 +6,8 @@ The keystore provides centralized management of reusable login identities (usern
 
 Entry point: **Settings → Keystore**.
 
+![Identity Management](/imgs/identities_light.webp)
+
 - The list shows each identity's Name / Username / Auth Type
 - Click **Add Identity** to create one; use **Edit** or **Delete** inline on each row
 - In a connection form, select **Identity** as the auth type, then use the **+** button next to the dropdown to create a new identity on the spot; it is selected automatically after saving

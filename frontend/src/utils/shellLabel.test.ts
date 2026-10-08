@@ -26,7 +26,7 @@ describe('getShellLabel', () => {
 
   it('labels Git Bash by its install path', () => {
     expect(getShellLabel('C:\\Program Files\\Git\\bin\\bash.exe')).toBe('Git Bash')
-    expect(getShellLabel('C:\\Users\\me\\scoop\\apps\\git\\current\\bin\\bash.exe')).toBe('Git Bash')
+    expect(getShellLabel('C:\\Users\\me\\scoop\\apps\\git\\current\\bin\\bash.exe')).toBe('Git Bash (Scoop)')
   })
 
   it('labels the chocolatey bash shim as Git Bash', () => {

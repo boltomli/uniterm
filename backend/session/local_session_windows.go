@@ -680,6 +680,9 @@ func shellName(path string) string {
 		lower := strings.ToLower(path)
 		if strings.Contains(lower, `\git\`) || strings.Contains(lower, `/git/`) ||
 			strings.Contains(lower, "chocolatey") {
+			if strings.Contains(lower, `\scoop\`) || strings.Contains(lower, `/scoop/`) {
+				return "Git Bash (Scoop)"
+			}
 			return "Git Bash"
 		}
 		if strings.Contains(lower, "cygwin") {

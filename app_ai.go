@@ -115,7 +115,7 @@ func injectCacheControl(reqBody map[string]interface{}) {
 // ChatCompletion streams the Anthropic API response via SSE, emitting Wails
 // events for each token while collecting the full message. It returns the
 // complete message JSON when the stream ends (backward-compatible).
-func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string) (string, error) {
+func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string, sessionID string) (string, error) {
 	// Parse the incoming request body (always Anthropic format from frontend)
 	var reqBody map[string]interface{}
 	if err := json.Unmarshal([]byte(requestJSON), &reqBody); err != nil {
@@ -126,6 +126,13 @@ func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, 
 		userAgent = "uniTerm"
 	}
 
+	// Attachment guard rail: validate image blocks before anything is sent so
+	// an oversized / malformed / over-count attachment produces a readable
+	// error instead of an upstream 400 (FR-3, FR-6).
+	if err := validateRequestAttachments(reqBody); err != nil {
+		return "", err
+	}
+
 	client, err := a.llmClientFor(proxyID)
 	if err != nil {
 		return "", err
@@ -133,7 +140,7 @@ func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, 
 
 	switch protocol {
 	case "openai":
-		return a.chatCompletionOpenAI(apiKey, baseURL, model, reqBody, userAgent, client)
+		return a.chatCompletionOpenAI(apiKey, baseURL, model, reqBody, userAgent, sessionID, client)
 	case "responses":
 		return a.chatCompletionResponses(apiKey, baseURL, model, reqBody, userAgent, client)
 	}
@@ -191,6 +198,10 @@ func proxyTransportURL(p *session.SocksProxy) (*url.URL, error) {
 
 // chatCompletionAnthropic handles the native Anthropic Messages API with SSE streaming.
 func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
+	// Computed once so a non-200 response can be reported as a readable
+	// attachment error when the request carried images (FR-6).
+	hasImages := requestHasImageAttachment(reqBody)
+
 	reqBody["stream"] = true
 
 	modifiedJSON, err := json.Marshal(reqBody)
@@ -243,7 +254,9 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 	if res.StatusCode != http.StatusOK {
 		// F-305: cap error-body reads at 64 KiB.
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		return "", fmt.Errorf("HTTP %d: %s", res.StatusCode, string(body))
+		// A vision-less model answers a multimodal request with a 4xx; report
+		// that as a readable attachment error instead of the raw upstream body.
+		return "", upstreamError(res.StatusCode, body, hasImages)
 	}
 
 	var contentBlocks []map[string]interface{}
@@ -439,13 +452,43 @@ func convertAnthropicMessageToOpenAI(msg map[string]interface{}) []map[string]in
 	switch role {
 	case "user":
 		out := map[string]interface{}{"role": "user"}
+		// Image attachments force OpenAI's multi-part content form. Text-only
+		// messages keep the plain string form they have always used, so the
+		// existing text/tool_result behaviour is untouched.
+		var parts []map[string]interface{}
+		hasImage := false
 		if contentStr, ok := content.(string); ok {
 			out["content"] = contentStr
 		} else if contentBlocks, ok := content.([]interface{}); ok {
 			for _, block := range contentBlocks {
 				if b, ok := block.(map[string]interface{}); ok {
 					if bType, _ := b["type"].(string); bType == "text" {
-						out["content"] = b["text"]
+						if hasImage {
+							parts = append(parts, map[string]interface{}{"type": "text", "text": toString(b["text"])})
+						} else {
+							out["content"] = b["text"]
+						}
+					}
+					if bType, _ := b["type"].(string); bType == "image" {
+						dataURL, err := anthropicImageBlockToDataURL(b)
+						if err != nil {
+							// Validated before dispatch; skip rather than emit a
+							// half-built request if a caller bypassed that guard.
+							continue
+						}
+						if !hasImage {
+							hasImage = true
+							// Re-seed any text seen before the first image so
+							// block order (and therefore prompt order) survives.
+							if s, ok := out["content"].(string); ok && s != "" {
+								parts = append(parts, map[string]interface{}{"type": "text", "text": s})
+							}
+							delete(out, "content")
+						}
+						parts = append(parts, map[string]interface{}{
+							"type":      "image_url",
+							"image_url": map[string]interface{}{"url": dataURL},
+						})
 					}
 					if bType, _ := b["type"].(string); bType == "tool_result" {
 						toolMsg := map[string]interface{}{
@@ -457,6 +500,9 @@ func convertAnthropicMessageToOpenAI(msg map[string]interface{}) []map[string]in
 					}
 				}
 			}
+		}
+		if hasImage {
+			out["content"] = parts
 		}
 		// Emit tool messages first, then any text user message. An OpenAI-format
 		// assistant message with tool_calls must be immediately followed by the
@@ -526,10 +572,28 @@ func toString(v interface{}) string {
 	}
 }
 
+func isOpenCodeGoBaseURL(baseURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return false
+	}
+
+	if !strings.EqualFold(u.Hostname(), "opencode.ai") {
+		return false
+	}
+
+	path := strings.TrimRight(u.Path, "/")
+	return path == "/zen/go/v1" || strings.HasPrefix(path, "/zen/go/v1/")
+}
+
 // chatCompletionOpenAI converts the Anthropic-format request to OpenAI,
 // calls the OpenAI Chat Completions API with SSE streaming, and converts
 // the response back to Anthropic format so the frontend sees no difference.
-func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
+func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, sessionID string, client *http.Client) (string, error) {
+	// Computed once so a non-200 response can be reported as a readable
+	// attachment error when the request carried images (FR-6).
+	hasImages := requestHasImageAttachment(reqBody)
+
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 
 	// --- Build OpenAI-format request body ---
@@ -599,6 +663,10 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("User-Agent", userAgent)
 
+	if sessionID != "" && isOpenCodeGoBaseURL(baseURL) {
+		req.Header.Set("x-opencode-session", sessionID)
+	}
+
 	res, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -613,7 +681,9 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 		// buggy upstream returning a multi-GB error body can't OOM
 		// the Go process.
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		return "", fmt.Errorf("HTTP %d: %s", res.StatusCode, string(body))
+		// A vision-less model answers a multimodal request with a 4xx; report
+		// that as a readable attachment error instead of the raw upstream body.
+		return "", upstreamError(res.StatusCode, body, hasImages)
 	}
 
 	// --- Parse OpenAI SSE stream, emit Anthropic-format events ---
@@ -966,6 +1036,22 @@ func convertAnthropicMessageToResponses(msg map[string]interface{}) []map[string
 			if txt, _ := b["text"].(string); txt != "" {
 				textParts = append(textParts, map[string]interface{}{"type": textType, "text": txt})
 			}
+		case "image":
+			// Images are only ever sent by the user; the Responses API takes a
+			// flat input_image part whose image_url is the data URL itself
+			// (unlike Chat Completions' nested image_url object).
+			if role == "assistant" {
+				continue
+			}
+			dataURL, err := anthropicImageBlockToDataURL(b)
+			if err != nil {
+				// Validated before dispatch; skip rather than emit a malformed item.
+				continue
+			}
+			textParts = append(textParts, map[string]interface{}{
+				"type":      "input_image",
+				"image_url": dataURL,
+			})
 		case "tool_use":
 			argsStr := "{}"
 			if input, ok := b["input"]; ok {
@@ -1004,6 +1090,10 @@ func convertAnthropicMessageToResponses(msg map[string]interface{}) []map[string
 // events back to Anthropic-format events so the frontend sees no difference.
 // Stateless: full history is sent as `input` each turn; reasoning items are ignored.
 func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map[string]interface{}, userAgent string, client *http.Client) (string, error) {
+	// Computed once so a non-200 response can be reported as a readable
+	// attachment error when the request carried images (FR-6).
+	hasImages := requestHasImageAttachment(reqBody)
+
 	url := strings.TrimRight(baseURL, "/") + "/responses"
 
 	// --- Build Responses-format request body ---
@@ -1083,7 +1173,9 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 		// buggy upstream returning a multi-GB error body can't OOM
 		// the Go process.
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		return "", fmt.Errorf("HTTP %d: %s", res.StatusCode, string(body))
+		// A vision-less model answers a multimodal request with a 4xx; report
+		// that as a readable attachment error instead of the raw upstream body.
+		return "", upstreamError(res.StatusCode, body, hasImages)
 	}
 
 	// --- Parse Responses SSE stream, emit Anthropic-format events ---

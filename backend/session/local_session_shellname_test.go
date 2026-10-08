@@ -14,7 +14,7 @@ func TestShellNameDisambiguatesBashFlavors(t *testing.T) {
 		want string
 	}{
 		{`C:\Program Files\Git\bin\bash.exe`, "Git Bash"},
-		{`C:\Users\me\scoop\apps\git\current\bin\bash.exe`, "Git Bash"},
+		{`C:\Users\me\scoop\apps\git\current\bin\bash.exe`, "Git Bash (Scoop)"},
 		{`C:\ProgramData\chocolatey\bin\bash.exe`, "Git Bash"},
 		{`C:\cygwin64\bin\bash.exe`, "Cygwin bash"},
 		{`D:\tools\cygwin\bin\bash.exe`, "Cygwin bash"},

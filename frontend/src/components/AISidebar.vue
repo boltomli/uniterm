@@ -195,6 +195,19 @@
             </button>
           </div>
         </div>
+        <div v-if="attachments.length" class="attachments-row">
+          <div v-for="att in attachments" :key="att.id" class="attachment-chip" :title="`${att.name} · ${formatBytes(att.size)}`">
+            <img v-if="att.kind === 'image'" class="attachment-thumb" :src="attachmentPreviewUrl(att)" :alt="att.name" />
+            <FileText v-else :size="16" class="attachment-icon" />
+            <div class="attachment-meta">
+              <span class="attachment-name">{{ att.name }}</span>
+              <span class="attachment-size">{{ formatBytes(att.size) }}</span>
+            </div>
+            <button class="attachment-remove" :title="t('ai.attachRemove')" @click="removeAttachment(att.id)">
+              <X :size="12" />
+            </button>
+          </div>
+        </div>
         <div class="textarea-wrap">
           <div
             ref="editableRef"
@@ -206,8 +219,25 @@
             @paste="onPaste"
           />
         </div>
+        <input
+          ref="fileInputRef"
+          class="attachment-file-input"
+          type="file"
+          multiple
+          :accept="ATTACHMENT_FILE_ACCEPT"
+          @change="onFileInputChange"
+        />
         <div class="input-actions">
           <div class="input-actions-left">
+            <button
+              v-if="!isMobile"
+              class="ghost-btn hash-btn"
+              :title="t('ai.attachFile')"
+              :disabled="lockedPanels.length === 0 && !currentIsTerminal"
+              @click="onAttachClick"
+            >
+              <Paperclip :size="14" />
+            </button>
             <button class="ghost-btn hash-btn" title="引用终端" :disabled="lockedPanels.length === 0 && !currentIsTerminal" @click="onHashButtonClick">
               <span class="hash-btn-icon">#</span>
             </button>
@@ -255,7 +285,7 @@
             <button
               v-if="!(busy && !inputText.trim())"
               class="send-btn"
-              :disabled="(!inputText.trim() && !hasSkillTag && !hasCommandTag) || (lockedPanels.length === 0 && !currentIsTerminal)"
+              :disabled="(!inputText.trim() && !hasSkillTag && !hasCommandTag && !attachments.length) || (lockedPanels.length === 0 && !currentIsTerminal)"
               :title="busy ? t('ai.queue') : t('ai.send')"
               @click="onSend"
             >
@@ -275,7 +305,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from 'vue'
-import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil } from '@lucide/vue'
+import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil, Paperclip, FileText } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAIStore } from '../stores/aiStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -286,7 +316,18 @@ import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { runAgent, approveTool, rejectTool, continueAgent, answerQuestion, dismissQuestion } from '../services/agent'
 import { CancelChatStream, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
-import type { ExecutionMode } from '../types/ai'
+import type { AIAttachment, ExecutionMode } from '../types/ai'
+import {
+  ATTACHMENT_FILE_ACCEPT,
+  ATTACHMENT_LIMITS,
+  attachmentErrorMessageKey,
+  attachmentPreviewUrl,
+  createImageAttachmentFromDataURL,
+  formatBytes,
+  readAttachmentFile,
+  validateAttachment,
+} from '../services/attachments'
+import { isMobilePlatform } from '../utils/platform'
 import AIMessage from './AIMessage.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -418,6 +459,149 @@ function createHashTagSpan(panelTitle: string): HTMLSpanElement {
 const inputText = ref('')
 const hasSkillTag = ref(false)
 const hasCommandTag = ref(false)
+
+// --- Attachments -----------------------------------------------------------
+// Images and text files queued for the next user turn. Validated on the way in
+// (services/attachments.ts) so nothing invalid ever reaches the input box.
+// Hidden on mobile, where the file picker and clipboard plumbing are absent.
+const isMobile = isMobilePlatform()
+const attachments = ref<AIAttachment[]>([])
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
+function showAttachmentError(key: string, params?: Record<string, string | number>) {
+  ElMessage.error(t(key, params))
+}
+
+function removeAttachment(id: string) {
+  attachments.value = attachments.value.filter((a) => a.id !== id)
+}
+
+function clearAttachments() {
+  attachments.value = []
+}
+
+function onAttachClick() {
+  fileInputRef.value?.click()
+}
+
+/** Add one file, reporting the reason on rejection instead of dropping it. */
+async function addFile(file: File) {
+  const verdict = validateAttachment({ name: file.name, size: file.size, type: file.type }, attachments.value)
+  if (!verdict.ok) {
+    showAttachmentError(attachmentErrorMessageKey(verdict.error), verdict.error.params)
+    return
+  }
+  try {
+    attachments.value = [...attachments.value, await readAttachmentFile(file, verdict.kind, verdict.mime)]
+  } catch (e) {
+    const key = e instanceof Error && e.message === 'binary file' ? 'ai.attachmentBinary'
+      : e instanceof Error && e.message === 'image pixels too large' ? 'ai.attachmentTooLargePixels'
+      : 'ai.attachmentReadFailed'
+    showAttachmentError(key, { name: file.name, limit: ATTACHMENT_LIMITS.maxImageSide })
+  }
+}
+
+async function onFileInputChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  // Reset immediately so picking the same file twice still fires 'change'.
+  input.value = ''
+  for (const file of files) await addFile(file)
+}
+
+/**
+ * Take an image off the clipboard. Returns true when an image was consumed so
+ * the caller can stop the plain-text path.
+ */
+function attachClipboardImage(blob: Blob | null | undefined, fallbackMime = ''): boolean {
+  if (!blob || !blob.size) return false
+  const name = t('ai.attachPastedImage')
+  const verdict = validateAttachment({ name, size: blob.size, type: blob.type || fallbackMime }, attachments.value)
+  if (!verdict.ok) {
+    showAttachmentError(attachmentErrorMessageKey(verdict.error), verdict.error.params)
+    return true
+  }
+  const reader = new FileReader()
+  reader.onerror = () => showAttachmentError('ai.attachmentReadFailed', { name })
+  reader.onload = () => {
+    createImageAttachmentFromDataURL(typeof reader.result === 'string' ? reader.result : '', name, blob.size, verdict.mime)
+      .then((att) => {
+        attachments.value = [...attachments.value, att]
+      })
+      .catch((e: unknown) => {
+        const key = e instanceof Error && e.message === 'image pixels too large' ? 'ai.attachmentTooLargePixels' : 'ai.attachmentReadFailed'
+        showAttachmentError(key, { name, limit: ATTACHMENT_LIMITS.maxImageSide })
+      })
+  }
+  reader.readAsDataURL(blob)
+  return true
+}
+
+/** Pull an image out of a DOM paste event's clipboard data, if any. */
+function clipboardImageFromEvent(e: ClipboardEvent): Blob | null {
+  const items = e.clipboardData?.items
+  if (items) {
+    for (const item of Array.from(items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) return file
+      }
+    }
+  }
+  const files = e.clipboardData?.files
+  if (files) {
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith('image/')) return file
+    }
+  }
+  return null
+}
+
+/**
+ * Read a clipboard image through the async Clipboard API. Resolves to null
+ * whenever the API is missing or denied (WebKitGTK and WKWebView both refuse
+ * it without an explicit permission delegate), which is why the DOM paste
+ * event is the primary source and this is only the fallback.
+ */
+async function readClipboardImage(): Promise<Blob | null> {
+  const clipboard = navigator.clipboard
+  if (!clipboard || typeof clipboard.read !== 'function') return null
+  const items = await clipboard.read()
+  for (const item of items) {
+    const type = item.types.find((tp) => tp.startsWith('image/'))
+    if (type) return await item.getType(type)
+  }
+  return null
+}
+
+/**
+ * Last-resort clipboard read for paste events that carried no data. Prefers an
+ * image from the async Clipboard API, then the Wails clipboard for text. The
+ * read is raced against a short deadline so a slow or permission-gated call
+ * can never leave paste hanging — once the text fallback has run, a late image
+ * is ignored.
+ */
+function pasteFromClipboard() {
+  let settled = false
+  const pasteText = () => {
+    if (settled) return
+    settled = true
+    Clipboard.Text().then(text => { if (text) insertTextAtCursor(text) }).catch(() => {})
+  }
+  const timer = window.setTimeout(pasteText, 500)
+  void readClipboardImage()
+    .then(blob => {
+      if (settled) return
+      window.clearTimeout(timer)
+      settled = true
+      if (!attachClipboardImage(blob)) pasteText()
+    })
+    .catch(() => {
+      window.clearTimeout(timer)
+      pasteText()
+    })
+}
+
 function syncInputText() {
   inputText.value = getEditableText()
   hasSkillTag.value = extractSkillFromInput() !== null
@@ -1341,10 +1525,15 @@ function onKeydown(e: KeyboardEvent) {
     }
   }
 
-  // Cmd/Ctrl+V: paste via Wails clipboard (DOM paste unreliable in WKWebView)
+  // Cmd/Ctrl+V is deliberately NOT preventDefault-ed: letting the browser run
+  // its default action is the only way to receive a paste event carrying image
+  // data, and onPaste() handles both the image and the text case. Mobile keeps
+  // the old Wails-clipboard path (no clipboard events on touch keyboards).
   if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
-    e.preventDefault()
-    Clipboard.Text().then(text => { if (text) insertTextAtCursor(text) }).catch(() => {})
+    if (isMobile) {
+      e.preventDefault()
+      Clipboard.Text().then(text => { if (text) insertTextAtCursor(text) }).catch(() => {})
+    }
     return
   }
 
@@ -1355,9 +1544,37 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+/**
+ * Paste handler. Order matters:
+ *   1. an image in the clipboard event becomes an attachment;
+ *   2. text from the event is inserted (plain-text paste, unchanged);
+ *   3. an event with nothing usable (some webviews hand over an empty
+ *      clipboardData) falls back to the async Clipboard API for an image and
+ *      then to the Wails clipboard for text — the pre-existing behaviour.
+ */
 function onPaste(e: ClipboardEvent) {
+  if (!isMobile) {
+    const image = clipboardImageFromEvent(e)
+    if (image) {
+      e.preventDefault()
+      attachClipboardImage(image)
+      return
+    }
+  }
+
+  const text = e.clipboardData?.getData('text/plain')
+  if (text) {
+    e.preventDefault()
+    insertTextAtCursor(text)
+    return
+  }
+
   e.preventDefault()
-  Clipboard.Text().then(text => { if (text) insertTextAtCursor(text) }).catch(() => {})
+  if (isMobile) {
+    Clipboard.Text().then(t => { if (t) insertTextAtCursor(t) }).catch(() => {})
+    return
+  }
+  pasteFromClipboard()
 }
 
 function insertTextAtCursor(text: string) {
@@ -1387,12 +1604,14 @@ function clearInput() {
 
 async function onSend() {
   const text = getEditableText().trim()
+  // Attachments ride along with whatever text / skill / command is sent.
+  const pending = attachments.value
 
   // F6: command tag —— 取 tag 后参数,后台组装正文作为 user 消息
   const cmd = extractCommandFromInput()
   // F5: 显式调用 skill —— 输入框里挂了 skill tag 则注入其 L2 正文
   const skillName = extractSkillFromInput()
-  if (!text && !skillName && !cmd) return
+  if (!text && !skillName && !cmd && pending.length === 0) return
   let skillBody = ''
   if (skillName) {
     try {
@@ -1425,14 +1644,16 @@ async function onSend() {
 
   if (busy.value) {
     if (cmd) aiStore.addCommandCard(cmd.name, cmd.args)
-    aiStore.enqueueMessage(cmd ? '' : final, skillName || undefined, skillBody || undefined, cmd ? final : undefined)
+    aiStore.enqueueMessage(cmd ? '' : final, skillName || undefined, skillBody || undefined, cmd ? final : undefined, pending)
     clearInput()
+    clearAttachments()
     return
   }
   clearInput()
+  clearAttachments()
   scrollToBottom()
   if (cmd) aiStore.addCommandCard(cmd.name, cmd.args)
-  await runAgent(cmd ? '' : final, skillName ?? undefined, skillBody, cmd ? final : undefined)
+  await runAgent(cmd ? '' : final, skillName ?? undefined, skillBody, cmd ? final : undefined, pending)
   scrollToBottom()
 }
 
@@ -1844,6 +2065,72 @@ defineExpose({ focusInput })
 }
 .textarea-wrap {
   position: relative;
+}
+/* Attachment chips sit above the input, inside the same bordered container */
+.attachments-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem 0;
+}
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  padding: 0.25rem 0.375rem;
+  background: var(--bg-tertiary, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.attachment-thumb {
+  width: 1.75rem;
+  height: 1.75rem;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.attachment-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.attachment-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.attachment-name {
+  font-size: 0.6875rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 11rem;
+}
+.attachment-size {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+.attachment-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.125rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.attachment-remove:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.18));
+}
+/* The real <input type=file> is driven by the paperclip button */
+.attachment-file-input {
+  display: none;
 }
 .ai-editable {
   padding: 0.75rem 1rem;

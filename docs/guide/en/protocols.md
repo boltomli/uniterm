@@ -1,6 +1,6 @@
 # Supported Protocols
 
-uniTerm supports 30+ connection protocols, covering remote terminals, remote desktops, file transfers, databases, containers, and server monitoring.
+uniTerm supports 30+ connection protocols, covering remote terminals, remote desktops, file transfers, databases, and containers.
 
 ## Remote Terminal
 
@@ -39,12 +39,6 @@ uniTerm supports 30+ connection protocols, covering remote terminals, remote des
 | WebDAV | 80 / 443 | HTTP-based file management |
 | S3 | Custom | S3 API-compatible object storage |
 | Zmodem | - (within SSH terminals) | `rz`/`sz` transfers inside SSH terminals, with a configurable default download directory |
-
-## Server Monitor
-
-| Type | Connection | Description |
-|------|----------|------|
-| Monitor | SSH | CPU / memory / network / disk / process monitoring with port and hardware details; Service Management, Hardware Devices, and IPMI tabs |
 
 ## Databases
 

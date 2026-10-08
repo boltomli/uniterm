@@ -60,6 +60,18 @@ func (a *App) GetAvailableShells() []string {
 	if clink := findClink(); clink != "" {
 		shells = append(shells, session.ClinkShellPathPrefix+clink)
 	}
+	// A user-configured Git Bash location (settings.gitBashPath) wins over the
+	// auto-probed ones, so it is listed first among the bash shells.
+	if a.settingsStore != nil {
+		if st, err := a.settingsStore.Load(); err == nil {
+			if p := resolveGitBashPath(st.GitBashPath, fileExists); p != "" {
+				add(p)
+			}
+		}
+	}
+	for _, p := range gitBashCandidates() {
+		add(p)
+	}
 	for _, p := range []string{
 		`C:\Program Files\Git\bin\bash.exe`,
 		`C:\Program Files (x86)\Git\bin\bash.exe`,
@@ -106,6 +118,54 @@ func (a *App) GetAvailableShells() []string {
 		}
 	}
 	return shells
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// resolveGitBashPath turns a user-supplied Git location into a bash.exe path.
+// It accepts bash.exe itself, a Git for Windows root (such as a scoop
+// `apps\git\current` directory) or its bin / usr\bin subdirectory. Returns ""
+// when nothing usable exists.
+func resolveGitBashPath(input string, exists func(string) bool) string {
+	input = strings.Trim(strings.TrimSpace(input), `"`)
+	if input == "" {
+		return ""
+	}
+	input = os.ExpandEnv(strings.ReplaceAll(input, "%USERPROFILE%", "$USERPROFILE"))
+	if strings.HasSuffix(strings.ToLower(input), ".exe") {
+		if exists(input) {
+			return input
+		}
+		return ""
+	}
+	for _, rel := range [][]string{{"bin", "bash.exe"}, {"usr", "bin", "bash.exe"}, {"bash.exe"}} {
+		p := filepath.Join(append([]string{input}, rel...)...)
+		if exists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// gitBashCandidates lists per-user Git for Windows installs (scoop) that the
+// fixed Program Files probes miss.
+func gitBashCandidates() []string {
+	var out []string
+	for _, root := range []string{
+		filepath.Join(os.Getenv("USERPROFILE"), "scoop"),
+		os.Getenv("SCOOP"),
+	} {
+		if root == "" || root == "scoop" {
+			continue
+		}
+		if p := resolveGitBashPath(filepath.Join(root, "apps", "git", "current"), fileExists); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // detectThirdPartyShells probes well-known third-party shell installs that

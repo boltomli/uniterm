@@ -21,6 +21,8 @@ The server monitor opens as an independent tab alongside terminal, file transfer
 
 The monitoring panel is organized into nine tabs — **Performance, Processes, Ports, Disks, Network, Services, System Info, Hardware, IPMI** — freely switchable via the top tab bar.
 
+![Server Monitor](/imgs/monitor_light.webp)
+
 ## Performance
 
 Displays four core metrics — CPU, Memory, Disk, and Network — in real time, refreshing every second, with 60-point line charts showing the last 1 minute of history. Below the CPU / Network / Disk sections are collapsible **All Cores / All Network Cards / All Disks** detail lists, expandable per core, per network card, and per mount point.

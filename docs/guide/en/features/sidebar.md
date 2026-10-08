@@ -14,6 +14,8 @@ The top of the sidebar is a tab bar containing the following tabs:
 - **History** — View and reuse commands entered in the terminal. See [Quick Commands and History](#quick-commands-and-history)
 - **Personalization** — A quick settings panel for theme, language, font, and font size
 
+![Sidebar Connection List](/imgs/sidebar_connection_light.webp)
+
 The **Collapse** button at the far right of the tab bar folds the entire sidebar away to free up space for the terminal.
 
 ## Customizing Visible Tabs
@@ -26,6 +28,8 @@ Tabs you rarely use can be hidden:
 When you hide the tab currently being displayed, the sidebar automatically falls back to the Connection List view. The sidebar width can be adjusted by dragging its edge.
 
 ## File Sidebar
+
+![File Sidebar](/imgs/sidebar_file_light.webp)
 
 The File Sidebar is a file management panel that follows the current connection. It supports two kinds of sessions:
 
@@ -139,6 +143,8 @@ uniTerm automatically records commands entered in the terminal, deduplicates the
 - **Delete** — Remove history entries you no longer need
 
 ## Monitor Sidebar
+
+![Monitor Sidebar](/imgs/sidebar_monitor_light.webp)
 
 The Monitor Sidebar shows the resource status of the host of the current SSH connection as real-time cards:
 

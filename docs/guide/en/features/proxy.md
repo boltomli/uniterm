@@ -8,6 +8,8 @@ uniTerm supports establishing SSH-family connections through SOCKS5 / HTTP proxi
 - **Edit / Delete** — inline actions on each list row; deletion takes effect immediately
 - The list shows Name / Type / Host (`host:port`) / the Enabled toggle
 
+![Proxy Management](/imgs/proxies_light.webp)
+
 Next to the proxy dropdown in the connection form and the AI model form, there is also a **+** button for quickly creating a proxy; it is selected automatically after saving.
 
 ## Creating a Proxy

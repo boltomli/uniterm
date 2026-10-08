@@ -2,6 +2,8 @@
 
 uniTerm is a lightweight all-in-one terminal emulator supporting **30+** connection protocols, covering remote terminals, remote desktops, file transfers, database management, containers, and server monitoring. It ships with a built-in **autonomous AI Agent** that can independently plan and execute multi-round shell commands.
 
+Supported platforms: **Windows / macOS / Linux / Android**.
+
 
 ## Core Features
 
@@ -27,7 +29,7 @@ Built-in **SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3** dual-pane file browser 
 
 #### Remote Desktop
 
-Integrated **RDP** (Windows Remote Desktop), **VNC** (Linux remote control), and **SPICE** (KVM/QEMU virtual machine) protocols provide a smooth graphical remote desktop experience.
+Integrated **RDP** (Windows Remote Desktop), **VNC** (Linux remote control), **SPICE** (KVM/QEMU virtual machine), and **X11** (X Window GUI forwarding and full desktop) protocols provide a smooth graphical remote desktop experience.
 
 ![RDP](/imgs/rdp_light.webp)
 
@@ -46,6 +48,8 @@ Integrated **Kubernetes / Docker / Podman / nerdctl / WSLC** management for clus
 #### Server Monitor
 
 Monitor CPU / memory / network / disk and processes on remote hosts in real time, with port, disk, and network-adapter details, plus **service management, hardware devices, IPMI** sensors, and host clock drift detection.
+
+![Server Monitor](/imgs/monitor_light.webp)
 
 #### Sidebar
 
@@ -95,6 +99,8 @@ Automatic failover between GitHub and Gitee sources — download, verify, and in
 #### Custom Keyboard Shortcuts
 
 Freely bind keyboard shortcuts for nearly every operation, so your hands never need to leave the keyboard.
+
+![Keyboard Shortcuts](/imgs/shortcuts_light.webp)
 
 #### Themes
 

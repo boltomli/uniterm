@@ -27,3 +27,17 @@ func TestParseMobaXterm(t *testing.T) {
 		t.Fatalf("db1 group path: want staging, got %q", groupPathFor(res.Groups, *res.Connections[1].GroupId))
 	}
 }
+
+func TestParseMobaXtermPrivateKey(t *testing.T) {
+	data := []byte("[Bookmarks]\nSubRep=\nweb=#109#0%10.0.0.8%22%alice%%-1%-1%%%%%0%0%0%C:\\keys\\example.ppk%%-1%-1%0\nplain=#109#0%10.0.0.9%22%bob%%-1%-1%%%%%0%0%0%%%-1\n")
+	res, err := parseMobaXterm(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := res.Connections[0]; c.AuthType != "key" || c.KeyPath != `C:\keys\example.ppk` {
+		t.Fatalf("key not imported: %+v", c)
+	}
+	if c := res.Connections[1]; c.AuthType != "password" || c.KeyPath != "" {
+		t.Fatalf("plain session changed: %+v", c)
+	}
+}

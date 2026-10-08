@@ -30,7 +30,37 @@
         <pre v-show="thinkingShown" class="thinking-content">{{ message.thinking }}</pre>
       </div>
 
-      <div class="text" v-html="renderedContent" @click="onTextClick" />
+      <!-- An image-only message has no prose to render: skip the empty bubble. -->
+      <div
+        v-if="!(message.role === 'user' && !message.content && message.attachments?.length)"
+        class="text"
+        v-html="renderedContent"
+        @click="onTextClick"
+      />
+
+      <!-- Attachments the user sent with this message. The payload lives on the
+           message (it is replayed to the model on later turns); here we only
+           show what was attached. -->
+      <div v-if="message.attachments?.length" class="msg-attachments">
+        <div
+          v-for="att in message.attachments"
+          :key="att.id"
+          class="msg-attachment"
+          :title="`${att.name} · ${formatBytes(att.size)}`"
+        >
+          <el-image
+            v-if="att.kind === 'image'"
+            class="msg-attachment-thumb"
+            :src="attachmentPreviewUrl(att)"
+            :preview-src-list="[attachmentPreviewUrl(att)]"
+            :preview-teleported="true"
+            fit="cover"
+            :alt="att.name"
+          />
+          <FileText v-else :size="14" class="msg-attachment-icon" />
+          <span class="msg-attachment-name">{{ att.name }}</span>
+        </div>
+      </div>
 
       <div v-if="message.role === 'assistant' && message.content?.trim()" class="copy-action">
         <button class="copy-md-btn" @click="copyAsMarkdown" :title="t('ai.copyMarkdown')">
@@ -151,11 +181,12 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { Copy, Check, BookOpen, Terminal } from '@lucide/vue'
+import { Copy, Check, BookOpen, Terminal, FileText } from '@lucide/vue'
 import { useAIStore } from '../stores/aiStore'
 import { useI18n } from '../i18n'
 import { sanitizeRenderedHtml, escapeHtml as escapeHtmlBase } from '../utils/markdown'
 import { formatClock, formatDuration } from '../utils/timeFormat'
+import { attachmentPreviewUrl, formatBytes } from '../services/attachments'
 import type { AIMessage } from '../types/ai'
 
 const props = defineProps<{ message: AIMessage; searchText?: string }>()
@@ -739,6 +770,43 @@ function escapeHtml(text: string): string {
 .content {
   flex: 1;
   min-width: 0;
+}
+/* Attachments shown with the user's message. No bubble background: the image
+   itself is the visual anchor, the filename is the fallback for text files. */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+.msg-attachment {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.msg-attachment-thumb {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+  flex-shrink: 0;
+}
+.msg-attachment-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.msg-attachment-name {
+  font-size: 0.6875rem;
+  color: var(--text-secondary, var(--text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 14rem;
 }
 .text {
   font-size: 0.75rem;

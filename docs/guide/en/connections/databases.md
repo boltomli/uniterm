@@ -62,6 +62,8 @@ The context menu offers actions per node type:
 - **Export Results** -- Query results can be exported as CSV / TXT / JSON
 - **Filter & Pagination** -- The result toolbar filters in real time; data browsing mode supports pagination (100 / 200 / 500 rows per page)
 
+![AI SQL Generation](/imgs/ai_generate_sql_light.webp)
+
 ### Run SQL File
 
 Right-click a database name and choose "Run SQL File" to execute `.sql` scripts in batch: on success, a prompt shows the number of statements executed and the cumulative affected rows; on failure, it reports the failing line number, error details, and the failed statement.
@@ -165,6 +167,8 @@ View existing indexes, create new indexes with custom keys and options.
 ## Elasticsearch
 
 Elasticsearch provides browsing and management of clusters, indexes, and documents.
+
+![Elasticsearch](/imgs/elasticsearch_light.webp)
 
 ### Cluster Browsing
 

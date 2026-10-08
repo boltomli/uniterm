@@ -76,6 +76,14 @@ func parseMobaXterm(data []byte) (*ImportResult, error) {
 			if conn.User == "" {
 				conn.User = "root"
 			}
+			// fields[14] is the private key file ("Use private key"); MobaXterm
+			// typically stores a PuTTY .ppk, which the SSH layer reads directly.
+			if len(fields) > 14 {
+				if kp := strings.TrimSpace(fields[14]); kp != "" && kp != "-1" && kp != "<none>" {
+					conn.AuthType = "key"
+					conn.KeyPath = kp
+				}
+			}
 		}
 		segs := splitNonEmpty(strings.ReplaceAll(subRep, "\\", "/"), "/")
 		if gid := ensureGroupPath(segs, pathMap, &res.Groups, newGroupID); gid != nil {

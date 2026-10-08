@@ -8,7 +8,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSkillStore } from '../stores/skillStore'
 import { GetSkillFile, ListSkillFiles } from '../../bindings/github.com/ys-ll/uniterm/app'
-import type { AIMessage } from '../types/ai'
+import type { AIAttachment, AIMessage } from '../types/ai'
 import { Events } from '@wailsio/runtime'
 import {
   InputValidationError,
@@ -404,7 +404,14 @@ function buildSkillIndex(): string {
   return `\n\nAVAILABLE SKILLS (when one matches the task, call the use_skill tool with its name to load its full instructions before acting; do NOT duplicate an existing one with save_skill):\n${lines}`
 }
 
-export async function runAgent(userInput: string, skillName?: string, skillBody?: string, commandBody?: string) {
+/**
+ * Run one user turn (plus the autonomous tool loop that follows it).
+ *
+ * `attachments` are the images / text files the user attached in the sidebar.
+ * They are validated by the caller (services/attachments.ts) and forwarded to
+ * the model unchanged — uniTerm does not interpret them itself.
+ */
+export async function runAgent(userInput: string, skillName?: string, skillBody?: string, commandBody?: string, attachments?: AIAttachment[]) {
   const store = useAIStore()
 
   if (!hasActiveSession()) {
@@ -449,7 +456,10 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
     store.setLastPanelContext(trackPanelId, tp?.config?.shellPath || '')
   }
 
-  if (userInput || (skillName && skillBody) || commandBody) {
+  // An attachment-only turn (paste a screenshot, hit send) is a valid user
+  // message with no prose, so attachments count towards "there is something to
+  // send" alongside text, skills and commands.
+  if (userInput || (skillName && skillBody) || commandBody || attachments?.length) {
     const dynamicCtx = buildDynamicContext()
     // skill/command 正文进 _contextHeader（发给模型但 UI 隐藏），content 只留用户原始输入
     let header = dynamicCtx || ''
@@ -462,13 +472,17 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       const cmdCtx = `[Command]\n${commandBody}`
       header = header ? `${cmdCtx}\n\n${header}` : cmdCtx
     }
-    // 仅选 skill/命令未输入文字时，给一句明确指令作为 content，避免发送空的 user 消息
-    const content = userInput || (skillName ? `请执行 skill「${skillName}」。` : `请执行命令。`)
+    // 仅选 skill/命令未输入文字时，给一句明确指令作为 content，避免发送空的 user 消息。
+    // 只有附件没有文字时 content 保持为空——附件块本身就是完整内容。
+    let content = userInput
+    if (!content && skillName) content = `请执行 skill「${skillName}」。`
+    else if (!content && commandBody) content = `请执行命令。`
     store.addMessage({
       id: `msg-${Date.now()}`,
       role: 'user',
       content,
-      _contextHeader: header || undefined
+      _contextHeader: header || undefined,
+      attachments: attachments?.length ? attachments : undefined
     })
   }
 
@@ -560,6 +574,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           role: 'user',
           content: q.content || (q.skillName ? `请执行 skill「${q.skillName}」。` : `请执行命令。`),
           _contextHeader: header || undefined,
+          attachments: q.attachments?.length ? q.attachments : undefined,
         })
       })
       turnCount = 0
