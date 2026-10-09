@@ -25,11 +25,14 @@ function makeFakeCore(inputEventResult: boolean = true) {
   // mirrors CompositionHelper's send paths).
   const sends: string[] = []
   const core: FakeCore = {
-    _inputEvent: function (this: Record<string, unknown>, ev: InputEvent) {
+    _inputEvent: function (this: Record<string, any>, ev: InputEvent) {
       calls.push({ keyDownSeenAtCall: this._keyDownSeen as boolean | undefined })
       // Mirror the browser: by the time the input event is dispatched the
       // textarea already holds the inserted data.
       if (ev.data) core.textarea.value += ev.data
+      if (inputEventResult && ev.data) {
+        this._compositionHelper._coreService.triggerDataEvent(ev.data, true)
+      }
       return inputEventResult
     },
     _keyDownSeen: true,
@@ -41,6 +44,14 @@ function makeFakeCore(inputEventResult: boolean = true) {
       _isSendingComposition: false,
       _compositionPosition: { start: 0, end: 0 },
       _dataAlreadySent: '',
+      // Mirror of xterm's CoreService.triggerDataEvent — the single funnel
+      // every send path (keydown / keypress / textarea diff / composition read
+      // / direct input) goes through.
+      _coreService: {
+        triggerDataEvent(data: string) {
+          sends.push(data)
+        },
+      },
       // Mirror of xterm's CompositionHelper._finalizeComposition: the
       // keydown-driven variant sends substring(start, end) synchronously, the
       // compositionend variant schedules a deferred read of the region minus
@@ -52,7 +63,7 @@ function makeFakeCore(inputEventResult: boolean = true) {
         if (!waitForPropagation) {
           this._isSendingComposition = false
           const input = core.textarea.value.substring(start, end)
-          if (input.length > 0) sends.push(input)
+          if (input.length > 0) this._coreService.triggerDataEvent(input, true)
           return
         }
         const snapshotStart = start
@@ -62,7 +73,7 @@ function makeFakeCore(inputEventResult: boolean = true) {
           this._isSendingComposition = false
           const from = snapshotStart + (this._dataAlreadySent?.length ?? 0)
           const input = core.textarea.value.substring(from)
-          if (input.length > 0) sends.push(input)
+          if (input.length > 0) this._coreService.triggerDataEvent(input, true)
         }, 0)
       },
       compositionupdate(this: Record<string, any>) {
@@ -683,6 +694,54 @@ describe('windows composition pipeline', () => {
     core._keyDownSeen = false
     expect(core._inputEvent.call(core, insertText('a'))).toBe(true)
     expect(calls).toHaveLength(1)
+  })
+
+  it('drops a straggler input duplicating another send path', () => {
+    const { core, calls, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    // The keydown/keypress path already delivered the character…
+    core._compositionHelper._coreService.triggerDataEvent('A', true)
+    expect(sends).toEqual(['A'])
+
+    // …then the modal loop delivers the keystroke's input event after its
+    // keyup, when xterm's _keyPressHandled guard is already cleared.
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('A'))).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(sends).toEqual(['A'])
+  })
+
+  it('drops the duplicate in the reverse order too', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    core._keyDownSeen = false
+    core._inputEvent.call(core, insertText('A'))
+    expect(sends).toEqual(['A'])
+
+    // The deferred textarea diff of the same keystroke fires afterwards.
+    core._compositionHelper._coreService.triggerDataEvent('A', true)
+    expect(sends).toEqual(['A'])
+  })
+
+  it('keeps identical repeats through the same path', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    core._compositionHelper._coreService.triggerDataEvent('A', true)
+    core._compositionHelper._coreService.triggerDataEvent('A', true)
+    core._keyDownSeen = false
+    core._inputEvent.call(core, insertText('B'))
+    core._inputEvent.call(core, insertText('B'))
+    expect(sends).toEqual(['A', 'A', 'B', 'B'])
+  })
+
+  it('keeps identical text delivered outside the window', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    core._compositionHelper._coreService.triggerDataEvent('A', true)
+    vi.advanceTimersByTime(300)
+    core._keyDownSeen = false
+    core._inputEvent.call(core, insertText('A'))
+    expect(sends).toEqual(['A', 'A'])
   })
 
   it('rebases the composition region when compositionstart was dropped', () => {

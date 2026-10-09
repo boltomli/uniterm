@@ -32,6 +32,9 @@ interface XtermCompositionHelperInternals {
   isComposing?: unknown
   _compositionPosition?: { start?: number; end?: number }
   _dataAlreadySent?: string
+  _coreService?: {
+    triggerDataEvent?: (this: unknown, data: string, wasUserInput?: boolean) => void
+  }
   compositionupdate?: (
     this: XtermCompositionHelperInternals,
     ev: Pick<CompositionEvent, 'data'>,
@@ -113,7 +116,11 @@ function isSameCharacter(left: string, right: string): boolean {
 //   _dataAlreadySent mechanism, xterm.js issue #3191) so a compositionend read
 //   arriving after it cannot send the same text again;
 // - _inputEvent drops an insertText whose data the composition read has just
-//   delivered (Chromium can order compositionend before the commit's input).
+//   delivered (Chromium can order compositionend before the commit's input);
+// - the send ledger drops a straggler input event whose text another send path
+//   already delivered for the same keystroke (the modal loop can deliver a
+//   keystroke's input after its keyup, when xterm's _keyPressHandled /
+//   _keyDownSeen guards are already cleared).
 function installWindowsImePatch(terminal: Terminal): Disposable {
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
@@ -129,6 +136,46 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
   let lastCompositionCommitAt = 0
   // Text the composition path (finalize / its deferred read) delivered last.
   let lastCommittedText = ''
+  // Cross-path send ledger. xterm delivers each keystroke / commit through one
+  // of several send paths — the keydown handler, keypress, the deferred
+  // textarea diff, the composition read, the direct input handler — and the
+  // modal loop can make two of them fire for one input, so the same text
+  // reaches the PTY twice. Record every user-input send; a duplicate arriving
+  // through the *other kind* of path (one side the direct input handler, the
+  // other not) within LATE_EVENT_WINDOW_MS is dropped. Same-path repeats —
+  // key auto-repeat, repeated soft-keyboard taps — are never touched.
+  let inDirectInput = false
+  let lastSend: { data: string; at: number; viaInput: boolean } | null = null
+
+  const coreService = helper._coreService
+  if (coreService && typeof coreService.triggerDataEvent === 'function') {
+    const originalTrigger = coreService.triggerDataEvent
+    const patchedTrigger = function patchedTrigger(
+      this: unknown,
+      data: string,
+      wasUserInput?: boolean,
+    ): void {
+      const isUserText = wasUserInput === true && typeof data === 'string' && data.length > 0
+      if (isUserText && lastSend !== null) {
+        const sameText = lastSend.data === data
+        const acrossPaths = lastSend.viaInput !== inDirectInput
+        const recent = Date.now() - lastSend.at <= LATE_EVENT_WINDOW_MS
+        if (sameText && acrossPaths && recent) {
+          return
+        }
+        lastSend = { data, at: Date.now(), viaInput: inDirectInput }
+      } else if (isUserText) {
+        lastSend = { data, at: Date.now(), viaInput: inDirectInput }
+      }
+      originalTrigger.call(this, data, wasUserInput)
+    }
+    coreService.triggerDataEvent = patchedTrigger
+    disposers.push(() => {
+      if (coreService.triggerDataEvent === patchedTrigger) {
+        coreService.triggerDataEvent = originalTrigger
+      }
+    })
+  }
 
   if (typeof helper.compositionupdate === 'function') {
     const originalCompositionUpdate = helper.compositionupdate
@@ -226,7 +273,15 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
         return true
       }
     }
-    return originalInputEvent!.call(this, ev)
+    // The send ledger tags what goes out below as direct-input traffic so it
+    // can tell this path apart from the keydown / keypress / textarea-diff /
+    // composition-read paths when looking for cross-path duplicates.
+    inDirectInput = true
+    try {
+      return originalInputEvent!.call(this, ev)
+    } finally {
+      inDirectInput = false
+    }
   }
   core._inputEvent = patchedInputEvent
 
