@@ -127,6 +127,8 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
   // never saw is the tail that update describes.
   let lastCompositionData = ''
   let lastCompositionCommitAt = 0
+  // Text the composition path (finalize / its deferred read) delivered last.
+  let lastCommittedText = ''
 
   if (typeof helper.compositionupdate === 'function') {
     const originalCompositionUpdate = helper.compositionupdate
@@ -163,7 +165,15 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
       waitForPropagation: boolean,
     ): void {
       const start = this._compositionPosition?.start ?? 0
+      const end = this._compositionPosition?.end ?? start
+      const alreadySent = this._dataAlreadySent?.length ?? 0
       const region = textarea.value.substring(start)
+      // What this finalize delivers (the deferred read runs the same
+      // substring one tick later): remembered so a duplicate arriving on the
+      // direct path afterwards can be dropped loss-free.
+      lastCommittedText = waitForPropagation
+        ? textarea.value.substring(start + alreadySent)
+        : textarea.value.substring(start, end)
       originalFinalize.call(this, waitForPropagation)
       lastCompositionCommitAt = Date.now()
       if (!waitForPropagation && region.length > 0) {
@@ -193,19 +203,27 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
       typeof ev.data === 'string' &&
       ev.data.length > 0
     ) {
-      const start = this._compositionHelper?._compositionPosition?.start ?? 0
-      const region = (this.textarea ?? textarea).value.substring(start)
-      if (region.includes(ev.data)) {
-        const inFlight =
-          this._compositionHelper?._isSendingComposition === true ||
-          this._compositionHelper?._isComposing === true
-        // Either the composition path owns this text and its pending read will
-        // deliver the whole region, or the read just did (the region still
-        // holds exactly what was delivered) — either way, sending it again
-        // from the direct path would commit the word twice.
-        if (inFlight || (Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS && region === ev.data)) {
+      const helper = this._compositionHelper
+      const inFlight =
+        helper?._isSendingComposition === true || helper?._isComposing === true
+      if (inFlight) {
+        // The composition path owns this text: the pending compositionend
+        // read delivers the whole region, so the direct send would commit
+        // it a second time.
+        const start = helper?._compositionPosition?.start ?? 0
+        if ((this.textarea ?? textarea).value.substring(start).includes(ev.data)) {
           return true
         }
+      }
+      // The composition read (or the keydown finalize) just delivered exactly
+      // this text and the commit's input event arrived after it — drop it.
+      // Matching the delivered text, not the textarea region, keeps genuinely
+      // new input loss-free even when it happens to equal the region.
+      if (
+        ev.data === lastCommittedText &&
+        Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS
+      ) {
+        return true
       }
     }
     return originalInputEvent!.call(this, ev)

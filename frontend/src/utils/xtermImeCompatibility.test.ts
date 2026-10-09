@@ -663,6 +663,28 @@ describe('windows composition pipeline', () => {
     expect(core.textarea.value).toBe('词词')
   })
 
+  it('never swallows fresh input that differs from the delivered commit', () => {
+    const { core, calls, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+
+    // A reset (drag boundary) puts the region back at the single character the
+    // user is typing now. The browser has already inserted it into the
+    // textarea before dispatching the input event, so the region equals the
+    // data — it must not be mistaken for the delivered commit.
+    resetXtermInputState(fakeTerminal(core))
+    core.textarea.value = 'a'
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('a'))).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
   it('rebases the composition region when compositionstart was dropped', () => {
     const { core, sends } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
