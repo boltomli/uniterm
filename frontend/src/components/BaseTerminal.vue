@@ -1297,6 +1297,16 @@ onMounted(() => {
     const sidNow = props.sessionId
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
+    // Final duplicate-delivery safety net. Every xterm send path is already
+    // deduplicated at the source (xtermImeCompatibility), but a pathological
+    // event ordering not modelled there could still deliver the same text
+    // twice on one keystroke/commit. No legitimate input repeats identical
+    // text within 25ms (OS key auto-repeat is ~30ms and emits only single
+    // characters), so an exact repeat here is always the same input delivered
+    // twice — drop it and log the event so a real-world trace is available.
+    let lastOnData = ''
+    let lastOnDataAt = 0
+
     terminal.attachCustomKeyEventHandler(handleTerminalKey)
 
     // Input handling
@@ -1321,6 +1331,16 @@ onMounted(() => {
         if (!cleaned) return
         data = cleaned
       }
+
+      const onDataNow = Date.now()
+      if (data === lastOnData && onDataNow - lastOnDataAt < 25) {
+        // The same input was delivered twice (the window is below the ~30ms
+        // key auto-repeat floor, so this is never a genuine repeat).
+        FrontendLog('ime-dup', JSON.stringify(data))
+        return
+      }
+      lastOnData = data
+      lastOnDataAt = onDataNow
 
       // Mobile sticky Ctrl: transform the next soft-keyboard character into
       // the corresponding Ctrl combo (e.g. 'c' → ^C) when Ctrl is armed.

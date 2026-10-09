@@ -218,9 +218,24 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
       // What this finalize delivers (the deferred read runs the same
       // substring one tick later): remembered so a duplicate arriving on the
       // direct path afterwards can be dropped loss-free.
-      lastCommittedText = waitForPropagation
+      const wouldSend = waitForPropagation
         ? textarea.value.substring(start + alreadySent)
         : textarea.value.substring(start, end)
+      if (waitForPropagation && wouldSend.length > 0) {
+        // The drag's event storm can deliver compositionend twice. If a read
+        // is already scheduled for this commit, or the same text was just
+        // delivered (and no fresh composition has started since), scheduling
+        // another read would send the word twice.
+        const readPending = this._isSendingComposition === true
+        const justDelivered =
+          wouldSend === lastCommittedText &&
+          Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS &&
+          this._isComposing !== true
+        if (readPending || justDelivered) {
+          return
+        }
+      }
+      lastCommittedText = wouldSend
       originalFinalize.call(this, waitForPropagation)
       lastCompositionCommitAt = Date.now()
       if (!waitForPropagation && region.length > 0) {

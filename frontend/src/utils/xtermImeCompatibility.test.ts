@@ -744,6 +744,55 @@ describe('windows composition pipeline', () => {
     expect(sends).toEqual(['A', 'A'])
   })
 
+  it('sends once when compositionend is delivered twice back-to-back', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true) // first end schedules the read
+    helper._finalizeComposition(true) // duplicate end while the read is pending
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+  })
+
+  it('sends once when a duplicate compositionend arrives after the read ran', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+    helper._finalizeComposition(true) // duplicate after the first read
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+  })
+
+  it('still sends an identical word re-committed through a fresh composition', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+
+    // A new composition (compositionstart flipped the flag) commits the same
+    // word again — this is real input and must not be dropped as a duplicate.
+    core.textarea.value = '词词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 1 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词', '词'])
+  })
+
   it('rebases the composition region when compositionstart was dropped', () => {
     const { core, sends } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
