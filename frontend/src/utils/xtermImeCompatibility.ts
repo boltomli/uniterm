@@ -32,9 +32,13 @@ interface XtermCompositionHelperInternals {
   isComposing?: unknown
   _compositionPosition?: { start?: number; end?: number }
   _dataAlreadySent?: string
+  // Text of the most recent composition commit, recorded by the Windows patch
+  // and cleared on the next compositionstart (and by resetXtermInputState).
+  _lastCommittedText?: string
   _coreService?: {
     triggerDataEvent?: (this: unknown, data: string, wasUserInput?: boolean) => void
   }
+  compositionstart?: (this: XtermCompositionHelperInternals) => void
   compositionupdate?: (
     this: XtermCompositionHelperInternals,
     ev: Pick<CompositionEvent, 'data'>,
@@ -108,19 +112,25 @@ function isSameCharacter(left: string, right: string): boolean {
 // from an IME candidate click with no keydown at all). When two paths fire for
 // one commit the word reaches the PTY twice, and a dropped compositionstart
 // leaves _compositionPosition at an old offset so later commits re-send
-// everything accumulated in the textarea. Three guards, one per ordering:
+// everything accumulated in the textarea.
 //
-// - compositionupdate re-syncs the composition region when compositionstart
-//   was dropped;
+// Earlier fixes deduped by a LATE_EVENT_WINDOW_MS time window, but a busy
+// renderer or background-tab timer throttling stretches the gap between the
+// two sends past any window, so the word still doubled. The correct signal is
+// structural: record the text a composition just committed and drop any later
+// path that re-sends exactly that text, clearing the record only when the next
+// composition starts (the one event that proves a genuinely new commit).
+//
+// - compositionstart (and the dropped-compositionstart rebase) clear the
+//   recorded commit so a genuine re-commit of the same word still sends;
 // - the keydown finalize marks its region as sent (xterm's own
 //   _dataAlreadySent mechanism, xterm.js issue #3191) so a compositionend read
 //   arriving after it cannot send the same text again;
-// - _inputEvent drops an insertText whose data the composition read has just
-//   delivered (Chromium can order compositionend before the commit's input);
-// - the send ledger drops a straggler input event whose text another send path
-//   already delivered for the same keystroke (the modal loop can deliver a
-//   keystroke's input after its keyup, when xterm's _keyPressHandled /
-//   _keyDownSeen guards are already cleared).
+// - compositionupdate re-syncs the composition region when compositionstart
+//   was dropped;
+// - _inputEvent drops an insertText whose data equals the recorded commit
+//   (Chromium can order compositionend before the commit's input, or deliver
+//   the input after keyup once xterm's _keyDownSeen guard is cleared).
 function installWindowsImePatch(terminal: Terminal): Disposable {
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
@@ -133,46 +143,26 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
   // Last compositionupdate data: the committed text of a composition xterm
   // never saw is the tail that update describes.
   let lastCompositionData = ''
-  let lastCompositionCommitAt = 0
-  // Text the composition path (finalize / its deferred read) delivered last.
-  let lastCommittedText = ''
-  // Cross-path send ledger. xterm delivers each keystroke / commit through one
-  // of several send paths — the keydown handler, keypress, the deferred
-  // textarea diff, the composition read, the direct input handler — and the
-  // modal loop can make two of them fire for one input, so the same text
-  // reaches the PTY twice. Record every user-input send; a duplicate arriving
-  // through the *other kind* of path (one side the direct input handler, the
-  // other not) within LATE_EVENT_WINDOW_MS is dropped. Same-path repeats —
-  // key auto-repeat, repeated soft-keyboard taps — are never touched.
-  let inDirectInput = false
-  let lastSend: { data: string; at: number; viaInput: boolean } | null = null
+  // Text the composition path (finalize / its deferred read) delivered for the
+  // most recent commit. Stored on the helper so resetXtermInputState can clear
+  // it too; cleared again when the next composition starts (compositionstart).
+  helper._lastCommittedText = ''
 
-  const coreService = helper._coreService
-  if (coreService && typeof coreService.triggerDataEvent === 'function') {
-    const originalTrigger = coreService.triggerDataEvent
-    const patchedTrigger = function patchedTrigger(
-      this: unknown,
-      data: string,
-      wasUserInput?: boolean,
+  if (typeof helper.compositionstart === 'function') {
+    const originalCompositionStart = helper.compositionstart
+    const patchedCompositionStart = function patchedCompositionStart(
+      this: XtermCompositionHelperInternals,
     ): void {
-      const isUserText = wasUserInput === true && typeof data === 'string' && data.length > 0
-      if (isUserText && lastSend !== null) {
-        const sameText = lastSend.data === data
-        const acrossPaths = lastSend.viaInput !== inDirectInput
-        const recent = Date.now() - lastSend.at <= LATE_EVENT_WINDOW_MS
-        if (sameText && acrossPaths && recent) {
-          return
-        }
-        lastSend = { data, at: Date.now(), viaInput: inDirectInput }
-      } else if (isUserText) {
-        lastSend = { data, at: Date.now(), viaInput: inDirectInput }
-      }
-      originalTrigger.call(this, data, wasUserInput)
+      // A fresh composition supersedes the previous commit: forgetting its
+      // text keeps a genuinely identical re-commit from being mistaken for a
+      // duplicate straggler.
+      this._lastCommittedText = ''
+      originalCompositionStart.call(this)
     }
-    coreService.triggerDataEvent = patchedTrigger
+    helper.compositionstart = patchedCompositionStart
     disposers.push(() => {
-      if (coreService.triggerDataEvent === patchedTrigger) {
-        coreService.triggerDataEvent = originalTrigger
+      if (helper.compositionstart === patchedCompositionStart) {
+        helper.compositionstart = originalCompositionStart
       }
     })
   }
@@ -188,6 +178,9 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
         // compositionstart was dropped: rebase the region to this update, the
         // way compositionstart would have, so the compositionend read delivers
         // only the new text instead of the whole accumulated textarea value.
+        // This is still the start of a new composition, so forget the prior
+        // commit the same way compositionstart does.
+        this._lastCommittedText = ''
         this._isComposing = true
         this._isSendingComposition = false
         this._dataAlreadySent = ''
@@ -222,22 +215,23 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
         ? textarea.value.substring(start + alreadySent)
         : textarea.value.substring(start, end)
       if (waitForPropagation && wouldSend.length > 0) {
-        // The drag's event storm can deliver compositionend twice. If a read
-        // is already scheduled for this commit, or the same text was just
-        // delivered (and no fresh composition has started since), scheduling
-        // another read would send the word twice.
+        // compositionend can be delivered twice for one commit. If a read is
+        // already scheduled, or an earlier finalize of the same commit already
+        // delivered this text (and no fresh composition has started since),
+        // scheduling another read would send the word twice. Matching the
+        // committed text structurally — not by a time window — keeps a
+        // straggler loss-free however late it arrives (a busy renderer or
+        // background-tab timer throttling can stretch the gap past any window).
         const readPending = this._isSendingComposition === true
-        const justDelivered =
-          wouldSend === lastCommittedText &&
-          Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS &&
-          this._isComposing !== true
+        const justDelivered = wouldSend === this._lastCommittedText
         if (readPending || justDelivered) {
           return
         }
       }
-      lastCommittedText = wouldSend
+      if (wouldSend.length > 0) {
+        this._lastCommittedText = wouldSend
+      }
       originalFinalize.call(this, waitForPropagation)
-      lastCompositionCommitAt = Date.now()
       if (!waitForPropagation && region.length > 0) {
         // The keydown finalize sends substring(start, end) immediately but
         // leaves the text in the textarea, so a compositionend landing after
@@ -277,26 +271,16 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
           return true
         }
       }
-      // The composition read (or the keydown finalize) just delivered exactly
-      // this text and the commit's input event arrived after it — drop it.
-      // Matching the delivered text, not the textarea region, keeps genuinely
-      // new input loss-free even when it happens to equal the region.
-      if (
-        ev.data === lastCommittedText &&
-        Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS
-      ) {
+      // The composition read (or the keydown finalize) already delivered
+      // exactly this text and the commit's input event arrived after it — drop
+      // it. Matching the committed text structurally (not by a time window)
+      // keeps a late straggler loss-free, and a genuinely new commit always
+      // starts with a fresh composition that clears the recorded text.
+      if (ev.data === helper?._lastCommittedText) {
         return true
       }
     }
-    // The send ledger tags what goes out below as direct-input traffic so it
-    // can tell this path apart from the keydown / keypress / textarea-diff /
-    // composition-read paths when looking for cross-path duplicates.
-    inDirectInput = true
-    try {
-      return originalInputEvent!.call(this, ev)
-    } finally {
-      inDirectInput = false
-    }
+    return originalInputEvent!.call(this, ev)
   }
   core._inputEvent = patchedInputEvent
 
@@ -340,6 +324,7 @@ export function resetXtermInputState(
     helper._isSendingComposition = false
     helper._isComposing = false
     helper._dataAlreadySent = ''
+    helper._lastCommittedText = ''
     helper._compositionPosition = { start: 0, end: 0 }
     const compositionView = core?._helperContainer?.querySelector?.('.composition-view')
     compositionView?.classList.remove('active')

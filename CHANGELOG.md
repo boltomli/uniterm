@@ -34,7 +34,8 @@
 - Containers: fixes silently failing when a container references an SSH host without saved credentials — the credential dialog now opens.
 - Terminal: fixes the app freezing when a command floods the terminal with output.
 - Terminal: fixes highlighting not applying to lines that span a soft wrap.
-- Windows IME: fixes the input method drifting off-screen to the top-left and committed words being typed twice after dragging the window. The drag's modal loop reorders and drops IME events, leaving xterm's input state stuck; the state is now flushed at drag start/end (with a blur+focus round trip that repositions the IME window) and every keystroke/commit is delivered to the terminal exactly once.
+- Windows IME: fixes committed words being typed twice. The previous dedup compared the two deliveries within a fixed time window, which a busy renderer or background-tab timer throttling could stretch past, so the word still doubled; the commit is now tracked structurally — the committed text is remembered, any later path that re-sends it is dropped, and the memory is cleared only when the next composition starts — so a duplicate is dropped however late it arrives, and a genuine re-commit of the same word still sends.
+- Windows IME: fixes the input method drifting off-screen to the top-left after dragging the window (a blur+focus round trip at drag end repositions the IME window).
 - SMB: fixes a session dying silently after idle — reconnect now restores the previous directory.
 - UI: fixes progress bars and status indicators turning invisible in background-image mode.
 - Linux: fixes the running window showing as an orphan with a generic icon on GNOME Wayland — the desktop file is now named after the Wayland app_id (`org.wails.uniterm.desktop`) so the window correctly matches its launcher. (@Teejer)
@@ -78,7 +79,8 @@ Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contrib
 - 容器：修复引用的 SSH 主机没有保存凭据时静默失败的问题，现在会弹出凭据录入对话框。
 - 终端：修复命令大量输出时整个应用卡死的问题。
 - 终端：修复跨软换行的行高亮不生效的问题。
-- Windows 输入法：修复拖动窗口后输入法候选框漂移到屏幕左上、上屏词语重复输入两次的问题——拖动的模态循环会打乱/丢失 IME 事件并让 xterm 输入状态卡住；现在在拖动开始/结束时清理输入状态（并以失焦+聚焦让系统重算输入法窗口位置），每个按键/上屏只送达终端一次。
+- Windows 输入法：修复上屏词语重复输入两次的问题。此前的去重依赖两次送达之间的时间窗口，渲染进程繁忙或后台标签页定时器节流会拉长间隔，导致词语仍会重复；现在改为结构化跟踪——记录本次上屏文本、丢弃任何后续重复送达、仅在下一次组合开始时清除——无论重复送达多晚到达都会被丢弃，而再次上屏相同词语仍能正常送达。
+- Windows 输入法：修复拖动窗口后输入法候选框漂移到屏幕左上角的问题（拖动结束时以失焦+聚焦让系统重算输入法窗口位置）。
 - SMB：修复空闲后会话静默失效的问题——重连后恢复原目录。
 - 界面：修复背景图模式下进度条、状态指示不可见的问题。
 - Linux：修复 GNOME Wayland 下运行窗口显示为无图标孤立窗口的问题——桌面文件改为按 Wayland app_id 命名（`org.wails.uniterm.desktop`），窗口可正确关联启动器图标。(@Teejer)

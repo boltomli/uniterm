@@ -76,6 +76,12 @@ function makeFakeCore(inputEventResult: boolean = true) {
           if (input.length > 0) this._coreService.triggerDataEvent(input, true)
         }, 0)
       },
+      // Mirror of xterm's CompositionHelper.compositionstart.
+      compositionstart(this: Record<string, any>) {
+        this._isComposing = true
+        this._compositionPosition.start = core.textarea.value.length
+        this._dataAlreadySent = ''
+      },
       compositionupdate(this: Record<string, any>) {
         setTimeout(() => {
           this._compositionPosition.end = core.textarea.value.length
@@ -654,7 +660,7 @@ describe('windows composition pipeline', () => {
     expect(sends).toEqual(['词'])
   })
 
-  it('delivers a second commit of the same word outside the dedup window', () => {
+  it('drops a straggler commit of the same word even after a long delay', () => {
     const { core, calls, sends } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
     const helper = core._compositionHelper
@@ -665,13 +671,14 @@ describe('windows composition pipeline', () => {
     vi.runAllTimers()
     expect(sends).toEqual(['词'])
 
+    // A busy renderer or background-tab timer throttling can delay the
+    // straggler input event well past any time window. The structural match
+    // still drops it (this is the case the old 250ms window missed).
     vi.advanceTimersByTime(300)
     core._keyDownSeen = false
     expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
-    // The fake handler reports its own result; assert it actually ran and
-    // appended the second word instead of being swallowed.
-    expect(calls).toHaveLength(1)
-    expect(core.textarea.value).toBe('词词')
+    expect(calls).toHaveLength(0)
+    expect(sends).toEqual(['词'])
   })
 
   it('never swallows fresh input that differs from the delivered commit', () => {
@@ -696,52 +703,24 @@ describe('windows composition pipeline', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('drops a straggler input duplicating another send path', () => {
+  it('clears the recorded commit when the next composition starts', () => {
     const { core, calls, sends } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
-    // The keydown/keypress path already delivered the character…
-    core._compositionHelper._coreService.triggerDataEvent('A', true)
-    expect(sends).toEqual(['A'])
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
 
-    // …then the modal loop delivers the keystroke's input event after its
-    // keyup, when xterm's _keyPressHandled guard is already cleared.
+    // A fresh composition supersedes the previous commit: its insertText is
+    // the next commit, not a straggler of this one, and must pass through.
+    helper.compositionstart()
     core._keyDownSeen = false
-    expect(core._inputEvent.call(core, insertText('A'))).toBe(true)
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
     expect(calls).toHaveLength(1)
-    expect(sends).toEqual(['A'])
-  })
-
-  it('drops the duplicate in the reverse order too', () => {
-    const { core, sends } = makeFakeCore()
-    installImeCompatibilityPatch(fakeTerminal(core))
-    core._keyDownSeen = false
-    core._inputEvent.call(core, insertText('A'))
-    expect(sends).toEqual(['A'])
-
-    // The deferred textarea diff of the same keystroke fires afterwards.
-    core._compositionHelper._coreService.triggerDataEvent('A', true)
-    expect(sends).toEqual(['A'])
-  })
-
-  it('keeps identical repeats through the same path', () => {
-    const { core, sends } = makeFakeCore()
-    installImeCompatibilityPatch(fakeTerminal(core))
-    core._compositionHelper._coreService.triggerDataEvent('A', true)
-    core._compositionHelper._coreService.triggerDataEvent('A', true)
-    core._keyDownSeen = false
-    core._inputEvent.call(core, insertText('B'))
-    core._inputEvent.call(core, insertText('B'))
-    expect(sends).toEqual(['A', 'A', 'B', 'B'])
-  })
-
-  it('keeps identical text delivered outside the window', () => {
-    const { core, sends } = makeFakeCore()
-    installImeCompatibilityPatch(fakeTerminal(core))
-    core._compositionHelper._coreService.triggerDataEvent('A', true)
-    vi.advanceTimersByTime(300)
-    core._keyDownSeen = false
-    core._inputEvent.call(core, insertText('A'))
-    expect(sends).toEqual(['A', 'A'])
+    expect(sends).toEqual(['词', '词'])
   })
 
   it('sends once when compositionend is delivered twice back-to-back', () => {
@@ -783,8 +762,10 @@ describe('windows composition pipeline', () => {
     vi.runAllTimers()
     expect(sends).toEqual(['词'])
 
-    // A new composition (compositionstart flipped the flag) commits the same
-    // word again — this is real input and must not be dropped as a duplicate.
+    // A new composition (compositionstart clears the recorded commit) commits
+    // the same word again — this is real input and must not be dropped as a
+    // duplicate.
+    helper.compositionstart()
     core.textarea.value = '词词'
     helper._isComposing = true
     helper._compositionPosition = { start: 1 }
@@ -820,13 +801,16 @@ describe('windows composition pipeline', () => {
   it('dispose restores the composition handlers', () => {
     const { core } = makeFakeCore()
     const helper = core._compositionHelper
+    const originalStart = helper.compositionstart
     const originalUpdate = helper.compositionupdate
     const originalFinalize = helper._finalizeComposition
     const disposable = installImeCompatibilityPatch(fakeTerminal(core))
+    expect(helper.compositionstart).not.toBe(originalStart)
     expect(helper.compositionupdate).not.toBe(originalUpdate)
     expect(helper._finalizeComposition).not.toBe(originalFinalize)
 
     disposable.dispose()
+    expect(helper.compositionstart).toBe(originalStart)
     expect(helper.compositionupdate).toBe(originalUpdate)
     expect(helper._finalizeComposition).toBe(originalFinalize)
   })
@@ -843,6 +827,7 @@ describe('resetXtermInputState', () => {
     helper._isComposing = true
     helper._isSendingComposition = true
     helper._dataAlreadySent = '词'
+    helper._lastCommittedText = '词'
     helper._compositionPosition = { start: 1, end: 2 }
     core.textarea.value = '词'
 
@@ -857,6 +842,7 @@ describe('resetXtermInputState', () => {
     expect(helper._isComposing).toBe(false)
     expect(helper._isSendingComposition).toBe(false)
     expect(helper._dataAlreadySent).toBe('')
+    expect(helper._lastCommittedText).toBe('')
     expect(helper._compositionPosition).toEqual({ start: 0, end: 0 })
     expect(core.textarea.value).toBe('')
     expect(core.textarea.blur).toHaveBeenCalled()
