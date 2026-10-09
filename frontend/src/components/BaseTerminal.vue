@@ -184,6 +184,7 @@ import {
   sanitizeTerminalOutput,
   sanitizeLiveTerminalOutput,
 } from '../utils/terminalSanitize'
+import { resetXtermInputState } from '../utils/xtermImeCompatibility'
 import { useTerminalInput } from '../composables/useTerminalInput'
 import { useSuggestions } from '../composables/useSuggestions'
 import TerminalSuggestion from './TerminalSuggestion.vue'
@@ -324,44 +325,13 @@ let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
 let onVisibilityChange: (() => void) | null = null
 
-// Reset xterm's internal IME composition state. Two variants:
-// - resetIMEState:        only clears internal flags (safe during active typing)
-// - resetIMEComposition:  also blurs textarea to end OS-level composition (for
-//                         deactivation / visibility change when terminal is hidden)
-//
-// Accessing _core._compositionHelper is fragile but necessary — xterm exposes
-// no public API for this. The guard ensures we only act when composition is
-// actually active.
-function resetIMEState(): boolean {
-  if (!terminal) return false
-  const core = (terminal as any)._core
-  const ch = core?._compositionHelper
-  if (!ch) return false
-  if (!ch._isComposing && !ch._isSendingComposition) return false
-  ch._isSendingComposition = false
-  ch._isComposing = false
-  ch._dataAlreadySent = ''
-  const cv = core?._helperContainer?.querySelector?.('.composition-view')
-  if (cv) cv.classList.remove('active')
-  return true
-}
-
-function resetIMEComposition(): boolean {
-  if (!resetIMEState()) return false
-  // Clear the textarea and end the OS-level composition via blur.
-  if (terminal?.textarea) {
-    terminal.textarea.value = ''
-    terminal.textarea.blur()
-  }
-  return true
-}
-
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // Trailing resize for size changes observed while a resize gate (window
 // resize debounce / split drag / suppress window) was active. Separate from
 // resizeTimer so it never cancels another handler's pending resize.
 let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
+let unsubMoveResizeStart: (() => void) | null = null
 let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
@@ -899,15 +869,20 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
-  // WM_EXITSIZEMOVE: WebView2 can drop the compositionend of a composition
-  // interrupted by the native drag's modal loop, leaving xterm's IME state
-  // stuck — the next committed word then goes out twice (stale state only
-  // cleared when the user switched windows or toggled the IME). Cancel the
-  // composition the same way those actions do, and hand focus straight back
-  // so typing can continue without a click.
+  // WM_EXITSIZEMOVE: the drag's modal loop can drop the compositionend of a
+  // composition it interrupted and reorder key events, leaving xterm's key /
+  // composition state stuck — the next committed word then goes out twice.
+  // WebView2 also stops re-reporting the caret layout to the IME after the
+  // window moved (WebView2Feedback#5675/#1611), so the composition/candidate
+  // window drifts to the screen origin (top left, off-screen) until something
+  // forces a re-sync. Reset every transient input state and run a blur+focus
+  // round trip: the focus change makes the OS recompute the IME window
+  // position from the caret, and focus goes straight back so typing can
+  // continue without a click.
   const textarea = terminal?.textarea
   const hadFocus = !!textarea && document.activeElement === textarea
-  if (resetIMEComposition() && hadFocus && textarea) textarea.focus()
+  resetXtermInputState(terminal, { blur: true })
+  if (hadFocus && textarea) textarea.focus()
   resizeTimer = setTimeout(() => resize(), 100)
 }
 
@@ -1694,6 +1669,14 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
+  // WM_ENTERSIZEMOVE, before the OS enters its modal move/size loop: flush
+  // xterm's transient input state without taking focus (the user is dragging
+  // the window and must not have to re-click the terminal), so the loop
+  // cannot corrupt a live composition into a duplicated commit. The
+  // definitive blur+refocus happens at move end (onNativeResizeEnd).
+  unsubMoveResizeStart = Events.On('rdp:move-resize-start', () => {
+    if (isActive.value) resetXtermInputState(terminal, { blur: false })
+  })
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1763,12 +1746,12 @@ onMounted(() => {
   bindListeners()
 
   // When the browser tab/page becomes hidden (user switches to another app
-  // or another browser tab), reset IME composition state. This prevents the
-  // OS IME from continuing to feed characters into the hidden textarea,
-  // which causes input duplication when the user returns.
+  // or another browser tab), reset xterm's transient input state. This
+  // prevents the OS IME from continuing to feed characters into the hidden
+  // textarea, which causes input duplication when the user returns.
   onVisibilityChange = () => {
     if (document.hidden && isActive.value) {
-      resetIMEComposition()
+      resetXtermInputState(terminal)
     }
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -1896,11 +1879,11 @@ onDeactivated(() => {
   // Buffer freezes from here (live session:data handler gates on isActive) —
   // publish it so buffer readers stop trusting the screen.
   markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
-  // Reset IME composition state so the OS IME doesn't continue feeding
-  // characters into the textarea while the terminal is hidden. Without
-  // this, the stale composition state causes input duplication when the
-  // user switches back (issue: IME offscreen duplicate input).
-  resetIMEComposition()
+  // Reset xterm's transient input state so the OS IME doesn't continue
+  // feeding characters into the textarea while the terminal is hidden.
+  // Without this, the stale composition/key state causes input duplication
+  // when the user switches back (issue: IME offscreen duplicate input).
+  resetXtermInputState(terminal)
   // Capture viewport position before listeners are torn down so reactivation
   // can restore the user's scroll position. Reading from the public IBuffer
   // API avoids depending on internal _core field shape.
@@ -2178,6 +2161,8 @@ onUnmounted(() => {
   window.removeEventListener('split:resize-end', onSplitResizeEnd)
   unsubNativeResizeEnd?.()
   unsubNativeResizeEnd = null
+  unsubMoveResizeStart?.()
+  unsubMoveResizeStart = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
   if (onResetOutput) window.removeEventListener('terminal:reset-output', onResetOutput)

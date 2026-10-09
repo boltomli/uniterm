@@ -1,21 +1,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installImeCompatibilityPatch } from './xtermImeCompatibility'
+import { installImeCompatibilityPatch, resetXtermInputState } from './xtermImeCompatibility'
 
 interface FakeCore {
   [key: string]: unknown
   _inputEvent: (this: Record<string, unknown>, ev: InputEvent) => boolean
   _keyDownSeen: boolean
-  _compositionHelper: Record<string, unknown>
+  _keyDownHandled: boolean
+  _keyPressHandled: boolean
+  _unprocessedDeadKey: boolean
+  _compositionHelper: Record<string, any>
   textarea: {
     value: string
     listeners: Map<string, EventListener>
     addEventListener: (type: string, fn: EventListener) => void
     removeEventListener: (type: string, fn: EventListener) => void
+    blur: () => void
+    focus: () => void
   }
 }
 
 function makeFakeCore(inputEventResult: boolean = true) {
   const calls: { keyDownSeenAtCall: boolean | undefined }[] = []
+  // What xterm's composition pipeline sent to the PTY (the fake helper below
+  // mirrors CompositionHelper's send paths).
+  const sends: string[] = []
   const core: FakeCore = {
     _inputEvent: function (this: Record<string, unknown>, ev: InputEvent) {
       calls.push({ keyDownSeenAtCall: this._keyDownSeen as boolean | undefined })
@@ -25,7 +33,44 @@ function makeFakeCore(inputEventResult: boolean = true) {
       return inputEventResult
     },
     _keyDownSeen: true,
-    _compositionHelper: { _isComposing: false, _isSendingComposition: false },
+    _keyDownHandled: false,
+    _keyPressHandled: false,
+    _unprocessedDeadKey: false,
+    _compositionHelper: {
+      _isComposing: false,
+      _isSendingComposition: false,
+      _compositionPosition: { start: 0, end: 0 },
+      _dataAlreadySent: '',
+      // Mirror of xterm's CompositionHelper._finalizeComposition: the
+      // keydown-driven variant sends substring(start, end) synchronously, the
+      // compositionend variant schedules a deferred read of the region minus
+      // what _dataAlreadySent says was already sent (xterm.js issue #3191).
+      _finalizeComposition(this: Record<string, any>, waitForPropagation: boolean) {
+        const start = (this._compositionPosition?.start as number) ?? 0
+        const end = (this._compositionPosition?.end as number) ?? start
+        this._isComposing = false
+        if (!waitForPropagation) {
+          this._isSendingComposition = false
+          const input = core.textarea.value.substring(start, end)
+          if (input.length > 0) sends.push(input)
+          return
+        }
+        const snapshotStart = start
+        this._isSendingComposition = true
+        setTimeout(() => {
+          if (!this._isSendingComposition) return
+          this._isSendingComposition = false
+          const from = snapshotStart + (this._dataAlreadySent?.length ?? 0)
+          const input = core.textarea.value.substring(from)
+          if (input.length > 0) sends.push(input)
+        }, 0)
+      },
+      compositionupdate(this: Record<string, any>) {
+        setTimeout(() => {
+          this._compositionPosition.end = core.textarea.value.length
+        }, 0)
+      },
+    },
     textarea: {
       value: '',
       listeners: new Map(),
@@ -35,9 +80,11 @@ function makeFakeCore(inputEventResult: boolean = true) {
       removeEventListener(type: string, fn: EventListener) {
         if (core.textarea.listeners.get(type) === fn) core.textarea.listeners.delete(type)
       },
+      blur: vi.fn(),
+      focus: vi.fn(),
     },
   }
-  return { core, calls }
+  return { core, calls, sends }
 }
 
 function fakeTerminal(core: FakeCore, input = vi.fn()) {
@@ -545,5 +592,157 @@ describe('windows duplicate-commit guard', () => {
 
     disposable.dispose()
     expect(core._inputEvent).toBe(original)
+  })
+})
+
+describe('windows composition pipeline', () => {
+  beforeEach(() => {
+    vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0; Win64; x64' })
+    vi.useFakeTimers()
+  })
+
+  it('sends a keydown-finalized commit once even when compositionend follows it', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    // The committed word is in the textarea (xterm never clears it mid-flow).
+    core.textarea.value = '你好'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0, end: 2 }
+
+    // Enter/Space confirming the candidate finalizes through the keydown path…
+    helper._finalizeComposition(false)
+    expect(sends).toEqual(['你好'])
+
+    // …and the reordered compositionend schedules xterm's deferred read,
+    // which must not deliver the same text a second time.
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['你好'])
+  })
+
+  it('drops a late insertText whose text the composition read just delivered', () => {
+    const { core, calls, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+
+    // compositionend → the deferred read delivers the word…
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+
+    // …then the commit's input event arrives (Chromium can order
+    // compositionend first). The flags are clear, but the word is already on
+    // the PTY — the region still holds exactly what was delivered.
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    expect(calls).toHaveLength(0)
+    expect(sends).toEqual(['词'])
+  })
+
+  it('delivers a second commit of the same word outside the dedup window', () => {
+    const { core, calls, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    core.textarea.value = '词'
+    helper._isComposing = true
+    helper._compositionPosition = { start: 0 }
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词'])
+
+    vi.advanceTimersByTime(300)
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    // The fake handler reports its own result; assert it actually ran and
+    // appended the second word instead of being swallowed.
+    expect(calls).toHaveLength(1)
+    expect(core.textarea.value).toBe('词词')
+  })
+
+  it('rebases the composition region when compositionstart was dropped', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    // '旧词' was committed earlier and the drag's modal loop dropped the next
+    // compositionstart: xterm's region still points at offset 0 while the
+    // textarea keeps accumulating.
+    core.textarea.value = '旧词新'
+    helper._isComposing = false
+    helper._isSendingComposition = false
+    helper._compositionPosition = { start: 0 }
+
+    helper.compositionupdate({ data: '新' })
+    expect(helper._isComposing).toBe(true)
+    expect(helper._compositionPosition.start).toBe(2)
+
+    // The preedit commit lands in the textarea, then compositionend runs the
+    // deferred read — only the new word may go out.
+    core.textarea.value = '旧词新词'
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['新词'])
+  })
+
+  it('dispose restores the composition handlers', () => {
+    const { core } = makeFakeCore()
+    const helper = core._compositionHelper
+    const originalUpdate = helper.compositionupdate
+    const originalFinalize = helper._finalizeComposition
+    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
+    expect(helper.compositionupdate).not.toBe(originalUpdate)
+    expect(helper._finalizeComposition).not.toBe(originalFinalize)
+
+    disposable.dispose()
+    expect(helper.compositionupdate).toBe(originalUpdate)
+    expect(helper._finalizeComposition).toBe(originalFinalize)
+  })
+})
+
+describe('resetXtermInputState', () => {
+  it('clears key and composition state and blurs the textarea', () => {
+    const { core } = makeFakeCore()
+    core._keyDownHandled = true
+    core._keyPressHandled = true
+    core._keyDownSeen = true
+    core._unprocessedDeadKey = true
+    const helper = core._compositionHelper
+    helper._isComposing = true
+    helper._isSendingComposition = true
+    helper._dataAlreadySent = '词'
+    helper._compositionPosition = { start: 1, end: 2 }
+    core.textarea.value = '词'
+
+    resetXtermInputState(fakeTerminal(core))
+
+    expect([
+      core._keyDownHandled,
+      core._keyPressHandled,
+      core._keyDownSeen,
+      core._unprocessedDeadKey,
+    ]).toEqual([false, false, false, false])
+    expect(helper._isComposing).toBe(false)
+    expect(helper._isSendingComposition).toBe(false)
+    expect(helper._dataAlreadySent).toBe('')
+    expect(helper._compositionPosition).toEqual({ start: 0, end: 0 })
+    expect(core.textarea.value).toBe('')
+    expect(core.textarea.blur).toHaveBeenCalled()
+  })
+
+  it('keeps focus when called with blur: false (drag start)', () => {
+    const { core } = makeFakeCore()
+    core.textarea.value = '词'
+
+    resetXtermInputState(fakeTerminal(core), { blur: false })
+
+    expect(core.textarea.value).toBe('')
+    expect(core.textarea.blur).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op without a terminal', () => {
+    expect(() => resetXtermInputState(null)).not.toThrow()
   })
 })

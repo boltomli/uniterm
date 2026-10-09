@@ -18,6 +18,9 @@ import type { Terminal } from '@xterm/xterm'
 // keyCode 229, so uppercase had no delivery path left at all. xterm skips its
 // direct path whenever `composed && _keyDownSeen`, so that is the condition we
 // key off, rather than inferring it from an IME-specific keyCode.
+//
+// Windows (WebView2) is covered by installWindowsImePatch and
+// resetXtermInputState — see their comments.
 
 export interface Disposable {
   dispose(): void
@@ -27,17 +30,34 @@ interface XtermCompositionHelperInternals {
   _isComposing?: unknown
   _isSendingComposition?: unknown
   isComposing?: unknown
-  _compositionPosition?: { start?: number }
+  _compositionPosition?: { start?: number; end?: number }
+  _dataAlreadySent?: string
+  compositionupdate?: (
+    this: XtermCompositionHelperInternals,
+    ev: Pick<CompositionEvent, 'data'>,
+  ) => void
+  _finalizeComposition?: (
+    this: XtermCompositionHelperInternals,
+    waitForPropagation: boolean,
+  ) => void
 }
 
 interface XtermCoreInternals {
   _inputEvent?: (this: XtermCoreInternals, ev: InputEvent) => boolean
   _keyDownSeen?: boolean
+  _keyDownHandled?: boolean
+  _keyPressHandled?: boolean
+  _unprocessedDeadKey?: boolean
   _compositionHelper?: XtermCompositionHelperInternals
+  _helperContainer?: {
+    querySelector?: (selector: string) => { classList: { remove: (token: string) => void } } | null
+  } | null
   textarea?: {
     value: string
     addEventListener: (type: string, listener: EventListener, capture?: boolean) => void
     removeEventListener: (type: string, listener: EventListener, capture?: boolean) => void
+    blur?: () => void
+    focus?: () => void
   } | null
 }
 
@@ -76,21 +96,91 @@ function isSameCharacter(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase()
 }
 
-// Windows/WebView2: xterm delivers a committed IME word through two paths —
-// the deferred textarea read queued on compositionend, and the direct
-// insertText send in _inputEvent (reached when the commit's keyup beat its
-// input event, or the commit came from an IME candidate click with no keydown
-// at all). After a native window drag (WM_ENTERSIZEMOVE's modal loop reorders
-// key events) both paths fire and the word reaches the PTY twice; the stale
-// state only clears when the user switches windows or toggles the IME.
-// While a commit is in flight the composition path owns the text: skip the
-// direct send when the event's data is already covered by the textarea region
-// the pending compositionend read will deliver.
-function installWindowsCommitGuard(terminal: Terminal): Disposable {
+// Windows/WebView2: a native window drag runs a modal loop (WM_ENTERSIZEMOVE)
+// that reorders and drops IME events, and xterm delivers a committed word
+// through more than one path — the deferred textarea read queued on
+// compositionend, the immediate send of the keydown finalize (Enter/Space
+// confirming a candidate), and the direct insertText send in _inputEvent
+// (reached when the commit's keyup beat its input event, or the commit came
+// from an IME candidate click with no keydown at all). When two paths fire for
+// one commit the word reaches the PTY twice, and a dropped compositionstart
+// leaves _compositionPosition at an old offset so later commits re-send
+// everything accumulated in the textarea. Three guards, one per ordering:
+//
+// - compositionupdate re-syncs the composition region when compositionstart
+//   was dropped;
+// - the keydown finalize marks its region as sent (xterm's own
+//   _dataAlreadySent mechanism, xterm.js issue #3191) so a compositionend read
+//   arriving after it cannot send the same text again;
+// - _inputEvent drops an insertText whose data the composition read has just
+//   delivered (Chromium can order compositionend before the commit's input).
+function installWindowsImePatch(terminal: Terminal): Disposable {
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
   if (!core || !helper || typeof core._inputEvent !== 'function' || !core.textarea) {
     return noopDisposable
+  }
+
+  const textarea = core.textarea
+  const disposers: (() => void)[] = []
+  // Last compositionupdate data: the committed text of a composition xterm
+  // never saw is the tail that update describes.
+  let lastCompositionData = ''
+  let lastCompositionCommitAt = 0
+
+  if (typeof helper.compositionupdate === 'function') {
+    const originalCompositionUpdate = helper.compositionupdate
+    const patchedCompositionUpdate = function patchedCompositionUpdate(
+      this: XtermCompositionHelperInternals,
+      ev: Pick<CompositionEvent, 'data'>,
+    ): void {
+      lastCompositionData = typeof ev?.data === 'string' ? ev.data : ''
+      if (this._isComposing !== true && this._isSendingComposition !== true) {
+        // compositionstart was dropped: rebase the region to this update, the
+        // way compositionstart would have, so the compositionend read delivers
+        // only the new text instead of the whole accumulated textarea value.
+        this._isComposing = true
+        this._isSendingComposition = false
+        this._dataAlreadySent = ''
+        const start = Math.max(0, textarea.value.length - lastCompositionData.length)
+        if (this._compositionPosition) this._compositionPosition.start = start
+        else this._compositionPosition = { start, end: start }
+      }
+      originalCompositionUpdate.call(this, ev)
+    }
+    helper.compositionupdate = patchedCompositionUpdate
+    disposers.push(() => {
+      if (helper.compositionupdate === patchedCompositionUpdate) {
+        helper.compositionupdate = originalCompositionUpdate
+      }
+    })
+  }
+
+  if (typeof helper._finalizeComposition === 'function') {
+    const originalFinalize = helper._finalizeComposition
+    const patchedFinalize = function patchedFinalize(
+      this: XtermCompositionHelperInternals,
+      waitForPropagation: boolean,
+    ): void {
+      const start = this._compositionPosition?.start ?? 0
+      const region = textarea.value.substring(start)
+      originalFinalize.call(this, waitForPropagation)
+      lastCompositionCommitAt = Date.now()
+      if (!waitForPropagation && region.length > 0) {
+        // The keydown finalize sends substring(start, end) immediately but
+        // leaves the text in the textarea, so a compositionend landing after
+        // it would schedule a second send of the same text. Record the whole
+        // region as sent: xterm's _dataAlreadySent advances the deferred read
+        // past it (and past the trailing characters their own key paths send).
+        this._dataAlreadySent = region
+      }
+    }
+    helper._finalizeComposition = patchedFinalize
+    disposers.push(() => {
+      if (helper._finalizeComposition === patchedFinalize) {
+        helper._finalizeComposition = originalFinalize
+      }
+    })
   }
 
   const originalInputEvent = core._inputEvent
@@ -99,16 +189,23 @@ function installWindowsCommitGuard(terminal: Terminal): Disposable {
     ev: InputEvent,
   ): boolean {
     if (
-      (helper._isSendingComposition === true || helper._isComposing === true) &&
       ev.inputType === 'insertText' &&
       typeof ev.data === 'string' &&
       ev.data.length > 0
     ) {
-      const textarea = this.textarea
-      const start = helper._compositionPosition?.start ?? 0
-      if (textarea && textarea.value.substring(start).includes(ev.data)) {
-        // The pending compositionend read delivers the same text.
-        return true
+      const start = this._compositionHelper?._compositionPosition?.start ?? 0
+      const region = (this.textarea ?? textarea).value.substring(start)
+      if (region.includes(ev.data)) {
+        const inFlight =
+          this._compositionHelper?._isSendingComposition === true ||
+          this._compositionHelper?._isComposing === true
+        // Either the composition path owns this text and its pending read will
+        // deliver the whole region, or the read just did (the region still
+        // holds exactly what was delivered) — either way, sending it again
+        // from the direct path would commit the word twice.
+        if (inFlight || (Date.now() - lastCompositionCommitAt <= LATE_EVENT_WINDOW_MS && region === ev.data)) {
+          return true
+        }
       }
     }
     return originalInputEvent!.call(this, ev)
@@ -120,7 +217,48 @@ function installWindowsCommitGuard(terminal: Terminal): Disposable {
       if (core._inputEvent === patchedInputEvent) {
         core._inputEvent = originalInputEvent
       }
+      for (const disposer of disposers) disposer()
+      disposers.length = 0
     },
+  }
+}
+
+// Reset every transient xterm input state to the "nothing in flight"
+// baseline. xterm routes each keystroke through exactly one send path
+// (keydown / keypress / input / composition finalize), gated by mutually
+// exclusive flags; the WM_ENTERSIZEMOVE modal loop can drop or reorder key
+// events and leave those flags stuck, after which one keystroke goes out
+// through several paths at once (duplicate/triplicate input). Safe at
+// drag/resize boundaries and when the terminal is hidden — the user is not
+// typing at those moments. `blur: false` keeps the textarea focused (drag
+// start) while still clearing its value, so a late compositionend read finds
+// nothing to send; `blur: true` (the default) also ends any OS-level
+// composition.
+export function resetXtermInputState(
+  terminal: Terminal | null | undefined,
+  opts: { blur?: boolean } = {},
+): void {
+  if (!terminal) return
+  const core = (terminal as TerminalWithCore)._core
+  const textarea = core?.textarea
+  if (core) {
+    core._keyDownHandled = false
+    core._keyPressHandled = false
+    core._keyDownSeen = false
+    core._unprocessedDeadKey = false
+  }
+  const helper = core?._compositionHelper
+  if (helper) {
+    helper._isSendingComposition = false
+    helper._isComposing = false
+    helper._dataAlreadySent = ''
+    helper._compositionPosition = { start: 0, end: 0 }
+    const compositionView = core?._helperContainer?.querySelector?.('.composition-view')
+    compositionView?.classList.remove('active')
+  }
+  if (textarea) {
+    textarea.value = ''
+    if (opts.blur !== false) textarea.blur?.()
   }
 }
 
@@ -129,7 +267,7 @@ export function installImeCompatibilityPatch(terminal: Terminal): Disposable {
     return installMacImePatch(terminal)
   }
   if (/Windows/i.test(navigator.userAgent)) {
-    return installWindowsCommitGuard(terminal)
+    return installWindowsImePatch(terminal)
   }
   return noopDisposable
 }
