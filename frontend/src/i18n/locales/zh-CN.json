@@ -1866,6 +1866,8 @@
   "ai.attachmentTooManyText": "每条消息最多添加 {limit} 个文本文件",
   "ai.attachmentEmpty": "{name} 是空文件",
   "ai.attachmentBinary": "{name} 看起来是二进制文件，无法作为文本附加",
+  "ai.attachmentDropHere": "松开添加附件",
+  "ai.attachmentIsDirectory": "不支持文件夹：{name} 是目录",
   "ai.attachmentReadFailed": "无法读取 {name}",
   "ai.attachmentErrTooLarge": "附件超过大小上限，未发送任何内容。",
   "ai.attachmentErrUnsupportedType": "附件格式不受支持，未发送任何内容。",

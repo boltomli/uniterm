@@ -67,6 +67,15 @@ func (s *ConnectionStore) Save(data session.ConnectionStoreData) error {
 	// Encrypt password fields in place before writing JSON.
 	for i := range connections {
 		conn := &connections[i]
+		if conn.AuthType != "password" {
+			// A cached plaintext login password belongs to password auth
+			// only. Drop it whenever the connection no longer uses that
+			// mode so a later key/keyText connect cannot backfill the stale
+			// password as a key passphrase, which breaks unencrypted keys.
+			s.pwdMu.Lock()
+			delete(s.pwdCache, conn.ID)
+			s.pwdMu.Unlock()
+		}
 		if conn.AuthType == "identity" {
 			// Identity connections obtain credentials solely from the
 			// referenced identity (MaterializeIdentity resolves them at

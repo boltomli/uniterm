@@ -246,6 +246,10 @@ func TestChatCompletionAnthropic_ThinkingBlocks(t *testing.T) {
 // wire-format tests.
 const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
+// 1x1 GIF and WebP fixtures for the extended image whitelist.
+const tinyGIFBase64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+const tinyWebPBase64 = "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=="
+
 // imageBlock builds an Anthropic-format image content block.
 func imageBlock(mediaType, data string) map[string]interface{} {
 	return map[string]interface{}{
@@ -456,6 +460,18 @@ func TestValidateRequestAttachments(t *testing.T) {
 			wantErr: errAttachmentTooLarge,
 		},
 		{
+			// gif and webp joined the whitelist alongside png/jpeg; the
+			// registered image/gif and x/image/webp decoders must parse them.
+			name:    "gif media type is accepted",
+			req:     reqWith(imageBlock("image/gif", tinyGIFBase64)),
+			wantErr: nil,
+		},
+		{
+			name:    "webp media type is accepted",
+			req:     reqWith(imageBlock("image/webp", tinyWebPBase64)),
+			wantErr: nil,
+		},
+		{
 			name:    "an image over the pixel cap is rejected",
 			req:     reqWith(imageBlock("image/png", oversizedPixelsPNG)),
 			wantErr: errAttachmentTooLargePixels,
@@ -467,7 +483,7 @@ func TestValidateRequestAttachments(t *testing.T) {
 		},
 		{
 			name:    "non-whitelisted media type is rejected",
-			req:     reqWith(imageBlock("image/gif", tinyPNGBase64)),
+			req:     reqWith(imageBlock("image/bmp", tinyPNGBase64)),
 			wantErr: errAttachmentUnsupportedType,
 		},
 		{

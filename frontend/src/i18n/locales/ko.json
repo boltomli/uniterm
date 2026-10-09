@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "메시지당 최대 {limit} 개의 텍스트 파일을 첨부할 수 있습니다",
   "ai.attachmentEmpty": "{name} 은(는) 빈 파일입니다",
   "ai.attachmentBinary": "{name} 은(는) 바이너리 파일이라 텍스트로 첨부할 수 없습니다",
+  "ai.attachmentDropHere": "놓아서 첨부",
+  "ai.attachmentIsDirectory": "{name}은(는) 폴더이므로 첨부할 수 없습니다",
   "ai.attachmentReadFailed": "{name} 을(를) 읽을 수 없습니다",
   "ai.attachmentErrTooLarge": "첨부 파일이 크기 제한을 초과해 아무것도 전송되지 않았습니다.",
   "ai.attachmentErrTooLargePixels": "이미지가 제공자의 픽셀 제한을 초과합니다. 축소한 후 다시 시도하세요.",

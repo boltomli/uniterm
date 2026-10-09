@@ -1866,6 +1866,8 @@
   "ai.attachmentTooManyText": "Up to {limit} text files can be attached per message",
   "ai.attachmentEmpty": "{name} is empty",
   "ai.attachmentBinary": "{name} looks like a binary file and cannot be attached as text",
+  "ai.attachmentDropHere": "Drop to attach",
+  "ai.attachmentIsDirectory": "{name} is a folder; drop files instead",
   "ai.attachmentReadFailed": "Could not read {name}",
   "ai.attachmentErrTooLarge": "The attachment exceeds the size limit; nothing was sent.",
   "ai.attachmentErrUnsupportedType": "Unsupported attachment format; nothing was sent.",

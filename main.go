@@ -2,8 +2,6 @@ package main
 
 import (
 	"embed"
-	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,9 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	// F-201: register pprof handlers on the default mux.
-	_ "net/http/pprof"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -27,8 +22,59 @@ var Version = "dev"
 
 // devBuild is true for `wails dev` (Version == "dev"); false for production
 // builds where `-ldflags '-X main.Version=...'` sets a real version string.
-// Gates the in-app update download (DownloadUpdate refuses dev builds).
+// Used to gate update downloads (app.go) and to pick the dev WebView2
+// user-data folder (webview2DataPath below).
 var devBuild = Version == "dev"
+
+// webview2DataPath returns the fixed WebView2 user-data folder:
+// %LOCALAPPDATA%\uniTerm\webview2, with a "-dev" suffix on dev builds. The
+// suffix keeps dev and release instances from contending for the same
+// folder — a WebView2 user-data folder only tolerates a single browser
+// process tree, and dev/release deliberately use distinct single-instance
+// lock IDs (see singleinstance_dev.go) precisely so they can run side by
+// side. The fixed folder replaces the old per-PID Temp dir, which was needed
+// when multiple instances could run concurrently and accumulated one ~11MB
+// dir per launch with no cleanup.
+func webview2DataPath() string {
+	name := "webview2"
+	if devBuild {
+		name += "-dev"
+	}
+	// %LOCALAPPDATA% unset (unexpected, but avoids a bogus relative path).
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		return filepath.Join(os.TempDir(), "uniTerm-"+name)
+	}
+	return filepath.Join(local, "uniTerm", name)
+}
+
+// sweepLegacyWebview2Dirs removes per-PID WebView2 Temp dirs
+// (uniTerm-webview2-<pid>) left behind by versions that created one per
+// launch without ever cleaning them up. Every dir matching the legacy
+// pattern is stale by definition — current versions keep their WebView2
+// user-data folder fixed and outside Temp — so there is no stale-age check
+// (unlike sweepStaleExtEditDirs): a dir newer than the sweep cannot belong
+// to a current build. If a legacy build is somehow still running, its locked
+// files fail to delete harmlessly. Runs async at startup.
+func sweepLegacyWebview2Dirs() {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		matched, _ := filepath.Match("uniTerm-webview2-*", name)
+		if !e.IsDir() || !matched {
+			continue
+		}
+		// Defensive: never touch this process's own folder (only reachable
+		// when %LOCALAPPDATA% is unset and the fallback lands in Temp).
+		if filepath.Join(os.TempDir(), name) == webview2DataPath() {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), name))
+	}
+}
 
 //go:embed all:frontend/dist
 var assets embed.FS
@@ -83,13 +129,11 @@ func main() {
 	}
 	defer log.Close()
 
-	// F-201: expose net/http/pprof on localhost:6060, opt-in only
-	// (UNITERM_PPROF=1). The env gate — not the Version string — guarantees a
-	// production binary never opens the debug listener by accident, even when
-	// a build forgets to inject the ldflags version.
-	startPprofIfEnabled()
-
-	webviewDataPath := filepath.Join(os.TempDir(), fmt.Sprintf("uniTerm-webview2-%d", os.Getpid()))
+	// Fixed folder (not per-PID): the single-instance lock guarantees only one
+	// GUI process owns the WebView2 user-data folder; dev and release builds
+	// each get their own folder so they can still run side by side. See
+	// webview2DataPath above.
+	webviewDataPath := webview2DataPath()
 	os.MkdirAll(webviewDataPath, 0700)
 
 	app := NewApp(webviewDataPath)
@@ -168,6 +212,15 @@ func main() {
 	// collide with (fresh PID + fresh session ID), so startup never waits
 	// on it.
 	go sweepStaleExtEditDirs()
+
+	// Remove per-PID WebView2 Temp dirs left behind by pre-fixed-folder
+	// versions (every launch created one and nothing ever deleted it). All
+	// dirs matching the legacy pattern are stale by definition — the fixed
+	// folder lives outside Temp. If an old-version instance is somehow still
+	// running, its locked files fail to delete harmlessly; retry next launch.
+	// Async and self-healing: after the first successful pass the Temp glob
+	// matches nothing, so it costs nothing.
+	go sweepLegacyWebview2Dirs()
 
 	// Declared before application.New so the single-instance callback (which
 	// runs after startup) can capture it.
@@ -429,29 +482,6 @@ func windowBackgroundColour(theme string) application.RGBA {
 	default:
 		return application.RGBA{Red: 27, Green: 31, Blue: 39, Alpha: 255} // #1b1f27
 	}
-}
-
-// startPprofIfEnabled spawns a goroutine that serves net/http/pprof on
-// localhost:6060 — only when UNITERM_PPROF=1. The explicit env opt-in (not
-// the Version string) means a production binary can never expose the debug
-// listener end-users' heap/goroutine profiles could leak credentials from;
-// a build that forgets the ldflags version stays closed too. For perf-issue
-// reproduction (see F-201 / audit §8.2): run with UNITERM_PPROF=1 and
-// `go tool pprof http://localhost:6060/debug/pprof/profile`.
-func startPprofIfEnabled() {
-	// Android: other apps on-device share this process's network namespace and
-	// can reach 127.0.0.1:6060, so never open the listener there (H4).
-	if runtime.GOOS == "android" {
-		return
-	}
-	if os.Getenv("UNITERM_PPROF") != "1" {
-		return
-	}
-	go func() {
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil && err != http.ErrServerClosed {
-			log.Writef("pprof listener failed: %v", err)
-		}
-	}()
 }
 
 // System tray support (issue #982): a persistent tray icon with a left-click

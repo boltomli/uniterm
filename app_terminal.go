@@ -41,7 +41,10 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	// it synchronously so the session never prompts for a password it
 	// already has. No-op when Password is already set, no store is wired,
 	// the keychain has no entry, or the config carries no connection ID.
-	if config.Password == "" && config.ID != "" && a.connectionStore != nil {
+	// Password-auth connections only: for key/keyText, Password is the key
+	// passphrase and must never be filled from a stored login password —
+	// doing so makes an unencrypted key fail to parse.
+	if config.AuthType == "password" && config.Password == "" && config.ID != "" && a.connectionStore != nil {
 		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
 			config.Password = pw
 		}
@@ -424,7 +427,8 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	// Defensive credential fallback for the jump host: the freshly loaded
 	// config already has passwords filled synchronously (populatePasswords),
 	// but resolve from the keychain anyway if it is somehow still empty.
-	if tunnelSSHConfig.Password == "" && tunnelSSHConfig.ID != "" {
+	// Password-auth connections only — see the connect-path fallback above.
+	if tunnelSSHConfig.AuthType == "password" && tunnelSSHConfig.Password == "" && tunnelSSHConfig.ID != "" {
 		if pw, err := a.connectionStore.EnsurePassword(tunnelSSHConfig.ID); err == nil && pw != "" {
 			tunnelSSHConfig.Password = pw
 		}
@@ -568,7 +572,8 @@ func (a *App) SessionStart(sessionID string, config session.ConnectionConfig) er
 	// an empty password (e.g. the Pinia store holds a snapshot from before
 	// keychain passwords were filled), resolve it from the OS keychain now
 	// so the user is not prompted for a password that is already stored.
-	if config.Password == "" && config.ID != "" && a.connectionStore != nil {
+	// Password-auth connections only — see the connect-path fallback above.
+	if config.AuthType == "password" && config.Password == "" && config.ID != "" && a.connectionStore != nil {
 		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
 			config.Password = pw
 		}

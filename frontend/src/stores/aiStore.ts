@@ -4,6 +4,7 @@ import type { AIAttachment, AIMessage, ExecutionMode, AISession, AIAgentStatus }
 import { SaveAISessions, LoadAISessions } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { buildUserContent, redactAttachmentsForLog } from '../services/attachments'
 import { useLocalStateStore } from './localStateStore'
+import { useTabStore } from './tabStore'
 import { isMobilePlatform } from '../utils/platform'
 import { t } from '../i18n'
 
@@ -435,6 +436,9 @@ export const useAIStore = defineStore('ai', () => {
       sessions.value = sessions.value.slice(0, 15)
     }
     clearQueue()
+    // The terminal binding is per-conversation: starting a new session drops
+    // the lock so the next conversation re-locks onto the active terminal.
+    useTabStore().clearAILockedPanels()
     // Don't save empty sessions — only persist when first message is added
   }
 
@@ -447,6 +451,9 @@ export const useAIStore = defineStore('ai', () => {
     thinkingExpanded.value = false
     thinkingStartedAt.value = 0
     clearQueue()
+    // Viewing another session drops the lock so the next conversation
+    // re-locks onto the terminal active at that moment.
+    useTabStore().clearAILockedPanels()
   }
 
   function deleteSession(sessionId: string) {

@@ -154,8 +154,9 @@
     <Menu ref="ctxMenuRef" v-model:visible="ctxMenuVisible">
         <template v-if="menuType === 'file'">
           <MenuItem @click="doEdit">{{ t('sftp.edit') }}</MenuItem>
-          <MenuItem @click="doEditExternal">{{ t('sftp.editExternal') }}</MenuItem>
-          <MenuItem @click="doOpenWithSystem">{{ t('sftp.openWithSystem') }}</MenuItem>
+          <!-- No external editor / system-app association in the mobile sandbox -->
+          <MenuItem v-if="!isMobilePlatform()" @click="doEditExternal">{{ t('sftp.editExternal') }}</MenuItem>
+          <MenuItem v-if="!isMobilePlatform()" @click="doOpenWithSystem">{{ t('sftp.openWithSystem') }}</MenuItem>
           <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
           <MenuItem @click="doMkdir">{{ t('sftp.newDirectory') }}</MenuItem>
           <MenuItem v-if="supportsSymlink" @click="doSymlink">{{ t('sftp.newLink') }}</MenuItem>

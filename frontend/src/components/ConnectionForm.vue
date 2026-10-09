@@ -554,7 +554,7 @@
               <el-switch v-model="form.agentForwarding" />
               <span class="field-hint" style="margin-left: 0.75rem;">{{ t('conn.agentForwardingDesc') }}</span>
             </el-form-item>
-            <el-form-item v-if="form.type === 'ssh'" :label="t('conn.x11Forwarding')">
+            <el-form-item v-if="form.type === 'ssh' && !isMobilePlatform()" :label="t('conn.x11Forwarding')">
               <el-switch v-model="form.x11Forwarding" />
               <span v-if="x11HintKey" class="field-hint" style="margin-left: 0.75rem;">{{ t(x11HintKey) }}</span>
             </el-form-item>
@@ -801,10 +801,11 @@ const allSubTypes = computed((): Record<string, SubTypeInfo[]> => {
     // form-visible entry always carries a ConnectionConfig type; the check
     // narrows info.type for the card.
     if (!isConnectionKind(info.type)) continue
-    // Local terminals spawn a host shell, which does not exist on android/ios
-    // (same rule as StartTabContent's hidden local-terminal button). Only when
-    // creating: an existing local connection must still show its active tile.
-    if (info.type === 'local' && isMobilePlatform() && !isEdit.value) continue
+    // Local terminals spawn a host shell, serial needs host serial-port
+    // hardware and X11 needs a local X server — none of which exist on
+    // android/ios (same rule as StartTabContent's hidden local-terminal
+    // button).
+    if (isMobilePlatform() && (info.type === 'local' || info.type === 'serial' || info.type === 'x11-desktop')) continue
     groups[info.category].push({
       type: info.type,
       dbType: info.dbType,

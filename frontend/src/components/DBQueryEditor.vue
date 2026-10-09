@@ -1275,15 +1275,27 @@ function onEditRowCancel() {
   max-height: 40%;
 }
 .row-form {
-  display: flex;
-  flex-direction: column;
+  /* One shared grid so every row's column tracks resolve together: the
+     max-content toggle column (NULL / auto-increment / empty spacer) gets a
+     single uniform width across all rows instead of per-row sizes. */
+  display: grid;
+  /* Name/type shrink toward their min when the dialog narrows (small screens
+     force the dialog to 100vw - 1rem); the value input keeps a usable floor
+     (minmax(10rem, 1fr)) and the NULL toggle takes only its content width
+     instead of a fixed 6.75rem. */
+  grid-template-columns: minmax(4rem, 10rem) minmax(2.5rem, 5.625rem) minmax(10rem, 1fr) max-content;
+  gap: 0 0.625rem;
   max-height: 60vh;
-  overflow-y: auto;
+  /* Both axes: below ~440px viewports the track mins stop shrinking, so let
+     the form scroll horizontally instead of clipping. */
+  overflow: auto;
 }
 .row-form-row {
+  /* Each row spans the shared tracks via subgrid, so cells stay aligned and
+     rows without a toggle still reserve the same column width. */
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: 10rem 5.625rem minmax(0, 1fr) 6.75rem;
-  gap: 0.625rem;
+  grid-template-columns: subgrid;
   align-items: center;
   padding: 0.3125rem 0;
   border-bottom: 1px solid var(--border-subtle);

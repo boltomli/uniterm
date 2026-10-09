@@ -9,8 +9,12 @@ import (
 const localStateFileName = "local_state.json"
 
 type LocalState struct {
-	SidebarVisible    bool     `json:"sidebarVisible"`
-	AISidebarVisible  bool     `json:"aiSidebarVisible"`
+	SidebarVisible   bool `json:"sidebarVisible"`
+	AISidebarVisible bool `json:"aiSidebarVisible"`
+	// Sidebar widths in px. Local-only UI state, never synced; 0 means an
+	// older config without the key and keeps the component default.
+	SidebarWidth      int      `json:"sidebarWidth"`
+	AISidebarWidth    int      `json:"aiSidebarWidth"`
 	CollapsedGroupIds []string `json:"collapsedGroupIds"`
 	// Collapsed quick-command group ids (plus "__ungrouped__"). Local-only
 	// UI state, never synced; groups absent from the list stay expanded.
@@ -73,6 +77,8 @@ func defaultLocalState() LocalState {
 	return LocalState{
 		SidebarVisible:                true,
 		AISidebarVisible:              true,
+		SidebarWidth:                  240,
+		AISidebarWidth:                360,
 		CollapsedQuickCommandGroupIds: []string{},
 		BackgroundOpacity:             60,
 		BackgroundBlur:                3,

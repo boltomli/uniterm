@@ -30,12 +30,30 @@ export const ATTACHMENT_LIMITS = {
   maxTextFilesPerMessage: 3,
 } as const
 
-/** Image MIME types accepted from the clipboard and the file picker. */
-export const ATTACHMENT_IMAGE_TYPES = ['image/png', 'image/jpeg'] as const
+/** Image MIME types accepted from the clipboard and the file picker.
+ *  png/jpeg/gif/webp are exactly the formats the major providers accept as
+ *  image blocks. */
+export const ATTACHMENT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
 /** Image extensions accepted from the file picker (used when MIME is absent). */
-export const ATTACHMENT_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg'] as const
-/** Text-file extensions accepted from the file picker. */
-export const ATTACHMENT_TEXT_EXTENSIONS = ['txt', 'md', 'log', 'json', 'yaml', 'yml', 'csv'] as const
+export const ATTACHMENT_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp'] as const
+/** Text-file extensions accepted from the file picker. Code, config and data
+ *  formats that are plain text — the model reads them verbatim. */
+export const ATTACHMENT_TEXT_EXTENSIONS = [
+  // documents / data
+  'txt', 'md', 'log', 'json', 'yaml', 'yml', 'csv', 'rst', 'adoc', 'tex', 'diff', 'patch',
+  // code
+  'go', 'py', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'java', 'c', 'h', 'cpp', 'hpp', 'cc',
+  'rs', 'rb', 'php', 'kt', 'swift', 'cs', 'sh', 'bat', 'ps1', 'sql', 'lua', 'vue',
+  // config
+  'xml', 'toml', 'ini', 'cfg', 'conf', 'properties',
+] as const
+/** Well-known extension-less file names attached as text. Extension-based
+ *  classification cannot see these (Makefile has no dot, .gitignore's only
+ *  dot is the hidden-file prefix), so they are matched by lowercased name. */
+export const ATTACHMENT_TEXT_FILENAMES = [
+  'makefile', 'dockerfile', 'readme', 'license', 'changelog',
+  '.gitignore', '.editorconfig', '.env',
+] as const
 
 /** `accept` attribute for the hidden file input, derived from the lists above.
  *  Both MIME and extension forms are listed so every platform's picker filters
@@ -78,6 +96,20 @@ export function fileExtension(name: string): string {
   return name.slice(idx + 1).toLowerCase()
 }
 
+/** Whitelist label used in the "unsupported type" message. */
+export const attachmentFormatsLabel = [...ATTACHMENT_IMAGE_EXTENSIONS, ...ATTACHMENT_TEXT_EXTENSIONS].join(' / ')
+
+/** Decode a base64 payload (no data-URL prefix) into raw bytes. Used to wrap
+ *  natively-dropped files — read off disk by the backend binding — back into
+ *  a File so the regular validation pipeline can run on them. */
+export function bytesFromBase64(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64)
+  const buf = new ArrayBuffer(bin.length)
+  const bytes = new Uint8Array(buf)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return ''
   if (bytes < 1024) return `${bytes} B`
@@ -109,9 +141,18 @@ export function classifyAttachment(name: string, mime: string): { kind: AIAttach
     return null
   }
   if ((ATTACHMENT_IMAGE_EXTENSIONS as readonly string[]).includes(ext)) {
-    return { kind: 'image', mime: ext === 'png' ? 'image/png' : 'image/jpeg' }
+    return {
+      kind: 'image',
+      mime: ext === 'png' ? 'image/png'
+        : ext === 'gif' ? 'image/gif'
+        : ext === 'webp' ? 'image/webp'
+        : 'image/jpeg',
+    }
   }
   if ((ATTACHMENT_TEXT_EXTENSIONS as readonly string[]).includes(ext)) {
+    return { kind: 'text', mime: normalizedMime || 'text/plain' }
+  }
+  if ((ATTACHMENT_TEXT_FILENAMES as readonly string[]).includes(name.toLowerCase())) {
     return { kind: 'text', mime: normalizedMime || 'text/plain' }
   }
   return null
@@ -134,7 +175,7 @@ export function validateAttachment(
         key: 'attachmentUnsupportedType',
         params: {
           name: file.name,
-          formats: [...ATTACHMENT_IMAGE_EXTENSIONS, ...ATTACHMENT_TEXT_EXTENSIONS].join(' / '),
+          formats: attachmentFormatsLabel,
         },
       },
     }

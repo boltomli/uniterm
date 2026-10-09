@@ -49,19 +49,29 @@ describe('classifyAttachment', () => {
   })
 
   it('accepts every whitelisted text extension', () => {
-    for (const ext of ['txt', 'md', 'log', 'json', 'yaml', 'csv']) {
+    for (const ext of ['txt', 'md', 'log', 'json', 'yaml', 'csv', 'go', 'py', 'ts', 'toml', 'ini', 'diff']) {
       expect(classifyAttachment(`file.${ext}`, '')?.kind).toBe('text')
     }
   })
 
-  it('rejects image formats outside the whitelist even with an allowed extension', () => {
-    expect(classifyAttachment('anim.gif', 'image/gif')).toBeNull()
-    expect(classifyAttachment('pic.webp', 'image/webp')).toBeNull()
+  it('accepts well-known extension-less file names as text', () => {
+    for (const name of ['Makefile', 'Dockerfile', 'README', 'LICENSE', '.gitignore', '.editorconfig', '.env']) {
+      expect(classifyAttachment(name, '')?.kind).toBe('text')
+    }
+    // Case-insensitive, and the fixed-name match never overrides a real
+    // extension classification.
+    expect(classifyAttachment('makefile', '')?.kind).toBe('text')
+    expect(classifyAttachment('README.bak', '')).toBeNull()
+  })
+
+  it('rejects image formats outside the whitelist', () => {
+    expect(classifyAttachment('anim.bmp', 'image/bmp')).toBeNull()
+    expect(classifyAttachment('icon.svg', 'image/svg+xml')).toBeNull()
   })
 
   it('rejects unknown extensions and extension-less names', () => {
     expect(classifyAttachment('archive.zip', 'application/zip')).toBeNull()
-    expect(classifyAttachment('Makefile', '')).toBeNull()
+    expect(classifyAttachment('randomname', '')).toBeNull()
     expect(classifyAttachment('trailing.', '')).toBeNull()
   })
 })

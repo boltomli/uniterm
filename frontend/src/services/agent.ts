@@ -445,8 +445,17 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
   store.thinkingText = ''
   store.thinkingStartedAt = 0
 
-  // Record current panel context so buildDynamicContext can detect terminal switches
+  // Auto-lock: when a turn starts with no locked panel, pin the AI to the
+  // panel that is active right now — same effect as the user clicking
+  // "Lock AI". The binding persists for the whole conversation (tab switches
+  // don't retarget it) and is cleared by createSession/switchSession.
   const tabStore = useTabStore()
+  if (tabStore.getAILockedPanels().length === 0) {
+    const activePanel = getActivePanel()
+    if (activePanel) tabStore.addAILockedPanel(activePanel.id)
+  }
+
+  // Record current panel context so buildDynamicContext can detect terminal switches
   const lockedPanels = tabStore.getAILockedPanels()
   const activePanel = getActivePanel()
   const trackPanelId = lockedPanels.length > 0 ? lockedPanels[0] : activePanel?.id

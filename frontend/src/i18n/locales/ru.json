@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "К одному сообщению можно прикрепить не более {limit} текстовых файлов",
   "ai.attachmentEmpty": "{name} пуст",
   "ai.attachmentBinary": "{name} похож на двоичный файл и не может быть прикреплён как текст",
+  "ai.attachmentDropHere": "Отпустите, чтобы прикрепить",
+  "ai.attachmentIsDirectory": "{name} — папка; перетащите файлы",
   "ai.attachmentReadFailed": "Не удалось прочитать {name}",
   "ai.attachmentErrTooLarge": "Вложение превышает лимит размера; ничего не отправлено.",
   "ai.attachmentErrTooLargePixels": "Изображение превышает пиксельный лимит провайдера; уменьшите его и попробуйте снова.",

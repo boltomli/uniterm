@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "Se pueden adjuntar hasta {limit} archivos de texto por mensaje",
   "ai.attachmentEmpty": "{name} está vacío",
   "ai.attachmentBinary": "{name} parece un archivo binario y no puede adjuntarse como texto",
+  "ai.attachmentDropHere": "Suelta para adjuntar",
+  "ai.attachmentIsDirectory": "{name} es una carpeta; suelta archivos en su lugar",
   "ai.attachmentReadFailed": "No se pudo leer {name}",
   "ai.attachmentErrTooLarge": "El adjunto supera el límite de tamaño; no se envió nada.",
   "ai.attachmentErrTooLargePixels": "La imagen supera el límite de píxeles del proveedor; redúcela e inténtalo de nuevo.",

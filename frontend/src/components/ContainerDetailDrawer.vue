@@ -1,6 +1,6 @@
 <template>
   <div class="detail-drawer-backdrop" :class="{ open: !!mode }" @click.self="$emit('close')"></div>
-  <div class="detail-drawer" :class="{ open: !!mode }" :style="mode ? { width: drawerWidth + 'px' } : undefined" @click.stop>
+  <div ref="drawerEl" class="detail-drawer" :class="{ open: !!mode }" :style="mode ? { width: drawerWidth + 'px' } : undefined" @click.stop>
     <div class="drawer-resizer" @mousedown="onResizeStart"></div>
     <div class="detail-drawer-header">
       <span class="detail-drawer-title">{{ target?.name || '' }}</span>
@@ -101,15 +101,22 @@ async function onCopyMenu() {
 }
 
 // Drawer width (draggable). Logs mode widens; not persisted.
+// Max width tracks the actual parent container (not the window) so the drawer
+// never extends past the container's left edge on any screen size.
+const drawerEl = ref<HTMLElement | null>(null)
 const drawerWidth = ref(420)
+function maxDrawerWidth() {
+  const parent = drawerEl.value?.parentElement
+  return parent ? Math.max(320, parent.clientWidth - 40) : window.innerWidth - 120
+}
 watch(() => props.mode, (m) => {
-  if (m === 'logs' && drawerWidth.value < 640) drawerWidth.value = 640
+  if (m === 'logs' && drawerWidth.value < 640) drawerWidth.value = Math.min(640, maxDrawerWidth())
 })
 let resizeStartX = 0
 let resizeStartW = 0
 function onResizeMove(e: MouseEvent) {
   const dx = resizeStartX - e.clientX
-  drawerWidth.value = Math.max(320, Math.min(window.innerWidth - 120, resizeStartW + dx))
+  drawerWidth.value = Math.max(320, Math.min(maxDrawerWidth(), resizeStartW + dx))
 }
 function onResizeEnd() {
   document.removeEventListener('mousemove', onResizeMove)
@@ -272,6 +279,7 @@ onBeforeUnmount(stopLogs)
   right: 0;
   bottom: 0;
   width: 26.25rem;
+  max-width: 100%;
   background: var(--bg-elevated);
   border-left: 1px solid var(--border-subtle);
   transform: translateX(100%);

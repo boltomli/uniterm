@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "1 つのメッセージに添付できるテキストファイルは最大 {limit} 個です",
   "ai.attachmentEmpty": "{name} は空のファイルです",
   "ai.attachmentBinary": "{name} はバイナリファイルのためテキストとして添付できません",
+  "ai.attachmentDropHere": "ドロップで添付",
+  "ai.attachmentIsDirectory": "{name} はフォルダのため添付できません",
   "ai.attachmentReadFailed": "{name} を読み込めませんでした",
   "ai.attachmentErrTooLarge": "添付ファイルがサイズ上限を超えているため、何も送信されませんでした。",
   "ai.attachmentErrTooLargePixels": "画像がプロバイダーのピクセル上限を超えています。縮小してから再試行してください。",

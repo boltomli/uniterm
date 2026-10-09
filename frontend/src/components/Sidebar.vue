@@ -848,9 +848,24 @@ watch(searchQuery, (q) => {
 })
 
 // ── Resize ──
-const sidebarWidth = ref(240)
+const SIDEBAR_MIN_WIDTH = 240
+const SIDEBAR_MAX_WIDTH = 400
+const sidebarWidth = ref(SIDEBAR_MIN_WIDTH)
 const isResizing = ref(false)
 const sidebarEl = ref<HTMLDivElement>()
+
+// Restore the persisted width once LocalState is loaded (App.vue awaits
+// init() on mount; children mount first, so re-init here — it is idempotent).
+onMounted(async () => {
+  try {
+    const ls = useLocalStateStore()
+    if (!ls.loaded) await ls.init()
+    const w = ls.state.sidebarWidth
+    if (w > 0) sidebarWidth.value = Math.min(Math.max(w, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
+  } catch {
+    // keep the default width
+  }
+})
 
 function onResizeStart(e: MouseEvent) {
   isResizing.value = true
@@ -864,13 +879,14 @@ function onResizeStart(e: MouseEvent) {
   function onMouseMove(ev: MouseEvent) {
     if (!isResizing.value) return
     const delta = ev.clientX - startX
-    const newWidth = Math.min(Math.max(startWidth + delta, 240), 400)
+    const newWidth = Math.min(Math.max(startWidth + delta, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
     el!.style.width = newWidth + 'px'
   }
 
   function onMouseUp() {
     isResizing.value = false
     sidebarWidth.value = el!.offsetWidth
+    useLocalStateStore().update({ sidebarWidth: sidebarWidth.value })
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     window.dispatchEvent(new CustomEvent('split:resize-end'))

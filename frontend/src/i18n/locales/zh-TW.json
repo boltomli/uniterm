@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "每則訊息最多附加 {limit} 個文字檔",
   "ai.attachmentEmpty": "{name} 是空檔案",
   "ai.attachmentBinary": "{name} 看起來是二進位檔案，無法以文字附加",
+  "ai.attachmentDropHere": "鬆開加入附件",
+  "ai.attachmentIsDirectory": "不支援資料夾：{name} 是目錄",
   "ai.attachmentReadFailed": "無法讀取 {name}",
   "ai.attachmentErrTooLarge": "附件超過大小上限，未送出任何內容。",
   "ai.attachmentErrTooLargePixels": "圖片超過供應商的像素上限，請縮小後重試。",

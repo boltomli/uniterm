@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "Pro Nachricht können bis zu {limit} Textdateien angehängt werden",
   "ai.attachmentEmpty": "{name} ist leer",
   "ai.attachmentBinary": "{name} scheint eine Binärdatei zu sein und kann nicht als Text angehängt werden",
+  "ai.attachmentDropHere": "Loslassen zum Anhängen",
+  "ai.attachmentIsDirectory": "{name} ist ein Ordner; bitte Dateien ablegen",
   "ai.attachmentReadFailed": "{name} konnte nicht gelesen werden",
   "ai.attachmentErrTooLarge": "Der Anhang überschreitet das Größenlimit; es wurde nichts gesendet.",
   "ai.attachmentErrTooLargePixels": "Das Bild überschreitet das Pixel-Limit des Anbieters; bitte verkleinern und erneut versuchen.",

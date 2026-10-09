@@ -484,7 +484,7 @@
     <!-- Service Detail Drawer (slides out like the process detail drawer);
          two tabs: properties detail / k8s-style journal logs -->
     <div class="detail-drawer-backdrop" :class="{ open: serviceDetailVisible }" @click="serviceDetailVisible = false"></div>
-    <div class="detail-drawer" :class="{ open: serviceDetailVisible }" :style="serviceDetailVisible ? { width: svcDrawerWidth + 'px' } : undefined">
+    <div ref="svcDrawerEl" class="detail-drawer" :class="{ open: serviceDetailVisible }" :style="serviceDetailVisible ? { width: svcDrawerWidth + 'px' } : undefined">
       <div class="svc-resizer" @mousedown="onServiceResizeStart"></div>
       <div class="detail-drawer-header">
         <span class="detail-drawer-title">{{ serviceDetailName }}</span>
@@ -688,14 +688,22 @@ const loadingServiceLogs = ref(false)
 const logViewerRef = ref<HTMLElement | null>(null)
 
 // Drawer width (draggable via the left-edge resizer, same as the k8s drawer;
-// not persisted across sessions).
+// not persisted across sessions). Max width tracks the actual parent container
+// (not the window) so the drawer never extends past the container's left edge
+// on any screen size.
+const svcDrawerEl = ref<HTMLElement | null>(null)
 const svcDrawerWidth = ref(420)
 let svcResizeStartX = 0
 let svcResizeStartW = 0
 
+function maxSvcDrawerWidth() {
+  const parent = svcDrawerEl.value?.parentElement
+  return parent ? Math.max(320, parent.clientWidth - 40) : window.innerWidth - 120
+}
+
 function onServiceResizeMove(e: MouseEvent) {
   const dx = svcResizeStartX - e.clientX
-  svcDrawerWidth.value = Math.max(320, Math.min(window.innerWidth - 120, svcResizeStartW + dx))
+  svcDrawerWidth.value = Math.max(320, Math.min(maxSvcDrawerWidth(), svcResizeStartW + dx))
 }
 
 function onServiceResizeEnd() {
@@ -2128,6 +2136,7 @@ watch(activeTab, (tab) => {
   right: 0;
   bottom: 0;
   width: 26.25rem;
+  max-width: 100%;
   background: var(--bg-elevated);
   border-left: 1px solid var(--border-subtle);
   transform: translateX(100%);

@@ -180,7 +180,8 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- Tab shortcut badges are already suppressed on mobile -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.showTabShortcutHints') }}</div>
               <div class="setting-desc">{{ t('settings.showTabShortcutHintsDesc') }}</div>
@@ -190,7 +191,9 @@
             </div>
           </div>
 
-          <div class="setting-card">
+          <!-- Touch has no hover: 'rightclick' style would leave host rows
+               with no visible menu affordance (long-press still works) -->
+          <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.hostListMenuStyle') }}</div>
               <div class="setting-desc">{{ t('settings.hostListMenuStyleDesc') }}</div>
@@ -1231,8 +1234,8 @@
         </div>
       </div>
 
-      <!-- MCP 服务器(外部 AI agent) — 无 Android 后端,移动端隐藏 -->
-      <div v-if="settingsStore.activeCategory === 'mcp' && !isMobile" class="settings-section">
+      <!-- MCP 服务器(外部 AI agent) — 无 Android 后端,入口已在移动端隐藏 -->
+      <div v-if="settingsStore.activeCategory === 'mcp'" class="settings-section">
         <h2 class="section-title">{{ t('settings.mcpSection') }}</h2>
         <p class="section-desc">{{ t('settings.mcpSectionDesc') }}</p>
 
@@ -2387,7 +2390,8 @@ const categories = computed(() => {
     // rebinding UI is desktop-only and hidden from the category list there.
     ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard }] : []),
     { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore },
-    { key: 'mcp', label: t('settings.mcp'), icon: Plug },
+    // MCP server has no mobile backend — hidden from the category list there.
+    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Plug }] : []),
     { key: 'skills', label: t('settings.skillsAndCommands'), icon: Wrench },
     { key: 'identities', label: t('settings.identities'), icon: Key },
     { key: 'proxies', label: t('settings.proxies'), icon: Network },

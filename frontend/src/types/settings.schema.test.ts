@@ -67,7 +67,6 @@ const NESTED_STRUCTS: Record<string, string> = {
   ai: 'AISettings',
   sftpBookmarks: 'SFTPBookmarks',
   mcp: 'MCPSettings',
-  'mcp.tools': 'MCPToolToggles',
 }
 
 const tagsByStruct: Record<string, Set<string>> = {}

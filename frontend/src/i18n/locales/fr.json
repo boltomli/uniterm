@@ -1806,6 +1806,8 @@
   "ai.attachmentTooManyText": "Jusqu'à {limit} fichiers texte peuvent être joints par message",
   "ai.attachmentEmpty": "{name} est vide",
   "ai.attachmentBinary": "{name} semble être un fichier binaire et ne peut pas être joint en tant que texte",
+  "ai.attachmentDropHere": "Déposez pour joindre",
+  "ai.attachmentIsDirectory": "{name} est un dossier ; déposez plutôt des fichiers",
   "ai.attachmentReadFailed": "Impossible de lire {name}",
   "ai.attachmentErrTooLarge": "La pièce jointe dépasse la limite de taille ; rien n'a été envoyé.",
   "ai.attachmentErrTooLargePixels": "L'image dépasse la limite de pixels du fournisseur ; réduisez-la et réessayez.",

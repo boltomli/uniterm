@@ -10,6 +10,9 @@ import type { SavedTabsSnapshot } from '../types/tabSnapshot'
 interface LocalState {
   sidebarVisible: boolean
   aiSidebarVisible: boolean
+  // Persisted sidebar widths in px (0 = old config, keep component default).
+  sidebarWidth: number
+  aiSidebarWidth: number
   collapsedGroupIds: string[]
   collapsedQuickCommandGroupIds: string[]
   windowX: number
@@ -37,6 +40,8 @@ interface LocalState {
 const DEFAULT: LocalState = {
   sidebarVisible: true,
   aiSidebarVisible: true,
+  sidebarWidth: 240,
+  aiSidebarWidth: 360,
   collapsedGroupIds: [],
   collapsedQuickCommandGroupIds: [],
   windowX: 0,

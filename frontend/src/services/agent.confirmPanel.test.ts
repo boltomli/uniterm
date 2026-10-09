@@ -30,6 +30,7 @@ vi.mock('../stores/tabStore', () => ({
   useTabStore: vi.fn(() => ({
     getAILockedPanel: vi.fn().mockReturnValue(null),
     getAILockedPanels: vi.fn().mockReturnValue([]),
+    addAILockedPanel: vi.fn(),
     activeTab: { type: 'terminal', panelId: 'panel-1' },
   })),
 }))
