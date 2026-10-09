@@ -498,6 +498,16 @@ func (s *WSLFileSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 		if !fi.IsDir() {
 			return FileListResult{}, fmt.Errorf("not a directory: %s", d)
 		}
+		// Windows CAN resolve some links (NTFS symlinks, depending on how
+		// the distro created them), and then the Stat above succeeds through
+		// the link. Land at the real target in that case too — whether an
+		// entry resolves must not decide the resulting cwd (share-side
+		// parity).
+		if lst, lerr := os.Lstat(local); lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
+			if canon, cerr := s.canonicalPath(d); cerr == nil && canon != d {
+				return s.ChangeRemoteDir(canon)
+			}
+		}
 		s.cwd = d
 		return s.ListRemote(d)
 	}

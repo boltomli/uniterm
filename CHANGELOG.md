@@ -37,6 +37,8 @@
 - SMB: fixes a session dying silently after idle — reconnect now restores the previous directory.
 - UI: fixes progress bars and status indicators turning invisible in background-image mode.
 - Linux: fixes the running window showing as an orphan with a generic icon on GNOME Wayland — the desktop file is now named after the Wayland app_id (`org.wails.uniterm.desktop`) so the window correctly matches its launcher. (@Teejer)
+- Settings: fixes saving occasionally failing on Windows when a concurrent read overlapped the write — saving now waits briefly for the reader instead of dropping the change.
+- WSL: opening a symlink under a mounted `/mnt` drive now always lands at its real target, instead of depending on how the symlink was created.
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
@@ -78,6 +80,8 @@ Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contrib
 - SMB：修复空闲后会话静默失效的问题——重连后恢复原目录。
 - 界面：修复背景图模式下进度条、状态指示不可见的问题。
 - Linux：修复 GNOME Wayland 下运行窗口显示为无图标孤立窗口的问题——桌面文件改为按 Wayland app_id 命名（`org.wails.uniterm.desktop`），窗口可正确关联启动器图标。(@Teejer)
+- 设置：修复 Windows 下保存偶尔失败（与并发读取重叠）的问题——保存现在会短暂等待读取方结束，不再丢失更改。
+- WSL：修复打开 `/mnt` 挂载盘下的符号链接时结果取决于链接创建方式的问题——现在始终定位到真实目标目录。
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
