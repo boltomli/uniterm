@@ -411,15 +411,23 @@ func (a *App) subclassMainWindow() {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW := user32.NewProc("CallWindowProcW")
+	procGetFocus := user32.NewProc("GetFocus")
+	procSetFocus := user32.NewProc("SetFocus")
+	procIsChild := user32.NewProc("IsChild")
+	procGetForegroundWindow := user32.NewProc("GetForegroundWindow")
+	var focusBeforeMove uintptr
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
 		case WM_ENTERSIZEMOVE:
+			focusBeforeMove, _, _ = procGetFocus.Call()
+			if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
+				focusBeforeMove = 0
+			}
 			a.inSizeMove = true
 			a.emitMoveResize("rdp:move-resize-start")
 		case WM_EXITSIZEMOVE:
 			a.inSizeMove = false
-			a.emitMoveResize("rdp:move-resize-end")
 		case WM_SYSCOMMAND:
 			switch wparam {
 			case SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE:
@@ -431,6 +439,17 @@ func (a *App) subclassMainWindow() {
 			}
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
+		if msg == WM_EXITSIZEMOVE {
+			// Wails focuses the parent on WM_ENTERSIZEMOVE to close popups.
+			// DOM focus alone cannot restore WebView2's native IME target.
+			foreground, _, _ := procGetForegroundWindow.Call()
+			child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove)
+			if foreground == uintptr(hwnd) && child != 0 {
+				procSetFocus.Call(focusBeforeMove)
+			}
+			focusBeforeMove = 0
+			a.emitMoveResize("rdp:move-resize-end")
+		}
 		return ret
 	})
 	a.wndProcCb = cb

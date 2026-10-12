@@ -35,6 +35,7 @@ interface XtermCompositionHelperInternals {
   // Text of the most recent composition commit, recorded by the Windows patch
   // and cleared on the next compositionstart (and by resetXtermInputState).
   _lastCommittedText?: string
+  _resetWindowsIme?: () => void
   _coreService?: {
     triggerDataEvent?: (this: unknown, data: string, wasUserInput?: boolean) => void
   }
@@ -47,6 +48,7 @@ interface XtermCompositionHelperInternals {
     this: XtermCompositionHelperInternals,
     waitForPropagation: boolean,
   ) => void
+  _handleAnyTextareaChanges?: () => void
 }
 
 interface XtermCoreInternals {
@@ -56,6 +58,7 @@ interface XtermCoreInternals {
   _keyPressHandled?: boolean
   _unprocessedDeadKey?: boolean
   _compositionHelper?: XtermCompositionHelperInternals
+  _syncTextArea?: () => void
   _helperContainer?: {
     querySelector?: (selector: string) => { classList: { remove: (token: string) => void } } | null
   } | null
@@ -114,23 +117,11 @@ function isSameCharacter(left: string, right: string): boolean {
 // leaves _compositionPosition at an old offset so later commits re-send
 // everything accumulated in the textarea.
 //
-// Earlier fixes deduped by a LATE_EVENT_WINDOW_MS time window, but a busy
-// renderer or background-tab timer throttling stretches the gap between the
-// two sends past any window, so the word still doubled. The correct signal is
-// structural: record the text a composition just committed and drop any later
-// path that re-sends exactly that text, clearing the record only when the next
-// composition starts (the one event that proves a genuinely new commit).
-//
-// - compositionstart (and the dropped-compositionstart rebase) clear the
-//   recorded commit so a genuine re-commit of the same word still sends;
-// - the keydown finalize marks its region as sent (xterm's own
-//   _dataAlreadySent mechanism, xterm.js issue #3191) so a compositionend read
-//   arriving after it cannot send the same text again;
-// - compositionupdate re-syncs the composition region when compositionstart
-//   was dropped;
-// - _inputEvent drops an insertText whose data equals the recorded commit
-//   (Chromium can order compositionend before the commit's input, or deliver
-//   the input after keyup once xterm's _keyDownSeen guard is cleared).
+// Own the deferred reads on Windows so reset can cancel them, and remember
+// the text actually sent — not the preedit value present at compositionend.
+// Flush a pending commit before a new composition starts, preserving both
+// commit order and genuine repeated words. Direct input and textarea-diff
+// fallback must never both own the same edit.
 function installWindowsImePatch(terminal: Terminal): Disposable {
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
@@ -140,22 +131,48 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
 
   const textarea = core.textarea
   const disposers: (() => void)[] = []
-  // Last compositionupdate data: the committed text of a composition xterm
-  // never saw is the tail that update describes.
-  let lastCompositionData = ''
-  // Text the composition path (finalize / its deferred read) delivered for the
-  // most recent commit. Stored on the helper so resetXtermInputState can clear
-  // it too; cleared again when the next composition starts (compositionstart).
+  let compositionTimer: number | undefined
+  let textareaTimer: number | undefined
+  let pendingStart = 0
   helper._lastCommittedText = ''
+
+  const cancelTextareaRead = () => {
+    window.clearTimeout(textareaTimer)
+    textareaTimer = undefined
+  }
+  const cancelCompositionRead = () => {
+    window.clearTimeout(compositionTimer)
+    compositionTimer = undefined
+    helper._isSendingComposition = false
+  }
+  const sendCommit = (data: string) => {
+    if (!data) return
+    helper._lastCommittedText = data
+    helper._coreService?.triggerDataEvent?.(data, true)
+  }
+  const flushComposition = () => {
+    if (compositionTimer === undefined) return
+    const start = pendingStart + (helper._dataAlreadySent?.length ?? 0)
+    cancelCompositionRead()
+    sendCommit(textarea.value.substring(start))
+  }
+  const reset = () => {
+    cancelCompositionRead()
+    cancelTextareaRead()
+  }
+  helper._resetWindowsIme = reset
+  disposers.push(() => {
+    reset()
+    if (helper._resetWindowsIme === reset) delete helper._resetWindowsIme
+  })
 
   if (typeof helper.compositionstart === 'function') {
     const originalCompositionStart = helper.compositionstart
     const patchedCompositionStart = function patchedCompositionStart(
       this: XtermCompositionHelperInternals,
     ): void {
-      // A fresh composition supersedes the previous commit: forgetting its
-      // text keeps a genuinely identical re-commit from being mistaken for a
-      // duplicate straggler.
+      flushComposition()
+      cancelTextareaRead()
       this._lastCommittedText = ''
       originalCompositionStart.call(this)
     }
@@ -173,18 +190,19 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
       this: XtermCompositionHelperInternals,
       ev: Pick<CompositionEvent, 'data'>,
     ): void {
-      lastCompositionData = typeof ev?.data === 'string' ? ev.data : ''
+      const compositionData = typeof ev?.data === 'string' ? ev.data : ''
       if (this._isComposing !== true && this._isSendingComposition !== true) {
         // compositionstart was dropped: rebase the region to this update, the
         // way compositionstart would have, so the compositionend read delivers
         // only the new text instead of the whole accumulated textarea value.
         // This is still the start of a new composition, so forget the prior
         // commit the same way compositionstart does.
+        cancelTextareaRead()
         this._lastCommittedText = ''
         this._isComposing = true
         this._isSendingComposition = false
         this._dataAlreadySent = ''
-        const start = Math.max(0, textarea.value.length - lastCompositionData.length)
+        const start = Math.max(0, textarea.value.length - compositionData.length)
         if (this._compositionPosition) this._compositionPosition.start = start
         else this._compositionPosition = { start, end: start }
       }
@@ -206,45 +224,59 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
     ): void {
       const start = this._compositionPosition?.start ?? 0
       const end = this._compositionPosition?.end ?? start
-      const alreadySent = this._dataAlreadySent?.length ?? 0
-      const region = textarea.value.substring(start)
-      // What this finalize delivers (the deferred read runs the same
-      // substring one tick later): remembered so a duplicate arriving on the
-      // direct path afterwards can be dropped loss-free.
-      const wouldSend = waitForPropagation
-        ? textarea.value.substring(start + alreadySent)
-        : textarea.value.substring(start, end)
-      if (waitForPropagation && wouldSend.length > 0) {
-        // compositionend can be delivered twice for one commit. If a read is
-        // already scheduled, or an earlier finalize of the same commit already
-        // delivered this text (and no fresh composition has started since),
-        // scheduling another read would send the word twice. Matching the
-        // committed text structurally — not by a time window — keeps a
-        // straggler loss-free however late it arrives (a busy renderer or
-        // background-tab timer throttling can stretch the gap past any window).
-        const readPending = this._isSendingComposition === true
-        const justDelivered = wouldSend === this._lastCommittedText
-        if (readPending || justDelivered) {
-          return
-        }
+      const wasComposing = this._isComposing === true
+      this._isComposing = false
+      core._helperContainer?.querySelector?.('.composition-view')?.classList.remove('active')
+      cancelTextareaRead()
+
+      if (!waitForPropagation) {
+        cancelCompositionRead()
+        const input = textarea.value.substring(start, end)
+        if (input !== this._lastCommittedText) sendCommit(input)
+        this._dataAlreadySent = textarea.value.substring(start)
+        return
       }
-      if (wouldSend.length > 0) {
-        this._lastCommittedText = wouldSend
-      }
-      originalFinalize.call(this, waitForPropagation)
-      if (!waitForPropagation && region.length > 0) {
-        // The keydown finalize sends substring(start, end) immediately but
-        // leaves the text in the textarea, so a compositionend landing after
-        // it would schedule a second send of the same text. Record the whole
-        // region as sent: xterm's _dataAlreadySent advances the deferred read
-        // past it (and past the trailing characters their own key paths send).
-        this._dataAlreadySent = region
-      }
+
+      // An end without an active composition is a duplicate or a straggler
+      // from before reset. It must not read newly typed text as an old commit.
+      if (!wasComposing || compositionTimer !== undefined) return
+      pendingStart = start
+      this._isSendingComposition = true
+      compositionTimer = window.setTimeout(flushComposition, 0)
     }
     helper._finalizeComposition = patchedFinalize
     disposers.push(() => {
       if (helper._finalizeComposition === patchedFinalize) {
         helper._finalizeComposition = originalFinalize
+      }
+    })
+  }
+
+  if (typeof helper._handleAnyTextareaChanges === 'function') {
+    const originalTextareaRead = helper._handleAnyTextareaChanges
+    const patchedTextareaRead = function patchedTextareaRead(): void {
+      if (textareaTimer !== undefined) return
+      const oldValue = textarea.value
+      textareaTimer = window.setTimeout(() => {
+        textareaTimer = undefined
+        if (isCompositionActive(helper)) return
+        const value = textarea.value
+        const diff = value.replace(oldValue, '')
+        helper._dataAlreadySent = diff
+        if (value.length < oldValue.length) {
+          helper._coreService?.triggerDataEvent?.('\x7f', true)
+        } else {
+          const input = value.length > oldValue.length ? diff : value !== oldValue ? value : ''
+          if (input && input !== helper._lastCommittedText) {
+            helper._coreService?.triggerDataEvent?.(input, true)
+          }
+        }
+      }, 0)
+    }
+    helper._handleAnyTextareaChanges = patchedTextareaRead
+    disposers.push(() => {
+      if (helper._handleAnyTextareaChanges === patchedTextareaRead) {
+        helper._handleAnyTextareaChanges = originalTextareaRead
       }
     })
   }
@@ -280,7 +312,9 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
         return true
       }
     }
-    return originalInputEvent!.call(this, ev)
+    const handled = originalInputEvent!.call(this, ev)
+    if (handled) cancelTextareaRead()
+    return handled
   }
   core._inputEvent = patchedInputEvent
 
@@ -313,6 +347,10 @@ export function resetXtermInputState(
   if (!terminal) return
   const core = (terminal as TerminalWithCore)._core
   const textarea = core?.textarea
+  // Blur can synchronously produce compositionend; cancel its read only
+  // after the OS-level composition has ended.
+  if (opts.blur !== false) textarea?.blur?.()
+  core?._compositionHelper?._resetWindowsIme?.()
   if (core) {
     core._keyDownHandled = false
     core._keyPressHandled = false
@@ -329,10 +367,8 @@ export function resetXtermInputState(
     const compositionView = core?._helperContainer?.querySelector?.('.composition-view')
     compositionView?.classList.remove('active')
   }
-  if (textarea) {
-    textarea.value = ''
-    if (opts.blur !== false) textarea.blur?.()
-  }
+  if (textarea) textarea.value = ''
+  core?._syncTextArea?.()
 }
 
 export function installImeCompatibilityPatch(terminal: Terminal): Disposable {

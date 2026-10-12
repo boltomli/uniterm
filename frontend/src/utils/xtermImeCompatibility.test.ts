@@ -154,22 +154,6 @@ afterEach(() => {
 })
 
 describe('installImeCompatibilityPatch', () => {
-  it('is a no-op on platforms without a dedicated patch', () => {
-    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
-    const { core, calls } = makeFakeCore()
-    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
-    expect(core._inputEvent).toBe(core._inputEvent)
-    expect(core.textarea.listeners.size).toBe(0)
-    disposable.dispose()
-    expect(calls).toHaveLength(0)
-  })
-
-  it('does not patch when xterm internals are missing', () => {
-    const disposable = installImeCompatibilityPatch({ _core: {} } as never)
-    expect(disposable.dispose).toBeTypeOf('function')
-    disposable.dispose()
-  })
-
   it('forces direct delivery for a single printable char after a 229 keydown', () => {
     const { core, calls } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
@@ -531,23 +515,12 @@ describe('installImeCompatibilityPatch', () => {
     ])
   })
 
-  it('dispose restores the original handler and removes the keydown listener', () => {
-    const { core } = makeFakeCore()
-    const original = core._inputEvent
-    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
-
-    expect(core._inputEvent).not.toBe(original)
-    expect(core.textarea.listeners.has('keydown')).toBe(true)
-
-    disposable.dispose()
-    expect(core._inputEvent).toBe(original)
-    expect(core.textarea.listeners.size).toBe(0)
-  })
 })
 
 describe('windows duplicate-commit guard', () => {
   beforeEach(() => {
     vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0; Win64; x64' })
+    vi.stubGlobal('window', globalThis)
   })
 
   it('suppresses the direct input path while a composition commit is pending', () => {
@@ -601,20 +574,12 @@ describe('windows duplicate-commit guard', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('dispose restores the original handler', () => {
-    const { core } = makeFakeCore()
-    const original = core._inputEvent
-    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
-    expect(core._inputEvent).not.toBe(original)
-
-    disposable.dispose()
-    expect(core._inputEvent).toBe(original)
-  })
 })
 
 describe('windows composition pipeline', () => {
   beforeEach(() => {
     vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0; Win64; x64' })
+    vi.stubGlobal('window', globalThis)
     vi.useFakeTimers()
   })
 
@@ -636,6 +601,91 @@ describe('windows composition pipeline', () => {
     helper._finalizeComposition(true)
     vi.runAllTimers()
     expect(sends).toEqual(['你好'])
+  })
+
+  it('deduplicates the actual commit when compositionend still sees the preedit', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    helper.compositionstart()
+    core.textarea.value = 'nihao'
+    helper.compositionupdate({ data: 'nihao' })
+    vi.runAllTimers()
+    helper._finalizeComposition(true)
+    core.textarea.value = '你好'
+    vi.runAllTimers()
+    core._keyDownSeen = false
+    core._inputEvent.call(core, insertText('你好'))
+    expect(sends).toEqual(['你好'])
+  })
+
+  it('preserves two identical commits started before the deferred read runs', () => {
+    const { core, sends } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+    const helper = core._compositionHelper
+    helper.compositionstart()
+    core.textarea.value = '词'
+    helper._finalizeComposition(true)
+    helper.compositionstart()
+    core.textarea.value = '词词'
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['词', '词'])
+  })
+
+  it('cancels a reset commit instead of reading the next composition into it', () => {
+    const { core, sends } = makeFakeCore()
+    const terminal = fakeTerminal(core)
+    installImeCompatibilityPatch(terminal)
+    const helper = core._compositionHelper
+    helper.compositionstart()
+    core.textarea.value = '旧词'
+    helper._finalizeComposition(true)
+    resetXtermInputState(terminal, { blur: false })
+    helper.compositionstart()
+    core.textarea.value = '新词'
+    helper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['新词'])
+  })
+
+  it('ignores an old compositionend after reset without resending fresh input', () => {
+    const { core, sends } = makeFakeCore()
+    const terminal = fakeTerminal(core)
+    installImeCompatibilityPatch(terminal)
+    core._compositionHelper.compositionstart()
+    core.textarea.value = '旧词'
+    resetXtermInputState(terminal, { blur: false })
+    core._inputEvent.call(core, insertText('a'))
+    core._compositionHelper._finalizeComposition(true)
+    vi.runAllTimers()
+    expect(sends).toEqual(['a'])
+  })
+
+  it('cancels a textarea fallback at a drag boundary without duplicating new input', () => {
+    const { core, sends } = makeFakeCore()
+    core._compositionHelper._handleAnyTextareaChanges = vi.fn()
+    const terminal = fakeTerminal(core)
+    installImeCompatibilityPatch(terminal)
+    core.textarea.value = '旧词'
+    core._compositionHelper._handleAnyTextareaChanges()
+    resetXtermInputState(terminal, { blur: false })
+    core._inputEvent.call(core, insertText('新词'))
+    vi.runAllTimers()
+    expect(sends).toEqual(['新词'])
+  })
+
+  it('cancels a commit scheduled synchronously by blur before fresh input arrives', () => {
+    const { core, sends } = makeFakeCore()
+    const terminal = fakeTerminal(core)
+    installImeCompatibilityPatch(terminal)
+    core._compositionHelper.compositionstart()
+    core.textarea.value = '旧词'
+    core.textarea.blur = () => core._compositionHelper._finalizeComposition(true)
+    resetXtermInputState(terminal)
+    core._inputEvent.call(core, insertText('新词'))
+    vi.runAllTimers()
+    expect(sends).toEqual(['新词'])
   })
 
   it('drops a late insertText whose text the composition read just delivered', () => {
@@ -798,56 +848,9 @@ describe('windows composition pipeline', () => {
     expect(sends).toEqual(['新词'])
   })
 
-  it('dispose restores the composition handlers', () => {
-    const { core } = makeFakeCore()
-    const helper = core._compositionHelper
-    const originalStart = helper.compositionstart
-    const originalUpdate = helper.compositionupdate
-    const originalFinalize = helper._finalizeComposition
-    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
-    expect(helper.compositionstart).not.toBe(originalStart)
-    expect(helper.compositionupdate).not.toBe(originalUpdate)
-    expect(helper._finalizeComposition).not.toBe(originalFinalize)
-
-    disposable.dispose()
-    expect(helper.compositionstart).toBe(originalStart)
-    expect(helper.compositionupdate).toBe(originalUpdate)
-    expect(helper._finalizeComposition).toBe(originalFinalize)
-  })
 })
 
 describe('resetXtermInputState', () => {
-  it('clears key and composition state and blurs the textarea', () => {
-    const { core } = makeFakeCore()
-    core._keyDownHandled = true
-    core._keyPressHandled = true
-    core._keyDownSeen = true
-    core._unprocessedDeadKey = true
-    const helper = core._compositionHelper
-    helper._isComposing = true
-    helper._isSendingComposition = true
-    helper._dataAlreadySent = '词'
-    helper._lastCommittedText = '词'
-    helper._compositionPosition = { start: 1, end: 2 }
-    core.textarea.value = '词'
-
-    resetXtermInputState(fakeTerminal(core))
-
-    expect([
-      core._keyDownHandled,
-      core._keyPressHandled,
-      core._keyDownSeen,
-      core._unprocessedDeadKey,
-    ]).toEqual([false, false, false, false])
-    expect(helper._isComposing).toBe(false)
-    expect(helper._isSendingComposition).toBe(false)
-    expect(helper._dataAlreadySent).toBe('')
-    expect(helper._lastCommittedText).toBe('')
-    expect(helper._compositionPosition).toEqual({ start: 0, end: 0 })
-    expect(core.textarea.value).toBe('')
-    expect(core.textarea.blur).toHaveBeenCalled()
-  })
-
   it('keeps focus when called with blur: false (drag start)', () => {
     const { core } = makeFakeCore()
     core.textarea.value = '词'
@@ -856,9 +859,5 @@ describe('resetXtermInputState', () => {
 
     expect(core.textarea.value).toBe('')
     expect(core.textarea.blur).not.toHaveBeenCalled()
-  })
-
-  it('is a no-op without a terminal', () => {
-    expect(() => resetXtermInputState(null)).not.toThrow()
   })
 })

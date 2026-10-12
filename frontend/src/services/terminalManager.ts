@@ -77,7 +77,7 @@ export interface ManagedTerminal {
   /** Subscription to ProgressAddon.onChange — routes OSC 9;4 progress
    * state into the tab store for the tab-bar indicator. */
   progressDispose: { dispose(): void } | null
-  /** IME compatibility patch installed on this terminal (macOS only). */
+  /** Platform IME compatibility patch installed after terminal.open(). */
   imeDispose: { dispose(): void } | null
 }
 
@@ -405,9 +405,8 @@ export function acquireTerminal(
     // AFTER loadAddon — the unicode property is provided by the addon.
     terminal.unicode.activeVersion = '11'
 
-    // IME compatibility (macOS) is installed in attachTerminal, after
-    // terminal.open() — the patch needs textarea/_compositionHelper, which
-    // xterm only creates there.
+    // IME compatibility is installed in attachTerminal, after open() creates
+    // the textarea and composition helper.
     managed = {
       terminal,
       fitAddon,
@@ -589,12 +588,8 @@ export function attachTerminal(sessionId: string, container: HTMLElement): void 
     container.appendChild(managed.terminal.element)
   }
 
-  // IME compatibility (macOS): deliver single-char input directly when an
-  // IME marks keystrokes with the phantom keyCode 229, instead of relying on
-  // xterm's racy deferred textarea diff that drops chars under fast typing.
-  // Must run after open() — that is where xterm creates the textarea and the
-  // composition helper the patch hooks into; installing at construction time
-  // silently no-ops.
+  // macOS direct input and Windows composition ownership both need the
+  // textarea/composition helper created by open(), not construction.
   if (!managed.imeDispose) {
     managed.imeDispose = installImeCompatibilityPatch(managed.terminal)
   }

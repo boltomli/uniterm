@@ -869,16 +869,9 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
-  // WM_EXITSIZEMOVE: the drag's modal loop can drop the compositionend of a
-  // composition it interrupted and reorder key events, leaving xterm's key /
-  // composition state stuck — the next committed word then goes out twice.
-  // WebView2 also stops re-reporting the caret layout to the IME after the
-  // window moved (WebView2Feedback#5675/#1611), so the composition/candidate
-  // window drifts to the screen origin (top left, off-screen) until something
-  // forces a re-sync. Reset every transient input state and run a blur+focus
-  // round trip: the focus change makes the OS recompute the IME window
-  // position from the caret, and focus goes straight back so typing can
-  // continue without a click.
+  // The native hook restores the pre-drag child HWND after Wails releases
+  // its modal move loop. Reset pending reads, sync the caret geometry, then
+  // cycle DOM focus so WebView2 refreshes the IME anchor at the new position.
   const textarea = terminal?.textarea
   const hadFocus = !!textarea && document.activeElement === textarea
   resetXtermInputState(terminal, { blur: true })
@@ -1297,16 +1290,6 @@ onMounted(() => {
     const sidNow = props.sessionId
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
-    // Final duplicate-delivery safety net. Every xterm send path is already
-    // deduplicated at the source (xtermImeCompatibility), but a pathological
-    // event ordering not modelled there could still deliver the same text
-    // twice on one keystroke/commit. No legitimate input repeats identical
-    // text within 25ms (OS key auto-repeat is ~30ms and emits only single
-    // characters), so an exact repeat here is always the same input delivered
-    // twice — drop it and log the event so a real-world trace is available.
-    let lastOnData = ''
-    let lastOnDataAt = 0
-
     terminal.attachCustomKeyEventHandler(handleTerminalKey)
 
     // Input handling
@@ -1331,16 +1314,6 @@ onMounted(() => {
         if (!cleaned) return
         data = cleaned
       }
-
-      const onDataNow = Date.now()
-      if (data === lastOnData && onDataNow - lastOnDataAt < 25) {
-        // The same input was delivered twice (the window is below the ~30ms
-        // key auto-repeat floor, so this is never a genuine repeat).
-        FrontendLog('ime-dup', JSON.stringify(data))
-        return
-      }
-      lastOnData = data
-      lastOnDataAt = onDataNow
 
       // Mobile sticky Ctrl: transform the next soft-keyboard character into
       // the corresponding Ctrl combo (e.g. 'c' → ^C) when Ctrl is armed.
