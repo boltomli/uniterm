@@ -254,8 +254,15 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
 
   if (typeof helper._handleAnyTextareaChanges === 'function') {
     const originalTextareaRead = helper._handleAnyTextareaChanges
-    const patchedTextareaRead = function patchedTextareaRead(): void {
+    const patchedTextareaRead = function patchedTextareaRead(
+      this: XtermCompositionHelperInternals,
+    ): void {
       if (textareaTimer !== undefined) return
+      // A keyCode-229 textarea diff starts a new non-composition input. Clear
+      // the previous composition marker so two genuine identical commits do
+      // not inherit each other's dedup state. If a composition is still
+      // active, its composition read remains the owner of the text.
+      if (!isCompositionActive(helper)) this._lastCommittedText = ''
       const oldValue = textarea.value
       textareaTimer = window.setTimeout(() => {
         textareaTimer = undefined
@@ -267,9 +274,10 @@ function installWindowsImePatch(terminal: Terminal): Disposable {
           helper._coreService?.triggerDataEvent?.('\x7f', true)
         } else {
           const input = value.length > oldValue.length ? diff : value !== oldValue ? value : ''
-          if (input && input !== helper._lastCommittedText) {
-            helper._coreService?.triggerDataEvent?.(input, true)
-          }
+          // This fallback is itself a commit path. Record exactly what was
+          // sent so a late insertText event for the same edit cannot send it
+          // through xterm's direct path a second time.
+          if (input) sendCommit(input)
         }
       }, 0)
     }

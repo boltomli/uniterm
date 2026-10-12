@@ -675,6 +675,31 @@ describe('windows composition pipeline', () => {
     expect(sends).toEqual(['新词'])
   })
 
+  it('records a textarea fallback before a late insertText event', () => {
+    const { core, sends } = makeFakeCore()
+    core._compositionHelper._handleAnyTextareaChanges = function () {
+      const oldValue = core.textarea.value
+      setTimeout(() => {
+        if (core._compositionHelper._isComposing) return
+        const value = core.textarea.value
+        const diff = value.replace(oldValue, '')
+        if (value.length > oldValue.length && diff) {
+          core._compositionHelper._coreService.triggerDataEvent(diff, true)
+        }
+      }, 0)
+    }
+    const terminal = fakeTerminal(core)
+    installImeCompatibilityPatch(terminal)
+
+    core._compositionHelper._handleAnyTextareaChanges()
+    core.textarea.value = '词'
+    vi.runAllTimers()
+    core._keyDownSeen = false
+    core._inputEvent.call(core, insertText('词'))
+
+    expect(sends).toEqual(['词'])
+  })
+
   it('cancels a commit scheduled synchronously by blur before fresh input arrives', () => {
     const { core, sends } = makeFakeCore()
     const terminal = fakeTerminal(core)

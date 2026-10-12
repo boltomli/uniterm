@@ -16,9 +16,9 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
-	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -421,8 +421,14 @@ func (a *App) subclassMainWindow() {
 		switch msg {
 		case WM_ENTERSIZEMOVE:
 			focusBeforeMove, _, _ = procGetFocus.Call()
-			if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
-				focusBeforeMove = 0
+			// Wails normally focuses the top-level window here, while WebView2 can
+			// expose either that HWND or a descendant as the active native target.
+			// Keep both forms; rejecting the parent makes the restore path a no-op
+			// for the normal WebView2 focus state.
+			if focusBeforeMove != uintptr(hwnd) {
+				if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
+					focusBeforeMove = 0
+				}
 			}
 			a.inSizeMove = true
 			a.emitMoveResize("rdp:move-resize-start")
@@ -441,16 +447,16 @@ func (a *App) subclassMainWindow() {
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
 		if msg == WM_EXITSIZEMOVE {
 			// Wails focuses the parent on WM_ENTERSIZEMOVE to close popups.
-			// DOM focus alone cannot restore WebView2's native IME target.
+			// Restore whichever native target owned focus before that handoff;
+			// SetFocus(parent) also lets Wails route focus back into WebView2.
 			foreground, _, _ := procGetForegroundWindow.Call()
-			child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove)
-			if foreground == uintptr(hwnd) && child != 0 {
+			if foreground == uintptr(hwnd) && focusBeforeMove != 0 {
 				procSetFocus.Call(focusBeforeMove)
 			}
 			focusBeforeMove = 0
 			a.emitMoveResize("rdp:move-resize-end")
 		}
-		return ret
+    return ret
 	})
 	a.wndProcCb = cb
 
