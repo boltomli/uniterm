@@ -539,7 +539,7 @@
             </div>
             <div class="setting-control">
               <el-select v-model="settingsStore.settings.terminal.timestampFormat" @change="settingsStore.save()">
-                <el-option v-for="opt in TIMESTAMP_FORMATS" :key="opt.value" :label="t(opt.labelKey)" :value="opt.value" />
+                <el-option v-for="opt in TIMESTAMP_FORMATS" :key="opt.value" :label="`${t(opt.labelKey)} (${opt.value})`" :value="opt.value" />
               </el-select>
             </div>
           </div>
@@ -1268,10 +1268,11 @@
             </div>
             <div class="setting-control">
               <el-select v-model="mcp.policy" @change="saveMcp()">
-                <el-option :label="t('settings.mcpPolicyConfirmAll')" value="confirm_all" />
-                <el-option :label="t('settings.mcpPolicyConfirmWrite')" value="confirm_write" />
-                <el-option :label="t('settings.mcpPolicyConfirmDangerous')" value="confirm_dangerous" />
-                <el-option :label="t('settings.mcpPolicyBypass')" value="bypass" />
+                <!-- Same option set and labels as the AI panel's mode menu (ai.*) so both fronts read identically. -->
+                <el-option :label="t('ai.confirmAll')" value="confirm_all" />
+                <el-option :label="t('ai.confirmWrite')" value="confirm_write" />
+                <el-option :label="t('ai.confirmDangerous')" value="confirm_dangerous" />
+                <el-option :label="t('ai.bypass')" value="bypass" />
               </el-select>
             </div>
           </div>
