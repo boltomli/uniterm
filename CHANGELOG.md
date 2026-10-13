@@ -34,8 +34,7 @@
 - Containers: fixes silently failing when a container references an SSH host without saved credentials — the credential dialog now opens.
 - Terminal: fixes the app freezing when a command floods the terminal with output.
 - Terminal: fixes highlighting not applying to lines that span a soft wrap.
-- Windows IME: fixes duplicate committed words after dragging the window. Deduplication now records the actual deferred commit rather than the preedit text, cancels pending composition/textarea reads at drag boundaries, and preserves rapid repeated commits; the time-based terminal-wide filter is removed so genuine repeated input is not lost.
-- Windows IME: fixes the candidate window drifting to the screen's top-left after dragging. The native child-window focus is restored after Wails' move loop, then the terminal refreshes caret geometry and DOM focus without stealing focus from another app.
+- Windows IME: fixes committed words being typed twice, and the candidate window jumping to the screen's top-left, after dragging or resizing the window. Wails bounced keyboard focus through the main window when a move started, which left WebView2's input-method connection detached; the move is no longer forwarded to that handler. The window hook that delivers move/resize events is also installed again (it had stopped attaching at startup).
 - SMB: fixes a session dying silently after idle — reconnect now restores the previous directory.
 - UI: fixes progress bars and status indicators turning invisible in background-image mode.
 - Linux: fixes the running window showing as an orphan with a generic icon on GNOME Wayland — the desktop file is now named after the Wayland app_id (`org.wails.uniterm.desktop`) so the window correctly matches its launcher. (@Teejer)
@@ -79,8 +78,7 @@ Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contrib
 - 容器：修复引用的 SSH 主机没有保存凭据时静默失败的问题，现在会弹出凭据录入对话框。
 - 终端：修复命令大量输出时整个应用卡死的问题。
 - 终端：修复跨软换行的行高亮不生效的问题。
-- Windows 输入法：修复拖动窗口后词语重复上屏。去重改为记录延迟读取实际送出的上屏文本，而非预编辑文本；拖动边界取消待处理的组合与 textarea 差分读取，保留快速重复上屏；移除终端全局按时间去重，避免误吞正常重复输入。
-- Windows 输入法：修复拖动窗口后候选框漂移到屏幕左上角。Wails 移动循环结束后恢复原生子窗口焦点，再刷新终端光标坐标和 DOM 焦点；不会从其他应用抢夺焦点。
+- Windows 输入法：修复拖动或缩放窗口后词语重复上屏、候选框跳到屏幕左上角的问题。Wails 在开始移动时让键盘焦点经主窗口绕回，导致 WebView2 与输入法的连接脱开；现在不再把移动开始消息交给该处理逻辑。同时修复了负责移动/缩放事件的窗口钩子在启动时未能挂上的问题。
 - SMB：修复空闲后会话静默失效的问题——重连后恢复原目录。
 - 界面：修复背景图模式下进度条、状态指示不可见的问题。
 - Linux：修复 GNOME Wayland 下运行窗口显示为无图标孤立窗口的问题——桌面文件改为按 Wayland app_id 命名（`org.wails.uniterm.desktop`），窗口可正确关联启动器图标。(@Teejer)

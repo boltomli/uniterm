@@ -331,7 +331,9 @@ func main() {
 	// native window exists. Idempotent; a no-op on pre-Win11 and other OSes.
 	if runtime.GOOS == "windows" {
 		window.OnWindowEvent(events.Windows.WindowShow, func(*application.WindowEvent) {
-			applyRoundedCorners(window.NativeWindow())
+			hwnd := window.NativeWindow()
+			applyRoundedCorners(hwnd)
+			app.attachMainWindow(uintptr(hwnd))
 		})
 	}
 

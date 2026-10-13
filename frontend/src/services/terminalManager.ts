@@ -77,7 +77,7 @@ export interface ManagedTerminal {
   /** Subscription to ProgressAddon.onChange — routes OSC 9;4 progress
    * state into the tab store for the tab-bar indicator. */
   progressDispose: { dispose(): void } | null
-  /** Platform IME compatibility patch installed after terminal.open(). */
+  /** macOS IME compatibility patch installed after terminal.open(). */
   imeDispose: { dispose(): void } | null
 }
 
@@ -405,8 +405,8 @@ export function acquireTerminal(
     // AFTER loadAddon — the unicode property is provided by the addon.
     terminal.unicode.activeVersion = '11'
 
-    // IME compatibility is installed in attachTerminal, after open() creates
-    // the textarea and composition helper.
+    // IME compatibility (macOS) is installed in attachTerminal, after open()
+    // creates the textarea and composition helper.
     managed = {
       terminal,
       fitAddon,

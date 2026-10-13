@@ -63,6 +63,7 @@ type App struct {
 	syncService          *sync.SyncService
 	tunnelService        *session.TunnelService
 	mainHwnd             uintptr
+	mainWindowAttach     stdsync.Once
 	originalWndProc      uintptr
 	wndProcCb            uintptr // keep alive to prevent GC
 	inSizeMove           bool
@@ -181,6 +182,20 @@ func (a *App) emit(name string, data ...any) {
 	a.app.Event.Emit(name, data...)
 }
 
+// attachMainWindow records the native main-window handle and installs the
+// Windows WndProc subclass (move/resize events, IME focus repair). Services
+// start before Wails creates the window, so ServiceStartup cannot discover it;
+// main.go calls this once the window is shown. Later calls are no-ops.
+func (a *App) attachMainWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	a.mainWindowAttach.Do(func() {
+		a.mainHwnd = hwnd
+		a.subclassMainWindow()
+	})
+}
+
 // win returns the single application window, used to drive window operations
 // from the v3 application object.
 func (a *App) win() *application.WebviewWindow {
@@ -226,10 +241,6 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 			}
 		}
 	}()
-
-	// Discover main window HWND for RDP child window embedding
-	a.mainHwnd = a.findMainWindow()
-	a.subclassMainWindow()
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
 	// defers all store init until the frontend calls SetDataDir.

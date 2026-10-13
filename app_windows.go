@@ -411,27 +411,22 @@ func (a *App) subclassMainWindow() {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW := user32.NewProc("CallWindowProcW")
-	procGetFocus := user32.NewProc("GetFocus")
-	procSetFocus := user32.NewProc("SetFocus")
-	procIsChild := user32.NewProc("IsChild")
-	procGetForegroundWindow := user32.NewProc("GetForegroundWindow")
-	var focusBeforeMove uintptr
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
 		case WM_ENTERSIZEMOVE:
-			focusBeforeMove, _, _ = procGetFocus.Call()
-			// Wails normally focuses the top-level window here, while WebView2 can
-			// expose either that HWND or a descendant as the active native target.
-			// Keep both forms; rejecting the parent makes the restore path a no-op
-			// for the normal WebView2 focus state.
-			if focusBeforeMove != uintptr(hwnd) {
-				if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
-					focusBeforeMove = 0
-				}
-			}
 			a.inSizeMove = true
 			a.emitMoveResize("rdp:move-resize-start")
+			// Do not forward to Wails. Its handler calls SetFocus(parent) to close
+			// native <select> popups (WebView2Feedback#2290), and WM_SETFOCUS then
+			// bounces focus back into WebView2. Win32 focus ends on the same HWND,
+			// but Chromium's TSF client is left detached: the IME stops composing
+			// in the page, its candidate window falls back to the screen origin,
+			// and commits arrive as WM_CHAR, which xterm sends once from keypress
+			// and again from its textarea diff. The app has no native <select>,
+			// and Wails only uses this message to emit WindowStartMove/Resize,
+			// which nothing subscribes to. DefWindowProc ignores it too.
+			return 0
 		case WM_EXITSIZEMOVE:
 			a.inSizeMove = false
 		case WM_SYSCOMMAND:
@@ -446,17 +441,9 @@ func (a *App) subclassMainWindow() {
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
 		if msg == WM_EXITSIZEMOVE {
-			// Wails focuses the parent on WM_ENTERSIZEMOVE to close popups.
-			// Restore whichever native target owned focus before that handoff;
-			// SetFocus(parent) also lets Wails route focus back into WebView2.
-			foreground, _, _ := procGetForegroundWindow.Call()
-			if foreground == uintptr(hwnd) && focusBeforeMove != 0 {
-				procSetFocus.Call(focusBeforeMove)
-			}
-			focusBeforeMove = 0
 			a.emitMoveResize("rdp:move-resize-end")
 		}
-    return ret
+		return ret
 	})
 	a.wndProcCb = cb
 

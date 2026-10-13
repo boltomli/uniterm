@@ -331,7 +331,6 @@ let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // resizeTimer so it never cancels another handler's pending resize.
 let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
-let unsubMoveResizeStart: (() => void) | null = null
 let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
@@ -869,13 +868,6 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
-  // The native hook restores the pre-drag child HWND after Wails releases
-  // its modal move loop. Reset pending reads, sync the caret geometry, then
-  // cycle DOM focus so WebView2 refreshes the IME anchor at the new position.
-  const textarea = terminal?.textarea
-  const hadFocus = !!textarea && document.activeElement === textarea
-  resetXtermInputState(terminal, { blur: true })
-  if (hadFocus && textarea) textarea.focus()
   resizeTimer = setTimeout(() => resize(), 100)
 }
 
@@ -1662,14 +1654,6 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
-  // WM_ENTERSIZEMOVE, before the OS enters its modal move/size loop: flush
-  // xterm's transient input state without taking focus (the user is dragging
-  // the window and must not have to re-click the terminal), so the loop
-  // cannot corrupt a live composition into a duplicated commit. The
-  // definitive blur+refocus happens at move end (onNativeResizeEnd).
-  unsubMoveResizeStart = Events.On('rdp:move-resize-start', () => {
-    if (isActive.value) resetXtermInputState(terminal, { blur: false })
-  })
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -2154,8 +2138,6 @@ onUnmounted(() => {
   window.removeEventListener('split:resize-end', onSplitResizeEnd)
   unsubNativeResizeEnd?.()
   unsubNativeResizeEnd = null
-  unsubMoveResizeStart?.()
-  unsubMoveResizeStart = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
   if (onResetOutput) window.removeEventListener('terminal:reset-output', onResetOutput)
