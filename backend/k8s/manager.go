@@ -24,6 +24,9 @@ type Manager struct {
 	conns   map[string]*connection
 	watches map[string]*watchHandle
 	logs    map[string]*logHandle
+	// quit stops the background sweeper; closed exactly once by Close.
+	quit      chan struct{}
+	closeOnce sync.Once
 	// emit is set once in startup via SetEventEmitter and never changes,
 	// so we store it in atomic.Value to let StartWatch/StartLogStream
 	// capture it without grabbing the manager mutex (F-413).
@@ -82,6 +85,7 @@ func NewManager() *Manager {
 		conns:   make(map[string]*connection),
 		watches: make(map[string]*watchHandle),
 		logs:    make(map[string]*logHandle),
+		quit:    make(chan struct{}),
 	}
 	m.emit.Store(EventEmitter(func(string, any) {}))
 	go m.sweepLoop()
@@ -96,8 +100,13 @@ func NewManager() *Manager {
 func (m *Manager) sweepLoop() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.sweepOnce()
+	for {
+		select {
+		case <-m.quit:
+			return
+		case <-ticker.C:
+			m.sweepOnce()
+		}
 	}
 }
 
@@ -262,6 +271,42 @@ func (m *Manager) Request(ctx context.Context, connID, method, path string, body
 		return 0, nil, fmt.Errorf("connection %q not found", connID)
 	}
 	return Do(ctx, conn.client, conn.base, method, path, body, contentType)
+}
+
+// Close stops the background sweeper and tears down every watch, log
+// stream and connection the manager owns. Watch and log loops run on
+// context.Background(); without this they (and the goroutines blocked on
+// their HTTP bodies) outlive the app. Safe to call more than once and
+// concurrent with the other methods.
+func (m *Manager) Close() {
+	m.closeOnce.Do(func() { close(m.quit) })
+
+	// Snapshot the ids, then reuse the per-item teardown paths (which take
+	// the lock themselves and run cancels/close callbacks outside it).
+	m.mu.Lock()
+	watchIDs := make([]string, 0, len(m.watches))
+	for id := range m.watches {
+		watchIDs = append(watchIDs, id)
+	}
+	logIDs := make([]string, 0, len(m.logs))
+	for id := range m.logs {
+		logIDs = append(logIDs, id)
+	}
+	connIDs := make([]string, 0, len(m.conns))
+	for id := range m.conns {
+		connIDs = append(connIDs, id)
+	}
+	m.mu.Unlock()
+
+	for _, id := range watchIDs {
+		m.StopWatch(id)
+	}
+	for _, id := range logIDs {
+		m.StopLogStream(id)
+	}
+	for _, id := range connIDs {
+		m.Disconnect(id)
+	}
 }
 
 func (m *Manager) StartWatch(connID, path string) (string, error) {

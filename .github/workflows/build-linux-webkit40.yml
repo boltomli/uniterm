@@ -156,6 +156,31 @@ jobs:
             uniterm-linux-amd64-webkit40-*.deb
             uniterm-linux-amd64-webkit40-*.rpm
 
+      # Same fail-closed contract as build.yml: the in-app updater refuses
+      # any release whose checksums.txt has no valid ed25519 signature
+      # (backend/update/signature.go). This channel is a draft+prerelease
+      # that the updater does not consume, but signing here keeps every
+      # published asset verifiable and lets the draft be promoted without
+      # re-cutting the release.
+      - name: Checksum and sign release files
+        if: inputs.upload_release == true
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          sha256sum uniterm-linux-amd64-webkit40-*.tar.gz \
+            uniterm-linux-amd64-webkit40-*.deb \
+            uniterm-linux-amd64-webkit40-*.rpm > checksums.txt
+          cat checksums.txt
+          if [ -z "${UPDATE_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::UPDATE_SIGNING_PRIVATE_KEY secret is missing; refusing to publish an unsigned release"
+            exit 1
+          fi
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "${KEY_FILE}"' EXIT
+          printf '%s' "${UPDATE_SIGNING_PRIVATE_KEY}" > "${KEY_FILE}"
+          go run ./build/signcmd -key "${KEY_FILE}" -in checksums.txt -out checksums.txt.sig
+          cat checksums.txt.sig
+
       - name: Create draft release
         if: inputs.upload_release == true
         uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b # v3
@@ -176,5 +201,7 @@ jobs:
             uniterm-linux-amd64-webkit40-*.tar.gz
             uniterm-linux-amd64-webkit40-*.deb
             uniterm-linux-amd64-webkit40-*.rpm
+            checksums.txt
+            checksums.txt.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

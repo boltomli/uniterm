@@ -893,10 +893,9 @@ func (a *App) watchForeground(ctx context.Context) {
 // move/resize forwarder are stopped, and the (periodically flushed) app log
 // is pushed to disk.
 //
-// The k8s/container managers expose no Stop/Close and their watch/log streams
-// are bound to context.Background(); nothing in the root package can reach
-// them without an exported shutdown API, and the process exits immediately
-// after this returns, which reaps those goroutines anyway.
+// The k8s/container managers are closed explicitly: their watch/log/pull
+// streams run on context.Background(), so without Close those goroutines
+// (and the HTTP bodies they block on) would outlive the app.
 func (a *App) shutdown() {
 	a.unsubclassMainWindow()
 	a.disableAllPanelLogs()
@@ -909,6 +908,12 @@ func (a *App) shutdown() {
 	}
 	if a.sessionManager != nil {
 		a.sessionManager.CloseAll()
+	}
+	if a.k8sManager != nil {
+		a.k8sManager.Close()
+	}
+	if a.containerManager != nil {
+		a.containerManager.Close()
 	}
 	a.stopMoveResizePump()
 	// backend/log buffers for up to a second; flush so no line is lost.

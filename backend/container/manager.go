@@ -117,9 +117,32 @@ func (m *Manager) Provider(id string) (*Provider, error) {
 	defer m.mu.RUnlock()
 	c, ok := m.conns[id]
 	if !ok {
-		return nil, fmt.Errorf("container connection not found: %s", id)
+		return nil, fmt.Errorf("connection %q not found", id)
 	}
 	return c.provider, nil
+}
+
+// Close stops every in-flight stream (logs / pull / push — their goroutines
+// run on context.Background()) and disconnects every connection the manager
+// owns. Safe to call more than once and concurrent with the other methods.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	streamIDs := make([]string, 0, len(m.streams))
+	for id := range m.streams {
+		streamIDs = append(streamIDs, id)
+	}
+	connIDs := make([]string, 0, len(m.conns))
+	for id := range m.conns {
+		connIDs = append(connIDs, id)
+	}
+	m.mu.Unlock()
+
+	for _, id := range streamIDs {
+		m.StopStream(id)
+	}
+	for _, id := range connIDs {
+		m.Disconnect(id)
+	}
 }
 
 // SetNamespace 切换连接的 namespace：用同一 runner 重建 provider，SSH 连接与进行中的流不受影响。
