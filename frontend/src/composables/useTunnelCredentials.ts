@@ -15,12 +15,14 @@ type ShowCredentialDialog = (
 // 判断一条连接是否缺账密、需要弹凭据对话框。key/identity/kerberos/agent 认证
 // 由后端解析凭据，无需补全提示（identity 连接的临时/旧密码若误弹窗，会压过后端
 // 从密钥库解析出的正确值，因此必须排除）。
+// LoadConnections 不再把明文密码发给渲染层：hasPassword 标志（而非 password
+// 字段本身）表示"已存密码"，后端 CreateSession 会按连接 ID 解析明文。
 export function needsCredentialCheck(config: ConnectionConfig): boolean {
   const inScope = ['ssh', 'mosh', 'sftp', 'scp', 'ftp'].includes(config.type)
   if (!inScope) return false
   if ((config.type === 'ssh' || config.type === 'mosh' || config.type === 'scp' || config.type === 'sftp') && (config.authType === 'key' || config.authType === 'keyText')) return false
   if (config.authType === 'identity' || config.authType === 'kerberos' || config.authType === 'agent') return false
-  return !config.user || !config.password
+  return !config.user || (!config.password && !config.hasPassword)
 }
 
 // 统一凭据补全入口。此前这段逻辑在 App.vue 与本文件各有一份复刻，而容器

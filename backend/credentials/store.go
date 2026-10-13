@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	stdsync "sync"
 
+	"github.com/zalando/go-keyring"
+
 	unitsync "github.com/ys-ll/uniterm/backend/sync"
 )
 
@@ -69,6 +71,9 @@ func (s *Store) Status() Status {
 }
 
 // AutoUnlock loads credentials.meta and attempts to recover the master key.
+// A recovered key is accepted only when it opens the meta verifier — a stale
+// keychain entry (e.g. a key cached by an older, unverified Unlock) must not
+// be adopted, or every load/save after restart runs under the wrong key.
 func (s *Store) AutoUnlock() error {
 	meta, err := ReadMeta(s.dataDir)
 	if err != nil {
@@ -100,6 +105,11 @@ func (s *Store) AutoUnlock() error {
 		}
 	default:
 		return fmt.Errorf("unknown credential mode %q", meta.Mode)
+	}
+	if key != nil && verifyKey(meta, key) != nil {
+		// The entry cannot open this vault: drop it instead of unlocking
+		// with the wrong key. The user can still unlock with the password.
+		key = nil
 	}
 	s.set(meta.Mode, meta.Salt, key)
 	return nil
@@ -148,6 +158,10 @@ func (s *Store) Setup(mode, masterPassword string) error {
 }
 
 // Unlock derives the master key from a master password (master-password mode only).
+// The derived key is checked against the verifier in credentials.meta BEFORE
+// anything is cached: a typo must not produce Unlocked=true, must not be
+// written to the keychain (it survived restarts through AutoUnlock), and must
+// never become the key new saves are encrypted under.
 func (s *Store) Unlock(masterPassword string) error {
 	s.mu.Lock()
 	mode, salt := s.mode, s.salt
@@ -156,11 +170,36 @@ func (s *Store) Unlock(masterPassword string) error {
 		return errors.New("not in master-password mode")
 	}
 	key := unitsync.DeriveKey(masterPassword, salt)
-	// Cache the derived key for future auto-unlock.
+	meta, err := ReadMeta(s.dataDir)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return errors.New("credentials meta missing; run setup")
+	}
+	if err := verifyKey(meta, key); err != nil {
+		return err
+	}
+	// Cache the verified derived key for future auto-unlock.
 	if err := s.keychain.Set("master-key/"+s.DirHash(), hex.EncodeToString(key)); err != nil {
 		return err
 	}
 	s.set(mode, salt, key)
+	return nil
+}
+
+// verifyKey checks key against the verifier stored in credentials.meta.
+// Meta written before verifiers existed (Verifier == "") cannot be checked
+// and is accepted — there is nothing to compare against, and rejecting would
+// lock out every existing vault.
+func verifyKey(meta *Meta, key []byte) error {
+	if meta == nil || meta.Verifier == "" {
+		return nil
+	}
+	canary, err := DecryptField(meta.Verifier, key)
+	if err != nil || canary != VerifyPlaintext {
+		return errors.New("master password incorrect")
+	}
 	return nil
 }
 
@@ -201,17 +240,34 @@ func (s *Store) SetKey(key []byte) {
 	s.mu.Unlock()
 }
 
-// Rekey persists the new mode/salt/key (keychain entry + credentials.meta) and
-// swaps them into memory. Used by Setup and switch-mode orchestration.
+// Rekey persists the new mode/salt/key/verifier and swaps them into memory.
+// Used by Setup and switch-mode orchestration. Ordering is deliberate:
+// credentials.meta is written FIRST (atomically) and the keychain second, so
+// a failed meta write can no longer leave the keychain holding a key that no
+// meta points at; a failed keychain write rolls meta back to its previous
+// bytes so the two never diverge.
 func (s *Store) Rekey(mode string, salt, key []byte) error {
 	entry := "keychain-key/" + s.DirHash()
 	if mode == ModeMasterPassword {
 		entry = "master-key/" + s.DirHash()
 	}
-	if err := s.keychain.Set(entry, hex.EncodeToString(key)); err != nil {
+	verifier, err := EncryptField(VerifyPlaintext, key)
+	if err != nil {
 		return err
 	}
-	if err := WriteMeta(s.dataDir, &Meta{Mode: mode, Salt: salt}); err != nil {
+	metaPath := MetaPath(s.dataDir)
+	prevRaw, prevErr := os.ReadFile(metaPath)
+	hadPrev := prevErr == nil
+
+	if err := WriteMeta(s.dataDir, &Meta{Mode: mode, Salt: salt, Verifier: verifier}); err != nil {
+		return err
+	}
+	if err := s.keychain.Set(entry, hex.EncodeToString(key)); err != nil {
+		if hadPrev {
+			_ = writeFileAtomic(metaPath, prevRaw, 0600)
+		} else {
+			_ = os.Remove(metaPath)
+		}
 		return err
 	}
 	s.set(mode, salt, key)
@@ -249,7 +305,12 @@ var ErrKeychainNotFound = errors.New("keychain entry not found")
 func (s *Store) getKey(name string) ([]byte, error) {
 	v, err := s.keychain.Get(name)
 	if err != nil {
-		if errors.Is(err, ErrKeychainNotFound) {
+		// The real keychain (backend/sync/keyring_desktop.go and the Android
+		// shim) reports a missing entry as keyring.ErrNotFound, never as this
+		// package's sentinel — only the test fake returns the sentinel. Map
+		// both, otherwise "key lost" can never happen in production and the
+		// UI dead-ends in NeedsSetup with no reset path.
+		if errors.Is(err, ErrKeychainNotFound) || errors.Is(err, keyring.ErrNotFound) {
 			return nil, nil
 		}
 		return nil, err
@@ -264,11 +325,26 @@ func (s *Store) getKey(name string) ([]byte, error) {
 	return b, nil
 }
 
+// SecretFiles lists the config file names inside a data dir that may hold
+// enc:v1 ciphertext. storeHasSecrets (the Setup guard) and the app's
+// credential reset both derive their file list from here so the two can never
+// drift and leave a file behind.
+func SecretFiles() []string {
+	return []string{
+		"connections.json",
+		"settings.json",
+		"identities.json",
+		"proxies.json",
+		"ai.json",
+		"tunnels.json",
+	}
+}
+
 // storeHasSecrets reports whether any config file in the data dir already
 // contains in-place enc:v1 ciphertext. A bare Setup on such a dir would
 // orphan the existing ciphertext, so it must be guarded.
 func (s *Store) storeHasSecrets() bool {
-	for _, name := range []string{"connections.json", "settings.json", "identities.json", "proxies.json"} {
+	for _, name := range SecretFiles() {
 		data, err := os.ReadFile(filepath.Join(s.dataDir, name))
 		if err != nil {
 			continue

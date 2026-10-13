@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -37,6 +38,15 @@ type x11Forwarder struct {
 	// case the connection setup is forwarded unmodified.
 	realProto  string
 	realCookie []byte
+	// fakeProto and fakeCookie are the credentials sent to the server in
+	// the x11-req channel request (cookie in raw form — the incoming X11
+	// connection-setup packet carries the raw bytes, while the x11-req
+	// payload hex-encodes them). Every inbound x11 channel must present
+	// exactly these in its connection-setup auth fields, otherwise any
+	// process on the remote host reaching the forwarded display would get
+	// authenticated access to the local X server.
+	fakeProto  string
+	fakeCookie []byte
 }
 
 const x11ChannelType = "x11"
@@ -80,6 +90,7 @@ var (
 	errX11SessionNil      = errors.New("x11: nil ssh session")
 	errX11DisplayEmpty    = errors.New("x11: $DISPLAY is empty")
 	errX11TrustedFallback = errors.New("x11: trusted mode (no MIT-MAGIC-COOKIE-1 in xauth)")
+	errX11BadAuth         = errors.New("x11: connection auth does not match the cookie sent in x11-req")
 )
 
 // readWriterPair wraps separate io.Reader and io.Writer as an io.ReadWriteCloser.
@@ -184,8 +195,9 @@ func startX11Forward(client *ssh.Client, session *ssh.Session, xauthPath, displa
 	// Always use a random fake cookie for the x11-req (untrusted forwarding,
 	// equivalent to ssh -X). This prevents the remote X application from
 	// learning the local X server's real cookie. The fake cookie secures the
-	// SSH X11 proxy; handleX11 will re-authenticate to the local X server
-	// with the real cookie.
+	// SSH X11 proxy: handleX11 verifies every inbound x11 channel presents
+	// exactly these credentials before touching the local X server, then
+	// re-authenticates with the real cookie.
 	fakeProto := "MIT-MAGIC-COOKIE-1"
 	fakeCookie := randomCookie()
 
@@ -202,6 +214,8 @@ func startX11Forward(client *ssh.Client, session *ssh.Session, xauthPath, displa
 		done:       make(chan struct{}),
 		realProto:  realProto,
 		realCookie: realCookie,
+		fakeProto:  fakeProto,
+		fakeCookie: fakeCookie,
 	}
 
 	// crypto/ssh exposes channel-open handlers as a Go channel; we drain
@@ -238,21 +252,28 @@ func (f *x11Forwarder) acceptX11Channels(chans <-chan ssh.NewChannel, display st
 
 // handleX11 accepts an "x11" channel from the server and bridges the
 // channel data stream to the local X server. It first reads the initial
-// X11 connection setup from the channel, replaces the remote auth data
+// X11 connection setup from the channel and VERIFIES its auth against the
+// fake credentials sent in x11-req (OpenSSH's x11_open_helper refuses
+// forwarded connections that don't match the announced cookie — without
+// this check any process on the remote host that reaches the forwarded
+// display gets authenticated access to the local X server). Only after a
+// match does it dial the local X server, replace the remote auth data
 // (which uses the fake cookie from x11-req) with the real local cookie,
-// and writes the modified setup to the local X server. After that it
-// bridges the remaining data bidirectionally.
+// and write the modified setup. After that it bridges the remaining data
+// bidirectionally.
 //
 // If no real local cookie is available (e.g. Windows VcXsrv without
-// access control), the connection setup is forwarded unmodified.
+// access control), the connection setup is forwarded unmodified — but
+// still only after the fake-cookie check.
 //
 // The OpenSSH-specific originator address lives in the channel-open packet
 // (ExtraData), NOT in the channel data stream — reading it from ch2 would
 // silently eat the first 4+N bytes of the X11 protocol and corrupt the
 // connection.
 //
-// Any error closes the channel silently; legitimate races (e.g. the
-// local X server has just shut down) happen often.
+// Auth rejection and setup errors close the channel and are logged via
+// errorf; local-X-gone races (e.g. the X server has just shut down) are
+// common enough that they stay silent.
 func (f *x11Forwarder) handleX11(ch ssh.NewChannel, display string) {
 	ch2, requests, err := ch.Accept()
 	if err != nil {
@@ -262,26 +283,36 @@ func (f *x11Forwarder) handleX11(ch ssh.NewChannel, display string) {
 	go ssh.DiscardRequests(requests)
 	_ = ch.ExtraData()
 
+	// Read + verify the connection setup BEFORE dialing the local X
+	// server: a rejected channel must not consume or write anything to
+	// the local X server.
+	header, order, authName, authData, err := f.readAndCheckSetup(ch2)
+	if err != nil {
+		f.errorf("[x11] Rejected forwarded X11 connection: %v", err)
+		return
+	}
+
 	local, err := DialLocalX(display)
 	if err != nil {
-		f.onError("[x11] Could not connect to the local X11 server.\r\n[x11] Display target: " + displayTargetString(display) + "\r\n[x11] " + xServerHint(runtime.GOOS))
+		f.errorf("[x11] Could not connect to the local X11 server.\r\n[x11] Display target: %s\r\n[x11] %s", displayTargetString(display), xServerHint(runtime.GOOS))
 		return
 	}
 	defer local.Close()
 
-	// Skip auth replacement when no real local cookie is available
-	// (e.g. Windows VcXsrv with access control disabled). Bridge
-	// directly to avoid unnecessary X11 handshake interception.
-	if f.realProto == "" || len(f.realCookie) == 0 {
-		bridge(local, ch2)
+	// Forward the setup to the local X server, replacing its auth with the
+	// real local cookie when one is available (with no real cookie — e.g.
+	// Windows VcXsrv with access control disabled — the setup is forwarded
+	// unmodified). If the write fails the channel is dropped — the X
+	// application will see a connection error and may retry or exit, just
+	// as it would if the X server were unreachable.
+	if err := forwardX11Setup(local, header, order, authName, authData, f.realProto, f.realCookie); err != nil {
 		return
 	}
 
-	// Replace the X11 connection setup's auth with the real local cookie
-	// before bridging. If the setup read/write fails the channel is
-	// dropped — the X application will see a connection error and may
-	// retry or exit, just as it would if the X server were unreachable.
-	if err := forwardX11Setup(local, ch2, f.realProto, f.realCookie); err != nil {
+	// Skip response interception when no real local cookie is available:
+	// bridge the raw stream directly.
+	if f.realProto == "" || len(f.realCookie) == 0 {
+		bridge(local, ch2)
 		return
 	}
 
@@ -368,9 +399,15 @@ func (f *x11Forwarder) handleX11(ch ssh.NewChannel, display string) {
 	bridge(&readWriterPair{w: local, r: localReader}, ch2)
 }
 
-// forwardX11Setup reads the initial X11 connection-request packet from
-// remote (the SSH x11 channel), replaces its auth fields with the given
-// realProto/realCookie (if non-empty), and writes the result to local.
+// readAndCheckSetup reads one X11 connection-request packet from remote
+// (the SSH x11 channel) and verifies that its auth fields match the fake
+// credentials announced in x11-req. It returns the raw 12-byte header,
+// the packet's byte order, and the parsed auth name/data so the caller
+// can forward or rewrite the setup. Any mismatch (including a forwarder
+// that somehow has no recorded fake credentials) fails with
+// errX11BadAuth — reference behaviour is OpenSSH's x11_open_helper, which
+// refuses forwarded X11 connections whose auth does not match the cookie
+// sent with the x11-req.
 //
 // X11 connection-request wire format:
 //
@@ -390,15 +427,15 @@ func (f *x11Forwarder) handleX11(ch ssh.NewChannel, display string) {
 // (X11 Protocol spec §4). Do NOT combine their lengths before padding
 // — that was the root cause of a 2-byte offset bug that broke cookie
 // replacement for "MIT-MAGIC-COOKIE-1" (18-byte name → pad=2).
-func forwardX11Setup(local io.Writer, remote io.Reader, realProto string, realCookie []byte) error {
+func (f *x11Forwarder) readAndCheckSetup(remote io.Reader) (header []byte, order binary.ByteOrder, authName, authData []byte, err error) {
 	// Read the 12-byte fixed header.
-	header := make([]byte, 12)
+	header = make([]byte, 12)
 	if _, err := io.ReadFull(remote, header); err != nil {
-		return err
+		return nil, nil, nil, nil, err
 	}
 
 	// Determine byte order from the first octet.
-	var order binary.ByteOrder = binary.BigEndian
+	order = binary.ByteOrder(binary.BigEndian)
 	if header[0] == 0x6C { // 'l' = LSB first
 		order = binary.LittleEndian
 	}
@@ -410,32 +447,56 @@ func forwardX11Setup(local io.Writer, remote io.Reader, realProto string, realCo
 	pad4 := func(x int) int { return (4 - (x%4)) % 4 }
 
 	// Read auth protocol name, then skip its padding.
-	authName := make([]byte, n)
+	authName = make([]byte, n)
 	if n > 0 {
 		if _, err := io.ReadFull(remote, authName); err != nil {
-			return err
+			return nil, nil, nil, nil, err
 		}
 	}
 	namePad := pad4(n)
 	if namePad > 0 {
 		if _, err := io.ReadFull(remote, make([]byte, namePad)); err != nil {
-			return err
+			return nil, nil, nil, nil, err
 		}
 	}
 
 	// Read auth protocol data, then skip its padding.
-	authData := make([]byte, m)
+	authData = make([]byte, m)
 	if m > 0 {
 		if _, err := io.ReadFull(remote, authData); err != nil {
-			return err
+			return nil, nil, nil, nil, err
 		}
 	}
 	dataPad := pad4(m)
 	if dataPad > 0 {
 		if _, err := io.ReadFull(remote, make([]byte, dataPad)); err != nil {
-			return err
+			return nil, nil, nil, nil, err
 		}
 	}
+
+	// The incoming X11 setup carries the raw cookie bytes (the hex
+	// encoding only applies to the x11-req payload). Compare against the
+	// exact fake credentials we announced; constant-time comparison
+	// guards against timing side channels on the cookie.
+	if f.fakeProto == "" || len(f.fakeCookie) == 0 ||
+		string(authName) != f.fakeProto ||
+		subtle.ConstantTimeCompare(authData, f.fakeCookie) != 1 {
+		return nil, nil, nil, nil, errX11BadAuth
+	}
+	return header, order, authName, authData, nil
+}
+
+// forwardX11Setup writes a connection-setup packet (as parsed by
+// readAndCheckSetup) to local, replacing its auth fields with the given
+// realProto/realCookie (if non-empty) and otherwise forwarding the
+// original auth unchanged.
+//
+// The per-field 4-byte padding rules are described on readAndCheckSetup;
+// this function re-emits padding for whichever name/cookie pair it
+// writes, so replacement packets stay correctly framed.
+func forwardX11Setup(local io.Writer, header []byte, order binary.ByteOrder, authName, authData []byte, realProto string, realCookie []byte) error {
+	// pad4(n) = (4 - (n % 4)) % 4
+	pad4 := func(x int) int { return (4 - (x%4)) % 4 }
 
 	// Replace auth with the real local cookie when available.
 	if realProto != "" && len(realCookie) > 0 {
@@ -478,21 +539,23 @@ func forwardX11Setup(local io.Writer, remote io.Reader, realProto string, realCo
 	if _, err := local.Write(header); err != nil {
 		return err
 	}
-	if n > 0 {
+	if len(authName) > 0 {
 		if _, err := local.Write(authName); err != nil {
 			return err
 		}
 	}
+	namePad := pad4(len(authName))
 	if namePad > 0 {
 		if _, err := local.Write(make([]byte, namePad)); err != nil {
 			return err
 		}
 	}
-	if m > 0 {
+	if len(authData) > 0 {
 		if _, err := local.Write(authData); err != nil {
 			return err
 		}
 	}
+	dataPad := pad4(len(authData))
 	if dataPad > 0 {
 		if _, err := local.Write(make([]byte, dataPad)); err != nil {
 			return err

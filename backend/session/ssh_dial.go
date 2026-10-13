@@ -18,6 +18,22 @@ import (
 type sshConnDialer func() (net.Conn, error)
 type sshClientConfigFactory func() (*ssh.ClientConfig, func(), error)
 
+// sshHandshakeTimeout bounds the SSH key-exchange + authentication handshake.
+// ClientConfig.Timeout only covers ssh.Dial's TCP connect, so without a conn
+// deadline a server/middlebox that accepts TCP and then stalls leaves the
+// session at "Connecting" forever. Overridable for tests.
+var sshHandshakeTimeout = 30 * time.Second
+
+// sshHandshakeDeadline returns the deadline applied to a raw conn around
+// ssh.NewClientConn: the config's own Timeout when set (per-caller semantic,
+// e.g. the 6s cwd probe), else sshHandshakeTimeout.
+func sshHandshakeDeadline(c *ssh.ClientConfig) time.Duration {
+	if c != nil && c.Timeout > 0 {
+		return c.Timeout
+	}
+	return sshHandshakeTimeout
+}
+
 // dialSSHWithCipherFallback keeps modern AEAD preference, but retries a
 // handshake EOF once with CTR first for servers that falsely advertise GCM.
 // The algorithm sets are resolved per connection (see resolveSSHAlgorithms)
@@ -41,9 +57,19 @@ func dialSSHWithCipherFallback(addr string, sets []sshAlgoSet, newConfig sshClie
 		attempt := *config
 		attempt.Config = set.config()
 		attempt.HostKeyAlgorithms = set.HostKeys
+		// Bound the handshake itself: ClientConfig.Timeout only covers
+		// ssh.Dial's TCP connect, so a server or middlebox that accepts TCP
+		// and then stalls would otherwise leave Connect at "Connecting"
+		// forever. Best-effort — conns backed by an SSH channel (jump hops)
+		// do not support deadlines and return an error we ignore.
+		_ = conn.SetDeadline(time.Now().Add(sshHandshakeDeadline(config)))
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &attempt)
 		cleanup()
 		if err == nil {
+			// The connection now lives for the whole session: clear the
+			// handshake deadline or every later read/write fails once it
+			// lapses.
+			_ = conn.SetDeadline(time.Time{})
 			return ssh.NewClient(sshConn, chans, reqs), nil
 		}
 		conn.Close()
@@ -105,11 +131,14 @@ func dialSSHTCP(addr string, clientConfig *ssh.ClientConfig, upstream *SocksProx
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial: %w", err)
 	}
+	// Bound the handshake (see dialSSHWithCipherFallback); cleared on success.
+	_ = raw.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
 	conn, chans, reqs, err := ssh.NewClientConn(raw, addr, clientConfig)
 	if err != nil {
 		raw.Close()
 		return nil, fmt.Errorf("ssh handshake: %w", err)
 	}
+	_ = raw.SetDeadline(time.Time{})
 	return ssh.NewClient(conn, chans, reqs), nil
 }
 
@@ -118,7 +147,10 @@ func dialSSHTCP(addr string, clientConfig *ssh.ClientConfig, upstream *SocksProx
 // 此上下文中无法应答 challenge，提供它只会让普通密码拒绝被回调自身的错误掩盖。
 func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -145,7 +177,7 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 		return nil, err
 	}
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 	}
 	return client, nil
 }

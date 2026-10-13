@@ -71,7 +71,10 @@ func (s *SCPSession) Connect(config ConnectionConfig) error {
 	defer cleanup()
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return err
@@ -91,7 +94,7 @@ func (s *SCPSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("ssh dial: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + pinAddr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	go func() {
@@ -842,7 +845,13 @@ func (s *SCPSession) fetchTree(c *scpProtoConn, remoteDir, localRoot string, tas
 			if name == "" {
 				return fmt.Errorf("scp: protocol error: bad dir directive %q", line)
 			}
-			dir := path.Join(cur, name)
+			// The server picks the name: it must be a plain single component
+			// and the join must stay under the download root (security.md
+			// High: "D0755 0 .." writes outside the target folder).
+			dir, derr := safeDownloadChild(cur, name)
+			if derr != nil {
+				return fmt.Errorf("scp: protocol error: %v", derr)
+			}
 			rdir := path.Join(rcur, name)
 			if first {
 				// The requested directory itself: its content lands in localRoot.
@@ -879,7 +888,12 @@ func (s *SCPSession) fetchTree(c *scpProtoConn, remoteDir, localRoot string, tas
 			}
 		case 'C':
 			name := scpDirectiveName(line)
-			local := path.Join(cur, name)
+			// Same guard as D: a malicious "C0644 N ../../x" must abort the
+			// walk before anything is written (CVE-2019-6111 class).
+			local, lerr := safeDownloadChild(cur, name)
+			if lerr != nil {
+				return fmt.Errorf("scp: protocol error: %v", lerr)
+			}
 			rel := relPath(path.Join(rcur, name), task.RemotePath)
 			if err := s.fetchTreeFile(c, line, local, rel, name, task); err != nil {
 				return err

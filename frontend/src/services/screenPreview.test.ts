@@ -177,6 +177,18 @@ describe('lineToRuns', () => {
     ])
   })
 
+  it('keeps the colour override above the cell\'s own foreground', () => {
+    // security.md component chapter #16 (Low): a duplicated
+    // `if (fg) style.fg = fg` after the override branch re-assigned the cell
+    // colour, wiping the selection/search highlight on any coloured cell.
+    const line = makeLine([
+      cell({ getChars: () => 'x', isFgPalette: () => true, getFgColor: () => 9 }),
+    ])
+    expect(lineToRuns(line, 1, palette, () => '#00ff00')).toEqual([{ text: 'x', fg: '#00ff00' }])
+    // Cells without an override keep their own colour.
+    expect(lineToRuns(line, 1, palette)).toEqual([{ text: 'x', fg: '#f14c4c' }])
+  })
+
   it('resolves colors via predicate APIs even when getFgColorMode returns v6 flag masks', () => {
     // Regression: xterm v6's getFgColorMode() returns masked flag bits
     // (palette = 16777216/33554432, RGB = 50331648), NOT 0/1/2. Cells must be

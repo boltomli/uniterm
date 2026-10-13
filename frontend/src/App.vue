@@ -203,6 +203,7 @@ import KeychainLostDialog from './components/KeychainLostDialog.vue'
 import CredentialPrompt from './components/CredentialPrompt.vue'
 import type { CredentialResult } from './components/CredentialPrompt.vue'
 import MCPApprovalDialog from './components/MCPApprovalDialog.vue'
+import { MCPApprovalQueue } from './services/mcpApprovalQueue'
 import type { MCPApprovalRequest } from './types/mcp'
 import Menu from './components/Menu.vue'
 import MenuItem from './components/MenuItem.vue'
@@ -636,18 +637,24 @@ function onCredentialResolve(result: CredentialResult | null) {
   }
 }
 
-// ── MCP approval bridge (external AI agents) ──────────────────────
-// backend mcp:approval-request event → dialog → ResolveMCPApproval binding.
+// ── MCP approval bridge (external AI agents) ──────────────────────────────
+// backend mcp:approval-request event → queue → dialog → ResolveMCPApproval
+// binding. Requests are shown one at a time, keyed by id (P1: a newer
+// request must never replace the dialog the user is already reading).
 const mcpApprovalVisible = ref(false)
 const mcpApprovalRequest = ref<MCPApprovalRequest | null>(null)
+const mcpApprovalQueue = new MCPApprovalQueue()
 let unsubMcpApproval: (() => void) | null = null
 let unsubMcpSessionCreated: (() => void) | null = null
 
 function onMcpApprovalResolve(approved: boolean, reason: string) {
   const req = mcpApprovalRequest.value
-  mcpApprovalVisible.value = false
-  mcpApprovalRequest.value = null
-  if (req) ResolveMCPApproval(req.id, approved, reason).catch(() => {})
+  if (!req) return
+  // Approve answers exactly the request on screen; a stale id answers
+  // nothing (the queue keeps its current entry).
+  ResolveMCPApproval(req.id, approved, reason).catch(() => {})
+  mcpApprovalRequest.value = mcpApprovalQueue.resolve(req.id)
+  mcpApprovalVisible.value = mcpApprovalRequest.value !== null
 }
 
 // backend mcp:session-created: an agent opened a new SSH session; mount a
@@ -971,8 +978,10 @@ onMounted(async () => {
   unsubTrayOpenAbout = Events.On('app:open-about', () => openSettings('about'))
   // MCP (external AI agents): approval dialogs + session takeover.
   unsubMcpApproval = Events.On('mcp:approval-request', (ev) => {
-    mcpApprovalRequest.value = ev.data as MCPApprovalRequest
-    mcpApprovalVisible.value = true
+    // The queue decides what is shown: the new request when the dialog is
+    // idle, otherwise the request already on screen (the new one waits).
+    mcpApprovalRequest.value = mcpApprovalQueue.enqueue(ev.data as MCPApprovalRequest)
+    mcpApprovalVisible.value = mcpApprovalRequest.value !== null
   })
   unsubMcpSessionCreated = Events.On('mcp:session-created', (ev) => {
     onMcpSessionCreated(ev.data)
@@ -1262,6 +1271,7 @@ onUnmounted(() => {
   unsubTrayOpenAbout?.()
   unsubMcpApproval?.()
   unsubMcpSessionCreated?.()
+  mcpApprovalQueue.clear()
   rdpAreaObserver?.disconnect()
   settingsStore.dispose?.()
   connectionStore.dispose?.()

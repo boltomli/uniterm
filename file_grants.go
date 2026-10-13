@@ -87,6 +87,42 @@ func requireFileGrant(path string) error {
 	return nil
 }
 
+// allowsDir reports whether dir is a granted directory itself or lexically
+// inside one. Unlike allows (files must sit strictly inside a granted dir),
+// the granted directory itself counts: directory-scoped bindings configure
+// the directory the user picked, not a file within it.
+func (g *pathGrantSet) allowsDir(dir string) bool {
+	clean := filepath.Clean(dir)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if _, ok := g.files[clean]; ok {
+		return true
+	}
+	for d := range g.dirs {
+		rel, err := filepath.Rel(d, clean)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// requireDirGrant gates a binding that configures or writes into a whole
+// directory (the session-log directory override, a caller-pinned log dir).
+func requireDirGrant(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("empty path")
+	}
+	if !fileGrants.allowsDir(dir) {
+		return fmt.Errorf("path not selected by a file dialog: %s", dir)
+	}
+	return nil
+}
+
 // rejectDotDotPath refuses any path containing a ".." segment. Transfer
 // bindings that join a remote-controlled filename onto a chosen local
 // directory (SftpGet) or a browsed pane directory cannot rely on grants

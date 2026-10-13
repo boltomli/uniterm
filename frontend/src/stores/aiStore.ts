@@ -181,6 +181,11 @@ export const useAIStore = defineStore('ai', () => {
     timeout?: number
     headLines?: number
     tailLines?: number
+    // send_terminal_key replay payload: the literal input (or control key)
+    // plus the send_enter flag the model asked for.
+    keyInput?: string
+    keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'
+    sendEnter?: boolean
   } | null>(null)
   const pendingQuestion = ref<{
     messageId: string
@@ -252,7 +257,7 @@ export const useAIStore = defineStore('ai', () => {
     lastDebugInfo.value = null
   }
 
-  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; headLines?: number; tailLines?: number }) {
+  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; headLines?: number; tailLines?: number; keyInput?: string; keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'; sendEnter?: boolean }) {
     pendingCommand.value = cmd
   }
 

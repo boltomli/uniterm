@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/rhnvrm/simples3"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 const (
@@ -99,7 +101,7 @@ func (s *S3Session) Connect(config ConnectionConfig) error {
 	return nil
 }
 
-func (s *S3Session) Write(data []byte) error  { return nil }
+func (s *S3Session) Write(data []byte) error     { return nil }
 func (s *S3Session) Resize(cols, rows int) error { return nil }
 
 func (s *S3Session) Disconnect() error {
@@ -430,9 +432,9 @@ func (s *S3Session) Rename(oldName, newName string) error {
 		prefix += "/"
 	}
 	input := simples3.ListInput{
-		Bucket:    s.bucket,
-		Prefix:    prefix,
-		MaxKeys:   1,
+		Bucket:  s.bucket,
+		Prefix:  prefix,
+		MaxKeys: 1,
 	}
 	resp, err := s.s3.List(input)
 	if err != nil {
@@ -523,9 +525,9 @@ func (s *S3Session) Copy(oldPath, newPath string) error {
 		prefix += "/"
 	}
 	input := simples3.ListInput{
-		Bucket:    s.bucket,
-		Prefix:    prefix,
-		MaxKeys:   1,
+		Bucket:  s.bucket,
+		Prefix:  prefix,
+		MaxKeys: 1,
 	}
 	resp, err := s.s3.List(input)
 	if err != nil {
@@ -991,6 +993,22 @@ func s3ContentType(ext string) string {
 	}
 }
 
+// s3LocalPath maps one listing key's relative part onto a local file path
+// inside localDir. S3 keys are arbitrary strings: a key planted with "../"
+// segments or a leading "/" (anyone with write access to a shared bucket)
+// must abort the download instead of writing outside the download folder.
+func s3LocalPath(localDir, rel string) (string, error) {
+	rel = path.Clean(rel)
+	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("unsafe S3 key path %q", rel)
+	}
+	p, err := utils.SafeLocalJoin(localDir, filepath.FromSlash(rel))
+	if err != nil {
+		return "", fmt.Errorf("unsafe S3 key path %q", rel)
+	}
+	return p, nil
+}
+
 func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) error {
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return err
@@ -1034,7 +1052,10 @@ func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) 
 			task.finishFile(item.rel)
 			return nil
 		}
-		lp := filepath.Join(localDir, filepath.FromSlash(item.rel))
+		lp, err := s3LocalPath(localDir, item.rel)
+		if err != nil {
+			return err // fail-fast: stop the whole download, write nothing
+		}
 		task.beginFile(item.rel)
 		s.emitFileStart(task, item.rel, filepath.Base(lp))
 		if err := s.downloadObject(task, item.key, lp); err != nil {
@@ -1079,33 +1100,24 @@ func (s *S3Session) downloadObject(task *TransferTask, key, localPath string) er
 	}
 	defer rc.Close()
 
+	// Nested keys ("a/b/c.txt") need their parent directories; without this
+	// every object below the first level fails (security.md 文件会话 Medium).
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
 	dst, err := os.Create(localPath)
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-
-	buf := make([]byte, 64*1024)
-	for {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
-		}
-		task.waitIfPaused()
-		n, e := rc.Read(buf)
-		if n > 0 {
-			dst.Write(buf[:n])
-			task.addProgress(int64(n))
-			s.emitTransferProgress(task)
-		}
-		if e != nil {
-			if e == io.EOF {
-				return nil
-			}
-			return e
-		}
+	// Write and read errors must surface: otherwise a full disk or a dropped
+	// link leaves a short local file reported as completed (security.md
+	// 文件会话 Medium "Write and read errors are ignored"). Close before
+	// returning so a flush failure is not dropped either.
+	if cerr := copyDownloadStream(dst, rc, task, func() { s.emitTransferProgress(task) }); cerr != nil {
+		dst.Close()
+		return cerr
 	}
+	return dst.Close()
 }
 
 func (s *S3Session) uploadDir(localDir, remoteDir string, task *TransferTask) error {
@@ -1318,4 +1330,3 @@ func isS3Retryable(err error) bool {
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "EOF")
 }
-

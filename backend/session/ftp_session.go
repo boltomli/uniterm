@@ -2,8 +2,11 @@ package session
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/textproto"
 	"os"
 	"path"
 	"path/filepath"
@@ -78,35 +81,12 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 		dialOpts = append(dialOpts, ftp.DialWithDisabledUTF8(true))
 	}
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: config.FtpSkipVerify,
-	}
+	tlsConfig := ftpTLSConfig(config)
 
-	var conn *ftp.ServerConn
-	var err error
-
-	switch encryption {
-	case "required":
-		conn, err = ftp.Dial(addr,
-			append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
-		if err != nil {
-			s.setStatus(StatusError)
-			return fmt.Errorf("ftp dial (TLS required): %w", err)
-		}
-	case "auto":
-		conn, err = ftp.Dial(addr,
-			append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
-		if err != nil {
-			// Fall back to plain FTP
-			conn, err = ftp.Dial(addr, dialOpts...)
-		}
-	default: // "none"
-		conn, err = ftp.Dial(addr, dialOpts...)
-	}
-
+	conn, downgraded, err := dialFTPGuarded(addr, encryption, tlsConfig, dialOpts)
 	if err != nil {
 		s.setStatus(StatusError)
-		return fmt.Errorf("ftp dial: %w", err)
+		return err
 	}
 
 	if err := conn.Login(config.User, config.Password); err != nil {
@@ -121,6 +101,12 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 	s.enc = enc
 	s.rawNames = sync.Map{} // fresh connection, no names seen yet
 	s.setStatus(StatusConnected)
+	// Auto mode silently downgraded a rejected AUTH TLS to plaintext: say so
+	// in the session feed — a credential sent without transport encryption
+	// must never look like a normal secure connection.
+	if downgraded {
+		s.emitData([]byte("\x1b[33m[FTP auto mode: connection NOT encrypted - AUTH TLS rejected by server]\x1b[0m\r\n"))
+	}
 	// One-shot session log warning when the user has opted in to
 	// InsecureSkipVerify. Surfaces the MITM risk in the session feed so
 	// it can't be silently enabled by a forgotten checkbox.
@@ -128,6 +114,142 @@ func (s *FTPSession) Connect(config ConnectionConfig) error {
 		s.emitData([]byte("\x1b[33m[FTP TLS verify disabled - connection is vulnerable to MITM]\x1b[0m\r\n"))
 	}
 	return nil
+}
+
+// ftpTLSConfig builds the TLS configuration for FTPS. ServerName is mandatory
+// for verified handshakes: without it crypto/tls fails with "either ServerName
+// or InsecureSkipVerify must be specified" — which pushed users to disable
+// verification entirely.
+func ftpTLSConfig(config ConnectionConfig) *tls.Config {
+	return &tls.Config{
+		ServerName:         ftpTLSServerName(config.Host),
+		InsecureSkipVerify: config.FtpSkipVerify,
+	}
+}
+
+// dialFTPGuarded dials addr honouring the encryption mode, applying the one
+// guarded plaintext-downgrade policy for "auto": only a real 500/502/504
+// rejection of AUTH TLS plus a fresh FEAT check proving the server does not
+// advertise FTPS allows a plaintext fallback. Shared by FTPSession.Connect
+// and ProbeConnection's probeFTP so the probe cannot drift back to the old
+// "downgrade on any dial error" behaviour that sent PASS in the clear.
+// downgraded reports the plaintext fallback so callers can surface a warning.
+func dialFTPGuarded(addr, encryption string, tlsConfig *tls.Config, dialOpts []ftp.DialOption) (*ftp.ServerConn, bool, error) {
+	switch encryption {
+	case "required":
+		conn, err := ftp.Dial(addr, append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
+		if err != nil {
+			return nil, false, fmt.Errorf("ftp dial (TLS required): %w", err)
+		}
+		return conn, false, nil
+	case "auto":
+		conn, err := ftp.Dial(addr, append(dialOpts, ftp.DialWithExplicitTLS(tlsConfig))...)
+		if err == nil {
+			return conn, false, nil
+		}
+		// Only an actual 500/502/504 reply means "this server has no
+		// AUTH TLS". Transport failures, TLS errors and garbled replies
+		// (all shapes a MITM produces) must never downgrade.
+		if !ftpAuthTLSRejected(err) {
+			return nil, false, fmt.Errorf("ftp dial (auto): %w", err)
+		}
+		// Before sending anything in clear, ask a FRESH connection
+		// (greeting + FEAT only, no credential) whether the server
+		// really has no FTPS: rejecting AUTH TLS while still
+		// advertising it in FEAT is the signature of tampering.
+		advertised, perr := ftpProbeAuthTLS(addr, 30*time.Second)
+		if perr != nil {
+			return nil, false, fmt.Errorf("ftp dial (auto): cannot verify FTPS capability: %w", perr)
+		}
+		if advertised {
+			return nil, false, fmt.Errorf("ftp dial (auto): server rejected AUTH TLS but advertises it in FEAT, refusing plaintext downgrade")
+		}
+		conn, err = ftp.Dial(addr, dialOpts...)
+		if err != nil {
+			return nil, false, fmt.Errorf("ftp dial: %w", err)
+		}
+		return conn, true, nil
+	default: // "none"
+		conn, err := ftp.Dial(addr, dialOpts...)
+		if err != nil {
+			return nil, false, fmt.Errorf("ftp dial: %w", err)
+		}
+		return conn, false, nil
+	}
+}
+
+// ftpTLSServerName strips an optional :port from a host — including the
+// bracketed IPv6 form "[::1]:21" — leaving a bare host or IP literal.
+// Certificates never carry the port, and a multi-colon bare IPv6 literal
+// ("::1") must be passed through untouched.
+func ftpTLSServerName(host string) string {
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end > 1 {
+			return host[1:end]
+		}
+		return strings.Trim(host, "[]")
+	}
+	if strings.Count(host, ":") == 1 {
+		if i := strings.LastIndex(host, ":"); i > 0 {
+			return host[:i]
+		}
+	}
+	return host
+}
+
+// ftpAuthTLSRejected reports whether err is an actual FTP reply with code
+// 500/502/504 — the RFC 959 "unrecognized / not implemented / bad parameter"
+// family a server uses to say "no AUTH TLS here". Connection resets, EOFs,
+// TLS handshake failures and garbled replies are NOT rejections: they are
+// exactly what a STARTTLS-stripping MITM produces, so they must not trigger
+// a plaintext downgrade.
+func ftpAuthTLSRejected(err error) bool {
+	var reply *textproto.Error
+	if !errors.As(err, &reply) {
+		return false
+	}
+	switch reply.Code {
+	case 500, 502, 504:
+		return true
+	}
+	return false
+}
+
+// ftpProbeAuthTLS opens a fresh plaintext connection and asks the server —
+// after the 220 greeting and before any credential is sent — whether FEAT
+// advertises AUTH TLS/AUTH SSL. A non-211 FEAT answer counts as "not
+// advertised"; any transport or protocol error is returned so the caller
+// refuses to downgrade.
+func ftpProbeAuthTLS(addr string, timeout time.Duration) (advertised bool, err error) {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return false, err
+	}
+	tc := textproto.NewConn(conn)
+	if _, _, err := tc.ReadResponse(220); err != nil {
+		return false, err
+	}
+	if err := tc.PrintfLine("FEAT"); err != nil {
+		return false, err
+	}
+	code, msg, err := tc.ReadResponse(-1)
+	if err != nil {
+		return false, err
+	}
+	if code != 211 {
+		return false, nil
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "AUTH" && (fields[1] == "TLS" || fields[1] == "SSL") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *FTPSession) Write(data []byte) error {
@@ -332,7 +454,6 @@ func (s *FTPSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 	}
 	return FileListResult{Files: files, Dir: target}, nil
 }
-
 
 // Symlink is not supported: the FTP protocol has no link semantics.
 func (s *FTPSession) Symlink(_, _ string) error {
@@ -695,7 +816,13 @@ func (s *FTPSession) rmRecursive(p string) error {
 		return s.ftpDelete(p)
 	}
 	for _, e := range entries {
-		childPath := path.Join(p, s.ftpDecodeName(e.Name))
+		name := s.ftpDecodeName(e.Name)
+		// MLSD servers list cdir/pdir (".", ".."); deleting them would
+		// recurse into "." (never terminates) or outside the tree via "..".
+		if name == "." || name == ".." {
+			continue
+		}
+		childPath := path.Join(p, name)
 		if e.Type == ftp.EntryTypeFolder {
 			if err := s.rmRecursive(childPath); err != nil {
 				return err
@@ -716,8 +843,13 @@ func (s *FTPSession) dirSizeRemote(dir string) (int64, error) {
 	}
 	var total int64
 	for _, e := range entries {
+		name := s.ftpDecodeName(e.Name)
+		// Skip cdir/pdir listing noise ("." recurses forever, ".." escapes).
+		if name == "." || name == ".." {
+			continue
+		}
 		if e.Type == ftp.EntryTypeFolder {
-			sz, err := s.dirSizeRemote(path.Join(dir, s.ftpDecodeName(e.Name)))
+			sz, err := s.dirSizeRemote(path.Join(dir, name))
 			if err != nil {
 				return 0, err
 			}
@@ -877,8 +1009,20 @@ func (s *FTPSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 	}
 	for _, e := range entries {
 		name := s.ftpDecodeName(e.Name)
+		// MLSD servers list cdir/pdir as "." and "..". They are listing
+		// noise, not downloadable children: following "." recurses forever
+		// and ".." would escape the target tree.
+		if name == "." || name == ".." {
+			continue
+		}
+		// Every other name comes from the (possibly compromised) server:
+		// validate it as a single component and join under localDir with
+		// containment (security.md P0 path traversal).
+		lp, err := safeDownloadChild(localDir, name)
+		if err != nil {
+			return err
+		}
 		rp := path.Join(remoteDir, name)
-		lp := filepath.Join(localDir, name)
 		if e.Type == ftp.EntryTypeFolder {
 			if err := s.downloadDir(rp, lp, task); err != nil {
 				return err
@@ -932,25 +1076,18 @@ func (s *FTPSession) transferFile(task *TransferTask, localPath, remotePath, tfT
 		if err != nil {
 			return err
 		}
-		defer dst.Close()
-		buf := make([]byte, 64*1024)
-		for {
-			select {
-			case <-task.ctx.Done():
-				return task.ctx.Err()
-			default:
-			}
-			task.waitIfPaused()
-			n, e := resp.Read(buf)
-			if n > 0 {
-				dst.Write(buf[:n])
-				task.addProgress(int64(n))
-				s.emitTransferProgress(task)
-			}
-			if e != nil {
-				break
-			}
+		// copyDownloadStream returns write failures and non-EOF read errors
+		// (dropped connection, disk full) instead of treating any error as
+		// end-of-stream — otherwise a short local file is reported as a
+		// completed download. dst.Close is checked explicitly: a deferred
+		// close would drop the final flush error.
+		if err := copyDownloadStream(dst, resp, task, func() {
+			s.emitTransferProgress(task)
+		}); err != nil {
+			dst.Close()
+			return err
 		}
+		return dst.Close()
 	} else {
 		src, err := os.Open(localPath)
 		if err != nil {
@@ -993,4 +1130,3 @@ func (s *FTPSession) transferFile(task *TransferTask, localPath, remotePath, tfT
 	}
 	return nil
 }
-

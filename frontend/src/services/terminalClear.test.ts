@@ -4,14 +4,37 @@
 
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 
-// notifyGutter dispatches a window CustomEvent; provide a minimal window.
+// notifyGutter dispatches a window CustomEvent, frame-coalesced (one dispatch
+// per animation frame, carrying the session ids that asked for it); provide a
+// minimal window plus a queued requestAnimationFrame so tests decide when a
+// frame runs — real timers would hide the batching.
+const windowStub = {
+  dispatchEvent: vi.fn(),
+  CustomEvent: class {
+    type: string
+    detail?: unknown
+    constructor(type: string, init?: { detail?: unknown }) {
+      this.type = type
+      this.detail = init?.detail
+    }
+  },
+}
+const frameQueue: FrameRequestCallback[] = []
+
+/** Run every queued animation frame (the coalesced gutter flush). */
+function flushFrames() {
+  for (const cb of frameQueue.splice(0)) cb(0)
+}
+
 beforeAll(() => {
-  ;(globalThis as any).window = {
-    dispatchEvent: vi.fn(),
-    CustomEvent: class {
-      constructor(public type: string, public init?: unknown) {}
+  Object.assign(globalThis, {
+    window: windowStub,
+    requestAnimationFrame: (cb: FrameRequestCallback) => {
+      frameQueue.push(cb)
+      return frameQueue.length
     },
-  }
+    cancelAnimationFrame: () => {},
+  })
 })
 
 // clearRegistry works through a managed terminal's live registry; mock the
@@ -53,5 +76,24 @@ describe('clearRegistry (issue #989)', () => {
     clearRegistry('other-session')
     expect(managedRegistry.entries.size).toBe(0)
     expect(managedRegistry.nextNumber).toBe(1)
+  })
+
+  it('notifies the gutter once per frame, carrying the session ids', () => {
+    // security.md #16 (Low): every write used to fire its own window event
+    // that every pane's gutter handled — a burst of writes meant a burst of
+    // full refreshes. The dispatch is now frame-coalesced and carries the
+    // session ids so a pane can ignore foreign refreshes.
+    flushFrames() // drain frames left over by the tests above
+    windowStub.dispatchEvent.mockClear()
+    clearRegistry('session-a')
+    clearRegistry('session-a')
+    clearRegistry('session-b')
+    flushFrames()
+
+    const gutterEvents = windowStub.dispatchEvent.mock.calls
+      .map(([event]) => event as InstanceType<typeof windowStub.CustomEvent>)
+      .filter((event) => event.type === 'terminal:refresh-gutter')
+    expect(gutterEvents).toHaveLength(1)
+    expect(gutterEvents[0].detail).toEqual({ sessionIds: ['session-a', 'session-b'] })
   })
 })

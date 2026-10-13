@@ -39,9 +39,16 @@ func (p *rqliteProvider) DriverName() string {
 	return "rqlite"
 }
 
+func (p *rqliteProvider) DBType() string {
+	return "rqlite"
+}
+
+// Quote returns the identifier wrapped in double quotes with embedded quotes
+// doubled (SQLite follows the PostgreSQL escaping rule). It never returns an
+// empty string for a non-empty name; the previous implementation discarded
+// the SafePgIdent error and silently produced broken SQL.
 func (p *rqliteProvider) Quote(name string) string {
-	q, _ := SafePgIdent(name)
-	return q
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func (p *rqliteProvider) PrepareExec(db execer, dbName string) error {
@@ -271,7 +278,7 @@ func (p *rqliteProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName s
 	if err != nil {
 		return err
 	}
-	stmts := SplitScript(dump)
+	stmts := SplitScript(dump, "rqlite")
 	ctx := context.Background()
 	for _, st := range stmts {
 		// Skip the DROP guard emitted by DumpTable — the destination must be

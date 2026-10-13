@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,8 +31,16 @@ type WebDAVClient struct {
 }
 
 // NewWebDAVClient builds a client. basePath is created lazily by MkdirAll.
+// The server URL must use https:// — WebDAV auth is HTTP Basic, so a
+// cleartext transport would expose the sync password on the wire (same
+// threat model as git's validateRepoURL). Plain http:// is tolerated only
+// for loopback hosts (local servers). Like parse failures, a scheme
+// rejection is deferred to request time (the constructor cannot fail).
 func NewWebDAVClient(serverURL, basePath, user, password string) *WebDAVClient {
 	base, err := url.Parse(strings.TrimRight(serverURL, "/") + "/")
+	if err == nil {
+		err = validateWebDAVServerURL(base)
+	}
 	return &WebDAVClient{
 		base:     base,
 		segments: splitSegments(basePath),
@@ -40,6 +49,32 @@ func NewWebDAVClient(serverURL, basePath, user, password string) *WebDAVClient {
 		http:     &http.Client{Timeout: 30 * time.Second},
 		parseErr: err,
 	}
+}
+
+// validateWebDAVServerURL enforces an encrypted transport: https:// is
+// always accepted, plain http:// only for loopback hosts, any other scheme
+// is rejected outright.
+func validateWebDAVServerURL(u *url.URL) error {
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("webdav server must use https:// (password would be sent unencrypted), got %q", u.String())
+	default:
+		return fmt.Errorf("webdav server must use https://, got %s:// scheme (%q)", u.Scheme, u.String())
+	}
+}
+
+// isLoopbackHost reports whether host is "localhost" or a loopback IP.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func splitSegments(basePath string) []string {

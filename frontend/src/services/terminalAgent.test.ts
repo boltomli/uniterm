@@ -94,6 +94,7 @@ const mockTabStore = {
 }
 const mockPanelStore = {
   getPanel: mockGetPanel,
+  panels: new Map<string, { id: string; title: string }>(),
 }
 
 vi.mock('../stores/tabStore', () => ({
@@ -787,5 +788,74 @@ describe('background terminal headless mirror', () => {
 
     const result = captureTerminal(200)
     expect(result.output).toBe(`${PROMPT} cmd\nrow1\nrow2\n${PROMPT} `)
+  })
+})
+
+// ── P1: explicit panel targets are restricted to the AI conversation ──────
+// buildDynamicContext only shows the model the locked (or active) panel, but
+// resolveActiveSession used to accept any panel title / "x (id: y)" from the
+// whole panel store — an injected execute_command {panel:"prod-db"} could
+// type into a session the user never attached.
+describe('resolveActiveSession explicit-panel restriction', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(Events.On).mockReturnValue(() => {})
+    vi.mocked(mockSessionWrite).mockClear()
+    vi.mocked(mockGetAILockedPanel).mockReturnValue(null)
+    vi.mocked(mockGetRemoteOS).mockReturnValue(undefined)
+    mockActiveTab.type = 'terminal'
+    mockActiveTab.panelId = 'panel-1'
+    // Two live panels; the active tab is panel-1.
+    vi.mocked(mockGetPanel).mockImplementation((id: string) => ({
+      id,
+      sessionId: `sess-${id}`,
+      title: id === 'panel-2' ? 'Prod DB' : 'Panel A',
+      config: { shellPath: '/bin/bash' },
+    }))
+    // The title→panelId index reads panelStore.panels.
+    mockPanelStore.panels = new Map<string, { id: string; title: string }>([
+      ['panel-1', { id: 'panel-1', title: 'Panel A' }],
+      ['panel-2', { id: 'panel-2', title: 'Prod DB' }],
+    ])
+  })
+
+  it('rejects a panel that is neither locked nor active (no locks)', async () => {
+    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
+
+    await expect(executeCommand('rm -rf /', 1000, 1, 1, undefined, 'Prod DB'))
+      .rejects.toThrow('not associated with this AI conversation')
+    expect(mockSessionWrite).not.toHaveBeenCalled()
+  })
+
+  it('allows the active panel when nothing is locked', async () => {
+    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
+
+    await expect(
+      executeCommand('ls', 10, 1, 1, undefined, 'Panel A').then(() => 'ok', (e: unknown) => String(e))
+    ).resolves.toBe('ok')
+  })
+
+  it('allows an explicitly locked panel', async () => {
+    vi.mocked(mockGetAILockedPanels).mockReturnValue(['panel-2'])
+
+    const out = await executeCommand('ls', 10, 1, 1, undefined, 'Prod DB')
+      .then(() => 'ok', (e: unknown) => String(e))
+    expect(out).toBe('ok')
+    // bash gets a CRLF line terminator (see getShellNewline).
+    expect(mockSessionWrite).toHaveBeenCalledWith('sess-panel-2', ' ls\r\n')
+  })
+
+  it('rejects another panel when a different one is locked', async () => {
+    vi.mocked(mockGetAILockedPanels).mockReturnValue(['panel-1'])
+
+    await expect(executeCommand('ls', 1000, 1, 1, undefined, 'Prod DB'))
+      .rejects.toThrow('not associated with this AI conversation')
+  })
+
+  it('rejects the "title (id: …)" suffix form for a non-associated panel', async () => {
+    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
+
+    await expect(executeCommand('ls', 1000, 1, 1, undefined, 'Prod DB (id: panel-2)'))
+      .rejects.toThrow('not associated with this AI conversation')
   })
 })

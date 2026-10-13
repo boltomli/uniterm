@@ -4,6 +4,8 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -709,4 +711,114 @@ func TestWSLChangeRemoteDirMntSymlinkFallback(t *testing.T) {
 	if !found {
 		t.Errorf("target listing missing inside.txt: %+v", res.Files)
 	}
+}
+
+// --- copyPath / copyFile (transfer engine) ----------------------------------
+
+// TestCopyPathNilTaskDoesNotPanic: WSL Copy and cross-mount Move call
+// copyPath(..., nil), so every task touch in the copy loop must be
+// nil-guarded (security.md Medium: "WSL Copy, and Move across mounts, always
+// panic" — the in-loop task.waitIfPaused dereferenced a nil *TransferTask).
+func TestCopyPathNilTaskDoesNotPanic(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("AAA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "b.txt"), []byte("BBB"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "dst")
+
+	var copyErr error
+	panicked := func() (p any) {
+		defer func() { p = recover() }()
+		copyErr = copyPath(src, dst, nil)
+		return
+	}()
+	if panicked != nil {
+		t.Fatalf("copyPath panicked with a nil task: %v", panicked)
+	}
+	if copyErr != nil {
+		t.Fatalf("copyPath: %v", copyErr)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "a.txt")); err != nil || string(b) != "AAA" {
+		t.Fatalf("dst a.txt = %q, err %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "nested", "b.txt")); err != nil || string(b) != "BBB" {
+		t.Fatalf("dst nested/b.txt = %q, err %v", b, err)
+	}
+
+	// Single file with a nil task must not panic either.
+	dstFile := filepath.Join(tmp, "copy.txt")
+	panicked = func() (p any) {
+		defer func() { p = recover() }()
+		copyErr = copyFile(filepath.Join(src, "a.txt"), dstFile, nil)
+		return
+	}()
+	if panicked != nil {
+		t.Fatalf("copyFile panicked with a nil task: %v", panicked)
+	}
+	if copyErr != nil {
+		t.Fatalf("copyFile: %v", copyErr)
+	}
+	if b, err := os.ReadFile(dstFile); err != nil || string(b) != "AAA" {
+		t.Fatalf("copy.txt = %q, err %v", b, err)
+	}
+}
+
+// TestCopyPathHonoursCancel: cancelling the task stops the copy (security.md
+// Medium: "Cancelling a WSL transfer does nothing" — neither copyPath nor
+// copyFile checked task.ctx).
+func TestCopyPathHonoursCancel(t *testing.T) {
+	t.Run("directory tree", func(t *testing.T) {
+		tmp := t.TempDir()
+		src := filepath.Join(tmp, "src")
+		if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("AAA"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "nested", "b.txt"), []byte("BBB"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tmp, "dst")
+
+		task := &TransferTask{ID: "wsl-1", Type: "download", Status: "running"}
+		task.start()
+		task.cancel()
+
+		err := copyPath(src, dst, task)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("copyPath err = %v, want context.Canceled", err)
+		}
+		if _, serr := os.Stat(dst); serr == nil {
+			t.Errorf("cancelled copy still created %s", dst)
+		}
+	})
+
+	t.Run("single file", func(t *testing.T) {
+		tmp := t.TempDir()
+		src := filepath.Join(tmp, "a.txt")
+		if err := os.WriteFile(src, []byte("AAA"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tmp, "b.txt")
+
+		task := &TransferTask{ID: "wsl-2", Type: "download", Status: "running"}
+		task.start()
+		task.cancel()
+
+		err := copyFile(src, dst, task)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("copyFile err = %v, want context.Canceled", err)
+		}
+		if b, rerr := os.ReadFile(dst); rerr == nil && len(b) > 0 {
+			t.Errorf("cancelled copy wrote %d bytes", len(b))
+		}
+	})
 }

@@ -28,11 +28,10 @@ type MoshSession struct {
 
 	mu             sync.RWMutex
 	enc            encoding.Encoding
+	encIn          inputEncoder
 	decoder        *encoding.Decoder
-	encoder        *encoding.Encoder
 	decodeLeftover []byte
 	decodeScratch  []byte
-	encScratch     []byte
 }
 
 func NewMoshSession(id string) *MoshSession {
@@ -63,7 +62,10 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return fmt.Errorf("mosh ssh auth: %w", err)
@@ -83,15 +85,20 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("mosh ssh dial: %w", err)
 	}
 
+	// Bound the handshake like the other SSH dial paths (ClientConfig.Timeout
+	// alone only covers the TCP connect); cleared on success so the long-lived
+	// connection is unaffected.
+	_ = conn.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
 	if err != nil {
 		conn.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("mosh ssh handshake: %w", err)
 	}
+	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(sshConn, chans, reqs)
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 	}
 
 	key, udpPort, err := startMoshServer(client)
@@ -220,10 +227,10 @@ func (s *MoshSession) SetEncoding(name string) {
 	s.enc = enc
 	if enc == nil {
 		s.decoder = nil
-		s.encoder = nil
+		s.encIn.set(nil)
 	} else {
 		s.decoder = enc.NewDecoder()
-		s.encoder = enc.NewEncoder()
+		s.encIn.set(enc.NewEncoder())
 	}
 	s.decodeLeftover = nil
 	s.mu.Unlock()
@@ -263,21 +270,11 @@ func (s *MoshSession) decodeOutput(data []byte) []byte {
 }
 
 // encodeInput converts user keystrokes (UTF-8) to the configured encoding
-// before writing to the remote. Each call handles a complete UTF-8 input.
+// before sending to mosh-server. Each call handles a complete UTF-8 input.
+// The shared inputEncoder owns its lock and scratch buffer (the old copy fed
+// Transform a zero-length destination, so encoding never happened).
 func (s *MoshSession) encodeInput(data []byte) []byte {
-	s.mu.RLock()
-	encoder := s.encoder
-	s.mu.RUnlock()
-	if encoder == nil {
-		return data
-	}
-	encoder.Reset()
-	s.encScratch = s.encScratch[:0]
-	nDst, _, err := encoder.Transform(s.encScratch, data, true)
-	if err != nil && err != transform.ErrShortSrc {
-		return data
-	}
-	return s.encScratch[:nDst]
+	return s.encIn.encode(data)
 }
 
 // moshReadInterval is the timeout passed to moshClient.Recv. The previous

@@ -153,7 +153,6 @@ export function lineToRuns(
     const style: PreviewStyleRun = { text: ch }
     if (override) style.fg = override
     else if (fg) style.fg = fg
-    if (fg) style.fg = fg
     if (bg) style.bg = bg
     if (cell.isBold()) style.bold = true
     if (cell.isDim()) style.dim = true

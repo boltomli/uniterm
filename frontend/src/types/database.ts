@@ -36,6 +36,8 @@ export interface QueryResultColumn {
 export interface QueryResult {
   columns: QueryResultColumn[]
   rows: Record<string, any>[]
+  /** True when the backend capped the scan (see maxQueryRows) and rows are missing. */
+  truncated?: boolean
 }
 
 export interface ExecResult {

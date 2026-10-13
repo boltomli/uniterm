@@ -215,12 +215,18 @@ func (a *App) mcpLoadTokens() map[string]mcp.TokenInfo {
 func (a *App) mcpResolveToken(hash string) string {
 	a.mcpTokenCacheMu.Lock()
 	defer a.mcpTokenCacheMu.Unlock()
-	fi, err := os.Stat(a.mcpTokensPath())
-	if err != nil || fi.ModTime() != a.mcpTokenCacheMtime {
+	// Stat may fail (mcp.json not created yet): use the zero time so a
+	// missing file never dereferences a nil FileInfo, and the cache is only
+	// re-read when the file's mtime actually changes (including appearing).
+	var mod time.Time
+	if fi, err := os.Stat(a.mcpTokensPath()); err == nil {
+		mod = fi.ModTime()
+	}
+	if mod != a.mcpTokenCacheMtime {
 		// Reload (also resets the mtime on failure so we don't hammer the
 		// disk on every request when the file is unreadable).
 		a.mcpTokenCache = a.mcpLoadTokens()
-		a.mcpTokenCacheMtime = fi.ModTime()
+		a.mcpTokenCacheMtime = mod
 	}
 	if info, ok := a.mcpTokenCache[hash]; ok {
 		return info.Name
@@ -769,7 +775,16 @@ func (a *App) mcpConnectionLabel(target string) string {
 
 // mcpApprove emits mcp:approval-request and blocks for the verdict via
 // ResolveMCPApproval (frontend dialog) or the timeout.
+//
+// Requests are serialized: the emit (and the wait that follows) holds
+// mcpApprovalSerial, so a second request can only reach the frontend once the
+// dialog in front of the user has been answered. Without this the frontend
+// received both events at once and the newer request replaced the dialog the
+// user was already reading.
 func (a *App) mcpApprove(req mcp.ApprovalRequest) error {
+	a.mcpApprovalSerial.Lock()
+	defer a.mcpApprovalSerial.Unlock()
+
 	ch := make(chan mcpApprovalVerdict, 1)
 	a.mcpApprovalsMu.Lock()
 	a.mcpApprovals[req.ID] = ch

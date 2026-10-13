@@ -42,6 +42,11 @@ type Provider interface {
 	// DriverName returns the Go SQL driver name to use for sql.Open.
 	DriverName() string
 
+	// DBType returns the registered database type key (e.g. "mysql",
+	// "postgres"). Behaviors keyed on the dialect — such as the script
+	// splitter's `#` comment handling — use this.
+	DBType() string
+
 	// Quote returns an identifier quoted for this database.
 	Quote(name string) string
 

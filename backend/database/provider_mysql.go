@@ -43,9 +43,17 @@ func (p *mysqlProvider) DriverName() string {
 	return "mysql"
 }
 
+func (p *mysqlProvider) DBType() string {
+	return "mysql"
+}
+
+// Quote returns the identifier wrapped in backticks with embedded backticks
+// doubled — MySQL's escaping rule, the same one SafeMyIdent applies on its
+// success path. It never returns an empty string for a non-empty name; the
+// previous implementation discarded the SafeMyIdent error and silently
+// produced broken SQL.
 func (p *mysqlProvider) Quote(name string) string {
-	q, _ := SafeMyIdent(name)
-	return q
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
 func (p *mysqlProvider) PrepareExec(db execer, dbName string) error {

@@ -221,6 +221,9 @@ func (r *LocalRunner) RunStream(ctx context.Context, argv []string) (LineStream,
 		for sc.Scan() {
 			s.lines <- sc.Text()
 		}
+		// scanner 因超长单行（>256KiB，ErrTooLong）提前停止后必须继续排干
+		// stdout：否则子进程阻塞在写管道上，cmd.Wait() 永远不返回。
+		_, _ = io.Copy(io.Discard, stdout)
 		close(s.lines)
 		s.done <- cmd.Wait()
 	}()

@@ -248,20 +248,27 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("dial %s: %w", addr, err)
 		}
 
-		cb, trust := NewHostKeyVerifier(addr)
+		cb, trust := NewHostKeyVerifier(hostKeyPinAddr(cfg, addr))
 		algoSet, _, err := resolveSSHAlgorithms(cfg.SSHAlgorithms)
 		if err != nil {
+			cleanup()
+			raw.Close()
 			closeClients(clients)
 			return nil, nil, err
 		}
 		clientConfig := &ssh.ClientConfig{
 			User:              cfg.User,
 			Auth:              authMethods,
-			Timeout:           30 * time.Second,
+			Timeout:           sshHandshakeTimeout,
 			HostKeyCallback:   cb,
 			Config:            algoSet.config(),
 			HostKeyAlgorithms: algoSet.HostKeys,
 		}
+		// Bound the handshake like the other SSH dial paths (ClientConfig.
+		// Timeout alone only covers ssh.Dial's TCP connect). Best-effort:
+		// hops behind another SSH client are channel-backed and don't
+		// support deadlines. Cleared on success so the tunnel lives on.
+		_ = raw.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
 		sshConn, chans, reqs, err := ssh.NewClientConn(raw, addr, clientConfig)
 		cleanup()
 		if err != nil {
@@ -269,9 +276,10 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			closeClients(clients)
 			return nil, nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
 		}
+		_ = raw.SetDeadline(time.Time{})
 		client := ssh.NewClient(sshConn, chans, reqs)
 		if trust != nil && trust.FirstTrust {
-			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(cfg, addr), trust.Fingerprint)
 		}
 		clients = append(clients, client)
 		prev = client

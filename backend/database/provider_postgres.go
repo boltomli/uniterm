@@ -53,9 +53,17 @@ func (p *postgresProvider) DriverName() string {
 	return "postgres"
 }
 
+func (p *postgresProvider) DBType() string {
+	return "postgres"
+}
+
+// Quote returns the identifier wrapped in double quotes with embedded quotes
+// doubled — PostgreSQL's escaping rule, the same one SafePgIdent applies on
+// its success path. It never returns an empty string for a non-empty name;
+// the previous implementation discarded the SafePgIdent error and silently
+// produced broken SQL.
 func (p *postgresProvider) Quote(name string) string {
-	q, _ := SafePgIdent(name)
-	return q
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func (p *postgresProvider) PrepareExec(db execer, dbName string) error {

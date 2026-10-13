@@ -1561,6 +1561,9 @@ func (a *App) DeleteSkill(name string) error {
 }
 
 func (a *App) ImportSkillFromDir(srcDir string) (string, error) {
+	if err := requireFileGrant(srcDir); err != nil {
+		return "", err
+	}
 	if a.skillsStore == nil {
 		return "", fmt.Errorf("skills store not initialized")
 	}
@@ -1568,6 +1571,9 @@ func (a *App) ImportSkillFromDir(srcDir string) (string, error) {
 }
 
 func (a *App) ImportSkillFromZip(zipPath string) (string, error) {
+	if err := requireFileGrant(zipPath); err != nil {
+		return "", err
+	}
 	if a.skillsStore == nil {
 		return "", fmt.Errorf("skills store not initialized")
 	}
@@ -2024,6 +2030,11 @@ func (a *App) ReadLocalAttachmentFile(path string) (LocalAttachmentFile, error) 
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return LocalAttachmentFile{}, errAttachmentInvalid
+	}
+	// The path crosses back from the renderer: it must be a file the user
+	// dropped (main.go grants the native drop) or picked through a dialog.
+	if err := requireFileGrant(path); err != nil {
+		return LocalAttachmentFile{}, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {

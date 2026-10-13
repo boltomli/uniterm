@@ -118,7 +118,9 @@ func DialLocalX(display string) (net.Conn, error) {
 		}
 		return conn, err
 	}
-	return net.DialTimeout("tcp", net.JoinHostPort(host, "600"+strconv.Itoa(disp)), 5*time.Second)
+	// 6000+disp, not "600"+disp: display :10 listens on 6010 (X11 spec —
+	// the port is 6000+N, not the digits "600" followed by N).
+	return net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(6000+disp)), 5*time.Second)
 }
 
 // findFreeDisplay scans display numbers starting from startFrom, returning
@@ -196,7 +198,8 @@ func tryStartLocalXServer(disp int) bool {
 }
 
 func dialLocal(goos, display string, disp int, timeout time.Duration) (net.Conn, error) {
-	tcpAddr := net.JoinHostPort("127.0.0.1", "600"+strconv.Itoa(disp))
+	// 6000+disp, not "600"+disp — see DialLocalX.
+	tcpAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(6000+disp))
 	if goos == "windows" {
 		return net.DialTimeout("tcp", tcpAddr, timeout)
 	}

@@ -112,9 +112,12 @@
           </div>
 
           <div class="redis-right-content" v-loading="keyLoading">
+            <div v-if="valueTruncated" class="truncate-hint">
+              {{ t('redis.valueTruncatedHint', { loaded: REDIS_VALUE_READ_CAP, total: selectedKeyInfo?.length ?? 0 }) }}
+            </div>
             <!-- String Editor -->
             <template v-if="selectedKeyInfo?.type === 'string'">
-              <el-input v-model="stringValue" type="textarea" rows="10" />
+              <el-input v-model="stringValue" type="textarea" rows="10" :disabled="valueTruncated" />
             </template>
 
             <!-- Hash Editor -->
@@ -123,21 +126,21 @@
                 <el-table-column type="index" label="#" :width="uiPx(40)" />
                 <el-table-column prop="field" :label="t('redis.field')">
                   <template #default="{ $index }">
-                    <el-input v-model="hashEntries[$index].field" size="small" type="textarea" :rows="1" autosize />
+                    <el-input v-model="hashEntries[$index].field" size="small" type="textarea" :rows="1" autosize :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column prop="value" :label="t('redis.value')">
                   <template #default="{ $index }">
-                    <el-input v-model="hashEntries[$index].value" size="small" type="textarea" :rows="1" autosize />
+                    <el-input v-model="hashEntries[$index].value" size="small" type="textarea" :rows="1" autosize :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column :width="uiPx(50)">
                   <template #default="{ $index }">
-                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" @click="hashEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
+                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" :disabled="valueTruncated" @click="hashEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
                   </template>
                 </el-table-column>
               </el-table>
-              <el-button size="small" style="margin-top: 0.25rem" @click="hashEntries.push({ field: '', value: '' })"><Plus :size="lucideSize('0.875rem')" /></el-button>
+              <el-button size="small" style="margin-top: 0.25rem" :disabled="valueTruncated" @click="hashEntries.push({ field: '', value: '' })"><Plus :size="lucideSize('0.875rem')" /></el-button>
             </template>
 
             <!-- List Editor -->
@@ -151,16 +154,16 @@
                 <el-table-column type="index" label="#" :width="uiPx(40)" />
                 <el-table-column :label="t('redis.value')">
                   <template #default="{ $index }">
-                    <el-input v-model="listEntries[$index]" size="small" type="textarea" :rows="1" autosize />
+                    <el-input v-model="listEntries[$index]" size="small" type="textarea" :rows="1" autosize :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column :width="uiPx(50)">
                   <template #default="{ $index }">
-                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" @click="listEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
+                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" :disabled="valueTruncated" @click="listEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
                   </template>
                 </el-table-column>
               </el-table>
-              <el-button size="small" style="margin-top: 0.25rem" @click="addListItem"><Plus :size="lucideSize('0.875rem')" /></el-button>
+              <el-button size="small" style="margin-top: 0.25rem" :disabled="valueTruncated" @click="addListItem"><Plus :size="lucideSize('0.875rem')" /></el-button>
             </template>
 
             <!-- Set Editor -->
@@ -169,16 +172,16 @@
                 <el-table-column type="index" label="#" :width="uiPx(40)" />
                 <el-table-column :label="t('redis.member')">
                   <template #default="{ $index }">
-                    <el-input v-model="setEntries[$index]" size="small" type="textarea" :rows="1" autosize />
+                    <el-input v-model="setEntries[$index]" size="small" type="textarea" :rows="1" autosize :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column :width="uiPx(50)">
                   <template #default="{ $index }">
-                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" @click="setEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
+                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" :disabled="valueTruncated" @click="setEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
                   </template>
                 </el-table-column>
               </el-table>
-              <el-button size="small" style="margin-top: 0.25rem" @click="setEntries.push('')"><Plus :size="lucideSize('0.875rem')" /></el-button>
+              <el-button size="small" style="margin-top: 0.25rem" :disabled="valueTruncated" @click="setEntries.push('')"><Plus :size="lucideSize('0.875rem')" /></el-button>
             </template>
 
             <!-- ZSet Editor -->
@@ -187,26 +190,26 @@
                 <el-table-column type="index" label="#" :width="uiPx(40)" />
                 <el-table-column :label="t('redis.member')">
                   <template #default="{ $index }">
-                    <el-input v-model="zsetEntries[$index].member" size="small" type="textarea" :rows="1" autosize />
+                    <el-input v-model="zsetEntries[$index].member" size="small" type="textarea" :rows="1" autosize :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column :label="t('redis.score')" :width="uiPx(100)">
                   <template #default="{ $index }">
-                    <el-input-number v-model="zsetEntries[$index].score" size="small" controls-position="right" style="width: 100%" />
+                    <el-input-number v-model="zsetEntries[$index].score" size="small" controls-position="right" style="width: 100%" :disabled="valueTruncated" />
                   </template>
                 </el-table-column>
                 <el-table-column :width="uiPx(50)">
                   <template #default="{ $index }">
-                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" @click="zsetEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
+                    <button class="btn btn-ghost btn-icon btn-sm danger" title="Delete" :disabled="valueTruncated" @click="zsetEntries.splice($index, 1)"><Trash2 :size="lucideSize('0.875rem')" /></button>
                   </template>
                 </el-table-column>
               </el-table>
-              <el-button size="small" style="margin-top: 0.25rem" @click="zsetEntries.push({ member: '', score: 0 })"><Plus :size="lucideSize('0.875rem')" /></el-button>
+              <el-button size="small" style="margin-top: 0.25rem" :disabled="valueTruncated" @click="zsetEntries.push({ member: '', score: 0 })"><Plus :size="lucideSize('0.875rem')" /></el-button>
             </template>
 
             <!-- Action buttons -->
             <div class="value-actions">
-              <el-button type="primary" size="small" @click="onSave" :loading="saving">{{ t('redis.save') }}</el-button>
+              <el-button type="primary" size="small" @click="onSave" :loading="saving" :disabled="valueTruncated">{{ t('redis.save') }}</el-button>
               <el-button size="small" @click="onRevert">{{ t('redis.revert') }}</el-button>
               <el-button type="danger" size="small" @click="onDeleteKey" :loading="deleting">{{ t('redis.deleteKey') }}</el-button>
             </div>
@@ -341,15 +344,18 @@ import {
   RedisGetString,
   RedisSetString,
   RedisGetHashAll,
-  RedisHashSet,
+  RedisHashSetFields,
   RedisHashDel,
+  RedisGetHashFields,
   RedisGetListRange,
   RedisListPush,
-  RedisListPop,
+  RedisReplaceList,
   RedisGetSetAll,
+  RedisGetSetMembers,
   RedisSetAdd,
   RedisSetRemove,
   RedisGetSortedSetRange,
+  RedisGetZSetRangeCapped,
   RedisZSetAdd,
   RedisZSetRemove,
   RedisDeleteKey,
@@ -357,6 +363,7 @@ import {
   RedisSwitchDB,
   RedisKeyspaceInfo,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { diffHashFields, diffMembers, diffScoredMembers, isValueTruncated, REDIS_VALUE_READ_CAP } from '../services/redisSave'
 import type { RedisKeyInfo, FieldEntry, ScoredMember, ScanResult, KeyNode } from '../types/redis'
 
 const props = defineProps<{ sessionId: string; keySeparator?: string }>()
@@ -544,6 +551,10 @@ const zsetEntries = ref<ScoredMember[]>([])
 const keyLoading = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
+// True when the loaded value is only a prefix of the server-side value
+// (capped read of a huge key). The editor turns read-only: saving a prefix
+// would silently drop everything beyond the cap.
+const valueTruncated = ref(false)
 
 // New key dialog
 const showNewKeyDialog = ref(false)
@@ -640,18 +651,43 @@ async function onSelectKey(info: RedisKeyInfo) {
   closeTree()
   selectedKey.value = info.name
   keyLoading.value = true
+  valueTruncated.value = false
   try {
     const fresh = await RedisGetKeyInfo(props.sessionId, info.name)
     if (fresh) { selectedKeyInfo.value = fresh; editTTL.value = fresh.ttl }
     else { selectedKeyInfo.value = info; editTTL.value = info.ttl }
   } catch (_) { selectedKeyInfo.value = info; editTTL.value = info.ttl }
   try {
+    const total = selectedKeyInfo.value?.length
+    // Every load is capped at REDIS_VALUE_READ_CAP: a 100k-element key must
+    // not fetch (and render) everything. isValueTruncated compares the loaded
+    // count against the key's real element count to flag a partial load.
     switch (info.type) {
       case 'string': { const val = await RedisGetString(props.sessionId, info.name); stringValue.value = val || ''; break }
-      case 'hash': { const entries = await RedisGetHashAll(props.sessionId, info.name); hashEntries.value = entries || []; break }
-      case 'list': { const items = await RedisGetListRange(props.sessionId, info.name, 0, -1); listEntries.value = items || []; break }
-      case 'set': { const members = await RedisGetSetAll(props.sessionId, info.name); setEntries.value = members || []; break }
-      case 'zset': { const members = await RedisGetSortedSetRange(props.sessionId, info.name, '-inf', '+inf'); zsetEntries.value = members || []; break }
+      case 'hash': {
+        const entries = await RedisGetHashFields(props.sessionId, info.name, REDIS_VALUE_READ_CAP)
+        hashEntries.value = entries || []
+        valueTruncated.value = isValueTruncated(hashEntries.value.length, total)
+        break
+      }
+      case 'list': {
+        const items = await RedisGetListRange(props.sessionId, info.name, 0, REDIS_VALUE_READ_CAP - 1)
+        listEntries.value = items || []
+        valueTruncated.value = isValueTruncated(listEntries.value.length, total)
+        break
+      }
+      case 'set': {
+        const members = await RedisGetSetMembers(props.sessionId, info.name, REDIS_VALUE_READ_CAP)
+        setEntries.value = members || []
+        valueTruncated.value = isValueTruncated(setEntries.value.length, total)
+        break
+      }
+      case 'zset': {
+        const members = await RedisGetZSetRangeCapped(props.sessionId, info.name, '-inf', '+inf', REDIS_VALUE_READ_CAP)
+        zsetEntries.value = members || []
+        valueTruncated.value = isValueTruncated(zsetEntries.value.length, total)
+        break
+      }
     }
   } catch (e: any) { msg.error(`Load key failed: ${e?.message || e}`) }
   finally { keyLoading.value = false }
@@ -659,6 +695,7 @@ async function onSelectKey(info: RedisKeyInfo) {
 
 // --- Save ---
 async function onSave() {
+  if (valueTruncated.value) { msg.error(t('redis.valueTruncatedError')); return }
   saving.value = true
   try {
     const key = selectedKey.value
@@ -667,30 +704,30 @@ async function onSave() {
       case 'string': await RedisSetString(props.sessionId, key, stringValue.value); break
       case 'hash': {
         const current = await RedisGetHashAll(props.sessionId, key)
-        const toDelete = current.filter((e: FieldEntry) => !hashEntries.value.find(h => h.field === e.field))
-        if (toDelete.length > 0) await RedisHashDel(props.sessionId, key, toDelete.map((e: FieldEntry) => e.field))
-        for (const e of hashEntries.value) { if (e.field) await RedisHashSet(props.sessionId, key, e.field, e.value) }
+        const { toSet, toDelete } = diffHashFields(current || [], hashEntries.value)
+        if (toDelete.length > 0) await RedisHashDel(props.sessionId, key, toDelete)
+        if (toSet.length > 0) await RedisHashSetFields(props.sessionId, key, toSet)
         break
       }
       case 'list': {
-        const existing = await RedisGetListRange(props.sessionId, key, 0, -1)
-        for (let i = 0; i < existing.length; i++) { await RedisListPop(props.sessionId, key, 'right') }
-        if (listEntries.value.length > 0) await RedisListPush(props.sessionId, key, 'right', listEntries.value)
+        // One atomic MULTI/DEL/RPUSH/EXEC replaces the list; the old
+        // pop-every-element flow could leave it empty if the connection
+        // dropped mid-save, and cost one round trip per element.
+        await RedisReplaceList(props.sessionId, key, listEntries.value)
         break
       }
       case 'set': {
         const current = await RedisGetSetAll(props.sessionId, key)
-        const r = current.filter((m: string) => !setEntries.value.includes(m))
-        const a = setEntries.value.filter(m => !current.includes(m))
-        if (r.length > 0) await RedisSetRemove(props.sessionId, key, r)
-        if (a.length > 0) await RedisSetAdd(props.sessionId, key, a)
+        const { toAdd, toRemove } = diffMembers(current || [], setEntries.value)
+        if (toRemove.length > 0) await RedisSetRemove(props.sessionId, key, toRemove)
+        if (toAdd.length > 0) await RedisSetAdd(props.sessionId, key, toAdd)
         break
       }
       case 'zset': {
         const current = await RedisGetSortedSetRange(props.sessionId, key, '-inf', '+inf')
-        const r = current.filter((m: ScoredMember) => !zsetEntries.value.find(z => z.member === m.member))
-        if (r.length > 0) await RedisZSetRemove(props.sessionId, key, r.map((m: ScoredMember) => m.member))
-        if (zsetEntries.value.length > 0) await RedisZSetAdd(props.sessionId, key, zsetEntries.value)
+        const { toAdd, toRemove } = diffScoredMembers(current || [], zsetEntries.value)
+        if (toRemove.length > 0) await RedisZSetRemove(props.sessionId, key, toRemove)
+        if (toAdd.length > 0) await RedisZSetAdd(props.sessionId, key, toAdd)
         break
       }
     }
@@ -742,8 +779,9 @@ async function onCreateKey() {
     switch (newKeyType.value) {
       case 'string': await RedisSetString(props.sessionId, newKeyName.value, newStringValue.value); break
       case 'hash': {
-        for (const e of newHashEntries.value) { if (e.field) await RedisHashSet(props.sessionId, newKeyName.value, e.field, e.value) }
-        if (!newHashEntries.value.some(e => e.field)) await RedisHashSet(props.sessionId, newKeyName.value, 'field', '')
+        const entries = newHashEntries.value.filter(e => e.field)
+        if (entries.length > 0) await RedisHashSetFields(props.sessionId, newKeyName.value, entries)
+        else await RedisHashSetFields(props.sessionId, newKeyName.value, [{ field: 'field', value: '' }])
         break
       }
       case 'list': {
@@ -1065,4 +1103,16 @@ watch(() => props.sessionId, async (newId) => {
 .drag-handle:hover { color: var(--text-primary); }
 :deep(.drag-col) { overflow: visible !important; text-align: center !important; vertical-align: middle !important; }
 :deep(.drag-col .cell) { overflow: visible !important; padding: 0 !important; }
+
+/* Shown when a huge key was loaded capped: the editor is read-only because
+   saving the loaded prefix would drop the hidden tail. */
+.truncate-hint {
+  margin-bottom: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--warning);
+  background: var(--warning-subtle);
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+}
 </style>

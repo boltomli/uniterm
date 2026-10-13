@@ -108,7 +108,7 @@ func (s *SMBSession) startKeepAlive() {
 	}
 }
 
-func (s *SMBSession) Write(data []byte) error  { return nil }
+func (s *SMBSession) Write(data []byte) error     { return nil }
 func (s *SMBSession) Resize(cols, rows int) error { return nil }
 
 func (s *SMBSession) Disconnect() error {
@@ -790,7 +790,12 @@ func (s *SMBSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 		default:
 		}
 		rp := smbJoin(remoteDir, e.Name())
-		lp := filepath.Join(localDir, e.Name())
+		// Server-supplied name: must stay a plain component under localDir
+		// (security.md P0: SMB directory downloads join names unchecked).
+		lp, jerr := safeDownloadChild(localDir, e.Name())
+		if jerr != nil {
+			return jerr
+		}
 		if e.IsDir() {
 			if err := s.downloadDir(rp, lp, task); err != nil {
 				return err
@@ -1033,4 +1038,3 @@ func (s *SMBSession) uploadFile(task *TransferTask, localPath, remotePath string
 			return err
 		})
 }
-

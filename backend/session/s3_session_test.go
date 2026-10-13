@@ -3,6 +3,13 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -112,5 +119,110 @@ func TestS3PartSizeFor(t *testing.T) {
 		if got := s3PartSizeFor(c.size); got != c.want {
 			t.Errorf("s3PartSizeFor(%d) = %d, want %d", c.size, got, c.want)
 		}
+	}
+}
+
+// --- Fake S3 endpoint (downloadDir walker) ----------------------------------
+
+// newFakeS3Session wires an S3Session to an httptest server that serves a
+// scripted bucket: ListObjectsV2 (query "list-type=2") returns the key set,
+// GET returns each key's body. Keys are arbitrary strings — a planted
+// "../" segment never exists on a real filesystem, so the walker must be
+// driven over HTTP (path-style URLs, like AWS/MinIO).
+func newFakeS3Session(t *testing.T, keys map[string]string) *S3Session {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" {
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+			b.WriteString(`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>buck</Name><IsTruncated>false</IsTruncated>`)
+			for k, body := range keys {
+				fmt.Fprintf(&b, "<Contents><Key>%s</Key><LastModified>2026-01-01T00:00:00Z</LastModified><Size>%d</Size><StorageClass>STANDARD</StorageClass></Contents>", k, len(body))
+			}
+			b.WriteString("</ListBucketResult>")
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, b.String())
+			return
+		}
+		// Object GET: path-style URL is /<bucket>/<key...>.
+		key := strings.TrimPrefix(r.URL.Path, "/buck/")
+		body, ok := keys[key]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	s := NewS3Session("s3-test")
+	if err := s.Connect(ConnectionConfig{
+		S3Region:   "us-east-1",
+		User:       "ak",
+		Password:   "sk",
+		Host:       srv.URL,
+		S3Bucket:   "buck",
+		S3URLStyle: "path",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestS3DownloadDirRejectsTraversalKeys: an object key planted with "../"
+// segments (legal in a shared bucket; anyone with write access can create
+// one) must abort the download instead of planning a local path outside the
+// download folder (security.md 文件会话 High).
+func TestS3DownloadDirRejectsTraversalKeys(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "dl")
+	s := newFakeS3Session(t, map[string]string{
+		"dir/a/../../../evil.txt": "BAD",
+	})
+	task := &TransferTask{ID: "dl-1", Type: "download", RemotePath: "/buck/dir", LocalPath: localDir, Status: "running"}
+	task.start()
+
+	if err := s.downloadDir("/buck/dir", localDir, task); err == nil {
+		t.Fatal("downloadDir accepted the traversal key dir/a/../../../evil.txt")
+	}
+	filepath.WalkDir(tmp, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "evil.txt" {
+			t.Errorf("traversal key wrote %s outside the download folder", p)
+		}
+		return nil
+	})
+}
+
+// TestS3DownloadDirNestedKeys: nested keys download with parent directories
+// created, alongside a flat key (security.md 文件会话 Medium: "S3 recursive
+// download fails for every object below the first level").
+func TestS3DownloadDirNestedKeys(t *testing.T) {
+	tmp := t.TempDir()
+	localDir := filepath.Join(tmp, "dl")
+	s := newFakeS3Session(t, map[string]string{
+		"dir/a/b/c.txt": "DEEP",
+		"dir/ok.txt":    "FLAT",
+	})
+	task := &TransferTask{ID: "dl-2", Type: "download", RemotePath: "/buck/dir", LocalPath: localDir, Status: "running"}
+	task.start()
+
+	if err := s.downloadDir("/buck/dir", localDir, task); err != nil {
+		t.Fatalf("downloadDir: %v", err)
+	}
+	if len(task.FailedFiles) != 0 {
+		t.Fatalf("FailedFiles = %+v, want none", task.FailedFiles)
+	}
+	b, err := os.ReadFile(filepath.Join(localDir, "a", "b", "c.txt"))
+	if err != nil {
+		t.Fatalf("nested key a/b/c.txt: %v", err)
+	}
+	if string(b) != "DEEP" {
+		t.Fatalf("nested key content = %q, want DEEP", b)
+	}
+	flat, err := os.ReadFile(filepath.Join(localDir, "ok.txt"))
+	if err != nil {
+		t.Fatalf("flat key ok.txt: %v", err)
+	}
+	if string(flat) != "FLAT" {
+		t.Fatalf("flat key content = %q, want FLAT", flat)
 	}
 }

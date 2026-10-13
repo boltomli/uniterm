@@ -73,7 +73,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { ConnectionConfig } from '../types/session'
 import { Clipboard, Events } from '@wailsio/runtime'
-import { CreateSession, CloseSession } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -138,13 +138,26 @@ async function connect() {
     sessionStore.initSession(info.id)
     if (info.proxyAddr) {
       panelStore.setProxyAddr(props.panelId, info.proxyAddr)
-      savedPassword.value = props.config.password || ''
+      savedPassword.value = await resolvePassword()
       initRFB(info.proxyAddr, savedPassword.value)
     }
   } catch (e: any) {
     console.error('VNC connect error:', e)
     lastError.value = e?.message || String(e)
     status.value = 'error'
+  }
+}
+
+// LoadConnections 脱敏后渲染层不再持有连接密码；noVNC 的 RFB 握手需要明文，
+// 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
+async function resolvePassword(): Promise<string> {
+  if (!props.config) return ''
+  if (props.config.password) return props.config.password
+  try {
+    const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }
+    return secret.password || ''
+  } catch {
+    return ''
   }
 }
 
@@ -305,11 +318,11 @@ onMounted(() => {
         if (data.proxyAddr) {
           panelStore.setProxyAddr(props.panelId, data.proxyAddr)
         }
-        if (props.config) {
-          savedPassword.value = props.config.password || ''
-        }
         if (data.proxyAddr && props.config) {
-          initRFB(data.proxyAddr, props.config.password || '')
+          void resolvePassword().then((pw) => {
+            savedPassword.value = pw
+            initRFB(data.proxyAddr, pw)
+          })
         } else {
           const proxy = panelStore.getProxyAddr(props.panelId)
           if (proxy) {
@@ -329,8 +342,10 @@ onMounted(() => {
 
   const storedProxy = panelStore.getProxyAddr(props.panelId)
   if (storedProxy && props.config) {
-    savedPassword.value = props.config.password || ''
-    initRFB(storedProxy, savedPassword.value)
+    void resolvePassword().then((pw) => {
+      savedPassword.value = pw
+      initRFB(storedProxy, pw)
+    })
   } else {
     connect()
   }

@@ -11,6 +11,7 @@ vi.mock('../stores/settingsStore', () => ({
 
 import {
   bufferRowSource,
+  createGutterCoalescer,
   createLineRegistry,
   recordWrittenLines,
   realignRegistry,
@@ -227,5 +228,42 @@ describe('bufferRowSource()', () => {
     const src = source([false], ['a'])
     expect(src.isWrapped(99)).toBe(false)
     expect(src.hasContent(99)).toBe(false)
+  })
+})
+
+describe('createGutterCoalescer()', () => {
+  function setup() {
+    const frames: (() => void)[] = []
+    const flushes: string[][] = []
+    const coalescer = createGutterCoalescer(
+      (flush) => { frames.push(flush) },
+      (sessionIds) => { flushes.push(sessionIds) },
+    )
+    const runFrame = () => { for (const flush of frames.splice(0)) flush() }
+    return { coalescer, flushes, runFrame }
+  }
+
+  it('batches a burst of writes into one flush for one frame', () => {
+    const { coalescer, flushes, runFrame } = setup()
+    coalescer.request('a')
+    coalescer.request('a')
+    coalescer.request('b')
+    coalescer.request('a')
+    expect(coalescer.pending()).toEqual(['a', 'b'])
+    expect(flushes).toHaveLength(0)
+
+    runFrame()
+    expect(flushes).toEqual([['a', 'b']])
+    expect(coalescer.pending()).toEqual([])
+  })
+
+  it('schedules again only after the previous frame ran', () => {
+    const { coalescer, flushes, runFrame } = setup()
+    coalescer.request('a')
+    runFrame()
+    coalescer.request('a')
+    coalescer.request('c')
+    runFrame()
+    expect(flushes).toEqual([['a'], ['a', 'c']])
   })
 })

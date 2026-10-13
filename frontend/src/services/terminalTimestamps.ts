@@ -204,9 +204,58 @@ export function realignRegistry(state: LineRegistryState, opts: RealignOptions):
 
 // ─── Service functions (live terminal adaptation) ───────────────────────────
 
-// Ask the gutter to re-read the (now updated) registry.
-function notifyGutter() {
-  window.dispatchEvent(new CustomEvent('terminal:refresh-gutter'))
+/**
+ * Frame-coalesced gutter notification. Writes arrive in bursts (shell output,
+ * TUI redraws): dispatching one window event per write made every pane's
+ * gutter re-read the registry once per write. Batch the requesting session
+ * ids instead and dispatch once per animation frame, carrying the ids so a
+ * pane's gutter can ignore refreshes belonging to other sessions.
+ */
+export interface GutterCoalescer {
+  request(sessionId: string): void
+  /** Session ids waiting for the next flush. */
+  pending(): string[]
+}
+
+export function createGutterCoalescer(
+  schedule: (flush: () => void) => void,
+  flush: (sessionIds: string[]) => void,
+): GutterCoalescer {
+  const pending = new Set<string>()
+  let scheduled = false
+
+  return {
+    request(sessionId) {
+      pending.add(sessionId)
+      if (scheduled) return
+      scheduled = true
+      schedule(() => {
+        scheduled = false
+        const ids = [...pending]
+        pending.clear()
+        flush(ids)
+      })
+    },
+    pending: () => [...pending],
+  }
+}
+
+const gutterNotifier = createGutterCoalescer(
+  (flush) => {
+    // rAF in the renderer; the fallback covers environments without it (node
+    // test runs) so a notification can never get stuck pending forever.
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => flush())
+    else setTimeout(flush, 16)
+  },
+  (sessionIds) => {
+    window.dispatchEvent(new CustomEvent('terminal:refresh-gutter', { detail: { sessionIds } }))
+  },
+)
+
+// Ask the gutters of `sessionId`'s panes to re-read the (now updated)
+// registry — coalesced to one dispatch per animation frame.
+function notifyGutter(sessionId: string) {
+  gutterNotifier.request(sessionId)
 }
 
 function timestampsEnabled(): boolean {
@@ -242,7 +291,7 @@ export function recordWrite(sessionId: string, beforeAbs: number, ts: number): v
     source: bufferRowSource(buf),
     now: ts,
   })
-  notifyGutter()
+  notifyGutter(sessionId)
 }
 
 /**
@@ -277,7 +326,7 @@ export function stampCommandLine(sessionId: string, ts: number): void {
       registry.entries.set(abs, { number: registry.nextNumber++, ts } satisfies LineMetaEntry)
     }
   }
-  if (timestampsEnabled()) notifyGutter()
+  if (timestampsEnabled()) notifyGutter(sessionId)
 }
 
 /** Return the cursor's absolute line index for the current terminal. */
@@ -297,5 +346,5 @@ export function clearRegistry(sessionId: string): void {
   if (!managed) return
   managed.lineRegistry.nextNumber = 1
   managed.lineRegistry.entries.clear()
-  notifyGutter()
+  notifyGutter(sessionId)
 }

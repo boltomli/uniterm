@@ -73,8 +73,14 @@ type App struct {
 	dataDir         string
 	credentialStore *credentials.Store
 	storesReady     bool
-	chatCancel      atomic.Pointer[context.CancelFunc] // F-308: active stream cancellation, per-call swap so overlap is safe
-	moveResizeCh    chan string                        // defer EventsEmit from WndProc
+	// lastUpdateInfo is the backend-side cache of the most recent successful
+	// CheckForUpdate. DownloadUpdate derives its asset list from here (never
+	// from a webview argument) so a compromised renderer cannot pick the URL
+	// that gets downloaded and executed. updateInfoMu guards it.
+	updateInfoMu   stdsync.Mutex
+	lastUpdateInfo *update.UpdateInfo
+	chatCancel     atomic.Pointer[context.CancelFunc] // F-308: active stream cancellation, per-call swap so overlap is safe
+	moveResizeCh   chan string                        // defer EventsEmit from WndProc
 	// F-043: foreground flag — true while the window is visible and the
 	// user is interacting; background goroutines (keepalive, output_log
 	// flush, k8s watches, auto-sync) should consult IsForeground before
@@ -98,11 +104,15 @@ type App struct {
 
 	// MCP server (external AI agents): listener + token auth + approval
 	// bridge. Lazily created once stores are ready (ensureMCPServer).
-	mcpServer   *mcp.Server
-	mcpOnce     stdsync.Once
+	mcpServer *mcp.Server
+	mcpOnce   stdsync.Once
 	// mcpApprovals maps pending approval request ids to their answer channels.
 	mcpApprovals   map[string]chan mcpApprovalVerdict
 	mcpApprovalsMu stdsync.Mutex
+	// mcpApprovalSerial serializes approval dialogs: only one request is
+	// shown to the user at a time, so a newer request can never replace the
+	// dialog (and its countdown/reason) the user is already reading.
+	mcpApprovalSerial stdsync.Mutex
 	// Token hot-reload cache: mcp.json mtime → parsed token map.
 	mcpTokenCacheMu    stdsync.Mutex
 	mcpTokenCache      map[string]mcp.TokenInfo
@@ -130,6 +140,15 @@ type App struct {
 	customLogDir         string
 	sessionLogFilename   string
 	sessionLogSettingsMu stdsync.RWMutex
+
+	// sftpLocalRoots records, per file-transfer session, the local
+	// directories that session's local pane has actually navigated to.
+	// The SftpLocal* bindings only touch paths inside those roots (plus
+	// rejectDotDotPath), so a compromised renderer cannot use an open
+	// file-transfer session as a generic local-file read/write primitive
+	// (security.md, file_grants scope). Lazily created.
+	sftpLocalMu    stdsync.Mutex
+	sftpLocalRoots map[string]map[string]struct{}
 
 	// errCh accumulates non-fatal init failures during startup() so the
 	// frontend can surface them (see StartupError / "app:startup-error"
@@ -271,6 +290,11 @@ func (a *App) initStores(dataDir string, upgrade bool) {
 	// Point clink:// local shells at the app data dir (they drop a tuned
 	// clink profile next to the stores; see backend/session/local_clink.go).
 	session.SetClinkProfileDir(filepath.Join(dataDir, "clink"))
+	// The command/skill managers' "reveal in file manager" action navigates
+	// into these fixed data-dir folders (OpenPathInExplorer is grant-gated);
+	// grant them once — they are Go-derived locations, never webview input.
+	fileGrants.addDir(filepath.Join(dataDir, "commands"))
+	fileGrants.addDir(filepath.Join(dataDir, "skills"))
 	// Trust-on-first-use host-key store lives next to the other stores;
 	// until this runs, session dials stay in legacy accept-all mode (see
 	// backend/session/knownhosts.go).
@@ -300,9 +324,12 @@ func (a *App) initStores(dataDir string, upgrade bool) {
 		a.settingsStore = ss
 		// Prime the session-log directory override from persisted settings
 		// so a log Enable that lands before the settings UI opens still
-		// respects the user's choice from a prior run.
+		// respects the user's choice from a prior run. The on-disk value is a
+		// trusted path source (mirrors the zmodem dir grant in LoadSettings),
+		// so grant it before the binding-level check applies.
 		if settings, err := ss.Load(); err == nil {
-			a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
+			fileGrants.addDir(settings.Terminal.SessionLogDir)
+			_ = a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
 			a.setSessionLogFilename(settings.Terminal.SessionLogFilename)
 		}
 	}
@@ -807,23 +834,217 @@ func (a *App) SaveFavoriteConnections(ids []string) error {
 
 // ConnectionStore methods
 
-func (a *App) SaveConnections(data session.ConnectionStoreData) error {
+// ── Connection secret redaction (webview trust boundary) ──
+//
+// The webview is an untrusted boundary, so LoadConnections must not hand it
+// the decrypted vault. RedactedConnection is a ConnectionConfig whose secret
+// fields (password, inline key text, tunnel password, sentinel password,
+// inline kubeconfig) are blanked and replaced by presence flags, so the
+// frontend can still tell "a secret is saved" from "none" — the edit dialog
+// shows a "saved, leave blank to keep" placeholder, the credential check
+// skips its prompt — without ever seeing the values. Secrets resolve
+// Go-side per connection ID: CreateSession/TestConnection fill them through
+// fillStoredSecrets, and the few features that genuinely need the plaintext
+// in the renderer (the VNC/SPICE browser-side handshake, the inline
+// kubeconfig editor) call ResolveConnectionSecret for one connection at a
+// time. A save round-trip keeps stored secrets: SaveConnections restores
+// blanked-but-flagged fields from the store before persisting.
+type RedactedConnection struct {
+	session.ConnectionConfig
+	HasPassword          bool `json:"hasPassword"`
+	HasKeyContent        bool `json:"hasKeyContent"`
+	HasTunnelSSHPassword bool `json:"hasTunnelSSHPassword"`
+	HasSentinelPassword  bool `json:"hasSentinelPassword"`
+	HasK8sConfigInline   bool `json:"hasK8sConfigInline"`
+}
+
+// RedactedConnectionStoreData is the store shape LoadConnections returns and
+// SaveConnections accepts.
+type RedactedConnectionStoreData struct {
+	Groups      []session.ConnectionGroup `json:"groups"`
+	Connections []RedactedConnection      `json:"connections"`
+}
+
+// ConnectionSecret carries the decrypted secret fields of one stored
+// connection (see ResolveConnectionSecret).
+type ConnectionSecret struct {
+	Password          string `json:"password"`
+	KeyContent        string `json:"keyContent"`
+	TunnelSSHPassword string `json:"tunnelSSHPassword"`
+	SentinelPassword  string `json:"sentinelPassword"`
+	K8sConfigInline   string `json:"k8sConfigInline"`
+}
+
+// redactConnections blanks every secret field and records its presence flag.
+// The input is left untouched so Go-side callers keep the plaintext copy.
+func redactConnections(data session.ConnectionStoreData) RedactedConnectionStoreData {
+	out := RedactedConnectionStoreData{
+		Groups:      data.Groups,
+		Connections: make([]RedactedConnection, 0, len(data.Connections)),
+	}
+	for _, c := range data.Connections {
+		rc := RedactedConnection{ConnectionConfig: c}
+		rc.HasPassword = c.Password != ""
+		rc.HasKeyContent = c.KeyContent != ""
+		rc.HasTunnelSSHPassword = c.TunnelSSHPassword != ""
+		rc.HasSentinelPassword = c.SentinelPassword != ""
+		rc.HasK8sConfigInline = c.K8sConfigInline != ""
+		rc.Password = ""
+		rc.KeyContent = ""
+		rc.TunnelSSHPassword = ""
+		rc.SentinelPassword = ""
+		rc.K8sConfigInline = ""
+		out.Connections = append(out.Connections, rc)
+	}
+	return out
+}
+
+// restoreRedactedSecrets converts a redacted payload coming back from the
+// frontend (a load→edit→save round-trip) into the store shape, filling each
+// blanked secret from the currently stored connection when its presence flag
+// is set — "leave blank to keep". A non-blank field wins (the user typed a
+// new secret); a missing flag or missing stored value keeps the blank.
+func (a *App) restoreRedactedSecrets(data RedactedConnectionStoreData) session.ConnectionStoreData {
+	out := session.ConnectionStoreData{
+		Groups:      data.Groups,
+		Connections: make([]session.ConnectionConfig, 0, len(data.Connections)),
+	}
+	stored := map[string]session.ConnectionConfig{}
+	if a.connectionStore != nil {
+		if cur, err := a.connectionStore.Load(); err == nil {
+			for _, c := range cur.Connections {
+				stored[c.ID] = c
+			}
+		}
+	}
+	for _, rc := range data.Connections {
+		c := rc.ConnectionConfig
+		if prev, ok := stored[c.ID]; ok {
+			if rc.HasPassword && c.Password == "" {
+				c.Password = prev.Password
+			}
+			if rc.HasKeyContent && c.KeyContent == "" {
+				c.KeyContent = prev.KeyContent
+			}
+			if rc.HasTunnelSSHPassword && c.TunnelSSHPassword == "" {
+				c.TunnelSSHPassword = prev.TunnelSSHPassword
+			}
+			if rc.HasSentinelPassword && c.SentinelPassword == "" {
+				c.SentinelPassword = prev.SentinelPassword
+			}
+			if rc.HasK8sConfigInline && c.K8sConfigInline == "" {
+				c.K8sConfigInline = prev.K8sConfigInline
+			}
+		}
+		out.Connections = append(out.Connections, c)
+	}
+	return out
+}
+
+// storedConnectionByID resolves one stored connection with its secrets
+// decrypted (ConnectionStore.Load populates them). Go-side only.
+func (a *App) storedConnectionByID(id string) (session.ConnectionConfig, bool) {
+	if a.connectionStore == nil || id == "" {
+		return session.ConnectionConfig{}, false
+	}
+	data, err := a.connectionStore.Load()
+	if err != nil {
+		return session.ConnectionConfig{}, false
+	}
+	for _, c := range data.Connections {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return session.ConnectionConfig{}, false
+}
+
+// fillStoredSecrets resolves the redacted secret fields of a frontend-held
+// config from the store, by connection ID. Every Go-side consumer that gets
+// a config back from the webview (CreateSession, TestConnection) calls this
+// before use. It never overwrites an inline value the frontend provided
+// (one-shot credentials from the credential dialog) and never moves a login
+// password into the key-passphrase slot or vice versa.
+func (a *App) fillStoredSecrets(config *session.ConnectionConfig) {
+	if config == nil || config.ID == "" || a.connectionStore == nil {
+		return
+	}
+	stored, ok := a.storedConnectionByID(config.ID)
+	if !ok {
+		return
+	}
+	// The password field carries a different secret per auth type: the login
+	// password for "password", the Elasticsearch API key for "apikey", the
+	// key passphrase for "key"/"keyText". Only same-auth-type secrets
+	// transfer, so a stored login password never lands in a passphrase slot
+	// (and vice versa) after an auth-mode switch.
+	if config.Password == "" && stored.AuthType == config.AuthType && stored.Password != "" {
+		config.Password = stored.Password
+	}
+	// Password auth additionally recovers pre-enc:v1 keychain entries.
+	if config.AuthType == "password" && config.Password == "" {
+		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
+			config.Password = pw
+		}
+	}
+	// The inline key text is only used by keyText (same auth type).
+	if config.AuthType == "keyText" && config.KeyContent == "" && stored.AuthType == "keyText" {
+		config.KeyContent = stored.KeyContent
+	}
+	if config.SentinelPassword == "" {
+		config.SentinelPassword = stored.SentinelPassword
+	}
+	if config.K8sConfigInline == "" {
+		config.K8sConfigInline = stored.K8sConfigInline
+	}
+}
+
+// saveAndEmitConnections persists the store and broadcasts the REDACTED
+// view, so no save/sync emit path ships secrets to the renderer.
+func (a *App) saveAndEmitConnections(data session.ConnectionStoreData) error {
+	if err := a.connectionStore.Save(data); err != nil {
+		return err
+	}
+	a.emit("store:connections:changed", redactConnections(data))
+	a.triggerAutoSync()
+	return nil
+}
+
+func (a *App) SaveConnections(data RedactedConnectionStoreData) error {
 	if a.connectionStore == nil {
 		return fmt.Errorf("connection store not initialized")
 	}
-	err := a.connectionStore.Save(data)
-	if err == nil {
-		a.emit("store:connections:changed", data)
-		a.triggerAutoSync()
-	}
-	return err
+	return a.saveAndEmitConnections(a.restoreRedactedSecrets(data))
 }
 
-func (a *App) LoadConnections() (session.ConnectionStoreData, error) {
+func (a *App) LoadConnections() (RedactedConnectionStoreData, error) {
 	if a.connectionStore == nil {
-		return session.ConnectionStoreData{}, fmt.Errorf("connection store not initialized")
+		return RedactedConnectionStoreData{}, fmt.Errorf("connection store not initialized")
 	}
-	return a.connectionStore.Load()
+	data, err := a.connectionStore.Load()
+	if err != nil {
+		return RedactedConnectionStoreData{}, err
+	}
+	return redactConnections(data), nil
+}
+
+// ResolveConnectionSecret returns the decrypted secret fields of ONE stored
+// connection. LoadConnections never ships secrets to the webview; the few
+// features that genuinely need the plaintext in the renderer (the VNC/SPICE
+// browser-side handshake, the inline kubeconfig editor) fetch it per
+// connection through this call.
+func (a *App) ResolveConnectionSecret(connectionID string) (ConnectionSecret, error) {
+	c, ok := a.storedConnectionByID(connectionID)
+	if !ok {
+		return ConnectionSecret{}, fmt.Errorf("connection not found: %s", connectionID)
+	}
+	return ConnectionSecret{
+		Password:          c.Password,
+		KeyContent:        c.KeyContent,
+		TunnelSSHPassword: c.TunnelSSHPassword,
+		SentinelPassword:  c.SentinelPassword,
+		K8sConfigInline:   c.K8sConfigInline,
+	}, nil
 }
 
 func (a *App) LoadIdentities() (session.IdentityStoreData, error) {
@@ -902,7 +1123,7 @@ func (a *App) ApplyImport(data session.ConnectionStoreData) error {
 	// custom command) before they merge into the store.
 	importer.SanitizeImported(&data)
 	merged := importer.MergeImported(existing, data)
-	return a.SaveConnections(merged)
+	return a.saveAndEmitConnections(merged)
 }
 
 // TunnelStore methods
@@ -1300,10 +1521,16 @@ func (a *App) SetBackgroundImage(srcPath string) (string, error) {
 
 // GetBackgroundImage reads the stored background file and returns it as a
 // data URL. Returns an empty string (no error) when name is empty or the
-// file is missing, so the frontend degrades gracefully.
+// file is missing, so the frontend degrades gracefully. name is an untrusted
+// webview value: it must be a bare file name inside the backgrounds dir —
+// anything with a path separator or a ".." segment is rejected before the
+// path is joined.
 func (a *App) GetBackgroundImage(name string) (string, error) {
 	if name == "" {
 		return "", nil
+	}
+	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return "", fmt.Errorf("invalid background image name: %q", name)
 	}
 	ext := strings.ToLower(filepath.Ext(name))
 	mime, ok := allowedBgExt[ext]
@@ -1341,7 +1568,7 @@ func (a *App) ClearBackgroundImage() error {
 func (a *App) reloadStoresAfterSync() {
 	if a.connectionStore != nil {
 		if data, err := a.connectionStore.Load(); err == nil {
-			a.emit("store:connections:changed", data)
+			a.emit("store:connections:changed", redactConnections(data))
 		}
 	}
 	if a.settingsStore != nil {
@@ -1590,7 +1817,10 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 	// startup from the on-disk value in LoadSettings.
 	err := a.settingsStore.Save(settings)
 	if err == nil {
-		a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
+		// The binding only applies a log-dir override the user picked through
+		// the directory dialog (which grants it); the persisted value is
+		// granted on the next startup / LoadSettings, mirroring the zmodem dir.
+		_ = a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
 		a.setSessionLogFilename(settings.Terminal.SessionLogFilename)
 		a.triggerAutoSync()
 		// Re-apply the global show/hide hotkey so binding changes (and the
@@ -1607,8 +1837,11 @@ func (a *App) LoadSettings() (store.AppSettings, error) {
 	settings, err := a.settingsStore.Load()
 	if err == nil {
 		// The configured zmodem download directory is a trusted path source
-		// for the receive path (no per-transfer dialog when set).
+		// for the receive path (no per-transfer dialog when set). The session
+		// log directory is trusted the same way: it is persisted on disk and
+		// only ever written through EnableSessionOutputLog.
 		fileGrants.addDir(settings.Terminal.ZmodemDownloadDir)
+		fileGrants.addDir(settings.Terminal.SessionLogDir)
 	}
 	return settings, err
 }
@@ -2012,7 +2245,16 @@ func (a *App) RelaunchApp() {
 }
 
 func (a *App) CheckForUpdate(source string) (*update.UpdateInfo, error) {
-	return update.Check(Version, source)
+	info, err := update.Check(Version, source)
+	if err != nil {
+		return nil, err
+	}
+	// Cache the backend's own result: DownloadUpdate downloads exactly this
+	// list, so the asset URLs never come from the webview.
+	a.updateInfoMu.Lock()
+	a.lastUpdateInfo = info
+	a.updateInfoMu.Unlock()
+	return info, nil
 }
 
 // updateManager holds the in-progress update state (download → apply).
@@ -2023,17 +2265,30 @@ func (a *App) emitUpdateProgress(p update.Progress) {
 	a.app.Event.Emit("update:progress", p)
 }
 
-// DownloadUpdate downloads and verifies the best available update asset from
-// the ordered candidate list (primary source first, mirror as fallback).
+// DownloadUpdate downloads and verifies the update assets discovered by the
+// last CheckForUpdate call (primary source first, mirror as fallback).
 // Progress is streamed to the frontend via the update:progress event.
-func (a *App) DownloadUpdate(assets []update.UpdateAsset) error {
+//
+// It takes no arguments on purpose: the webview is an untrusted boundary, so
+// the candidate list — URLs and hashes alike — is derived from the backend's
+// own cached check result.
+func (a *App) DownloadUpdate() error {
 	if devBuild {
 		return fmt.Errorf("updates are disabled in development builds")
 	}
-	if len(assets) == 0 {
-		return fmt.Errorf("no update assets available")
+	a.updateInfoMu.Lock()
+	info := a.lastUpdateInfo
+	a.updateInfoMu.Unlock()
+	if info == nil {
+		return errors.New("check for updates before downloading")
 	}
-	_, err := updateManager.Download(assets, a.emitUpdateProgress)
+	if !info.HasUpdate {
+		return errors.New("no update available")
+	}
+	if len(info.Assets) == 0 {
+		return errors.New("no update assets available")
+	}
+	_, err := updateManager.Download(info.Assets, a.emitUpdateProgress)
 	return err
 }
 
@@ -2066,6 +2321,13 @@ func (a *App) FrontendLog(tag string, message string) {
 // `open -R`; Linux uses `xdg-open <dir>` (no selection semantic in
 // xdg-open, so the parent directory is opened).
 func (a *App) OpenPathInExplorer(path string) error {
+	// Revealing a path runs the platform file manager on it, which executes
+	// .app/.desktop/.command targets — the path must be one the user picked
+	// (dialog/drop grant) or produced Go-side (e.g. an output-log file, which
+	// EnableSessionOutputLog grants when it creates it).
+	if err := requireFileGrant(path); err != nil {
+		return err
+	}
 	if path == "" {
 		return fmt.Errorf("empty path")
 	}
@@ -2128,6 +2390,16 @@ func (a *App) SetDataDir(kind, customDir string, migrate bool) error {
 	target, err := dataDirFor(kind, customDir)
 	if err != nil {
 		return err
+	}
+	// Refuse overlapping source/target BEFORE probing or creating anything:
+	// migrating onto the current dir copies each file onto itself and then
+	// deletes the source (wiping connections, settings, identities and
+	// credentials.meta), and a nested target makes the copy walk recurse into
+	// its own destination before removeDataDir deletes it.
+	if migrate && a.dataDir != "" {
+		if err := checkMigratePaths(a.dataDir, target); err != nil {
+			return err
+		}
 	}
 	if !isWritable(target) {
 		return fmt.Errorf("directory not writable: %s", target)
@@ -2306,9 +2578,13 @@ func (a *App) ResetCredentials() error {
 }
 
 // reencryptAll decrypts all secret fields under oldKey and re-encrypts them
-// under newKey by loading (decrypt) then saving (encrypt) both stores.
+// under newKey by loading (decrypt) then saving (encrypt) every store that
+// holds ciphertext — connections, settings, identities, proxies, ai.json and
+// tunnels.json. Files already saved under newKey are rolled back under
+// oldKey when a later save fails, so the vault never mixes two keys.
 func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
-	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil || a.proxyStore == nil {
+	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil ||
+		a.proxyStore == nil || a.aiConfigStore == nil || a.tunnelStore == nil {
 		return errors.New("stores not initialized")
 	}
 	conns, err := a.connectionStore.Load()
@@ -2327,50 +2603,63 @@ func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
 	if err != nil {
 		return err
 	}
+	// ai.json and tunnels.json encrypt with the same credential key; skipping
+	// them would strand their ciphertext under oldKey forever (Load() fails
+	// with a decrypt error, including tunnel auto-start).
+	aiCfg, err := a.aiConfigStore.Load()
+	if err != nil {
+		return err
+	}
+	tunnels, err := a.tunnelStore.Load()
+	if err != nil {
+		return err
+	}
+
+	saves := []struct {
+		name string
+		save func() error
+	}{
+		{"connections.json", func() error { return a.connectionStore.Save(conns) }},
+		{"settings.json", func() error { return a.settingsStore.Save(settings) }},
+		{"identities.json", func() error { return a.identityStore.Save(idents) }},
+		{"proxies.json", func() error { return a.proxyStore.Save(proxies) }},
+		{"ai.json", func() error { return a.aiConfigStore.Save(aiCfg) }},
+		{"tunnels.json", func() error { return a.tunnelStore.Save(tunnels) }},
+	}
+
 	// Swap key, re-encrypt on save.
 	cs.SetKey(newKey)
-	if err := a.connectionStore.Save(conns); err != nil {
-		cs.SetKey(oldKey)
-		return err
-	}
-	if err := a.settingsStore.Save(settings); err != nil {
-		// Roll the connection store back under oldKey so both files stay
-		// encrypted under a single consistent key.
-		cs.SetKey(oldKey)
-		_ = a.connectionStore.Save(conns)
-		return err
-	}
-	if err := a.identityStore.Save(idents); err != nil {
-		// Roll back under oldKey: revert the key and re-save conns and settings
-		// so all files stay encrypted under a single consistent key.
-		cs.SetKey(oldKey)
-		_ = a.connectionStore.Save(conns)
-		_ = a.settingsStore.Save(settings)
-		return err
-	}
-	if err := a.proxyStore.Save(proxies); err != nil {
-		cs.SetKey(oldKey)
-		_ = a.connectionStore.Save(conns)
-		_ = a.settingsStore.Save(settings)
-		_ = a.identityStore.Save(idents)
-		return err
+	for i := range saves {
+		if err := saves[i].save(); err != nil {
+			// Revert every store (including the one that failed, in case it
+			// half-wrote) under oldKey so all files stay on a single key.
+			cs.SetKey(oldKey)
+			for j := range i + 1 {
+				_ = saves[j].save()
+			}
+			return fmt.Errorf("re-encrypt %s: %w", saves[i].name, err)
+		}
 	}
 	return nil
 }
 
-// clearEncryptedFields rewrites connections.json and settings.json with empty
+// clearEncryptedFields rewrites every file the stores can encrypt with empty
 // secret fields WITHOUT decrypting. It must work while the credential store is
 // locked (keychain-lost / reset), when Load()/Save() would fail because they
 // require the master key to decrypt the very fields we are clearing.
+// The file list is credentials.SecretFiles() — the same list
+// storeHasSecrets() guards Setup with — so a reset can never leave a file
+// behind that keeps blocking Setup.
 func (a *App) clearEncryptedFields() {
-	clearSecretsInFile(filepath.Join(a.dataDir, "connections.json"), "connections")
-	clearSecretsInFile(filepath.Join(a.dataDir, "settings.json"), "settings")
-	clearSecretsInFile(filepath.Join(a.dataDir, "identities.json"), "identities")
-	clearSecretsInFile(filepath.Join(a.dataDir, "proxies.json"), "proxies")
+	for _, name := range credentials.SecretFiles() {
+		clearSecretsInFile(filepath.Join(a.dataDir, name), strings.TrimSuffix(name, ".json"))
+	}
 }
 
-// clearSecretsInFile blanks the secret fields (connections[].password or
-// ai.models[].apiKey) in a raw JSON config file, preserving every other field.
+// clearSecretsInFile blanks the secret fields in a raw JSON config file,
+// preserving every other field. Known plaintext-secret fields are cleared by
+// name (they may predate in-place encryption), then every remaining enc:v1:
+// value anywhere in the document is blanked so no field type can be missed.
 // Missing/corrupt files are left untouched.
 func clearSecretsInFile(path, kind string) {
 	data, err := os.ReadFile(path)
@@ -2381,47 +2670,105 @@ func clearSecretsInFile(path, kind string) {
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return
 	}
-	switch kind {
-	case "connections":
-		if conns, ok := obj["connections"].([]interface{}); ok {
-			for _, c := range conns {
-				if cm, ok := c.(map[string]interface{}); ok {
-					cm["password"] = ""
-				}
-			}
-		}
-	case "settings":
-		if ai, ok := obj["ai"].(map[string]interface{}); ok {
-			if models, ok := ai["models"].([]interface{}); ok {
-				for _, m := range models {
-					if mm, ok := m.(map[string]interface{}); ok {
-						mm["apiKey"] = ""
-					}
-				}
-			}
-		}
-	case "identities":
-		if ids, ok := obj["identities"].([]interface{}); ok {
-			for _, id := range ids {
-				if im, ok := id.(map[string]interface{}); ok {
-					im["password"] = ""
-				}
-			}
-		}
-	case "proxies":
-		if ps, ok := obj["proxies"].([]interface{}); ok {
-			for _, p := range ps {
-				if pm, ok := p.(map[string]interface{}); ok {
-					pm["pass"] = ""
-				}
-			}
-		}
-	}
+	blankInList(obj, kind, "connections", "password", "keyContent", "sentinelPassword", "tunnelSSHPassword", "k8sConfigInline")
+	blankInList(obj, kind, "identities", "password", "keyContent")
+	blankInList(obj, kind, "proxies", "pass")
+	blankNestedList(obj, kind, "tunnels", "upstream", "pass")
+	blankModelsAPIKey(obj, "ai")
+	blankModelsAPIKey(obj, "settings")
+	scrubEncryptedValues(obj)
 	out, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
 		return
 	}
 	_ = os.WriteFile(path, out, 0600)
+}
+
+// blankInList sets each named field to "" on every element of obj[key] when
+// this file kind matches.
+func blankInList(obj map[string]interface{}, kind, listKey string, fields ...string) {
+	if kind != listKey {
+		return
+	}
+	items, ok := obj[listKey].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		el, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			el[field] = ""
+		}
+	}
+}
+
+// blankNestedList clears a field on a sub-object of each list element
+// (tunnels[].upstream.pass).
+func blankNestedList(obj map[string]interface{}, kind, listKey, subKey, field string) {
+	if kind != listKey {
+		return
+	}
+	items, ok := obj[listKey].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		el, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if sub, ok := el[subKey].(map[string]interface{}); ok {
+			sub[field] = ""
+		}
+	}
+}
+
+// blankModelsAPIKey clears model API keys under either settings (ai.models)
+// or ai.json (models).
+func blankModelsAPIKey(obj map[string]interface{}, kind string) {
+	var models []interface{}
+	switch kind {
+	case "settings":
+		if ai, ok := obj["ai"].(map[string]interface{}); ok {
+			models, _ = ai["models"].([]interface{})
+		}
+	case "ai":
+		models, _ = obj["models"].([]interface{})
+	default:
+		return
+	}
+	for _, m := range models {
+		if mm, ok := m.(map[string]interface{}); ok {
+			mm["apiKey"] = ""
+		}
+	}
+}
+
+// scrubEncryptedValues blanks every enc:v1: string value in the document,
+// wherever it appears — the catch-all that keeps Reset complete when a store
+// grows a new encrypted field.
+func scrubEncryptedValues(v interface{}) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for key, val := range t {
+			if s, ok := val.(string); ok && credentials.IsEncrypted(s) {
+				t[key] = ""
+				continue
+			}
+			scrubEncryptedValues(val)
+		}
+	case []interface{}:
+		for i, val := range t {
+			if s, ok := val.(string); ok && credentials.IsEncrypted(s) {
+				t[i] = ""
+				continue
+			}
+			scrubEncryptedValues(val)
+		}
+	}
 }
 
 func (a *App) dataDirType() string {
@@ -2469,6 +2816,60 @@ func randomKey32() ([]byte, error) {
 		return nil, err
 	}
 	return k, nil
+}
+
+// Migration overlap sentinels: SetDataDir refuses any source/target pair that
+// is not two disjoint directories, because every such pair either deletes the
+// source (which is also the destination) or copies files into the tree the
+// walk is still traversing.
+var (
+	errSameDataDir   = errors.New("target data directory is the same as the current one")
+	errNestedDataDir = errors.New("target data directory is inside the current one")
+	errParentDataDir = errors.New("target data directory contains the current one")
+)
+
+// comparableDataDir normalises p for overlap comparison: absolute, Clean'ed
+// and symlink-resolved when the path exists (Clean alone when it does not, so
+// not-yet-created targets still compare). Windows paths are folded to lower
+// case because NTFS paths are case-insensitive.
+func comparableDataDir(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	} else {
+		p = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	} else {
+		p = filepath.Clean(p)
+	}
+	if goruntime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
+// checkMigratePaths returns a sentinel error when the migration source and
+// target overlap — identical paths (self-migration), a target inside the
+// source, or a target that contains the source. Disjoint directories pass.
+func checkMigratePaths(src, dst string) error {
+	s := comparableDataDir(src)
+	d := comparableDataDir(dst)
+	if s == d {
+		return errSameDataDir
+	}
+	if rel, err := filepath.Rel(s, d); err == nil && !isOutsideRel(rel) {
+		return fmt.Errorf("%w: %s", errNestedDataDir, dst)
+	}
+	if rel, err := filepath.Rel(d, s); err == nil && !isOutsideRel(rel) {
+		return fmt.Errorf("%w: %s", errParentDataDir, dst)
+	}
+	return nil
+}
+
+// isOutsideRel reports whether a filepath.Rel result escapes the base dir.
+func isOutsideRel(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // removeDataDir deletes the files copied out of src during a migration so the

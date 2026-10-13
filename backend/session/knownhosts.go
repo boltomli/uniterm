@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -155,6 +156,24 @@ func NewHostKeyVerifier(hostport string) (cb ssh.HostKeyCallback, trust *TrustEv
 		}
 	}
 	return cb, trust
+}
+
+// hostKeyPinAddr returns the host:port a connection's host key must be pinned
+// and verified under: the ORIGINAL host:port when the dial address was
+// rewritten at connect time (jump-host tunnels replace Host/Port with
+// 127.0.0.1:<ephemeral>, see setupJumpHostTunnel), else the dial address
+// itself. Every NewHostKeyVerifier call site must use it so a jump-host
+// session verifies the target's real identity instead of re-trusting a fresh
+// 127.0.0.1:<port> entry on every connection.
+func hostKeyPinAddr(config ConnectionConfig, dialAddr string) string {
+	if config.HostKeyPinHost == "" {
+		return dialAddr
+	}
+	port := config.HostKeyPinPort
+	if port <= 0 {
+		port = 22
+	}
+	return net.JoinHostPort(config.HostKeyPinHost, strconv.Itoa(port))
 }
 
 // hasHostKey reports whether keys contains exactly this key (type AND wire

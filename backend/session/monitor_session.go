@@ -174,7 +174,10 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 	defer cleanup()
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return err
@@ -194,7 +197,7 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("ssh dial: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 	}
 
 	s.client = client

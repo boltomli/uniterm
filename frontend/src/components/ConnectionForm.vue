@@ -113,7 +113,7 @@
               </el-form-item>
             </template>
             <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
-              <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : '')" />
+              <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : savedSecretPlaceholder)" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
               <div class="field-hint">{{ t('conn.kerberosHint') }}</div>
@@ -173,7 +173,7 @@
                   type="textarea"
                   :rows="7"
                   class="key-text-area mono"
-                  :placeholder="t('conn.keyContentPlaceholder')"
+                  :placeholder="keyContentPlaceholderText"
                   spellcheck="false"
                 />
                 <div class="key-content-actions">
@@ -608,6 +608,13 @@
               <el-form-item :label="t('conn.rdpSmartSizing')">
                 <el-switch v-model="form.rdpSmartSizing" />
               </el-form-item>
+              <el-form-item :label="t('conn.rdpRedirectClipboard')">
+                <el-switch v-model="form.rdpRedirectClipboard" />
+              </el-form-item>
+              <el-form-item :label="t('conn.rdpRedirectDrives')">
+                <el-switch v-model="form.rdpRedirectDrives" />
+                <div class="field-hint">{{ t('conn.rdpRedirectHint') }}</div>
+              </el-form-item>
             </template>
             <el-form-item v-if="showProxy" :label="t('conn.proxy')">
               <div class="inline-add-row">
@@ -709,6 +716,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
+import { RDP_REDIRECTION_DEFAULT, resolveRdpRedirection } from '../utils/rdpRedirection'
 import { reactive, computed, watch, ref, nextTick, onMounted } from 'vue'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1031,6 +1039,16 @@ const isEsApiKey = computed(() =>
   isElasticsearch.value && form.authType === 'apikey'
 )
 
+// 已保存的秘密占位：LoadConnections 脱敏后密码/密钥字段恒为空，编辑已有
+// 连接时用 hasPassword/hasKeyContent 标志提示"已保存，留空保持"——留空保存
+// 时后端（SaveConnections）会保留原值，不会覆盖。
+const savedSecretPlaceholder = computed(() =>
+  props.editConfig?.hasPassword ? t('conn.savedSecretPlaceholder') : ''
+)
+const keyContentPlaceholderText = computed(() =>
+  props.editConfig?.hasKeyContent ? t('conn.savedKeyContentPlaceholder') : t('conn.keyContentPlaceholder')
+)
+
 const defaultParamsHint = computed(() => {
   // Standalone MongoDB form carries no dbType — key off the type itself.
   // Mirrors buildMongoURI's built-in defaults.
@@ -1063,6 +1081,7 @@ const form = reactive<ConnectionConfig>({
   rdpEnableNLA: true,
   rdpDomain: '',
   rdpAdminSession: false,
+  ...RDP_REDIRECTION_DEFAULT,
   dbType: '',
   dbName: '',
   dbParams: '',
@@ -1310,6 +1329,10 @@ watch(() => props.editConfig, (config) => {
     // Existing connections without the field default to NLA off (old behavior).
     form.rdpEnableNLA = config.rdpEnableNLA ?? false
     form.rdpAdminSession = config.rdpAdminSession ?? false
+    // Redirection flags: connections saved before the fields existed stay OFF.
+    const rdpRedirect = resolveRdpRedirection(config)
+    form.rdpRedirectClipboard = rdpRedirect.rdpRedirectClipboard
+    form.rdpRedirectDrives = rdpRedirect.rdpRedirectDrives
     form.x11Forwarding = config.x11Forwarding ?? false
     form.agentForwarding = config.agentForwarding ?? false
     // Old connections without the field default to startup injection.
@@ -1326,9 +1349,11 @@ watch(() => props.editConfig, (config) => {
     if (config.serialStopBits) serialStopBitsValue.value = config.serialStopBits
     if (config.serialParity) serialParityValue.value = config.serialParity
     if (config.type === 'serial') scanSerialPorts()
-    // Sync k8s source-mode radio from restored config
+    // Sync k8s source-mode radio from restored config. LoadConnections
+    // redacts the inline kubeconfig, so the presence flag decides the mode
+    // when the content itself is blank.
     if (config.type === 'k8s') {
-      k8sSourceMode.value = config.k8sConfigInline ? 'inline' : 'file'
+      k8sSourceMode.value = (config.k8sConfigInline || config.hasK8sConfigInline) ? 'inline' : 'file'
     }
     // Defaults for container connections saved before these fields existed
     if (config.type === 'container') {
@@ -1447,6 +1472,7 @@ function resetForm() {
   form.rdpEnableNLA = true
   form.rdpDomain = ''
   form.rdpAdminSession = false
+  Object.assign(form, RDP_REDIRECTION_DEFAULT)
   form.kerberosRealm = ''
   form.sshAlgorithms = undefined
   form.dbType = ''

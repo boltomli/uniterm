@@ -174,10 +174,10 @@ func (s *Server) toolDownloadFile(ctx context.Context, req *mcp.CallToolRequest,
 	if err != nil {
 		return nil, downloadOut{}, err
 	}
-	// Download only reads the remote side; the local destination is already
-	// constrained to the user's bookmarked directories, so it grades as
-	// read — same as cat-ing the file through exec_command.
-	if err := s.gateExec(ctx, req, in.SessionID, "download "+in.RemotePath+" → "+in.LocalPath, RiskRead); err != nil {
+	// Download writes a local file: an agent must not drop remote content
+	// (e.g. a startup script) into the user's machine without asking, so it
+	// grades at least write — same as upload.
+	if err := s.gateExec(ctx, req, in.SessionID, "download "+in.RemotePath+" → "+in.LocalPath, RiskWrite); err != nil {
 		return nil, downloadOut{}, err
 	}
 	n, err := fe.MCPReadRemoteToFile(in.RemotePath, resolved)

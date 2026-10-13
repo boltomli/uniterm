@@ -59,6 +59,11 @@ function bindProgressEvents() {
 // startUpdate downloads the staged update and applies it. On success the
 // backend relaunches the app (or quits for the installer channel), so the
 // last state the user sees is "restarting".
+//
+// No assets are passed: the backend downloads the list from its own
+// CheckForUpdate result, so the webview cannot choose the URL that gets
+// installed. updateInfo.assets is only used here to decide whether the
+// dialog may offer an install at all.
 async function startUpdate() {
   const info = updateInfo.value
   if (!info || info.assets.length === 0) {
@@ -70,7 +75,7 @@ async function startUpdate() {
   updatePhase.value = 'downloading'
   bindProgressEvents()
   try {
-    await DownloadUpdate(info.assets as any)
+    await DownloadUpdate()
     updatePhase.value = 'applying'
     await ApplyUpdate()
     updatePhase.value = 'restarting'

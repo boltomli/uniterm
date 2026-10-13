@@ -4,7 +4,6 @@ import { CreateSession, CloseSession, ListSessions } from '../../bindings/github
 import { usePanelStore } from './panelStore'
 import { useSessionStore } from './sessionStore'
 import { useTabStore } from './tabStore'
-import { useConnectionStore } from './connectionStore'
 import { fileTransferProto } from '../utils/fileTransferUtils'
 import { unregisterTransferRoute } from '../services/transferTaskCenter'
 import type { ConnectionConfig } from '../types/session'
@@ -164,12 +163,10 @@ export const useCompanionStore = defineStore('companion', () => {
     const panel = panelStore.getPanel(sshPanelId)
     if (!panel?.config) return null
     const config = cloneConfig(panel.config)
-    // Prefer password still held on the live SSH panel; fall back to the
-    // connection store (which may have been refreshed from keychain).
-    if (!config.password && config.authType === 'password' && config.id) {
-      const stored = useConnectionStore().connections.find(c => c.id === config.id)
-      if (stored?.password) config.password = stored.password
-    }
+    // Secrets no longer live in the renderer (LoadConnections redacts them):
+    // CreateSession resolves the password Go-side by connection ID
+    // (fillStoredSecrets/EnsurePassword), and a password typed into the
+    // credential dialog rides along inline on the config above.
     return config
   }
 

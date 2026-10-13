@@ -65,8 +65,20 @@ function stopTimer() {
   }
 }
 
-watch(() => props.visible, v => {
-  if (v) {
+watch(
+  // The dialog can stay visible while the queue advances to the next request
+  // (App.vue swaps `request` without toggling `visible`), so the countdown
+  // and the deny reason must reset on every NEW request id — not only when
+  // the dialog is (re)opened.
+  () => [props.visible, props.request?.id] as const,
+  ([visible, id], prev) => {
+    if (!visible) {
+      stopTimer()
+      return
+    }
+    const prevId = prev?.[1]
+    const wasVisible = prev?.[0] ?? false
+    if (prev && wasVisible && prevId === id) return // same request, keep the countdown
     reason.value = ''
     remaining.value = 110
     stopTimer()
@@ -77,10 +89,8 @@ watch(() => props.visible, v => {
         emit('resolve', false, reason.value)
       }
     }, 1000)
-  } else {
-    stopTimer()
   }
-})
+)
 
 onBeforeUnmount(stopTimer)
 

@@ -96,6 +96,11 @@ func (m *Manager) Download(candidates []UpdateAsset, onProgress func(Progress)) 
 }
 
 func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (*PendingUpdate, error) {
+	// Fail closed BEFORE fetching: no checksum or a URL outside the known
+	// release sources means the payload could never be trusted anyway.
+	if err := cand.Validate(); err != nil {
+		return nil, err
+	}
 	root, err := updateCacheDir()
 	if err != nil {
 		return nil, err
@@ -112,22 +117,22 @@ func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (*Pen
 		return nil, fmt.Errorf("download %s: %w", cand.Name, err)
 	}
 
-	if cand.SHA256 != "" {
-		if onProgress != nil {
-			onProgress(Progress{Phase: "verifying", Total: -1, Message: cand.Name})
-		}
-		got, err := sha256File(filePath)
-		if err != nil {
-			cleanup()
-			return nil, fmt.Errorf("hash %s: %w", cand.Name, err)
-		}
-		if !strings.EqualFold(got, cand.SHA256) {
-			log.Writef("[update] sha256 mismatch for %s: got %s want %s", cand.Name, got, cand.SHA256)
-			cleanup()
-			return nil, fmt.Errorf("sha256 mismatch for %s", cand.Name)
-		}
-		log.Writef("[update] sha256 verified for %s", cand.Name)
+	// cand.SHA256 is guaranteed non-empty by Validate; the digest is the only
+	// thing that ties these bytes to the published release.
+	if onProgress != nil {
+		onProgress(Progress{Phase: "verifying", Total: -1, Message: cand.Name})
 	}
+	got, err := sha256File(filePath)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("hash %s: %w", cand.Name, err)
+	}
+	if !strings.EqualFold(got, cand.SHA256) {
+		log.Writef("[update] sha256 mismatch for %s: got %s want %s", cand.Name, got, cand.SHA256)
+		cleanup()
+		return nil, fmt.Errorf("sha256 mismatch for %s", cand.Name)
+	}
+	log.Writef("[update] sha256 verified for %s", cand.Name)
 
 	pend := &PendingUpdate{
 		Asset:    cand,

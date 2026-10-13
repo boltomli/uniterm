@@ -146,11 +146,10 @@ type LocalSession struct {
 
 	mu             sync.RWMutex
 	enc            encoding.Encoding
+	encIn          inputEncoder
 	decoder        *encoding.Decoder
-	encoder        *encoding.Encoder
 	decodeLeftover []byte
 	decodeScratch  []byte
-	encScratch     []byte
 }
 
 func NewLocalSession(id string) *LocalSession {
@@ -670,10 +669,10 @@ func (s *LocalSession) SetEncoding(name string) {
 	s.enc = enc
 	if enc == nil {
 		s.decoder = nil
-		s.encoder = nil
+		s.encIn.set(nil)
 	} else {
 		s.decoder = enc.NewDecoder()
-		s.encoder = enc.NewEncoder()
+		s.encIn.set(enc.NewEncoder())
 	}
 	s.decodeLeftover = nil
 	s.mu.Unlock()
@@ -714,20 +713,10 @@ func (s *LocalSession) decodeOutput(data []byte) []byte {
 
 // encodeInput converts user keystrokes (UTF-8) to the configured encoding
 // before writing to the PTY. Each call handles a complete UTF-8 input.
+// The shared inputEncoder owns its lock and scratch buffer (the old copy fed
+// Transform a zero-length destination, so encoding never happened).
 func (s *LocalSession) encodeInput(data []byte) []byte {
-	s.mu.RLock()
-	encoder := s.encoder
-	s.mu.RUnlock()
-	if encoder == nil {
-		return data
-	}
-	encoder.Reset()
-	s.encScratch = s.encScratch[:0]
-	nDst, _, err := encoder.Transform(s.encScratch, data, true)
-	if err != nil && err != transform.ErrShortSrc {
-		return data
-	}
-	return s.encScratch[:nDst]
+	return s.encIn.encode(data)
 }
 
 func (s *LocalSession) readLoop() {

@@ -73,12 +73,11 @@ type SSHSession struct {
 	// only the ready marker fires. Scanner Feeds run in the readLoop only.
 	hook typedCwdHookState
 
-	enc            encoding.Encoding     // input(write) codec; nil = utf-8 passthrough
-	encoder        transform.Transformer // cached encoder; nil = utf-8 passthrough (F-003)
-	decoder        *encoding.Decoder     // persistent streaming decoder for output(read)
-	decodeLeftover []byte                // trailing partial multibyte bytes between reads
-	decodeScratch  []byte                // reusable src buffer for decodeOutput (F-002)
-	encScratch     []byte                // reusable dst buffer for encodeInput (F-003)
+	enc            encoding.Encoding // input(write) codec; nil = utf-8 passthrough
+	encIn          inputEncoder      // locked UTF-8 → session-encoding conversion for writes
+	decoder        *encoding.Decoder // persistent streaming decoder for output(read)
+	decodeLeftover []byte            // trailing partial multibyte bytes between reads
+	decodeScratch  []byte            // reusable src buffer for decodeOutput (F-002)
 
 	// Disconnect diagnostics (see readLoop / disconnect logs).
 	lastRecv atomic.Value // []byte: tail of most recent server output (diagnostics)
@@ -205,7 +204,11 @@ func (s *SSHSession) keyboardInteractiveChallenge(config ConnectionConfig, autoA
 		}
 		for i, q := range questions {
 			s.emitData([]byte("\r\n" + q + " "))
-			var answer string
+			// Collected as raw bytes: converting each byte with string(b)
+			// decodes it as a rune, so every byte ≥0x80 became a 2-byte
+			// sequence and non-ASCII passwords/OTPs reached the server
+			// mangled. Convert once at the end.
+			var answer []byte
 		loop:
 			for {
 				select {
@@ -225,9 +228,9 @@ func (s *SSHSession) keyboardInteractiveChallenge(config ConnectionConfig, autoA
 								}
 							}
 						case '\x15': // Ctrl+U
-							answer = ""
+							answer = answer[:0]
 						default:
-							answer += string(b)
+							answer = append(answer, b)
 							if echos[i] {
 								s.emitData([]byte{b})
 							}
@@ -239,7 +242,7 @@ func (s *SSHSession) keyboardInteractiveChallenge(config ConnectionConfig, autoA
 				}
 			}
 			s.emitData([]byte("\r\n"))
-			answers[i] = answer
+			answers[i] = string(answer)
 		}
 		return answers, nil
 	}
@@ -330,7 +333,9 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	// keyboard-interactive support (the kbCallback fallback below).
 	if shouldPromptForSSHPassword(config) {
 		s.emitData([]byte("\r\nPassword: "))
-		var answer string
+		// Raw bytes, converted once below: string(b) per byte would decode
+		// each ≥0x80 byte as a rune and corrupt non-ASCII passwords.
+		var answer []byte
 	promptLoop:
 		for {
 			select {
@@ -347,9 +352,9 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 							answer = answer[:len(answer)-1]
 						}
 					case '\x15': // Ctrl+U
-						answer = ""
+						answer = answer[:0]
 					default:
-						answer += string(b)
+						answer = append(answer, b)
 					}
 				}
 			case <-time.After(120 * time.Second):
@@ -358,7 +363,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 			}
 		}
 		s.emitData([]byte("\r\n"))
-		config.Password = answer
+		config.Password = string(answer)
 	}
 
 	// Auto-answer keyboard-interactive challenges with the saved password on
@@ -373,7 +378,14 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	kbCallback := s.keyboardInteractiveChallenge(config, &kbAutoAnswered)
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Host-key verification keys on the ORIGINAL host:port when a jump-host
+	// tunnel rewrote the dial address to 127.0.0.1:<ephemeral>
+	// (setupJumpHostTunnel fills HostKeyPinHost/Port): the target is then
+	// verified against its real identity instead of being re-trusted as a
+	// fresh first-use host on every connection, and known_hosts.json stops
+	// growing one entry per ephemeral port.
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -427,7 +439,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 		return wrapSSHAlgorithmError(sshAlgoModeOf(config.SSHAlgorithms), err)
 	}
 	if trust != nil && trust.FirstTrust {
-		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + pinAddr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	// Detect Windows OpenSSH from the server identification string exchanged
@@ -632,7 +644,9 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		werr := session.Wait()
 		last, _ := s.lastRecv.Load().([]byte)
 		sent, _ := s.lastSent.Load().([]byte)
-		log.Writef("ssh disconnect: session.Wait returned (%v), %s lastRecv=%s lastSent=%s", werr, s.kaDiag(), tailHex(last, 64), tailHex(sent, 32))
+		// lastSent is the most recent user input — possibly a password typed
+		// at a prompt right before the drop. Log its length, never its bytes.
+		log.Writef("ssh disconnect: session.Wait returned (%v), %s lastRecv=%s lastSent(%s)", werr, s.kaDiag(), tailHex(last, 64), sentDiag(sent))
 		s.Disconnect()
 	}()
 
@@ -734,7 +748,9 @@ func (s *SSHSession) readLoop() {
 			} else {
 				last, _ := s.lastRecv.Load().([]byte)
 				sent, _ := s.lastSent.Load().([]byte)
-				log.Writef("ssh disconnect: remote closed (EOF), %s lastRecv=%s lastSent=%s", s.kaDiag(), tailHex(last, 64), tailHex(sent, 32))
+				// Length only: lastSent is raw user input and may be a
+				// just-typed password (see sentDiag).
+				log.Writef("ssh disconnect: remote closed (EOF), %s lastRecv=%s lastSent(%s)", s.kaDiag(), tailHex(last, 64), sentDiag(sent))
 				s.emitData(disconnectNotice("Connection closed by remote host."))
 			}
 			s.Disconnect()
@@ -750,6 +766,15 @@ func tailHex(b []byte, max int) string {
 		b = b[len(b)-max:]
 	}
 	return fmt.Sprintf("% x", b)
+}
+
+// sentDiag renders the last-sent payload for disconnect diagnostics as a
+// LENGTH ONLY. That payload is the most recent user input — a sudo or
+// database password typed right before the link dropped — so its bytes must
+// never reach the log file (security.md, "Last user input is written to the
+// log as hex").
+func sentDiag(b []byte) string {
+	return fmt.Sprintf("len=%d", len(b))
 }
 
 // kaDiag formats idle state for disconnect diagnostics: how long since the
@@ -957,6 +982,13 @@ const (
 // the session itself is unaffected.
 func probeCwdShellSeparately(config ConnectionConfig) string {
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	// The probe carries the same credentials as the main dial, so it must
+	// verify the host key exactly like the main connection does. Skipping
+	// verification here (it used InsecureIgnoreHostKey) handed the stored
+	// password to a MITM even when the main dial correctly aborted on a
+	// changed key. Pinning under the original host:port keeps a jump-host
+	// probe consistent with the main dial's verification.
+	cb, _ := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
 	factory := func() (*ssh.ClientConfig, func(), error) {
 		authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, nil)
 		if err != nil {
@@ -966,7 +998,7 @@ func probeCwdShellSeparately(config ConnectionConfig) string {
 			User:            config.User,
 			Auth:            authMethods,
 			Timeout:         cwdProbeDialTimeout,
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			HostKeyCallback: cb,
 		}, cleanup, nil
 	}
 	sets, err := resolveSSHDialAlgorithms(config.SSHAlgorithms)
@@ -1135,10 +1167,10 @@ func (s *SSHSession) SetEncoding(name string) {
 	s.enc = enc
 	if enc == nil {
 		s.decoder = nil
-		s.encoder = nil
+		s.encIn.set(nil)
 	} else {
 		s.decoder = enc.NewDecoder()
-		s.encoder = enc.NewEncoder()
+		s.encIn.set(enc.NewEncoder())
 	}
 	s.decodeLeftover = nil
 	s.mu.Unlock()
@@ -1214,20 +1246,12 @@ func (s *SSHSession) EndZmodem(trailing []byte) {
 
 // encodeInput converts user keystrokes (UTF-8) to the configured encoding
 // before writing to the remote. Each call handles a complete UTF-8 input.
+// The shared inputEncoder (input_encoding.go) owns its lock and a correctly
+// sized scratch buffer, so encoding actually happens (the old per-session
+// copy fed Transform a zero-length destination and always fell back to raw
+// UTF-8) and SetEncoding cannot race with concurrent writers.
 func (s *SSHSession) encodeInput(data []byte) []byte {
-	s.mu.RLock()
-	encoder := s.encoder
-	s.mu.RUnlock()
-	if encoder == nil {
-		return data
-	}
-	encoder.Reset()
-	s.encScratch = s.encScratch[:0]
-	nDst, _, err := encoder.Transform(s.encScratch, data, true)
-	if err != nil && err != transform.ErrShortSrc {
-		return data
-	}
-	return s.encScratch[:nDst]
+	return s.encIn.encode(data)
 }
 
 // encodingByName maps a connection's encoding setting to an x/text codec.

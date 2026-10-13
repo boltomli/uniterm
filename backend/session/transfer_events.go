@@ -1,10 +1,14 @@
 package session
 
 import (
+	"fmt"
+	"io"
 	"path"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 // TransferEventSink is installed by the App layer at startup. File-transfer
@@ -88,7 +92,7 @@ func (s *baseSession) emitTransferComplete(task *TransferTask) {
 	s.emitTransferPayload(payload)
 }
 
-// emitTransferPaused reports that a transfer was paused. Unlike the old
+// emitTransferPaused reports that a transfer is paused. Unlike the old
 // "complete" + status "paused" event this never looks finished to the UI.
 func (s *baseSession) emitTransferPaused(task *TransferTask) {
 	s.emitTransferPayload(map[string]any{
@@ -96,7 +100,6 @@ func (s *baseSession) emitTransferPaused(task *TransferTask) {
 	})
 }
 
-// emitTransferResumed reports that a paused transfer is running again.
 func (s *baseSession) emitTransferResumed(task *TransferTask) {
 	s.emitTransferPayload(map[string]any{
 		"taskId": task.ID, "event": "resumed",
@@ -132,4 +135,77 @@ func (s *baseSession) emitFileFailed(task *TransferTask, rel string, err error) 
 		"taskId": task.ID, "event": "file-failed", "file": rel, "error": err.Error(),
 		"completedFiles": task.completedCount(), "fileCount": task.fileCount(),
 	})
+}
+
+// --- Shared download helpers -------------------------------------------------
+
+// safeDownloadChild joins one server-supplied listing name under dir and
+// verifies the result stays inside dir. Every recursive download walker
+// (SCP/SFTP/FTP/SMB/WebDAV) must resolve child paths through this helper:
+// the name comes from the remote server, which may be compromised
+// (security.md P0 path traversal, CVE-2019-6111 class). A name must be a
+// plain single component — no empty/"/\."/"..", no separators in either
+// style, no NUL, no drive prefix — and the joined path is double-checked
+// with filepath.Rel containment (utils.SafeLocalJoin).
+func safeDownloadChild(dir, name string) (string, error) {
+	if err := utils.SafeRemoteName(name); err != nil {
+		return "", fmt.Errorf("unsafe remote file name %q", name)
+	}
+	p, err := utils.SafeLocalJoin(dir, name)
+	if err != nil {
+		return "", fmt.Errorf("unsafe remote file name %q", name)
+	}
+	return p, nil
+}
+
+// transferCtxErr reports the task's cancellation error, or nil when there is
+// no task, the task was never started, or it is still running. Every copy or
+// download loop must consult it so cancel actually stops the transfer
+// (security.md: "Cancelling a WSL transfer does nothing").
+func transferCtxErr(task *TransferTask) error {
+	if task == nil {
+		return nil
+	}
+	ctx := task.ctx
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+// copyDownloadStream streams src into dst while honouring the task's cancel
+// and pause state and reporting progress through progress (optional). Unlike
+// the ad-hoc loops it replaces (s3/webdav/ftp downloads), a failed write and
+// a non-EOF read error are returned instead of dropped — otherwise a full
+// disk or a dropped link leaves a short local file reported as completed
+// (security.md "Write and read errors are ignored"). task may be nil for
+// copies without transfer tracking (e.g. WSL Copy/Move).
+func copyDownloadStream(dst io.Writer, src io.Reader, task *TransferTask, progress func()) error {
+	buf := make([]byte, 64*1024)
+	for {
+		if err := transferCtxErr(task); err != nil {
+			return err
+		}
+		if task != nil {
+			task.waitIfPaused()
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			if task != nil {
+				task.addProgress(int64(n))
+			}
+			if progress != nil {
+				progress()
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return nil
+			}
+			return rerr
+		}
+	}
 }

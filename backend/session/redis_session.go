@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,6 +12,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/ys-ll/uniterm/backend/log"
 )
+
+// defaultRedisReadLimit is the fallback cap for capped value reads
+// (GetHashFields / GetSetMembers / GetZSetRangeCapped) when the caller passes
+// a non-positive limit. Mirrors the frontend's REDIS_VALUE_READ_CAP.
+const defaultRedisReadLimit = 1000
 
 // ScanResult holds a page of SCAN results with cursor for pagination.
 type ScanResult struct {
@@ -24,6 +30,10 @@ type RedisKeyInfo struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 	TTL  int64  `json:"ttl"`
+	// Length is the element count of the current type (STRLEN bytes for
+	// strings, HLEN fields, LLEN elements, SCARD members, ZCARD members).
+	// The value editor uses it to detect a truncated (capped) load.
+	Length int64 `json:"length"`
 }
 
 // FieldEntry represents a hash field-value pair.
@@ -44,6 +54,9 @@ type RedisSession struct {
 	client *redis.Client
 	dbIdx  int
 	closed bool
+	// cfg is the config of the last successful Connect, kept so SwitchDB can
+	// rebuild a client pinned to another database index.
+	cfg ConnectionConfig
 }
 
 // NewRedisSession creates a new RedisSession with the given ID.
@@ -56,6 +69,43 @@ func NewRedisSession(id string) *RedisSession {
 		},
 		dbIdx: 0,
 	}
+}
+
+// newRedisClient builds a go-redis client for the given connection config,
+// pinned to database index db. go-redis pins SELECT per client — every
+// connection it opens issues `SELECT db` on init — so a database switch must
+// go through a fresh client instead of a SELECT on one pooled connection.
+func newRedisClient(config ConnectionConfig, db int) (*redis.Client, error) {
+	if config.RedisMode == "sentinel" {
+		addrs := make([]string, 0)
+		for _, a := range strings.Split(config.RedisSentinels, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				addrs = append(addrs, a)
+			}
+		}
+		if len(addrs) == 0 {
+			return nil, fmt.Errorf("redis sentinel: no sentinel addresses")
+		}
+		if config.RedisMasterName == "" {
+			return nil, fmt.Errorf("redis sentinel: master name required")
+		}
+		return redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       config.RedisMasterName,
+			SentinelAddrs:    addrs,
+			SentinelUsername: config.SentinelUser,
+			SentinelPassword: config.SentinelPassword,
+			Username:         config.User,
+			Password:         config.Password,
+			DB:               db,
+		}), nil
+	}
+	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	return redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Username: config.User,
+		Password: config.Password,
+		DB:       db,
+	}), nil
 }
 
 // Connect establishes a connection to the Redis server.
@@ -71,39 +121,10 @@ func (s *RedisSession) Connect(config ConnectionConfig) error {
 		s.title = fmt.Sprintf("redis:%s:%d", config.Host, config.Port)
 	}
 
-	var client *redis.Client
-	if config.RedisMode == "sentinel" {
-		addrs := make([]string, 0)
-		for _, a := range strings.Split(config.RedisSentinels, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				addrs = append(addrs, a)
-			}
-		}
-		if len(addrs) == 0 {
-			s.setStatus(StatusError)
-			return fmt.Errorf("redis sentinel: no sentinel addresses")
-		}
-		if config.RedisMasterName == "" {
-			s.setStatus(StatusError)
-			return fmt.Errorf("redis sentinel: master name required")
-		}
-		client = redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:       config.RedisMasterName,
-			SentinelAddrs:    addrs,
-			SentinelUsername: config.SentinelUser,
-			SentinelPassword: config.SentinelPassword,
-			Username:         config.User,
-			Password:         config.Password,
-			DB:               0,
-		})
-	} else {
-		addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
-		client = redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Username: config.User,
-			Password: config.Password,
-			DB:       0,
-		})
+	client, err := newRedisClient(config, 0)
+	if err != nil {
+		s.setStatus(StatusError)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -118,6 +139,7 @@ func (s *RedisSession) Connect(config ConnectionConfig) error {
 
 	s.mu.Lock()
 	s.client = client
+	s.cfg = config
 	s.mu.Unlock()
 
 	log.Writef("[RedisSession.Connect] connected successfully")
@@ -180,30 +202,42 @@ func (s *RedisSession) Ping() error {
 	return client.Ping(ctx).Err()
 }
 
-// SwitchDB switches to the specified Redis database index (0-15).
+// SwitchDB switches to the specified Redis database index (0-15). It builds a
+// fresh client pinned to the new database and closes the old one: go-redis
+// pins SELECT per client, so issuing SELECT on a single pooled connection
+// would leave every other pooled connection (and every connection recreated
+// after an idle reap or reconnect) operating on the previous database.
 func (s *RedisSession) SwitchDB(idx int) error {
 	if idx < 0 || idx > 15 {
 		return fmt.Errorf("invalid db index: %d (must be 0-15)", idx)
 	}
-	client := s.Client()
-	if client == nil {
+	s.mu.RLock()
+	old := s.client
+	cfg := s.cfg
+	s.mu.RUnlock()
+	if old == nil {
 		return fmt.Errorf("not connected")
 	}
 
+	client, err := newRedisClient(cfg, idx)
+	if err != nil {
+		return fmt.Errorf("switch db %d: %w", idx, err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	pipe := client.Pipeline()
-	pipe.Do(ctx, "SELECT", idx)
-	pipe.Ping(ctx)
-	if _, err := pipe.Exec(ctx); err != nil {
+	if err := client.Ping(ctx).Err(); err != nil {
+		client.Close()
 		log.Writef("[RedisSession.SwitchDB] failed to switch to db %d: %v", idx, err)
 		return fmt.Errorf("switch db %d: %w", idx, err)
 	}
 
 	s.mu.Lock()
+	s.client = client
 	s.dbIdx = idx
 	s.mu.Unlock()
+	// Close the old client only after the swap so concurrent readers always
+	// hold a usable client.
+	old.Close()
 	return nil
 }
 
@@ -277,8 +311,16 @@ func (s *RedisSession) GetKeyInfo(key string) (*RedisKeyInfo, error) {
 	pipe := client.Pipeline()
 	typeCmd := pipe.Type(ctx, key)
 	ttlCmd := pipe.TTL(ctx, key)
-	_, err := pipe.Exec(ctx)
-	if err != nil {
+	lenStr := pipe.StrLen(ctx, key)
+	lenHash := pipe.HLen(ctx, key)
+	lenList := pipe.LLen(ctx, key)
+	lenSet := pipe.SCard(ctx, key)
+	lenZSet := pipe.ZCard(ctx, key)
+	// The per-type count commands fail with WRONGTYPE on other key types;
+	// only the TYPE command's error is meaningful here.
+	_, _ = pipe.Exec(ctx)
+
+	if err := typeCmd.Err(); err != nil {
 		return nil, fmt.Errorf("get key info: %w", err)
 	}
 
@@ -293,7 +335,20 @@ func (s *RedisSession) GetKeyInfo(key string) (*RedisKeyInfo, error) {
 	} else if ttlVal == -2 {
 		ttl = -2
 	}
-	return &RedisKeyInfo{Name: key, Type: t, TTL: ttl}, nil
+	var length int64
+	switch t {
+	case "string":
+		length = lenStr.Val()
+	case "hash":
+		length = lenHash.Val()
+	case "list":
+		length = lenList.Val()
+	case "set":
+		length = lenSet.Val()
+	case "zset":
+		length = lenZSet.Val()
+	}
+	return &RedisKeyInfo{Name: key, Type: t, TTL: ttl, Length: length}, nil
 }
 
 // DBSize returns the number of keys in the current database.
@@ -442,6 +497,66 @@ func (s *RedisSession) HashDel(key string, fields []string) (int64, error) {
 	return client.HDel(ctx, key, fields...).Result()
 }
 
+// HashSetFields sets multiple field-value pairs in one round trip.
+func (s *RedisSession) HashSetFields(key string, entries []FieldEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	client := s.Client()
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	values := make([]any, 0, len(entries)*2)
+	for _, e := range entries {
+		values = append(values, e.Field, e.Value)
+	}
+	return client.HSet(ctx, key, values...).Err()
+}
+
+// GetHashFields reads up to limit hash fields via HSCAN. Unlike GetHashAll
+// (HGETALL) it never loads a huge hash whole, so opening a 100k-field hash
+// cannot hang the client. The result is sorted by field for stable display.
+func (s *RedisSession) GetHashFields(key string, limit int64) ([]FieldEntry, error) {
+	if limit <= 0 {
+		limit = defaultRedisReadLimit
+	}
+	client := s.Client()
+	if client == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var cursor uint64
+	entries := make([]FieldEntry, 0, min(limit, 4096))
+	for {
+		fields, next, err := client.HScan(ctx, key, cursor, "", 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		// HSCAN returns a flat [field, value, field, value, …] slice.
+		for i := 0; i+1 < len(fields); i += 2 {
+			entries = append(entries, FieldEntry{Field: fields[i], Value: fields[i+1]})
+			if int64(len(entries)) >= limit {
+				break
+			}
+		}
+		if int64(len(entries)) >= limit || next == 0 {
+			break
+		}
+		cursor = next
+	}
+	if int64(len(entries)) > limit {
+		entries = entries[:limit]
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Field < entries[j].Field })
+	return entries, nil
+}
+
 // --- List operations ---
 
 // GetListRange returns elements from a list within the specified range.
@@ -495,6 +610,28 @@ func (s *RedisSession) ListRemove(key string, value string, count int64) (int64,
 	return client.LRem(ctx, key, count, value).Result()
 }
 
+// ListReplace atomically replaces the whole list contents in one
+// MULTI/DEL/RPUSH/EXEC transaction; an empty values slice deletes the key.
+// It replaces the old save flow (pop every element, then push the new list)
+// which could leave the list empty if the connection dropped mid-save, and
+// cost one round trip per element.
+func (s *RedisSession) ListReplace(key string, values []string) error {
+	client := s.Client()
+	if client == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pipe := client.TxPipeline()
+	pipe.Del(ctx, key)
+	if len(values) > 0 {
+		pipe.RPush(ctx, key, values)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 // --- Set operations ---
 
 // GetSetAll returns all members of a set.
@@ -504,6 +641,39 @@ func (s *RedisSession) GetSetAll(key string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return client.SMembers(ctx, key).Result()
+}
+
+// GetSetMembers reads up to limit set members via SSCAN. Unlike GetSetAll
+// (SMEMBERS) it never loads a huge set whole.
+func (s *RedisSession) GetSetMembers(key string, limit int64) ([]string, error) {
+	if limit <= 0 {
+		limit = defaultRedisReadLimit
+	}
+	client := s.Client()
+	if client == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var cursor uint64
+	members := make([]string, 0, min(limit, 4096))
+	for {
+		page, next, err := client.SScan(ctx, key, cursor, "", 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, page...)
+		if int64(len(members)) >= limit || next == 0 {
+			break
+		}
+		cursor = next
+	}
+	if int64(len(members)) > limit {
+		members = members[:limit]
+	}
+	return members, nil
 }
 
 // SetAdd adds members to a set.
@@ -534,6 +704,33 @@ func (s *RedisSession) GetSortedSetRange(key string, min string, max string) ([]
 	defer cancel()
 
 	opt := &redis.ZRangeBy{Min: min, Max: max}
+	vals, err := client.ZRangeByScoreWithScores(ctx, key, opt).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	members := make([]ScoredMember, len(vals))
+	for i, v := range vals {
+		members[i] = ScoredMember{Member: v.Member.(string), Score: v.Score}
+	}
+	return members, nil
+}
+
+// GetZSetRangeCapped returns at most limit members within a score range.
+// Unlike GetSortedSetRange it never loads a huge sorted set whole.
+func (s *RedisSession) GetZSetRangeCapped(key string, min, max string, limit int64) ([]ScoredMember, error) {
+	if limit <= 0 {
+		limit = defaultRedisReadLimit
+	}
+	client := s.Client()
+	if client == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	opt := &redis.ZRangeBy{Min: min, Max: max, Offset: 0, Count: limit}
 	vals, err := client.ZRangeByScoreWithScores(ctx, key, opt).Result()
 	if err != nil {
 		return nil, err

@@ -60,6 +60,19 @@ export function autoRename(targetName: string, existingNames: string[]): string 
   return candidate
 }
 
+/** True when a listing-provided name is safe to join onto a chosen local
+ *  download folder. A malicious/compromised server can list names like
+ *  `..\..\AppData\Roaming\...\Startup\x.bat`; backslashes pass a plain
+ *  `..` check and the backend's filepath.Join treats them as separators on
+ *  Windows, so the download would land outside the chosen folder. Rejects
+ *  empty names, `.`/`..`, any `/`, `\` or NUL, and drive prefixes (C:x). */
+export function isSafeDownloadName(name: string): boolean {
+  if (!name || name === '.' || name === '..') return false
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false
+  if (name[1] === ':') return false
+  return true
+}
+
 export function isPathInside(child: string, parent: string): boolean {
   const c = child.endsWith('/') ? child : child + '/'
   const p = parent.endsWith('/') ? parent : parent + '/'
@@ -252,6 +265,10 @@ export function createSendToOther(opts: {
     const existingNames = opts.targetFiles.value.map(f => f.name)
     for (const item of items) {
       if (item.name === '..') continue
+      if (!isSafeDownloadName(item.name)) {
+        msg.warning(i18nT('sftp.dialog.newFileInvalid'))
+        continue
+      }
       let resolvedName = item.name
       if (action === 'rename' && existingNames.includes(item.name)) {
         resolvedName = autoRename(item.name, existingNames)
@@ -592,6 +609,10 @@ export function useFilePanel(opts: FilePanelOptions) {
       const existingNames = [...targetNames]
       for (const item of items) {
         if (item.name === '..') continue
+        if (!isSafeDownloadName(item.name)) {
+          msg.warning(t('sftp.dialog.newFileInvalid'))
+          continue
+        }
         let resolvedName = item.name
         if (action === 'rename' && existingNames.includes(item.name)) {
           resolvedName = autoRename(item.name, existingNames)

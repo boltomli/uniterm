@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/mcp"
 )
 
 func TestMcpNotifyStrings(t *testing.T) {
@@ -101,5 +105,91 @@ func TestMcpDispatchIgnoresProgressEvents(t *testing.T) {
 	a.mcpDispatchTransferEvent(map[string]any{"taskId": "t5", "event": "start", "status": "done"})
 	if len(a.mcpTransferWaiters) != 0 {
 		t.Fatalf("waiter map should stay empty without registered waiters, got %d", len(a.mcpTransferWaiters))
+	}
+}
+
+// ── Token cache (mcpResolveToken) ──────────────────────────────────────────
+
+// Regression (security.md low): mcpResolveToken called fi.ModTime() after
+// os.Stat failed, so with no mcp.json every MCP request panicked (nil
+// dereference) and the client saw a dropped connection instead of a 401.
+func TestMcpResolveTokenWithoutFile(t *testing.T) {
+	a := &App{dataDir: t.TempDir()} // no mcp.json yet
+	if got := a.mcpResolveToken("deadbeef"); got != "" {
+		t.Fatalf("resolve without mcp.json = %q, want empty", got)
+	}
+}
+
+func TestMcpResolveTokenHotReload(t *testing.T) {
+	dir := t.TempDir()
+	a := &App{dataDir: dir}
+	if got := a.mcpResolveToken("h1"); got != "" {
+		t.Fatalf("unknown hash = %q, want empty", got)
+	}
+	buf := []byte(`{"tokens":[{"name":"claude","hash":"h1"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, mcpTokensFileName), buf, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.mcpResolveToken("h1"); got != "claude" {
+		t.Fatalf("after writing mcp.json: resolve = %q, want claude", got)
+	}
+}
+
+// ── Approval dialog serialization ─────────────────────────────────────────
+
+// Regression (security.md high, P1): the backend fired mcp:approval-request
+// for every tool call independently, so a second request replaced the dialog
+// the user was already reading. Requests must be shown one at a time; a
+// queued request is not even registered until the dialog in front of the
+// user has been answered.
+func TestMcpApproveSerializesDialogs(t *testing.T) {
+	a := &App{mcpApprovals: make(map[string]chan mcpApprovalVerdict)}
+	pending := func(id string) bool {
+		a.mcpApprovalsMu.Lock()
+		defer a.mcpApprovalsMu.Unlock()
+		_, ok := a.mcpApprovals[id]
+		return ok
+	}
+	waitFor := func(id string, want bool) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if pending(id) == want {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("request %s pending=%v never happened", id, want)
+	}
+
+	errA := make(chan error, 1)
+	go func() { errA <- a.mcpApprove(mcp.ApprovalRequest{ID: "req-a"}) }()
+	waitFor("req-a", true)
+
+	// Second request arrives while A's dialog is open.
+	errB := make(chan error, 1)
+	go func() { errB <- a.mcpApprove(mcp.ApprovalRequest{ID: "req-b"}) }()
+	time.Sleep(50 * time.Millisecond)
+	if pending("req-b") {
+		t.Fatal("second request must stay queued while the first dialog is open")
+	}
+	if err := a.ResolveMCPApproval("req-b", true, ""); err == nil {
+		t.Fatal("a queued request must not be resolvable before it is shown")
+	}
+
+	if err := a.ResolveMCPApproval("req-a", true, ""); err != nil {
+		t.Fatalf("resolve A: %v", err)
+	}
+	if err := <-errA; err != nil {
+		t.Fatalf("A must be approved, got %v", err)
+	}
+
+	// B reaches the front of the queue with its own id.
+	waitFor("req-b", true)
+	if err := a.ResolveMCPApproval("req-b", true, ""); err != nil {
+		t.Fatalf("resolve B: %v", err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatalf("B must be approved, got %v", err)
 	}
 }

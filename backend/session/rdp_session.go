@@ -19,7 +19,6 @@ import (
 	"github.com/go-ole/go-ole"
 	"github.com/ys-ll/uniterm/backend/log"
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 var (
@@ -27,28 +26,25 @@ var (
 	procAtlAxWinInit    = atlDll.NewProc("AtlAxWinInit")
 	procAtlAxGetControl = atlDll.NewProc("AtlAxGetControl")
 
-	user32Dll              = windows.NewLazySystemDLL("user32.dll")
-	procCreateWindowExW    = user32Dll.NewProc("CreateWindowExW")
-	procSetWindowPos       = user32Dll.NewProc("SetWindowPos")
-	procShowWindow         = user32Dll.NewProc("ShowWindow")
-	procDestroyWindow      = user32Dll.NewProc("DestroyWindow")
-	procFindWindowW        = user32Dll.NewProc("FindWindowW")
-	procPeekMessage        = user32Dll.NewProc("PeekMessageW")
-	procTranslateMessage   = user32Dll.NewProc("TranslateMessage")
-	procDispatchMessage    = user32Dll.NewProc("DispatchMessageW")
-	procGetWindowRect      = user32Dll.NewProc("GetWindowRect")
-	procGetClientRect      = user32Dll.NewProc("GetClientRect")
-	procClientToScreen     = user32Dll.NewProc("ClientToScreen")
-	procPostMessageW       = user32Dll.NewProc("PostMessageW")
-	procFindWindowExW      = user32Dll.NewProc("FindWindowExW")
-	procSendMessageW       = user32Dll.NewProc("SendMessageW")
-	procGetSystemMetrics   = user32Dll.NewProc("GetSystemMetrics")
-	procGetWindowThreadPID = user32Dll.NewProc("GetWindowThreadProcessId")
-	procInvalidateRect     = user32Dll.NewProc("InvalidateRect")
-	procRedrawWindow       = user32Dll.NewProc("RedrawWindow")
-	procGetDC              = user32Dll.NewProc("GetDC")
-	procReleaseDC          = user32Dll.NewProc("ReleaseDC")
-	procPrintWindow        = user32Dll.NewProc("PrintWindow")
+	user32Dll            = windows.NewLazySystemDLL("user32.dll")
+	procCreateWindowExW  = user32Dll.NewProc("CreateWindowExW")
+	procSetWindowPos     = user32Dll.NewProc("SetWindowPos")
+	procShowWindow       = user32Dll.NewProc("ShowWindow")
+	procDestroyWindow    = user32Dll.NewProc("DestroyWindow")
+	procFindWindowW      = user32Dll.NewProc("FindWindowW")
+	procPeekMessage      = user32Dll.NewProc("PeekMessageW")
+	procTranslateMessage = user32Dll.NewProc("TranslateMessage")
+	procDispatchMessage  = user32Dll.NewProc("DispatchMessageW")
+	procGetWindowRect    = user32Dll.NewProc("GetWindowRect")
+	procGetClientRect    = user32Dll.NewProc("GetClientRect")
+	procClientToScreen   = user32Dll.NewProc("ClientToScreen")
+	procPostMessageW     = user32Dll.NewProc("PostMessageW")
+	procGetSystemMetrics = user32Dll.NewProc("GetSystemMetrics")
+	procInvalidateRect   = user32Dll.NewProc("InvalidateRect")
+	procRedrawWindow     = user32Dll.NewProc("RedrawWindow")
+	procGetDC            = user32Dll.NewProc("GetDC")
+	procReleaseDC        = user32Dll.NewProc("ReleaseDC")
+	procPrintWindow      = user32Dll.NewProc("PrintWindow")
 
 	gdi32Dll                   = windows.NewLazySystemDLL("gdi32.dll")
 	procBitBlt                 = gdi32Dll.NewProc("BitBlt")
@@ -59,9 +55,6 @@ var (
 	procDeleteObject           = gdi32Dll.NewProc("DeleteObject")
 	procDeleteDC               = gdi32Dll.NewProc("DeleteDC")
 	procGetDIBits              = gdi32Dll.NewProc("GetDIBits")
-
-	// kernel32Dll is declared in local_session_windows.go (same package).
-	procGetCurrentProcID = kernel32Dll.NewProc("GetCurrentProcessId")
 )
 
 const (
@@ -83,10 +76,6 @@ const (
 	RDW_INVALIDATE     = 0x0001
 	RDW_ALLCHILDREN    = 0x0080
 	RDW_UPDATENOW      = 0x0100
-	WM_COMMAND         = 0x0111
-	BM_CLICK           = 0x00F5
-	IDYES              = 6
-	IDOK               = 1
 	SM_CXSCREEN        = 0
 	SM_CYSCREEN        = 1
 
@@ -280,76 +269,37 @@ func (s *RDPSession) SetParentHwnd(hwnd uintptr) {
 	s.parentHwnd = hwnd
 }
 
-// autoDismissSecurityDialogs polls for RDP security warning dialogs (e.g.
-// cert prompts or "do you want to connect" dialogs) and dismisses them.
-func (s *RDPSession) autoDismissSecurityDialogs(stop <-chan struct{}) {
-	dialogTitles := []string{
-		"远程桌面连接",
-		"远程桌面连接安全警告",
-		"Remote Desktop Connection",
-		"Remote Desktop Connection Security Warning",
-		"Windows 安全",
-		"Windows Security",
-		"安全警告",
-		"Security Warning",
-	}
-	clsName, _ := windows.UTF16PtrFromString("#32770")
+// rdpSettings is the security-relevant subset of what the RDP ActiveX
+// control is told, computed by buildRdpSettings so the decisions are unit
+// testable without COM or a live control (the real property calls happen on
+// the COM STA thread inside Connect).
+type rdpSettings struct {
+	// EnableCredSSP turns on Network Level Authentication (CredSSP).
+	EnableCredSSP bool
+	// AuthLevel maps to IMsRdpClientAdvancedSettings::AuthenticationLevel:
+	// 2 = always verify the server certificate. It is never below 1, not even
+	// when NLA is off: that path sends the stored password through
+	// ClearTextPassword, so a network impersonator must be caught by the
+	// certificate warning instead of silently receiving the password.
+	AuthLevel int
+	// RedirectClipboard / RedirectDrives are per-connection opt-ins that
+	// default to off, so the remote side cannot reach the local clipboard or
+	// disks through \\tsclient unless the user enabled them for this
+	// connection.
+	RedirectClipboard bool
+	RedirectDrives    bool
+}
 
-	// Our own process ID, used to skip dialogs belonging to the system's mstsc.
-	pid, _, _ := procGetCurrentProcID.Call()
-	selfPID := uint32(pid)
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			for _, title := range dialogTitles {
-				tPtr, _ := windows.UTF16PtrFromString(title)
-				hwnd, _, _ := procFindWindowW.Call(
-					uintptr(unsafe.Pointer(clsName)),
-					uintptr(unsafe.Pointer(tPtr)),
-				)
-				if hwnd == 0 {
-					continue
-				}
-
-				// Only dismiss dialogs owned by our OWN process. The dialog class
-				// (#32770) and titles ("远程桌面连接" / "Windows 安全") are shared
-				// with the system's mstsc; without this filter we would repeatedly
-				// close mstsc's own password/security prompts, causing them to
-				// flicker and re-open. (issue #348)
-				var dlgPID uint32
-				procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&dlgPID)))
-				if dlgPID != selfPID {
-					continue
-				}
-
-				// Dismiss via standard dialog button IDs
-				procPostMessageW.Call(hwnd, WM_COMMAND, IDYES, 0)
-				procPostMessageW.Call(hwnd, WM_COMMAND, IDOK, 0)
-				procPostMessageW.Call(hwnd, WM_COMMAND, IDYES+1, 0) // IDNO sometimes maps to 7
-
-				// Also try clicking buttons directly (Windows 11 may use different labels)
-				for _, btnText := range []string{
-					"是(&Y)", "是", "Yes", "&Yes",
-					"连接(&C)", "连接(&N)", "连接", "Connect", "&Connect",
-					"确认", "确认(&Y)", "确认(&O)",
-					"确定", "确定(&O)", "OK", "&OK",
-					"继续", "继续(&C)", "Continue", "&Continue",
-				} {
-					btnPtr, _ := windows.UTF16PtrFromString(btnText)
-					btnHwnd, _, _ := procFindWindowExW.Call(hwnd, 0, 0, uintptr(unsafe.Pointer(btnPtr)))
-					if btnHwnd != 0 {
-						procSendMessageW.Call(btnHwnd, BM_CLICK, 0, 0)
-						break
-					}
-				}
-			}
-		}
+// buildRdpSettings derives the security-relevant RDP settings for one
+// connection. It deliberately performs no global side effects: no registry
+// writes, no warning suppression — certificate and redirection dialogs are
+// shown to the user.
+func buildRdpSettings(config ConnectionConfig) rdpSettings {
+	return rdpSettings{
+		EnableCredSSP:     config.RdpEnableNLA,
+		AuthLevel:         2,
+		RedirectClipboard: config.RdpRedirectClipboard,
+		RedirectDrives:    config.RdpRedirectDrives,
 	}
 }
 
@@ -491,21 +441,22 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 	if advObj != nil {
 		adv := advObj.ToIDispatch()
 		if adv != nil {
+			settings := buildRdpSettings(config)
 			adv.PutProperty("RDPPort", port)
-			adv.PutProperty("RedirectClipboard", true)
-			adv.PutProperty("RedirectDrives", true)
+			// Redirection is an explicit per-connection opt-in (default off).
+			adv.PutProperty("RedirectClipboard", settings.RedirectClipboard)
+			adv.PutProperty("RedirectDrives", settings.RedirectDrives)
 			// Let the ActiveX control handle full screen
 			// itself and show its built-in connection bar (which carries the
 			// restore/exit button). Requires ContainerHandledFullScreen=false.
 			adv.PutProperty("DisplayConnectionBar", true)
 			adv.PutProperty("EnableAutoReconnect", true)
-			if config.RdpEnableNLA {
-				adv.PutProperty("EnableCredSspSupport", true)
-				adv.PutProperty("AuthenticationLevel", 2)
-			} else {
-				adv.PutProperty("EnableCredSspSupport", false)
-				adv.PutProperty("AuthenticationLevel", 0)
-			}
+			// Server authentication is never switched off, NLA or not:
+			// AuthenticationLevel stays >= 1 so an untrusted certificate
+			// surfaces a warning to the user instead of silently handing the
+			// stored password to a network impersonator.
+			adv.PutProperty("EnableCredSspSupport", settings.EnableCredSSP)
+			adv.PutProperty("AuthenticationLevel", settings.AuthLevel)
 			adv.PutProperty("WarnOnDirectConnect", false)
 			// false = ActiveX manages full screen itself
 			// (renders its own connection bar with an exit button), instead of
@@ -559,24 +510,9 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 		}
 	}
 
-	// Suppress server certificate warning at OS level
-	setAuthLevelOverride()
-
-	// Auto-dismiss any security dialogs that appear during Connect (e.g.
-	// "网站正在尝试启动远程连接"). The goroutine polls for dialog windows
-	// and clicks "Yes" to dismiss them.
-	// On Windows 11, the dialog may appear after Connect succeeds, so keep
-	// polling for a few seconds after connection.
-	stopDismiss := make(chan struct{})
-	go s.autoDismissSecurityDialogs(stopDismiss)
-	defer func() {
-		// Keep polling for dialogs after Connect completes. On Windows 11
-		// the security warning may appear slightly after connection.
-		go func() {
-			time.Sleep(5 * time.Second)
-			close(stopDismiss)
-		}()
-	}()
+	// Security warnings — the server certificate prompt and the drive /
+	// clipboard redirection warnings — are deliberately left to the user:
+	// no registry overrides, no dialog auto-clicker.
 
 	_, err = dispatch.CallMethod("Connect")
 	if err != nil {
@@ -988,115 +924,6 @@ func win32Error(err error) string {
 		return fmt.Sprintf("win32 error %d (%v)", errno, errno)
 	}
 	return fmt.Sprintf("%v", err)
-}
-
-// setAuthLevelOverride sets the system-wide RDP authentication level to 0,
-// which suppresses the server certificate warning dialog.
-func setAuthLevelOverride() {
-	// AuthenticationLevelOverride = 0 disables server cert verification.
-	k, err := registry.OpenKey(registry.CURRENT_USER,
-		`Software\Microsoft\Terminal Server Client`,
-		registry.SET_VALUE)
-	if err != nil {
-		k, _, err = registry.CreateKey(registry.CURRENT_USER,
-			`Software\Microsoft\Terminal Server Client`,
-			registry.SET_VALUE)
-		if err != nil {
-			return
-		}
-	}
-	defer k.Close()
-	k.SetDWordValue("AuthenticationLevelOverride", 0)
-	// Also disable the redirection warning dialog via the non-policy key
-	k.SetDWordValue("ShowRedirectionWarningDialog", 0)
-
-	// RedirectionWarningDialogVersion = 1 suppresses the "unknown remote
-	// connection" security warning dialog. Check if already set first.
-	if isRDWAlreadySet() {
-		return
-	}
-
-	// Write to HKCU policy path (no elevation needed, works on Windows 11)
-	rdwPath := `Software\Policies\Microsoft\Windows NT\Terminal Services\Client`
-	if writeRegDWORD(registry.CURRENT_USER, rdwPath, "RedirectionWarningDialogVersion", 1) {
-		return
-	}
-
-	// Fallback: try HKLM policy path (requires admin)
-	rdwPathLM := `SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client`
-	if writeRegDWORD(registry.LOCAL_MACHINE, rdwPathLM, "RedirectionWarningDialogVersion", 1) {
-		return
-	}
-	elevateRegWrite()
-}
-
-// isRDWAlreadySet returns true if RedirectionWarningDialogVersion is already 1.
-func isRDWAlreadySet() bool {
-	paths := []struct {
-		root registry.Key
-		path string
-	}{
-		{registry.LOCAL_MACHINE, `SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client`},
-		{registry.CURRENT_USER, `Software\Policies\Microsoft\Windows NT\Terminal Services\Client`},
-	}
-	for _, p := range paths {
-		if readRegDWORD(p.root, p.path, "RedirectionWarningDialogVersion") == 1 {
-			return true
-		}
-	}
-	return false
-}
-
-// writeRegDWORD writes a DWORD value to the registry. Returns true on success.
-func writeRegDWORD(root registry.Key, path, name string, value uint32) bool {
-	k, err := registry.OpenKey(root, path, registry.SET_VALUE)
-	if err != nil {
-		k, _, err = registry.CreateKey(root, path, registry.SET_VALUE)
-		if err != nil {
-			return false
-		}
-	}
-	defer k.Close()
-	return k.SetDWordValue(name, value) == nil
-}
-
-// readRegDWORD reads a DWORD value from the registry. Returns 0 if not found.
-func readRegDWORD(root registry.Key, path, name string) uint32 {
-	k, err := registry.OpenKey(root, path, registry.QUERY_VALUE)
-	if err != nil {
-		return 0
-	}
-	defer k.Close()
-	val, _, err := k.GetIntegerValue(name)
-	if err != nil {
-		return 0
-	}
-	return uint32(val)
-}
-
-// elevateRegWrite launches reg.exe with the "runas" verb to write the
-// RedirectionWarningDialogVersion machine-policy key with admin rights.
-func elevateRegWrite() {
-	shell32 := windows.NewLazySystemDLL("shell32.dll")
-	procShellExecute := shell32.NewProc("ShellExecuteW")
-
-	op, _ := windows.UTF16PtrFromString("runas")
-	file, _ := windows.UTF16PtrFromString("reg.exe")
-	params, _ := windows.UTF16PtrFromString(
-		`add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client" /v RedirectionWarningDialogVersion /t REG_DWORD /d 1 /f`,
-	)
-
-	ret, _, _ := procShellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(op)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		0,
-		0, // SW_HIDE
-	)
-	if ret <= 32 {
-		log.Writef("[RDP] ShellExecute runas failed: %d", ret)
-	}
 }
 
 func (s *RDPSession) configureNonScriptable(password string) {
@@ -1861,7 +1688,11 @@ func (s *RDPSession) Snapshot() (string, error) {
 	}
 
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	// Snapshot runs on the Wails/UI thread: use the fastest compression level
+	// so encoding a full frame does not stall the app (the default level is
+	// the slowest one).
+	enc := png.Encoder{CompressionLevel: png.BestSpeed}
+	if err := enc.Encode(&buf, img); err != nil {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil

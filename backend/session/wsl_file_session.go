@@ -6,7 +6,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -797,8 +796,13 @@ func dirSize(p string) (int64, error) {
 }
 
 // copyPath copies a file or directory tree. task, if non-nil, receives byte
-// progress updates and pauses/cancels via transferTask.
+// progress updates, honours pause, and aborts with the context error as soon
+// as the transfer is cancelled. A nil task (WSL Copy/Move use one) copies
+// without tracking.
 func copyPath(src, dst string, task *TransferTask) error {
+	if err := transferCtxErr(task); err != nil {
+		return err
+	}
 	fi, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -812,6 +816,10 @@ func copyPath(src, dst string, task *TransferTask) error {
 			return err
 		}
 		for _, e := range entries {
+			// Checked per child so a cancel stops the directory walk promptly.
+			if err := transferCtxErr(task); err != nil {
+				return err
+			}
 			if err := copyPath(joinEntry(src, e.Name()), joinEntry(dst, e.Name()), task); err != nil {
 				return err
 			}
@@ -822,6 +830,9 @@ func copyPath(src, dst string, task *TransferTask) error {
 }
 
 func copyFile(src, dst string, task *TransferTask) error {
+	if err := transferCtxErr(task); err != nil {
+		return err
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -831,31 +842,15 @@ func copyFile(src, dst string, task *TransferTask) error {
 	if err != nil {
 		return err
 	}
-	if task != nil {
-		task.waitIfPaused() // blocks while paused / returns on cancel
+	// The shared stream copy nil-guards the task (this loop used to panic on
+	// waitIfPaused with the nil task WSL Copy/Move pass) and returns write
+	// errors and cancellation instead of copying to the end.
+	cpErr := copyDownloadStream(out, in, task, nil)
+	closeErr := out.Close()
+	if cpErr != nil {
+		return cpErr
 	}
-	buf := make([]byte, 64*1024)
-	for {
-		task.waitIfPaused()
-		n, rerr := in.Read(buf)
-		if n > 0 {
-			if _, werr := out.Write(buf[:n]); werr != nil {
-				out.Close()
-				return werr
-			}
-			if task != nil {
-				task.addProgress(int64(n))
-			}
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			out.Close()
-			return rerr
-		}
-	}
-	return out.Close()
+	return closeErr
 }
 
 // RetryTransfer (re)starts a transfer from a frontend-held checkpoint.

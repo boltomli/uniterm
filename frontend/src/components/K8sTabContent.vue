@@ -110,6 +110,7 @@ import { OVERVIEW_KEY } from '../types/k8s'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import { parseCRD, crdListPath } from '../services/k8sCrd'
+import { ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { K8sTab, NavFrame } from '../types/k8s'
 import type { ConnectionConfig } from '../types/session'
 
@@ -332,8 +333,15 @@ async function connect() {
   k8sStore.setConnStatus(props.connection.id, 'connecting')
   try {
     const cfg = props.connection
-    const source = cfg.k8sConfigInline ? cfg.k8sConfigInline : (cfg.k8sConfigPath || '~/.kube/config')
-    const isPath = !cfg.k8sConfigInline
+    // LoadConnections 脱敏后内联 kubeconfig 不再随连接下发：文件模式走
+    // k8sConfigPath（后端按已存连接/对话框授权放行），内联模式按连接 ID
+    // 向后端解析一次明文。
+    const isPath = !(cfg.k8sConfigInline || cfg.hasK8sConfigInline)
+    let source = isPath ? (cfg.k8sConfigPath || '~/.kube/config') : (cfg.k8sConfigInline || '')
+    if (!isPath && !source) {
+      const secret = await ResolveConnectionSecret(cfg.id) as { k8sConfigInline?: string }
+      source = secret.k8sConfigInline || ''
+    }
     let tunnelUser = ''
     let tunnelPassword = ''
     if (cfg.tunnelSSHConnId) {

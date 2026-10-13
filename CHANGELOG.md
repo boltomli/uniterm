@@ -21,6 +21,8 @@
 - Terminal: network-device highlighting rules — Cisco IOS / Huawei VRP interface names and config keywords are recognized in output.
 - Terminal: the right/middle click actions gain a "No action" option, so mouse-tracking apps (vim, htop, ...) keep receiving those clicks. (#1088)
 - Sync: Git sync repo history is auto-compacted to bound repo size.
+- Remote desktop: RDP snapshots encode with the fastest PNG compression level, so grabbing a frame no longer stalls the UI thread.
+- UI: large directories stay responsive in the file list — selection and cut-marker checks are set lookups, a refresh re-maps the selection in one pass, and the listing is sorted once with the name filter applied on top instead of re-sorting on every keystroke.
 
 **Bug Fixes**
 - SSH: fixes connections failing with EOF on certain devices (dropbear on OpenWrt CPEs, for example) by detecting the shell before the shell channel opens. (@sonnartliao)
@@ -40,6 +42,20 @@
 - Linux: fixes the running window showing as an orphan with a generic icon on GNOME Wayland — the desktop file is now named after the Wayland app_id (`org.wails.uniterm.desktop`) so the window correctly matches its launcher. (@Teejer)
 - Settings: fixes saving occasionally failing on Windows when a concurrent read overlapped the write — saving now waits briefly for the reader instead of dropping the change.
 - WSL: opening a symlink under a mounted `/mnt` drive now always lands at its real target, instead of depending on how the symlink was created.
+- Remote desktop: RDP no longer turns off server certificate verification or auto-clicks the security warnings away. The certificate prompt is shown to the user, the HKCU/HKLM registry writes (and their UAC-elevation fallback) that weakened the system-wide `mstsc.exe` settings are removed, and local drive / clipboard redirection is now a per-connection option that defaults to off.
+- UI: fixes global listeners and terminal addons piling up as tabs close and reopen — context menus no longer leak window/document listeners per mounted menu, terminal remounts no longer stack link-click handlers and search subscriptions on the shared xterm instance (and pending resize retries no longer fire against a released terminal), the Settings shortcut-rebind capture listener no longer survives switching tabs (it used to swallow every keystroke), and the scrollbar preview keeps highlight colors on colored text.
+- Security: saved connection secrets no longer cross into the UI — `LoadConnections` returns presence flags (`hasPassword`, `hasKeyContent`, ...) instead of decrypted passwords, key text, tunnel / sentinel passwords and inline kubeconfigs; the backend resolves them per connection ID when a session connects, a per-connection secret lookup serves the few features that need the plaintext (VNC/SPICE handshake, inline kubeconfig), and editing a connection keeps the stored secret when its field is left blank. The file-grant trust boundary also covers the remaining raw bindings: the AI attachment reader, the kubeconfig path, skill imports, the background-image name, the session-log directory, the external editor command (resolved from settings Go-side, program must be a bare name), open-with / reveal-in-explorer, and the SFTP local pane (paths limited to the directories the pane actually browsed, per session).
+- Security: fixes arbitrary file writes from a hostile sync server, remote host or container — WebDAV sync only accepts whitelisted manifest names, every download/unpack path (SCP, SFTP, FTP, SMB, WebDAV, S3, container tar extraction and the frontend file panel) validates server-supplied names through one shared safe-join helper, and SFTP recursive delete no longer follows symlinks out of the target tree.
+- Security: the SSH cwd-hook probe now verifies the host key like the main connection (it used to skip verification while still sending the password), connections through a jump host pin the target under its real host:port instead of the loopback tunnel address, X11 forwarding validates the fake auth cookie before swapping in the real one, and X11 Desktop no longer panics on a nil error handler.
+- Security: the AI command-risk classifier can no longer be bypassed — segments split on `&&`/`&` as well, wrapper stripping no longer crashes the app on a bare `env`/`sudo`, command substitution / `eval` / `bash -c` / `xargs` / `find -delete` grade as dangerous, redirect targets are checked individually, the model's self-reported risk can only raise the level, non-control terminal keystrokes always go through the confirmation dialog, and the agent can only target locked or active panels. The MCP `download_file` tool is graded as a write.
+- Security: MCP approval dialogs are queued per request id, so a second request no longer hijacks the dialog the user is confirming, and the countdown resets for each new request.
+- Security: updates fail closed — the asset list is re-derived on the Go side from the last update check instead of being supplied by the UI, download URLs are restricted to the known release hosts, and the SHA-256 checksum is mandatory.
+- Security: credential lifecycle hardening — unlocking verifies the master password against a stored verifier before caching the key (a typo no longer locks in a bad key), re-keying and reset cover `ai.json` / `tunnels.json` and every encrypted field, a missing keychain entry is detected so the recovery path actually triggers, and `credentials.meta` is written atomically.
+- Security: FTPS sets the TLS `ServerName` so verified handshakes can work without disabling verification, and FTP "auto" mode only falls back to plaintext when the server provably lacks AUTH TLS (with a visible warning otherwise, and never when a fresh FEAT probe still advertises it).
+- Data: migrating the data directory to itself or into its own tree is refused instead of copying onto itself and then deleting all user data.
+- Kubernetes / containers: exec uploads now surface tar failures instead of reporting success, downloads keep the bytes that arrive in the same frame as the completion marker, and `SSHRunner.RunStdin` works again (the stdin pipe was taken after the process started).
+- Redis / SQL: switching databases no longer leaks commands onto pooled connections still bound to DB 0, list saves are one atomic MULTI/DEL/RPUSH instead of per-element round trips, value loading is capped with a read-only banner for huge keys, SQL Server `#temp-table` scripts split correctly (`#` counts as a comment only for MySQL), and ad-hoc query results are capped with a truncation notice.
+- Terminal: non-ASCII keystrokes are actually encoded for GBK/Big5/Shift-JIS sessions (the encoder never had a buffer, so everything went out as UTF-8), telnet IAC negotiation no longer spins at 100% CPU when an option sequence is split across packets or pasted lines, non-ASCII passwords typed at the keyboard-interactive prompt arrive intact, SSH handshakes get a deadline so a stalling server no longer hangs the session forever, and the tunnel service no longer blocks its state API while dialing.
 
 **Notes**
 - As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
@@ -65,6 +81,8 @@ Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contrib
 - 终端：新增网络设备高亮规则——识别 Cisco IOS / 华为 VRP 的接口名与配置关键字。
 - 终端：右键、中键动作新增「无动作」选项，开启鼠标追踪的程序（vim、htop 等）可正常接收点击。(#1088)
 - 同步：Git 同步仓库历史自动压缩，避免仓库无限膨胀。
+- 远程桌面：RDP 截图改用最快 PNG 压缩级别，捕获一帧不再拖慢界面线程。
+- 界面：大目录文件列表保持流畅——选中与剪切标记判断改为集合查找，刷新后一次性重映射选中项，列表只排序一次、名称过滤在其上进行，不再每敲一个键就整体重排。
 
 **修复**
 - SSH：修复部分设备（如 OpenWrt 上的 dropbear）连接报 EOF 失败的问题，现在先探测 shell 类型再打开 shell 通道。(@sonnartliao)
@@ -84,6 +102,20 @@ Thanks to @surenwuyuwuqiu, @boltomli, @Teejer and @sonnartliao for their contrib
 - Linux：修复 GNOME Wayland 下运行窗口显示为无图标孤立窗口的问题——桌面文件改为按 Wayland app_id 命名（`org.wails.uniterm.desktop`），窗口可正确关联启动器图标。(@Teejer)
 - 设置：修复 Windows 下保存偶尔失败（与并发读取重叠）的问题——保存现在会短暂等待读取方结束，不再丢失更改。
 - WSL：修复打开 `/mnt` 挂载盘下的符号链接时结果取决于链接创建方式的问题——现在始终定位到真实目标目录。
+- 远程桌面：修复 RDP 关闭服务器证书校验并自动点掉安全警告的问题——证书提示交还给用户；移除改写 HKCU/HKLM 注册表（含 UAC 提权回退）削弱系统级 `mstsc.exe` 设置的写入；本地磁盘与剪贴板重定向改为连接级开关，默认关闭。
+- 界面：修复标签页关闭/重开后全局监听与终端插件不断累积的问题——右键菜单不再按实例泄漏 window/document 监听；终端重挂载不再在共享 xterm 实例上叠加链接点击处理与搜索订阅（未完成的尺寸重试定时器也不再作用于已释放的终端）；设置页快捷键重录的捕获监听不再在切换标签后残留（此前会吞掉所有按键）；滚动条预览不再覆盖彩色文本的高亮颜色。
+- 安全：已保存连接的凭据不再下发到界面——`LoadConnections` 只返回「已保存」标志（`hasPassword`、`hasKeyContent` 等），不再返回解密后的密码、密钥文本、跳板/哨兵密码与内联 kubeconfig；会话连接时由后端按连接 ID 解析，少数需要明文的功能（VNC/SPICE 握手、内联 kubeconfig 编辑）按单个连接按需取回；编辑连接时密码留空即保持原值不变。文件授权边界同时覆盖此前未校验的绑定：AI 附件读取、kubeconfig 路径、技能导入、背景图片名、会话日志目录、外部编辑器命令（后端从设置读取、程序名必须为裸名）、系统打开/资源管理器定位，以及 SFTP 本地面板（路径限定在该会话实际浏览过的目录内）。
+- 安全：修复来自恶意同步服务器、远程主机或容器的任意文件写入——WebDAV 同步只接受白名单内的 manifest 文件名，所有下载/解包路径（SCP、SFTP、FTP、SMB、WebDAV、S3、容器 tar 解包与前端文件面板）统一经共享的安全路径拼接校验服务端提供的文件名，SFTP 递归删除不再跟随符号链接逃出目标目录树。
+- 安全：SSH cwd 探测连接现在与主连接一样校验主机密钥（此前跳过校验但仍发送密码）；经跳板机的连接按目标真实 host:port 记录主机密钥，不再按 127.0.0.1 临时端口记录；X11 转发在换取真实 cookie 前先校验 fake auth cookie；X11 Desktop 的错误回调为空时不再崩溃。
+- 安全：AI 命令风险分级不再可绕过——分段同时按 `&&`/`&` 切分，包装命令剥离不再因单独的 `env`/`sudo` 使整个应用崩溃，命令替换 / `eval` / `bash -c` / `xargs` / `find -delete` 判为危险，重定向目标逐个判定，模型自报的 risk 只能提高不能降低，非控制键输入一律走确认对话框，agent 只能操作已锁定或当前活动的面板；MCP `download_file` 工具改判为写操作。
+- 安全：MCP 审批对话框按请求 id 排队展示，第二个请求不再顶掉用户正在确认的对话框，新请求会重置倒计时。
+- 安全：更新失败即停止——资产列表由后端基于最近一次更新检查重新派生（不再由界面传入），下载 URL 限已知发布源，SHA-256 校验和为必填。
+- 安全：凭据生命周期加固——解锁时先用存储的校验器验证主密码再缓存密钥（输错一次不会再把错误密钥锁死），重新加密与重置覆盖 `ai.json` / `tunnels.json` 及全部加密字段，钥匙串条目缺失可被识别以走恢复流程，`credentials.meta` 改为原子写入。
+- 安全：FTPS 配置 TLS `ServerName`，验证模式握手无需再关闭校验即可工作；FTP「auto」模式只有在服务器确实不支持 AUTH TLS 时才降级明文（否则给出可见警告；新连接 FEAT 仍宣称支持时拒绝降级）。
+- 数据：把数据目录迁移到自身或其子目录会被拒绝，不再先自我复制再删除全部用户数据。
+- Kubernetes / 容器：exec 上传不再把 tar 失败误报为成功，下载不再丢失与完成标记同帧到达的数据，`SSHRunner.RunStdin` 恢复可用（此前在进程启动后才取 stdin 管道）。
+- Redis / SQL：切换数据库不再把命令发到仍绑定 DB 0 的池内连接，list 保存改为一次原子 MULTI/DEL/RPUSH 而非逐元素往返，超大 key 的值加载有上限并以只读横幅提示，SQL Server `#临时表` 脚本切分正确（`#` 仅对 MySQL 视为注释），即席查询结果有行数上限并提示截断。
+- 终端：GBK/Big5/Shift-JIS 会话的非 ASCII 按键输入现在真正按配置编码发送（编码器此前没有缓冲区，全部按 UTF-8 发出），telnet IAC 协商序列跨包或跨粘贴行时不再 100% CPU 空转，键盘交互提示下输入的非 ASCII 密码不再乱码，SSH 握手增加超时使卡住的服务器不再永久挂起会话，隧道服务拨号期间不再阻塞状态接口。
 
 **说明**
 - 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。

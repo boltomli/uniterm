@@ -138,6 +138,7 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { createDisposeBag } from '../utils/disposeBag'
 import '@xterm/xterm/css/xterm.css'
 import { SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { queuedSessionWrite } from '../services/sessionWriter'
@@ -335,6 +336,14 @@ let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
 let retryOnEnter = false
+
+// Per-instance teardown bag: the shared xterm instance outlives this
+// component, so addons loaded onto it and listeners on shared addons must be
+// released on unmount or they stack up on every remount (security.md #13).
+// The fit-retry timers are tracked here too so they can't fire against a
+// released terminal (security.md #22).
+const teardown = createDisposeBag()
+
 let zmodemService: ReturnType<typeof startZmodemService> | null = null
 let isZmodemStarting = false
 let zmodemStartTimer: ReturnType<typeof setTimeout> | null = null
@@ -1187,17 +1196,23 @@ onMounted(() => {
     }
   )
   terminal.loadAddon(webLinksAddon)
+  // The shared terminal outlives this component: without an explicit dispose
+  // every remount stacked another WebLinksAddon (Ctrl+Click opened a URL N
+  // times; security.md #13).
+  teardown.addDisposable(webLinksAddon)
 
   // Unicode 11 activeVersion is set in terminalManager.ts right after the
   // addon loads; no need to set it here again.
 
-  // Set up search results listener from shared SearchAddon
+  // Set up search results listener from shared SearchAddon. The disposable
+  // must be kept: the addon is shared, so a lost subscription survives this
+  // component and re-subscribes on every remount (security.md #13).
   const managed = getManagedTerminal(props.sessionId || '')
   if (managed) {
-    managed.searchAddon.onDidChangeResults((e) => {
+    teardown.addDisposable(managed.searchAddon.onDidChangeResults((e) => {
       searchResultIndex.value = e.resultIndex
       searchResultCount.value = e.resultCount
-    })
+    }))
   }
 
   // Attach terminal DOM to this component's container
@@ -1254,14 +1269,19 @@ onMounted(() => {
     // Force initial resize with retries — needed because cell dimensions
     // may not be available immediately, and for reused terminals the cols/rows
     // may hold stale dimensions from the previous container.
-    ;[50, 150, 300, 600, 1000, 2000].forEach(d => setTimeout(() => {
-      if (!terminal) return
-      getFitAddon()?.fit()
-      const sessionId = props.sessionId
-      if (sessionId && terminal.cols > 0 && terminal.rows > 0) {
-        SessionResize(sessionId, terminal.cols, terminal.rows).catch(() => {})
-      }
-    }, d))
+    ;[50, 150, 300, 600, 1000, 2000].forEach(d => {
+      const timer = setTimeout(() => {
+        if (!terminal) return
+        getFitAddon()?.fit()
+        const sessionId = props.sessionId
+        if (sessionId && terminal.cols > 0 && terminal.rows > 0) {
+          SessionResize(sessionId, terminal.cols, terminal.rows).catch(() => {})
+        }
+      }, d)
+      // Tracked so unmount cancels them: they would otherwise fire
+      // SessionResize / fit() against a released terminal (security.md #22).
+      teardown.addTimeout(timer)
+    })
   }
 
   // Bind per-component listeners (onData, keyHandler).
@@ -2117,6 +2137,17 @@ onUnmounted(() => {
   // component still holds a reference.
   onDataDispose?.dispose()
   onDataDispose = null
+
+  // Pending resize/fit work must not run against a released terminal
+  // (security.md #22)…
+  if (resizeTimer) {
+    clearTimeout(resizeTimer)
+    resizeTimer = null
+  }
+  // …and everything loaded onto the shared terminal (WebLinksAddon, the
+  // shared SearchAddon's results listener) plus the tracked fit-retry
+  // timers is released here, or it stacks on every remount (security.md #13).
+  teardown.disposeAll()
 
   // Release reference (delayed dispose: terminal survives 500ms)
   if (props.sessionId) {

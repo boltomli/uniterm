@@ -87,7 +87,10 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 	defer cleanup()
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	pinAddr := hostKeyPinAddr(config, addr)
+	cb, trust := NewHostKeyVerifier(pinAddr)
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return err
@@ -107,7 +110,7 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 		return fmt.Errorf("ssh dial: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + addr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
+		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + pinAddr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	sc, err := sftp.NewClient(client, sftpClientOptions()...)
@@ -1138,7 +1141,10 @@ func localCopyRecursive(src, dst string) error {
 }
 
 func (s *SFTPSession) rmRecursive(p string) error {
-	fi, err := s.sftpClient.Stat(p)
+	// Lstat, not Stat: a symlink to a directory must be removed as a link,
+	// never recursed into — Stat follows it and deleting through it wipes the
+	// link target's contents (security.md: "shared -> /srv/data").
+	fi, err := s.sftpClient.Lstat(p)
 	if err != nil {
 		return err
 	}
@@ -1321,7 +1327,14 @@ func (s *SFTPSession) walkRemoteForDownload(remoteDir, localDir string, task *Tr
 	}
 	for _, fi := range infos {
 		rp := path.Join(remoteDir, fi.Name())
-		lp := filepath.Join(localDir, fi.Name())
+		// The server picks the entry name: it must be a plain component that
+		// stays under localDir (security.md High: SFTP directory downloads —
+		// a "..\name" entry escapes on Windows because path.Join treats
+		// backslashes as ordinary characters there).
+		lp, jerr := safeDownloadChild(localDir, fi.Name())
+		if jerr != nil {
+			return jerr
+		}
 		if fi.IsDir() {
 			if err := s.walkRemoteForDownload(rp, lp, task, out); err != nil {
 				return err

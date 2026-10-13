@@ -326,6 +326,10 @@ func fetchChecksums(rel *release) map[string]string {
 		if a.Name != "checksums.txt" {
 			continue
 		}
+		if err := validateAssetURL(a.BrowserDownloadURL); err != nil {
+			log.Writef("[update] skipping checksums.txt: %v", err)
+			continue
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", a.BrowserDownloadURL, nil)
 		if err != nil {
 			continue
@@ -404,6 +408,12 @@ func candidatesFor(osName, arch string, ch Channel, primary string, rels map[str
 				if classifyAsset(a.Name) != kind || !assetMatchesPlatform(osName, arch, a.Name) {
 					continue
 				}
+				// Never surface an asset URL outside the release sources:
+				// the frontend only ever displays what this list contains.
+				if err := validateAssetURL(a.BrowserDownloadURL); err != nil {
+					log.Writef("[update] dropping asset %s: %v", a.Name, err)
+					continue
+				}
 				out = append(out, UpdateAsset{
 					Name:   a.Name,
 					URL:    a.BrowserDownloadURL,
@@ -477,12 +487,16 @@ func Check(currentVersion, source string) (*UpdateInfo, error) {
 	}
 
 	// Checksums: prefer the primary source's checksums.txt, fall back to the
-	// mirror's. Either may be absent on older releases.
+	// mirror's. Without them every candidate is refused at download time, so
+	// say so loudly instead of silently producing an uninstallable update.
 	sums := fetchChecksums(primary)
 	if len(sums) == 0 {
 		if rel2, ok := rels[otherSource(source)]; ok {
 			sums = fetchChecksums(rel2)
 		}
+	}
+	if len(sums) == 0 {
+		log.Writef("[update] no checksums available for %s; downloads will be refused (fail closed)", primary.TagName)
 	}
 
 	result.Assets = candidatesFor(runtime.GOOS, runtime.GOARCH, DetectChannel(), source, rels, sums)

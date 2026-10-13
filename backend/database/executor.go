@@ -20,14 +20,21 @@ var queryTimeout = 30 * time.Second
 // dumps so the goroutine cannot wedge forever.
 var scriptTimeout = 10 * time.Minute
 
+// maxQueryRows caps rows returned by a single ExecuteQuery. The UI grid
+// cannot render unbounded results (a cross join can produce millions of
+// rows and freeze the app), so the scan stops at the cap and the result is
+// flagged Truncated. A var so tests can shrink it.
+var maxQueryRows = 10000
+
 type QueryResultColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
 
 type QueryResult struct {
-	Columns []QueryResultColumn `json:"columns"`
-	Rows    []map[string]any    `json:"rows"`
+	Columns   []QueryResultColumn `json:"columns"`
+	Rows      []map[string]any    `json:"rows"`
+	Truncated bool                `json:"truncated"`
 }
 
 type ExecResult struct {
@@ -61,7 +68,14 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 
 	guids := guidColumns(rows)
 	var result []map[string]any
+	truncated := false
 	for rows.Next() {
+		if len(result) >= maxQueryRows {
+			// More rows than the cap: stop scanning and flag the result so
+			// the UI can tell the user the data is incomplete.
+			truncated = true
+			break
+		}
 		values := make([]any, len(cols))
 		valuePtrs := make([]any, len(cols))
 		for i := range values {
@@ -86,9 +100,9 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 	}
 
 	if len(result) == 0 {
-		return &QueryResult{Columns: columns, Rows: []map[string]any{}}, nil
+		return &QueryResult{Columns: columns, Rows: []map[string]any{}, Truncated: truncated}, nil
 	}
-	return &QueryResult{Columns: columns, Rows: result}, nil
+	return &QueryResult{Columns: columns, Rows: result, Truncated: truncated}, nil
 }
 
 func ExecuteStatement(p Provider, db *sql.DB, dbName, sqlStr string) (*ExecResult, error) {
@@ -134,7 +148,7 @@ type ScriptResult struct {
 // statement's line. Routines defined via DELIMITER are supported because the
 // splitter already merged their bodies into a single statement.
 func ExecuteScript(p Provider, db *sql.DB, dbName, script string) (*ScriptResult, error) {
-	stmts := SplitScript(script)
+	stmts := SplitScript(script, p.DBType())
 	res := &ScriptResult{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)

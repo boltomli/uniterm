@@ -21,6 +21,11 @@ type K8sContextInfo = k8s.ContextInfo
 // K8sListContexts 解析给定 kubeconfig 内容并返回 context 列表。
 // source 为文件路径或 YAML 内联字符串；根据 sourceIsPath 区分。
 func (a *App) K8sListContexts(source string, sourceIsPath bool) ([]K8sContextInfo, error) {
+	if sourceIsPath {
+		if err := a.grantKubeconfigPath(source); err != nil {
+			return nil, err
+		}
+	}
 	raw, err := readKubeconfigSource(source, sourceIsPath)
 	if err != nil {
 		return nil, err
@@ -33,6 +38,11 @@ func (a *App) K8sListContexts(source string, sourceIsPath bool) ([]K8sContextInf
 // 劫持到本地 loopback；TLS 校验仍按 kubeconfig 里的原 hostname 走。
 func (a *App) K8sConnect(source string, sourceIsPath bool, contextName string,
 	tunnelSSHConnID, tunnelSSHUser, tunnelSSHPassword string) (string, error) {
+	if sourceIsPath {
+		if err := a.grantKubeconfigPath(source); err != nil {
+			return "", err
+		}
+	}
 	raw, err := readKubeconfigSource(source, sourceIsPath)
 	if err != nil {
 		return "", err
@@ -163,17 +173,49 @@ func (a *App) K8sExecSession(connID, namespace, pod, container string) (*session
 	return &session.SessionInfo{ID: id, Type: "container-exec", Title: pod, Status: session.StatusConnected}, nil
 }
 
+// expandHomePath resolves a leading "~" against the user home directory.
+func expandHomePath(p string) string {
+	if len(p) > 1 && p[0] == '~' {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[1:])
+		}
+	}
+	return p
+}
+
 func readKubeconfigSource(source string, sourceIsPath bool) ([]byte, error) {
 	if !sourceIsPath {
 		return []byte(source), nil
 	}
-	if len(source) > 1 && source[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			source = filepath.Join(home, source[1:])
+	return os.ReadFile(expandHomePath(source))
+}
+
+// grantKubeconfigPath gates the sourceIsPath kubeconfig flow on the file
+// grant set. Two trusted sources grant the path: the native file dialog /
+// drag-drop (the dialogs add the grant themselves), and the path persisted
+// on a saved k8s connection — a stored connection config is trusted the same
+// way as the zmodem / session-log directories loaded from disk. A path the
+// renderer merely made up is rejected, so K8sListContexts/K8sConnect stop
+// doubling as arbitrary-local-file readers.
+func (a *App) grantKubeconfigPath(source string) error {
+	expanded := expandHomePath(source)
+	if err := requireFileGrant(expanded); err == nil {
+		return nil
+	} else if a.connectionStore != nil {
+		if data, loadErr := a.connectionStore.Load(); loadErr == nil {
+			for _, c := range data.Connections {
+				if c.Type != "k8s" || c.K8sConfigPath == "" {
+					continue
+				}
+				p := expandHomePath(c.K8sConfigPath)
+				if filepath.Clean(p) == filepath.Clean(expanded) {
+					fileGrants.addFile(p)
+					return nil
+				}
+			}
 		}
 	}
-	return os.ReadFile(source)
+	return fmt.Errorf("kubeconfig path not granted: %s — pick the file with the file dialog", source)
 }
 
 // ContainerConnect 打开容器连接：解析配置、按 transport 建 Local 或 SSH runner。

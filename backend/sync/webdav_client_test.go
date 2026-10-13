@@ -129,3 +129,51 @@ func TestWebDAVClientPathEscaping(t *testing.T) {
 		}
 	}
 }
+
+// TestWebDAVClientRejectsCleartextServerURL is the security.md High
+// regression guard (git.go validateRepoURL analogue): WebDAV auth is HTTP
+// Basic, so anything but https:// would send the sync password in clear.
+// The rejection must surface before any network I/O.
+func TestWebDAVClientRejectsCleartextServerURL(t *testing.T) {
+	cases := []struct{ name, serverURL string }{
+		{"plain http", "http://dav.example.com/dav"},
+		{"http by ip", "http://203.0.113.10/dav"},
+		{"ftp scheme", "ftp://dav.example.com/dav"},
+		{"file scheme", "file:///etc/dav"},
+		{"no scheme", "dav.example.com/dav"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewWebDAVClient(tc.serverURL, "sync", "u", "p")
+			// rootURL resolves the base for every request; the scheme
+			// rejection must surface here, before any request is sent.
+			if _, err := c.rootURL(); err == nil || !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("rootURL err = %v, want https:// rejection", err)
+			}
+			if err := c.MkdirAll(); err == nil || !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("MkdirAll err = %v, want https:// rejection", err)
+			}
+		})
+	}
+}
+
+// Plain http:// stays tolerated for loopback hosts (local servers, tests).
+func TestWebDAVClientAllowsLoopbackHTTP(t *testing.T) {
+	f := newFakeDAV(t)
+	for _, host := range []string{"127.0.0.1", "localhost"} {
+		t.Run(host, func(t *testing.T) {
+			serverURL := strings.Replace(f.server.URL, "127.0.0.1", host, 1)
+			c := NewWebDAVClient(serverURL, "sync", "u", "p")
+			if err := c.MkdirAll(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Put("connections.json", []byte("cipher")); err != nil {
+				t.Fatal(err)
+			}
+			got, err := c.Get("connections.json")
+			if err != nil || string(got) != "cipher" {
+				t.Fatalf("get = %q err=%v", got, err)
+			}
+		})
+	}
+}

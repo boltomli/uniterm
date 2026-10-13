@@ -1473,7 +1473,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated } from 'vue'
+import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Plug } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -1497,6 +1497,7 @@ import type { MCPStatus } from '../types/mcp'
 import MCPSetupDialog from './MCPSetupDialog.vue'
 import { useTerminalThemeOptions } from '../composables/useTerminalThemeOptions'
 import { uninstallGlobalListener, installGlobalListener, formatKeyBinding, digitModifierCollides, digitModifierFlagsEqual, TAB_DEFAULT_FLAGS, PANEL_DEFAULT_FLAGS, setRebinding } from '../composables/useKeyboardShortcuts'
+import { createRebindCapture } from '../composables/rebindCapture'
 import AddRepoDialog from './AddRepoDialog.vue'
 import EditRepoDialog from './EditRepoDialog.vue'
 import ChangePasswordDialog from './ChangePasswordDialog.vue'
@@ -2053,25 +2054,25 @@ function resetBinding(action: ShortcutAction) {
   settingsStore.save()
 }
 
-let rebindListenerActive = false
+// The capture listener swallows every keystroke (preventDefault +
+// stopPropagation) while a binding is being recorded, so it must never
+// outlive the rebind session: the tab is kept alive by <KeepAlive>, and a
+// deactivated tab whose capture listener survives breaks keyboard input for
+// the whole app (security.md #2). The helper is a symmetric start/stop pair.
+const rebindCapture = createRebindCapture(
+  { document, window },
+  { onKeydown: onRebindKeydown, onBlur: onRebindBlur },
+)
 
 function startRebind(action: ShortcutAction) {
   rebindingAction.value = action
   uninstallGlobalListener()
   setRebinding(true)
-  if (!rebindListenerActive) {
-    rebindListenerActive = true
-    document.addEventListener('keydown', onRebindKeydown, true)
-    window.addEventListener('blur', onRebindBlur)
-  }
+  rebindCapture.start()
 }
 
 function stopRebind() {
-  if (rebindListenerActive) {
-    rebindListenerActive = false
-    document.removeEventListener('keydown', onRebindKeydown, true)
-    window.removeEventListener('blur', onRebindBlur)
-  }
+  rebindCapture.stop()
   rebindingAction.value = null
   rebindingTabSwitch.value = false
   rebindingPanelSwitch.value = false
@@ -2079,6 +2080,12 @@ function stopRebind() {
   setRebinding(false)
   installGlobalListener()
 }
+
+// End any in-flight rebind when the user switches away from the Settings tab
+// (the listener would otherwise keep swallowing keystrokes) and when the tab
+// is torn down.
+onDeactivated(stopRebind)
+onUnmounted(stopRebind)
 
 function clearBinding(action: ShortcutAction) {
   settingsStore.settings.keyboard = {
@@ -2261,22 +2268,14 @@ function startRebindTabSwitch() {
   rebindingTabSwitch.value = true
   uninstallGlobalListener()
   setRebinding(true)
-  if (!rebindListenerActive) {
-    rebindListenerActive = true
-    document.addEventListener('keydown', onRebindKeydown, true)
-    window.addEventListener('blur', onRebindBlur)
-  }
+  rebindCapture.start()
 }
 
 function startRebindPanelSwitch() {
   rebindingPanelSwitch.value = true
   uninstallGlobalListener()
   setRebinding(true)
-  if (!rebindListenerActive) {
-    rebindListenerActive = true
-    document.addEventListener('keydown', onRebindKeydown, true)
-    window.addEventListener('blur', onRebindBlur)
-  }
+  rebindCapture.start()
 }
 
 // Modifier-only capture: bare modifier presses are ignored so the user can
@@ -2326,11 +2325,7 @@ function startRebindTrayHotkey() {
   rebindingPanelSwitch.value = false
   uninstallGlobalListener()
   setRebinding(true)
-  if (!rebindListenerActive) {
-    rebindListenerActive = true
-    document.addEventListener('keydown', onRebindKeydown, true)
-    window.addEventListener('blur', onRebindBlur)
-  }
+  rebindCapture.start()
 }
 
 function onRebindTrayHotkeyKeydown(e: KeyboardEvent) {

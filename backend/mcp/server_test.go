@@ -27,9 +27,13 @@ func TestClassifyCommand(t *testing.T) {
 		{"grep -r foo .", RiskRead},
 		{"echo hello", RiskRead},
 		{"curl -s https://example.com", RiskWrite}, // downloader = write
-		{"touch file", RiskRead},                   // touch: no rule, read by design
-		{"mkdir dir", RiskRead},
-		{"mkdir -p dir/sub", RiskRead},
+		// Default closed (RISK RULES v1): a command that is not on the read
+		// allowlist is at least a write, so touch/mkdir can no longer grade
+		// read. See risk_test.go for the full rule set, mirrored in the
+		// frontend classifier (services/agent.ts).
+		{"touch file", RiskWrite},
+		{"mkdir dir", RiskWrite},
+		{"mkdir -p dir/sub", RiskWrite},
 		{"mv a b", RiskWrite},
 		{"rm a.txt", RiskWrite},
 		{"rm -rf /", RiskDangerous},
@@ -418,5 +422,68 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("download outside allowed dir must be a tool error")
+	}
+}
+
+// TestDownloadFileGradesAtLeastWrite 回归 P1：download_file 把远端内容写进
+// 本地路径（可能覆盖 ~/.bashrc 之类的启动文件 → 本地代码执行），因此在
+// confirm_write 策略下必须弹审批框，不能按 read 直接落盘。
+func TestDownloadFileGradesAtLeastWrite(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(dir, 0755)
+
+	var approvals []ApprovalRequest
+	env := Env{
+		Sessions:    func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
+		FileSession: func(id string) (FileExecutor, error) { return fakeFileExecutor{}, nil },
+		ListSessions: func() []SessionSummary {
+			return []SessionSummary{{ID: "s1", Type: "ssh", Status: "connected"}}
+		},
+		Approve: func(req ApprovalRequest) error {
+			approvals = append(approvals, req)
+			return nil
+		},
+		Audit: func(entry AuditEntry) {},
+		Policy: func() Policy { return PolicyConfirmWrite },
+		ResolveLocalPath: func(p string) (string, error) {
+			return ResolveMcpLocalPath(p, []string{dir})
+		},
+	}
+	srv := NewServer(env)
+	token, hash := GenerateToken()
+	srv.SetTokens(map[string]TokenInfo{hash: {Name: "dl-agent"}})
+	if err := srv.Start(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "dl-probe", Version: "1"}, nil)
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   "http://127.0.0.1:" + strconv.Itoa(srv.Port()) + "/mcp",
+		HTTPClient: &http.Client{Transport: tokenTransport{rt: http.DefaultTransport, token: token}},
+	}
+	cs, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer cs.Close()
+
+	target := filepath.Join(dir, "downloaded.txt")
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "download_file",
+		Arguments: map[string]any{
+			"sessionId": "s1", "remotePath": "/tmp/a.txt", "localPath": target,
+		},
+	})
+	if err != nil {
+		t.Fatalf("download_file call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("download inside allowed dir should succeed, got %+v", res.StructuredContent)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("download_file must request approval under confirm_write, approvals = %d", len(approvals))
 	}
 }

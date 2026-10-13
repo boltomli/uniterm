@@ -6,12 +6,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 const (
 	manifestName = "manifest.json"
 	saltName     = ".sync-salt"
 )
+
+// fetchableNames is the whitelist FetchAll enforces on manifest.json file
+// names: the sync-scope menu (syncableFiles) plus the two reserved
+// resources. The sync server is untrusted — it never sees the encryption
+// key — so a hostile manifest naming anything else (separators, "..",
+// absolute paths) must never reach the disk (security.md P0 traversal).
+var fetchableNames = func() map[string]bool {
+	names := make(map[string]bool, len(syncableFiles)+2)
+	for _, name := range syncableFiles {
+		names[name] = true
+	}
+	names[saltName] = true
+	names[manifestName] = true
+	return names
+}()
 
 // WebDAVBackend stores one encrypted snapshot in a WebDAV collection:
 // .sync-salt, one ciphertext resource per scoped config file, and
@@ -60,6 +77,14 @@ func (b *WebDAVBackend) FetchAll(dir string) error {
 	if info == nil {
 		return nil
 	}
+	// The manifest is attacker-controlled: validate every name against the
+	// whitelist before any network read or disk write so a hostile entry
+	// can neither escape dir nor half-mirror its whitelisted siblings.
+	for name := range info.FileHashes {
+		if !fetchableNames[name] {
+			return fmt.Errorf("manifest: disallowed file name %q", name)
+		}
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -78,15 +103,23 @@ func (b *WebDAVBackend) FetchAll(dir string) error {
 		return err
 	}
 	for name := range info.FileHashes {
+		target, err := utils.SafeLocalJoin(dir, name)
+		if err != nil {
+			return fmt.Errorf("manifest: disallowed file name %q: %w", name, err)
+		}
 		data, err := b.client.Get(name)
 		if err != nil {
 			return fmt.Errorf("fetch %s: %w", name, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+		if err := os.WriteFile(target, data, 0600); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(filepath.Join(dir, manifestName), mustJSON(info), 0600)
+	manifestPath, err := utils.SafeLocalJoin(dir, manifestName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, mustJSON(info), 0600)
 }
 
 // StoreAll uploads ciphertext files from stagingDir (named by

@@ -434,6 +434,22 @@ function resolveActiveSession(panelTitle?: string): { sessionId: string; shellPa
     if (!panel || !panel.sessionId) {
       throw new Error(`Panel "${panelTitle}" not found or has no active session`)
     }
+    // P1: an explicit panel must be one the user attached to this AI
+    // conversation — a member of the AI-locked set, or the active panel when
+    // nothing is locked. Otherwise a prompt-injected model could type into
+    // any open session ("prod-db") the user never showed it.
+    let activeId: string | undefined
+    const activeTab = tabStore.activeTab
+    if (activeTab?.type === 'terminal' || activeTab?.type === 'settings') {
+      activeId = activeTab.panelId
+    } else if (activeTab?.type === 'workspace' && activeTab.activePanelId) {
+      activeId = activeTab.activePanelId
+    }
+    const permitted = tabStore.getAILockedPanels()
+    const allowed = permitted.length > 0 ? permitted : (activeId ? [activeId] : [])
+    if (!allowed.includes(panel.id)) {
+      throw new Error(`Panel "${panelTitle}" is not associated with this AI conversation`)
+    }
   } else {
     // Default logic: first locked panel > active panel
     const lockedPanels = tabStore.getAILockedPanels()

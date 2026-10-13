@@ -122,7 +122,112 @@ func (a *App) SftpListLocal(sessionID, dir string) (session.FileListResult, erro
 	if err != nil {
 		return session.FileListResult{}, err
 	}
-	return fs.ListLocal(dir)
+	res, err := fs.ListLocal(dir)
+	if err == nil {
+		// Every successful listing is a pane navigation: register the
+		// resolved directory as one of this session's local roots.
+		a.noteSftpLocalDir(sessionID, res.Dir)
+	}
+	return res, err
+}
+
+// ── Session-scoped local-pane roots ──
+//
+// The local pane of a file-transfer session navigates the local disk, and
+// every navigation lands here through SftpListLocal/SftpChangeLocalDir.
+// Those navigated directories become the session's local roots; the
+// SftpLocal* bindings only touch paths inside a root (plus
+// rejectDotDotPath), so an open file-transfer session stops being a generic
+// read/write-anywhere primitive for a compromised renderer (security.md,
+// file_grants scope note). Roots are dropped when the session closes.
+
+// noteSftpLocalDir records a directory the session's local pane navigated to.
+func (a *App) noteSftpLocalDir(sessionID, dir string) {
+	if sessionID == "" || dir == "" {
+		return
+	}
+	clean := filepath.Clean(dir)
+	a.sftpLocalMu.Lock()
+	defer a.sftpLocalMu.Unlock()
+	if a.sftpLocalRoots == nil {
+		a.sftpLocalRoots = map[string]map[string]struct{}{}
+	}
+	if a.sftpLocalRoots[sessionID] == nil {
+		a.sftpLocalRoots[sessionID] = map[string]struct{}{}
+	}
+	a.sftpLocalRoots[sessionID][clean] = struct{}{}
+}
+
+// pathWithinRoots reports whether clean is lexically inside one of roots
+// (or equal to it).
+func pathWithinRoots(clean string, roots map[string]struct{}) bool {
+	for r := range roots {
+		rel, err := filepath.Rel(r, clean)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
+}
+
+// requireSftpLocalPath refuses local paths outside the directories the
+// session's pane actually navigated to, and any ".." traversal.
+func (a *App) requireSftpLocalPath(sessionID, p string) error {
+	if err := rejectDotDotPath(p); err != nil {
+		return err
+	}
+	clean := filepath.Clean(p)
+	a.sftpLocalMu.Lock()
+	roots := a.sftpLocalRoots[sessionID]
+	clone := make(map[string]struct{}, len(roots))
+	for r := range roots {
+		clone[r] = struct{}{}
+	}
+	a.sftpLocalMu.Unlock()
+	if len(clone) == 0 {
+		return fmt.Errorf("no local directory browsed yet in session %s", sessionID)
+	}
+	if !pathWithinRoots(clean, clone) {
+		return fmt.Errorf("path outside the session's browsed directories: %s", p)
+	}
+	return nil
+}
+
+// requireLocalPanePath gates the local-pane "open with" / "edit externally"
+// bindings, whose signatures carry no session id. It accepts a file-granted
+// path (dialog/drop/log file) or a path inside SOME session's browsed local
+// roots — the pane's own navigation is the trust source — and refuses
+// everything else.
+func (a *App) requireLocalPanePath(p string) error {
+	if err := rejectDotDotPath(p); err != nil {
+		return err
+	}
+	clean := filepath.Clean(p)
+	if fileGrants.allows(clean) {
+		return nil
+	}
+	a.sftpLocalMu.Lock()
+	roots := map[string]struct{}{}
+	for _, rs := range a.sftpLocalRoots {
+		for r := range rs {
+			roots[r] = struct{}{}
+		}
+	}
+	a.sftpLocalMu.Unlock()
+	if pathWithinRoots(clean, roots) {
+		return nil
+	}
+	return fmt.Errorf("path not granted: %s", p)
+}
+
+// forgetSftpLocalRoots drops a closed session's local roots.
+func (a *App) forgetSftpLocalRoots(sessionID string) {
+	a.sftpLocalMu.Lock()
+	delete(a.sftpLocalRoots, sessionID)
+	a.sftpLocalMu.Unlock()
 }
 
 func (a *App) SftpChangeRemoteDir(sessionID, dir string) (session.FileListResult, error) {
@@ -138,7 +243,11 @@ func (a *App) SftpChangeLocalDir(sessionID, dir string) (session.FileListResult,
 	if err != nil {
 		return session.FileListResult{}, err
 	}
-	return fs.ChangeLocalDir(dir)
+	res, err := fs.ChangeLocalDir(dir)
+	if err == nil {
+		a.noteSftpLocalDir(sessionID, res.Dir)
+	}
+	return res, err
 }
 
 func (a *App) SftpListLocalDrives(sessionID string) ([]session.FileItem, error) {
@@ -197,6 +306,9 @@ func (a *App) SftpChmod(sessionID, path, mode string) error {
 }
 
 func (a *App) SftpLocalRemove(sessionID, path string, recursive bool) error {
+	if err := a.requireSftpLocalPath(sessionID, path); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -205,6 +317,12 @@ func (a *App) SftpLocalRemove(sessionID, path string, recursive bool) error {
 }
 
 func (a *App) SftpLocalRename(sessionID, oldPath, newPath string) error {
+	if err := a.requireSftpLocalPath(sessionID, oldPath); err != nil {
+		return err
+	}
+	if err := a.requireSftpLocalPath(sessionID, newPath); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -213,6 +331,9 @@ func (a *App) SftpLocalRename(sessionID, oldPath, newPath string) error {
 }
 
 func (a *App) SftpLocalMkdir(sessionID, dir string) error {
+	if err := a.requireSftpLocalPath(sessionID, dir); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -221,6 +342,9 @@ func (a *App) SftpLocalMkdir(sessionID, dir string) error {
 }
 
 func (a *App) SftpLocalGetContent(sessionID, localPath string) (string, error) {
+	if err := a.requireSftpLocalPath(sessionID, localPath); err != nil {
+		return "", err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return "", err
@@ -233,6 +357,9 @@ func (a *App) SftpLocalGetContent(sessionID, localPath string) (string, error) {
 }
 
 func (a *App) SftpLocalPutContent(sessionID, localPath, contentBase64, encoding string) error {
+	if err := a.requireSftpLocalPath(sessionID, localPath); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -250,6 +377,12 @@ func (a *App) SftpLocalPutContent(sessionID, localPath, contentBase64, encoding 
 }
 
 func (a *App) SftpLocalCopy(sessionID, oldPath, newPath string) error {
+	if err := a.requireSftpLocalPath(sessionID, oldPath); err != nil {
+		return err
+	}
+	if err := a.requireSftpLocalPath(sessionID, newPath); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -258,6 +391,12 @@ func (a *App) SftpLocalCopy(sessionID, oldPath, newPath string) error {
 }
 
 func (a *App) SftpLocalMove(sessionID, oldPath, newPath string) error {
+	if err := a.requireSftpLocalPath(sessionID, oldPath); err != nil {
+		return err
+	}
+	if err := a.requireSftpLocalPath(sessionID, newPath); err != nil {
+		return err
+	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
 		return err
@@ -480,14 +619,46 @@ func writeExtEditTemp(dir, stem string, sum []byte, ext string, content []byte) 
 	return tmp, nil
 }
 
+// externalEditorCommand resolves the external editor command Go-side from
+// the persisted local state. The webview-supplied editorCmd argument of the
+// editor bindings is kept in their signatures for compatibility but is
+// deliberately IGNORED: a compromised renderer must not be able to exec an
+// arbitrary program through them. The program part must additionally be a
+// bare name (no path separators), so the setting can only launch something
+// findable on PATH — never a dropped binary by absolute or relative path.
+func (a *App) externalEditorCommand() (string, error) {
+	if a.localStateStore == nil {
+		return "", errors.New("no external editor configured")
+	}
+	ls, err := a.localStateStore.Load()
+	if err != nil {
+		return "", errors.New("no external editor configured")
+	}
+	cmd := strings.TrimSpace(ls.ExternalEditor)
+	if cmd == "" {
+		return "", errors.New("no external editor configured")
+	}
+	prog, _, err := splitCommand(cmd)
+	if err != nil {
+		return "", fmt.Errorf("invalid external editor command: %w", err)
+	}
+	if prog != filepath.Base(prog) || strings.ContainsAny(prog, `/\`) {
+		return "", fmt.Errorf("external editor must be a bare program name, got: %s", prog)
+	}
+	return cmd, nil
+}
+
 // SftpOpenExternalEditor opens a remote file in a configurable external editor
 // and starts background auto-upload of changes back to the remote path.
-// editorCmd is the program + any fixed flags (quoted paths allowed); the temp
-// file path is appended as the final argument. Returns immediately once the
-// editor has launched; progress is reported via "sftp:extedit" Wails events.
-func (a *App) SftpOpenExternalEditor(sessionID, remotePath, editorCmd string) error {
-	if strings.TrimSpace(editorCmd) == "" {
-		return errors.New("no external editor configured")
+// The third argument is kept for binding compatibility but ignored — the
+// editor command is resolved Go-side from the persisted local state (see
+// externalEditorCommand); the temp file path is appended as the final
+// argument. Returns immediately once the editor has launched; progress is
+// reported via "sftp:extedit" Wails events.
+func (a *App) SftpOpenExternalEditor(sessionID, remotePath, _ string) error {
+	editorCmd, err := a.externalEditorCommand()
+	if err != nil {
+		return err
 	}
 	fs, err := a.getSftp(sessionID)
 	if err != nil {
@@ -502,8 +673,8 @@ func (a *App) SftpOpenExternalEditor(sessionID, remotePath, editorCmd string) er
 		return errors.New("refusing to open binary file in external editor")
 	}
 
-	// Validate the command before any state is armed: a bad editorCmd must
-	// leave no temp file, watcher or registered run behind.
+	// Validate the command before any state is armed: a bad editor command
+	// must leave no temp file, watcher or registered run behind.
 	prog, args, err := splitCommand(editorCmd)
 	if err != nil {
 		return err
@@ -566,6 +737,12 @@ func (a *App) OpenWithSystemLocal(localPath string) error {
 	if strings.TrimSpace(localPath) == "" {
 		return errors.New("empty local path")
 	}
+	// Runs the OS handler on the path (which executes .app/.desktop/.command
+	// targets): only a granted path or one inside a session's browsed local
+	// roots (the pane's own navigation) is accepted.
+	if err := a.requireLocalPanePath(localPath); err != nil {
+		return err
+	}
 	return a.openWithSystem(localPath)
 }
 
@@ -627,22 +804,30 @@ func (a *App) startExtEditWatcher(sessionID, remotePath string, fs fileTransferS
 // OpenExternalEditorLocal launches the configured external editor directly on
 // a local file (used by the SFTP "local" pane). Unlike the remote flavour, no
 // temp copy or auto-upload is involved: the file already lives on disk, so the
-// editor edits it in place and the launch returns immediately.
-func (a *App) OpenExternalEditorLocal(localPath, editorCmd string) error {
-	if strings.TrimSpace(editorCmd) == "" {
-		return errors.New("no external editor configured")
+// editor edits it in place and the launch returns immediately. The second
+// argument is kept for binding compatibility but ignored — the editor command
+// comes from the persisted local state (see externalEditorCommand).
+func (a *App) OpenExternalEditorLocal(localPath, _ string) error {
+	cmd, err := a.externalEditorCommand()
+	if err != nil {
+		return err
 	}
-	prog, args, err := splitCommand(editorCmd)
+	// The path is a pane-local file: require it to be granted or inside a
+	// session's browsed local roots before handing it to a program.
+	if err := a.requireLocalPanePath(localPath); err != nil {
+		return err
+	}
+	prog, args, err := splitCommand(cmd)
 	if err != nil {
 		return err
 	}
 	args = append(args, localPath)
-	cmd := exec.Command(prog, args...)
-	hideProcWindow(cmd)
-	if err := cmd.Start(); err != nil {
+	cmd2 := exec.Command(prog, args...)
+	hideProcWindow(cmd2)
+	if err := cmd2.Start(); err != nil {
 		return fmt.Errorf("failed to start external editor %s: %w", prog, err)
 	}
-	go cmd.Wait()
+	go cmd2.Wait()
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ys-ll/uniterm/backend/log"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
 )
@@ -33,6 +34,14 @@ const (
 	// Sub-negotiation
 	telnetTTYPEIs   = 0
 	telnetTTYPESend = 1
+
+	// telnetPendingCap bounds the bytes filterIAC may retain for an
+	// incomplete command (split option byte, lone IAC, unfinished sub-
+	// negotiation). A peer that never completes the sequence must not be
+	// able to grow the buffer without limit: past the cap the tail is
+	// dropped with an error log and parsing restarts clean. Real sub-
+	// negotiations (TTYPE, NAWS) are a few dozen bytes at most.
+	telnetPendingCap = 4096
 )
 
 type TelnetSession struct {
@@ -42,18 +51,23 @@ type TelnetSession struct {
 	quit     chan struct{}
 	quitOnce sync.Once
 
-	enc            encoding.Encoding    // input(write) codec; nil = utf-8 passthrough
-	encoder        transform.Transformer // cached encoder; nil = utf-8 passthrough
-	decoder        *encoding.Decoder     // persistent streaming decoder for output(read)
-	decodeLeftover []byte                // trailing partial multibyte bytes between reads
-	decodeScratch  []byte                // reusable src buffer for decodeOutput
-	encScratch     []byte                // reusable dst buffer for encodeInput
+	enc            encoding.Encoding // input(write) codec; nil = utf-8 passthrough
+	encIn          inputEncoder      // UTF-8 → session encoding for writes (own lock)
+	decoder        *encoding.Decoder // persistent streaming decoder for output(read)
+	decodeLeftover []byte            // trailing partial multibyte bytes between reads
+	decodeScratch  []byte            // reusable src buffer for decodeOutput
 
 	// Telnet option state (configured in Connect, consumed by Write)
-	localEcho   bool
-	telnetSendMode    string // "character" | "line"
-	newlineMode string // "cr" | "crlf"
-	lineBuf           []byte
+	localEcho      bool
+	telnetSendMode string // "character" | "line"
+	newlineMode    string // "cr" | "crlf"
+	lineBuf        []byte // line mode only: bytes since the last flushed line
+
+	// iacPending holds an incomplete telnet command carried across reads
+	// (readLoop goroutine only): a split IAC WILL/WONT/DO/DONT missing its
+	// option byte, a lone trailing IAC, or an IAC SB ... sequence still
+	// awaiting its terminating IAC SE. Capped by telnetPendingCap.
+	iacPending []byte
 }
 
 func NewTelnetSession(id string) *TelnetSession {
@@ -153,48 +167,97 @@ func (s *TelnetSession) handleRead(data []byte) {
 	}
 }
 
+// filterIAC strips telnet IAC command sequences from data and returns the
+// terminal payload. The parser is stateful: a command split across reads (a
+// missing option byte, a lone trailing IAC, or an IAC SB … sequence still
+// awaiting its terminating IAC SE) is retained in s.iacPending and merged
+// with the next read instead of being emitted as data or dropped. Incomplete
+// tails are never emitted, and every loop iteration either consumes at least
+// one input byte or breaks out to retain the tail, so a truncated command
+// can no longer spin the readLoop forever. Must only be called from the
+// single readLoop goroutine (tests call it from one goroutine too).
 func (s *TelnetSession) filterIAC(data []byte) []byte {
+	if len(s.iacPending) > 0 {
+		merged := make([]byte, 0, len(s.iacPending)+len(data))
+		merged = append(merged, s.iacPending...)
+		merged = append(merged, data...)
+		s.iacPending = s.iacPending[:0]
+		data = merged
+	}
+
 	var out []byte
 	i := 0
+loop:
 	for i < len(data) {
-		if data[i] == telnetIAC && i+1 < len(data) {
-			cmd := data[i+1]
-			switch cmd {
-			case telnetWILL, telnetWONT, telnetDO, telnetDONT:
-				if i+2 < len(data) {
-					s.handleNegotiation(cmd, data[i+2])
-					i += 3
-					continue
-				}
-			case telnetSB:
-				s.handleSubNegotiation(data, i)
-				// Skip to end of sub-negotiation.
-				found := false
-				for j := i + 2; j < len(data)-1; j++ {
-					if data[j] == telnetIAC && data[j+1] == telnetSE {
-						i = j + 2
-						found = true
-						break
-					}
-				}
-				if !found {
-					i = len(data)
-				}
-				continue
-			case telnetIAC:
-				out = append(out, telnetIAC)
-				i += 2
-				continue
-			default:
-				i += 2
-				continue
-			}
-		} else {
+		if data[i] != telnetIAC {
 			out = append(out, data[i])
 			i++
+			continue
+		}
+		if i+1 == len(data) {
+			break loop // lone trailing IAC: hold for the next read
+		}
+		cmd := data[i+1]
+		switch cmd {
+		case telnetWILL, telnetWONT, telnetDO, telnetDONT:
+			if i+2 == len(data) {
+				break loop // option byte arrives with the next read
+			}
+			s.handleNegotiation(cmd, data[i+2])
+			i += 3
+		case telnetSB:
+			// Find the terminating IAC SE; IAC IAC inside the payload is an
+			// escaped 0xFF data byte, not the terminator.
+			end := -1
+			for j := i + 2; j < len(data); j++ {
+				if data[j] != telnetIAC {
+					continue
+				}
+				if j+1 == len(data) {
+					break // split IAC: incomplete
+				}
+				switch data[j+1] {
+				case telnetSE:
+					end = j + 2
+				case telnetIAC:
+					j++ // escaped 0xFF payload byte
+				}
+				if end >= 0 {
+					break
+				}
+			}
+			if end < 0 {
+				break loop // unfinished sub-negotiation: hold for the next read
+			}
+			s.handleSubNegotiation(data, i)
+			i = end
+		case telnetIAC:
+			out = append(out, telnetIAC)
+			i += 2
+		default:
+			i += 2
 		}
 	}
+	s.holdIAC(data[i:])
 	return out
+}
+
+// holdIAC retains the incomplete command tail for the next read, capped at
+// telnetPendingCap: past the cap the tail is dropped with an error log and
+// parsing restarts from a clean state, so a peer that never completes a
+// sequence cannot grow the buffer without bound.
+func (s *TelnetSession) holdIAC(tail []byte) {
+	if len(tail) == 0 {
+		s.iacPending = s.iacPending[:0]
+		return
+	}
+	if len(tail) > telnetPendingCap {
+		log.Writef("session %s: incomplete telnet IAC sequence exceeds %d bytes, dropping it",
+			s.id, telnetPendingCap)
+		s.iacPending = s.iacPending[:0]
+		return
+	}
+	s.iacPending = append(s.iacPending[:0], tail...)
 }
 
 func (s *TelnetSession) handleSubNegotiation(data []byte, start int) {
@@ -299,6 +362,28 @@ func (s *TelnetSession) runPostLoginScript(ctx context.Context, script string) {
 	}, s.IsConnected)
 }
 
+// flushLineBuffer writes the buffered line to the server (applying CRLF
+// translation when configured) and clears lineBuf. Under newlineMode "crlf"
+// a '\r' becomes "\r\n" unless it is already followed by '\n' — so a
+// \r\n-terminated line is sent as typed, never doubled.
+func (s *TelnetSession) flushLineBuffer() error {
+	flush := s.lineBuf
+	if s.newlineMode == "crlf" {
+		translated := make([]byte, 0, len(flush)+1)
+		for i, fb := range flush {
+			if fb == '\r' && !(i+1 < len(flush) && flush[i+1] == '\n') {
+				translated = append(translated, '\r', '\n')
+			} else {
+				translated = append(translated, fb)
+			}
+		}
+		flush = translated
+	}
+	_, err := s.conn.Write(flush)
+	s.lineBuf = s.lineBuf[:0]
+	return err
+}
+
 func (s *TelnetSession) Write(data []byte) error {
 	if s.conn == nil {
 		return fmt.Errorf("not connected")
@@ -306,31 +391,50 @@ func (s *TelnetSession) Write(data []byte) error {
 
 	encoded := s.encodeInput(data)
 
-	// Line mode: buffer until \r or \n, then flush
+	// Line mode: buffer until a newline, flush every complete line, keep the
+	// trailing partial line in lineBuf for the next Write. The old code
+	// returned right after the first flush, silently dropping everything
+	// after the first newline (pasting "a\rb\r" sent only "a").
 	if s.telnetSendMode == "line" {
+		remStart := len(s.lineBuf) // index in lineBuf where this call's unflushed bytes start
+		flush := func() error {
+			remStart = 0
+			return s.flushLineBuffer()
+		}
+		// A '\r' defers its flush until the next byte is seen: if that byte
+		// is '\n', the pair is a single CRLF terminator (one flush, no
+		// spurious empty line for the lone '\n'). A '\n' terminates at once.
+		pendingCR := false
 		for _, b := range encoded {
-			s.lineBuf = append(s.lineBuf, b)
-			if b == '\r' || b == '\n' {
-				flush := s.lineBuf
-				// Apply CRLF translation on the flushed line
-				if s.newlineMode == "crlf" {
-					var translated []byte
-					for _, fb := range flush {
-						if fb == '\r' {
-							translated = append(translated, '\r', '\n')
-						} else {
-							translated = append(translated, fb)
-						}
-					}
-					flush = translated
+			if pendingCR && b != '\n' {
+				if err := flush(); err != nil {
+					return err
 				}
-				_, err := s.conn.Write(flush)
-				s.lineBuf = s.lineBuf[:0]
+			}
+			pendingCR = false
+			s.lineBuf = append(s.lineBuf, b)
+			switch b {
+			case '\n':
+				if err := flush(); err != nil {
+					return err
+				}
+			case '\r':
+				pendingCR = true
+			}
+		}
+		if pendingCR {
+			// Input ended on a line terminator: the line is complete.
+			if err := flush(); err != nil {
 				return err
 			}
 		}
-		// Echo each character locally while buffering for visibility
-		s.emitData(data)
+		// Echo only what remains buffered (the trailing partial line this
+		// call contributed), and only when local echo is on — a flushed line
+		// was never echoed by the old code either, and servers that don't
+		// echo don't care what we display.
+		if s.localEcho && len(s.lineBuf) > remStart {
+			s.emitData(append([]byte(nil), s.lineBuf[remStart:]...))
+		}
 		return nil
 	}
 
@@ -393,10 +497,10 @@ func (s *TelnetSession) SetEncoding(name string) {
 	s.enc = enc
 	if enc == nil {
 		s.decoder = nil
-		s.encoder = nil
+		s.encIn.set(nil)
 	} else {
 		s.decoder = enc.NewDecoder()
-		s.encoder = enc.NewEncoder()
+		s.encIn.set(enc.NewEncoder())
 	}
 	s.decodeLeftover = nil
 	s.mu.Unlock()
@@ -438,17 +542,5 @@ func (s *TelnetSession) decodeOutput(data []byte) []byte {
 // encodeInput converts user keystrokes (UTF-8) to the configured encoding
 // before writing to the remote. Each call handles a complete UTF-8 input.
 func (s *TelnetSession) encodeInput(data []byte) []byte {
-	s.mu.RLock()
-	encoder := s.encoder
-	s.mu.RUnlock()
-	if encoder == nil {
-		return data
-	}
-	encoder.Reset()
-	s.encScratch = s.encScratch[:0]
-	nDst, _, err := encoder.Transform(s.encScratch, data, true)
-	if err != nil && err != transform.ErrShortSrc {
-		return data
-	}
-	return s.encScratch[:nDst]
+	return s.encIn.encode(data)
 }

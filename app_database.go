@@ -388,6 +388,35 @@ func (a *App) RedisHashDel(sessionID string, key string, fields []string) (int64
 	return rs.HashDel(key, fields)
 }
 
+// RedisHashSetFields sets multiple hash field-value pairs in one round trip.
+func (a *App) RedisHashSetFields(sessionID string, key string, entries []session.FieldEntry) error {
+	rs, err := a.redisSession(sessionID)
+	if err != nil {
+		return err
+	}
+	return rs.HashSetFields(key, entries)
+}
+
+// RedisGetHashFields reads up to limit hash fields via HSCAN (capped so a
+// huge hash cannot hang the value editor).
+func (a *App) RedisGetHashFields(sessionID string, key string, limit int64) ([]session.FieldEntry, error) {
+	rs, err := a.redisSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return rs.GetHashFields(key, limit)
+}
+
+// RedisReplaceList atomically replaces a whole list (MULTI/DEL/RPUSH/EXEC);
+// an empty slice deletes the key.
+func (a *App) RedisReplaceList(sessionID string, key string, values []string) error {
+	rs, err := a.redisSession(sessionID)
+	if err != nil {
+		return err
+	}
+	return rs.ListReplace(key, values)
+}
+
 func (a *App) RedisGetListRange(sessionID string, key string, start int64, stop int64) ([]string, error) {
 	rs, err := a.redisSession(sessionID)
 	if err != nil {
@@ -436,6 +465,16 @@ func (a *App) RedisGetSetAll(sessionID string, key string) ([]string, error) {
 	return rs.GetSetAll(key)
 }
 
+// RedisGetSetMembers reads up to limit set members via SSCAN (capped so a
+// huge set cannot hang the value editor).
+func (a *App) RedisGetSetMembers(sessionID string, key string, limit int64) ([]string, error) {
+	rs, err := a.redisSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return rs.GetSetMembers(key, limit)
+}
+
 func (a *App) RedisSetAdd(sessionID string, key string, members []string) (int64, error) {
 	rs, err := a.redisSession(sessionID)
 	if err != nil {
@@ -458,6 +497,16 @@ func (a *App) RedisGetSortedSetRange(sessionID string, key string, min string, m
 		return nil, err
 	}
 	return rs.GetSortedSetRange(key, min, max)
+}
+
+// RedisGetZSetRangeCapped returns at most limit members within a score range
+// (capped so a huge sorted set cannot hang the value editor).
+func (a *App) RedisGetZSetRangeCapped(sessionID string, key string, min string, max string, limit int64) ([]session.ScoredMember, error) {
+	rs, err := a.redisSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return rs.GetZSetRangeCapped(key, min, max, limit)
 }
 
 func (a *App) RedisZSetAdd(sessionID string, key string, members []session.ScoredMember) (int64, error) {

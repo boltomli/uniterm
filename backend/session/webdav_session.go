@@ -55,7 +55,7 @@ func (s *WebDAVSession) Connect(config ConnectionConfig) error {
 	return nil
 }
 
-func (s *WebDAVSession) Write(data []byte) error  { return nil }
+func (s *WebDAVSession) Write(data []byte) error     { return nil }
 func (s *WebDAVSession) Resize(cols, rows int) error { return nil }
 
 func (s *WebDAVSession) Disconnect() error {
@@ -448,6 +448,10 @@ func (s *WebDAVSession) calcWebdavRemoteDirSize(remoteDir string) (int64, error)
 		return 0, err
 	}
 	for _, e := range entries {
+		// Servers may list "." and ".."; recursing on them never terminates.
+		if name := e.Name(); name == "." || name == ".." {
+			continue
+		}
 		if e.IsDir() {
 			sub, err := s.calcWebdavRemoteDirSize(path.Join(remoteDir, e.Name()))
 			if err != nil {
@@ -481,8 +485,20 @@ func (s *WebDAVSession) downloadDir(remoteDir, localDir string, task *TransferTa
 			return task.ctx.Err()
 		default:
 		}
-		rp := path.Join(remoteDir, e.Name())
-		lp := filepath.Join(localDir, e.Name())
+		// Skip listing noise first (a "." entry would join onto localDir
+		// itself), then require the server-supplied name to be a plain
+		// component that stays under localDir (security.md P0: WebDAV
+		// directory downloads join names unchecked — "..\x" escapes on
+		// Windows).
+		name := e.Name()
+		if name == "." || name == ".." {
+			continue
+		}
+		rp := path.Join(remoteDir, name)
+		lp, jerr := safeDownloadChild(localDir, name)
+		if jerr != nil {
+			return jerr
+		}
 		if e.IsDir() {
 			if err := s.downloadDir(rp, lp, task); err != nil {
 				return err
@@ -515,28 +531,15 @@ func (s *WebDAVSession) downloadFile(task *TransferTask, remotePath, localPath s
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
-	buf := make([]byte, 64*1024)
-	for {
-		select {
-		case <-task.ctx.Done():
-			return task.ctx.Err()
-		default:
-		}
-		task.waitIfPaused()
-		n, e := rc.Read(buf)
-		if n > 0 {
-			dst.Write(buf[:n])
-			task.addProgress(int64(n))
-			s.emitTransferProgress(task)
-		}
-		if e != nil {
-			if e == io.EOF {
-				return nil
-			}
-			return e
-		}
+	// The shared stream copy returns write errors and non-EOF read errors
+	// (the old loop dropped dst.Write's error, so a full disk left a short
+	// file reported as completed) and surfaces the Close error too.
+	cpErr := copyDownloadStream(dst, rc, task, func() { s.emitTransferProgress(task) })
+	closeErr := dst.Close()
+	if cpErr != nil {
+		return cpErr
 	}
+	return closeErr
 }
 
 func (s *WebDAVSession) uploadDir(localDir, remoteDir string, task *TransferTask) error {
@@ -625,4 +628,3 @@ func (s *WebDAVSession) uploadFile(task *TransferTask, localPath, remotePath str
 	}
 	return <-errCh
 }
-

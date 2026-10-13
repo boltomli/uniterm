@@ -88,7 +88,9 @@ func probeSSH(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -115,7 +117,7 @@ func probeSSH(config ConnectionConfig) (string, error) {
 		return "", fmt.Errorf("ssh: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
 	}
 	defer client.Close()
 	return fmt.Sprintf("ssh: connected as %s@%s:%d", config.User, config.Host, config.Port), nil
@@ -129,7 +131,9 @@ func probeSFTP(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -154,7 +158,7 @@ func probeSFTP(config ConnectionConfig) (string, error) {
 		return "", fmt.Errorf("sftp: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
 	}
 	defer client.Close()
 	sc, err := sftp.NewClient(client)
@@ -172,7 +176,9 @@ func probeSCP(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	cb, trust := NewHostKeyVerifier(addr)
+	// Pin under the original host:port — see hostKeyPinAddr (jump-host
+	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
+	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -197,7 +203,7 @@ func probeSCP(config ConnectionConfig) (string, error) {
 		return "", fmt.Errorf("scp: %w", err)
 	}
 	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", addr, trust.Fingerprint)
+		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
 	}
 	defer client.Close()
 	sess, err := client.NewSession()
@@ -233,35 +239,27 @@ func probeTCP(config ConnectionConfig) (string, error) {
 }
 
 func probeFTP(config ConnectionConfig) (string, error) {
-	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
 	if config.Port <= 0 {
-		addr = fmt.Sprintf("%s:21", config.Host)
+		addr = net.JoinHostPort(config.Host, "21")
 	}
 	encryption := config.FtpEncryption
 	if encryption == "" {
 		encryption = "none"
 	}
-	tlsConfig := &tls.Config{InsecureSkipVerify: config.FtpSkipVerify}
-
-	var conn *ftp.ServerConn
-	var err error
-	switch encryption {
-	case "required":
-		conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second), ftp.DialWithExplicitTLS(tlsConfig))
-	case "auto":
-		conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second), ftp.DialWithExplicitTLS(tlsConfig))
-		if err != nil {
-			conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second))
-		}
-	default:
-		conn, err = ftp.Dial(addr, ftp.DialWithTimeout(30*time.Second))
-	}
+	// Same guarded dial as FTPSession.Connect: ServerName on the TLS config
+	// and no plaintext downgrade except the FEAT-verified rejection case.
+	conn, downgraded, err := dialFTPGuarded(addr, encryption, ftpTLSConfig(config),
+		[]ftp.DialOption{ftp.DialWithTimeout(30 * time.Second)})
 	if err != nil {
 		return "", fmt.Errorf("ftp: %w", err)
 	}
 	defer conn.Quit()
 	if err := conn.Login(config.User, config.Password); err != nil {
 		return "", fmt.Errorf("ftp login: %w", err)
+	}
+	if downgraded {
+		return fmt.Sprintf("ftp: logged in as %s@%s (WARNING: connection NOT encrypted - AUTH TLS rejected by server)", config.User, config.Host), nil
 	}
 	return fmt.Sprintf("ftp: logged in as %s@%s", config.User, config.Host), nil
 }

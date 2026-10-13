@@ -317,6 +317,105 @@ func TestScpFetchTreeCancelAbortsWalk(t *testing.T) {
 	}
 }
 
+// TestScpFetchTreeRejectsTraversalNames: a compromised server must not be
+// able to write outside the chosen download folder through the C/D directive
+// name (security.md High: CVE-2019-6111 class). Every name must be a plain
+// single component; anything else aborts the walk without touching disk.
+func TestScpFetchTreeRejectsTraversalNames(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		// path (relative to the download folder) where the malicious name
+		// would land if the join were unchecked
+		escape string
+	}{
+		{
+			name:   "file with parent traversal",
+			script: "D0755 0 src\n" + "C0644 3 ../up.txt\n" + "AAA\x00" + "E\n",
+			escape: "../up.txt",
+		},
+		{
+			name:   "file with deep traversal",
+			script: "D0755 0 src\n" + "C0644 3 ../../up2.txt\n" + "AAA\x00" + "E\n",
+			escape: "../../up2.txt",
+		},
+		{
+			name:   "file with backslash traversal",
+			script: "D0755 0 src\n" + "C0644 3 ..\\win.txt\n" + "AAA\x00" + "E\n",
+			escape: `..\win.txt`,
+		},
+		{
+			name:   "file with slash in name",
+			script: "D0755 0 src\n" + "C0644 3 sub/down.txt\n" + "AAA\x00" + "E\n",
+			escape: "sub/down.txt",
+		},
+		{
+			name:   "nested dir directive with parent",
+			script: "D0755 0 src\n" + "D0755 0 ..\n" + "C0644 3 x.txt\n" + "AAA\x00" + "E\n" + "E\n",
+			escape: "../x.txt",
+		},
+		{
+			name:   "root dir directive with parent",
+			script: "D0755 0 ..\n" + "C0644 3 y.txt\n" + "AAA\x00" + "E\n",
+			escape: "y.txt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			// Two levels deep so "../../x" still lands inside tmp, keeping the
+			// red run from writing outside the test sandbox.
+			root := filepath.Join(tmp, "x", "dl")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			c, _ := newFakeScpConn([]byte(tc.script))
+			s := NewSCPSession("test-scp")
+			task := newScpTreeTask(root, "/remote/src")
+
+			err := s.fetchTree(c, "/remote/src", root, task)
+			if err == nil {
+				t.Errorf("fetchTree accepted a malicious directive name (script %q)", tc.script)
+			}
+			if _, serr := os.Stat(filepath.Join(root, tc.escape)); serr == nil {
+				t.Errorf("file written through malicious name %q", tc.escape)
+			}
+		})
+	}
+}
+
+// TestScpFetchTreeStillAcceptsLegitNames: ordinary names — spaces, unicode,
+// leading dots — keep working after the traversal guard.
+func TestScpFetchTreeStillAcceptsLegitNames(t *testing.T) {
+	root := t.TempDir()
+	script := "" +
+		"D0755 0 src\n" +
+		"C0644 3 a b.txt\n" + "AAA\x00" +
+		"C0644 2 ..hidden\n" + "BB\x00" +
+		"D0755 0 sub dir\n" +
+		"C0644 1 c.txt\n" + "C\x00" + "E\n" +
+		"E\n" +
+		"E\n"
+	c, _ := newFakeScpConn([]byte(script))
+	s := NewSCPSession("test-scp")
+	task := newScpTreeTask(root, "/remote/src")
+	if err := s.fetchTree(c, "/remote/src", root, task); err != nil {
+		t.Fatalf("fetchTree: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "a b.txt")); err != nil || string(b) != "AAA" {
+		t.Fatalf("a b.txt = %q, err %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "..hidden")); err != nil || string(b) != "BB" {
+		t.Fatalf("..hidden = %q, err %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sub dir", "c.txt")); err != nil {
+		t.Fatalf("sub dir/c.txt: %v", err)
+	}
+	if task.CompletedFiles != 3 {
+		t.Fatalf("CompletedFiles = %d, want 3", task.CompletedFiles)
+	}
+}
+
 // TestScpSendTreePerFileTracking drives the upload walker with a fake
 // connection whose stdout is a stream of acks. Asserts the directives and
 // file data written by the client and the per-file accounting.

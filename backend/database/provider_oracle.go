@@ -43,6 +43,10 @@ func (p *oracleProvider) DriverName() string {
 	return "oracle"
 }
 
+func (p *oracleProvider) DBType() string {
+	return "oracle"
+}
+
 func (p *oracleProvider) Quote(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

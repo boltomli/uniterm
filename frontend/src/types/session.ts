@@ -38,6 +38,17 @@ export interface ConnectionConfig {
   password?: string
   keyPath?: string
   keyContent?: string // inline private-key text (authType === 'keyText')
+  // Secret presence flags: since LoadConnections stopped sending decrypted
+  // secrets to the webview (security.md, connection secret redaction), the
+  // secret fields above arrive blank and these flags say whether one is
+  // stored — the edit dialog shows a "saved, leave blank to keep"
+  // placeholder, the credential check skips its prompt, and the backend
+  // restores a blanked-but-flagged secret on save.
+  hasPassword?: boolean
+  hasKeyContent?: boolean
+  hasTunnelSSHPassword?: boolean
+  hasSentinelPassword?: boolean
+  hasK8sConfigInline?: boolean
   identityId?: string // reference to a vault identity (authType === 'identity')
   proxyId?: string // reference to a saved outbound proxy (SOCKS5/HTTP)
   // File-transfer protocol for the SSH companion file panel / "connect SFTP/SCP"
@@ -57,6 +68,11 @@ export interface ConnectionConfig {
   // "DOMAIN\user" prefix in user is used as a fallback.
   rdpDomain?: string
   rdpAdminSession?: boolean
+  // RDP resource redirection: per-connection opt-ins that default to OFF.
+  // Connections saved before the fields existed carry them undefined and
+  // must behave as off (see utils/rdpRedirection.ts).
+  rdpRedirectClipboard?: boolean
+  rdpRedirectDrives?: boolean
   // Local terminal shell path (for WSL, `wsl://<distro>` carries the distro)
   shellPath?: string
   // Working directory for local terminal (defaults to user home)

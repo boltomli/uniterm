@@ -55,6 +55,10 @@ func (p *sqlserverProvider) DriverName() string {
 	return "sqlserver"
 }
 
+func (p *sqlserverProvider) DBType() string {
+	return "sqlserver"
+}
+
 func (p *sqlserverProvider) Quote(name string) string {
 	return "[" + strings.ReplaceAll(name, "]", "]]") + "]"
 }

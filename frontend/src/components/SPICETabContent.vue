@@ -53,7 +53,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { ConnectionConfig } from '../types/session'
 import { Events } from '@wailsio/runtime'
-import { CreateSession, CloseSession } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -88,11 +88,24 @@ async function connect() {
     sessionStore.initSession(info.id)
     if (info.proxyAddr) {
       panelStore.setProxyAddr(props.panelId, info.proxyAddr)
-      initSpice(info.proxyAddr, props.config.password || '')
+      initSpice(info.proxyAddr, await resolvePassword())
     }
   } catch (e: any) {
     console.error('SPICE connect error:', e)
     status.value = 'error'
+  }
+}
+
+// LoadConnections 脱敏后渲染层不再持有连接密码；SPICE 客户端握手需要明文，
+// 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
+async function resolvePassword(): Promise<string> {
+  if (!props.config) return ''
+  if (props.config.password) return props.config.password
+  try {
+    const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }
+    return secret.password || ''
+  } catch {
+    return ''
   }
 }
 
@@ -216,7 +229,7 @@ onMounted(() => {
   const storedProxy = panelStore.getProxyAddr(props.panelId)
   if (storedProxy && props.config) {
     status.value = 'connected'
-    initSpice(storedProxy, props.config.password || '')
+    void resolvePassword().then((pw) => initSpice(storedProxy, pw))
   } else if (currentSessionId.value) {
     status.value = 'connected'
     connect()
@@ -233,11 +246,11 @@ onMounted(() => {
           panelStore.setProxyAddr(props.panelId, data.proxyAddr)
         }
         if (data.proxyAddr && props.config) {
-          initSpice(data.proxyAddr, props.config.password || '')
+          void resolvePassword().then((pw) => initSpice(data.proxyAddr, pw))
         } else {
           const proxy = panelStore.getProxyAddr(props.panelId)
           if (proxy) {
-            initSpice(proxy, props.config?.password || '')
+            void resolvePassword().then((pw) => initSpice(proxy, pw))
           }
         }
         break

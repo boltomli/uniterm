@@ -17,96 +17,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, provide, watch, nextTick } from 'vue'
+import { ref, reactive, provide, watch, nextTick, onBeforeUnmount } from 'vue'
+import { getMenuCoordinator, type ActiveMenu } from '../composables/menuCoordinator'
 
 // Single unified menu. Covers every showed-panel style of menu the app uses:
 //   - flat button trigger    → toggle(anchorEl, data) / open(anchorEl, data)
 //   - right-click / pointer  → openAt(x, y, data)
 //   - nested submenus        → render .submenu-wrap rows in the slot; the active
-//                               flyout key is the `submenu` slot prop ({ active }).
+//                              flyout key is the `submenu` slot prop ({ active }).
 // The .conn-context-menu skin lives once in style.css, reused by everything.
-
-// ── Global single-open coordinator (module scope, shared across ALL <Menu>s) ──
-// Only the most recently opened menu stays open: opening one closes whatever was
-// open before, and ONE shared document listener dismisses the active menu on
-// outside-click / Escape. Defined here once so hosts never reimplement it.
-// Note: per/future migration this also broadcasts so non-Menu popovers close.
-interface ActiveMenu { el: () => HTMLElement | null; close: () => void }
-let active: ActiveMenu | null = null
-let docBound = false
-
-// ── RDP overlay coordination ──
-// The RDP ActiveX native window sits above the webview layer and occludes
-// HTML-rendered menus. Every Menu instance hides the RDP window when it opens
-// and restores it when it closes. A reference counter handles overlapping
-// transitions (one menu closing as another opens): the push fires on the first
-// open, the pop only on the last close.
-let menuOpenCount = 0
-
-// Close the active menu whenever any surface broadcasts the legacy
-// global:close-context-menus event (opening a dialog, RDP overlay push,
-// keyboard nav, etc.). Centralized here so no host re-subscribes to force-close
-// menus — single-open + this event is the whole close story.
-window.addEventListener('global:close-context-menus', () => { active?.close() })
-
-function activate(m: ActiveMenu) {
-  // Right-click menus close each other because main.ts dispatches the global
-  // close signal on every `contextmenu` (capture) before the new menu opens.
-  // Broadcast the same signal here when taking over a *different* menu so a
-  // button-triggered open closes everything too — this is the close-other path
-  // that's actually proven to fire. Dispatch BEFORE switching `active` so the
-  // signal closes the previous menu, not this one.
-  //
-  // Re-activating the SAME menu (open()/openAt() emit `update:visible` true and
-  // the visible-prop watcher ALSO calls activate) must NOT push/ref-count again,
-  // otherwise menuOpenCount never returns to 0 and the pop that restores the RDP
-  // window never fires — the RDP stays on top and occludes every later menu.
-  if (active === m) {
-    // Already the active menu: ensure the shared dismiss listeners are bound,
-    // then bail — this is the watcher's duplicate call.
-    if (!docBound) {
-      document.addEventListener('click', onDocClick)
-      document.addEventListener('keydown', onDocKeydown)
-      docBound = true
-    }
-    return
-  }
-  window.dispatchEvent(new Event('global:close-context-menus'))
-  active?.close()
-  active = m
-  if (!docBound) {
-    document.addEventListener('click', onDocClick)
-    document.addEventListener('keydown', onDocKeydown)
-    docBound = true
-  }
-  // Hide the native RDP window so menus aren't occluded (first open only).
-  if (menuOpenCount === 0) {
-    window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
-  }
-  menuOpenCount++
-}
-function deactivate(m: ActiveMenu) {
-  if (active === m) active = null
-  menuOpenCount = Math.max(0, menuOpenCount - 1)
-  // Restore the RDP window only after the last menu closes.
-  if (menuOpenCount === 0) {
-    window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
-  }
-}
-
-// Bubble-phase outside-click close. Trigger buttons use @click.stop so their own
-// click only runs toggle(); anything that bubbles past the open menu closes it.
-// Clicks inside a teleported flyout (see MenuSubmenu) live outside the menu root
-// in the DOM but must count as inside.
-function onDocClick(e: MouseEvent) {
-  if (!active) return
-  const t = e.target as HTMLElement
-  const el = active.el()
-  if (el && !el.contains(t) && !t.closest('.menu-submenu')) active.close()
-}
-function onDocKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') active?.close()
-}
+//
+// The single-open coordinator (only the most recently opened menu stays open,
+// one shared document listener dismisses it on outside-click / Escape, RDP
+// overlay ref-counting) is a MODULE singleton in composables/menuCoordinator —
+// <script setup> state is per instance, so a copy here would leak window and
+// document listeners on every mount (security.md #12).
+const menuCoordinator = getMenuCoordinator()
 
 const props = defineProps<{
   visible: boolean
@@ -135,6 +61,10 @@ provide('menuSubmenu', submenu)
 
 const closeFn = () => emit('update:visible', false)
 const menuController: ActiveMenu = { el: () => menuEl.value, close: closeFn }
+// Bind the coordinator's shared dismiss listeners for the lifetime of this
+// instance only — the last unmounting menu removes them again.
+menuCoordinator.retain(menuController)
+onBeforeUnmount(() => menuCoordinator.release(menuController))
 
 async function position(x: number, y: number) {
   const m = menuEl.value
@@ -163,7 +93,7 @@ function open(anchorEl: HTMLElement, data?: unknown) {
   // Close any other open menu synchronously at open-time (not deferred to the
   // async visible-prop watcher) so a button-triggered open behaves exactly like
   // a right-click one and always drops the previously-open menu.
-  activate(menuController)
+  menuCoordinator.activate(menuController)
   nextTick(() => {
     const m = menuEl.value
     if (!anchorEl || !m) return
@@ -190,7 +120,7 @@ function openAt(x: number, y: number, data?: unknown) {
   current.value = data
   emit('update:visible', true)
   // See open(): close others synchronously instead of waiting on the watcher.
-  activate(menuController)
+  menuCoordinator.activate(menuController)
   nextTick(() => position(x, y))
 }
 
@@ -214,9 +144,9 @@ function onInnerMouseOver(e: MouseEvent) {
 
 watch(() => props.visible, (v) => {
   if (v) {
-    activate(menuController)
+    menuCoordinator.activate(menuController)
   } else {
-    deactivate(menuController)
+    menuCoordinator.deactivate(menuController)
     current.value = undefined
     submenu.active = ''
   }

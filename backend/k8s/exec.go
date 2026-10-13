@@ -25,9 +25,23 @@ const (
 	wsChError  = 3
 )
 
+// exec WebSocket 子协议。v5 增加按通道关闭帧 [255, channelIndex]，
+// 客户端用它通知 kubelet 关闭容器 stdin（v4 只能整体断开 WS）。
+const (
+	execSubprotocolV4 = "v4.channel.k8s.io"
+	execSubprotocolV5 = "v5.channel.k8s.io"
+)
+
+// wsCloseChannel 是 v5 子协议里「关闭某通道」帧的首字节。
+const wsCloseChannel = 255
+
 // dialExecWS 拨一条 exec WebSocket。tty 固定 false（输出可安全解析），
 // command 为 /bin/sh -c script；container 为空时使用 Pod 默认容器。
-func (m *Manager) dialExecWS(ctx context.Context, connID, ns, pod, container string, stdin bool, script string) (*websocket.Conn, error) {
+// subprotocols 缺省协商 v4；stdin 上传路径传 v5 优先、v4 兜底。
+func (m *Manager) dialExecWS(ctx context.Context, connID, ns, pod, container string, stdin bool, script string, subprotocols ...string) (*websocket.Conn, error) {
+	if len(subprotocols) == 0 {
+		subprotocols = []string{execSubprotocolV4}
+	}
 	m.mu.RLock()
 	conn, ok := m.conns[connID]
 	m.mu.RUnlock()
@@ -59,7 +73,7 @@ func (m *Manager) dialExecWS(ctx context.Context, connID, ns, pod, container str
 
 	dialer := websocket.Dialer{
 		TLSClientConfig: conn.tlsConfig,
-		Subprotocols:    []string{"v4.channel.k8s.io"},
+		Subprotocols:    subprotocols,
 	}
 	if conn.dialOverride != nil {
 		dialer.NetDialContext = conn.dialOverride
@@ -238,7 +252,10 @@ func (m *Manager) ExecRaw(ctx context.Context, connID, ns, pod, container, scrip
 	s := &execRawStream{PipeReader: pr, pw: pw, ws: ws, done: make(chan struct{})}
 	go func() {
 		var execErr error
-		var tail string // 跨帧拼接：标记可能被拆到相邻两帧
+		// pending 是尚未写出的 stdout 尾部：可能构成完成标记的前缀（标记会被
+		// 拆到相邻两帧），确认不是标记后才写出；命中时先把标记之前的字节全部
+		// 写出再收尾，保证既不丢数据也不把标记泄漏进输出。
+		var pending []byte
 		finalized := false
 		finalize := func() {
 			if finalized {
@@ -251,12 +268,20 @@ func (m *Manager) ExecRaw(ctx context.Context, connID, ns, pod, container, scrip
 			pw.Close()
 			close(s.done)
 		}
+		// flush 把 pending 剩余字节尽力写出（连接断开/执行错误时收尾用）。
+		flush := func() {
+			if len(pending) > 0 {
+				_, _ = pw.Write(pending)
+				pending = pending[:0]
+			}
+		}
 		defer func() {
 			finalize()
 		}()
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
+				flush()
 				return
 			}
 			if len(msg) == 0 {
@@ -264,24 +289,32 @@ func (m *Manager) ExecRaw(ctx context.Context, connID, ns, pod, container, scrip
 			}
 			switch msg[0] {
 			case wsChStdout:
-				// 标记检测：当前帧 + 上一帧尾部拼接扫描
-				combined := tail + string(msg[1:])
-				if strings.Contains(combined, marker) {
+				pending = append(pending, msg[1:]...)
+				if i := bytes.Index(pending, []byte(marker)); i >= 0 {
+					// 命中完成标记：写出标记之前的全部字节后收尾。
+					if i > 0 {
+						if _, werr := pw.Write(pending[:i]); werr != nil {
+							return
+						}
+					}
 					finalize()
 					return
 				}
-				tail = combined
-				if len(tail) > len(marker) {
-					tail = tail[len(tail)-len(marker)+1:]
-				}
-				if _, werr := pw.Write(msg[1:]); werr != nil {
-					return
+				// 未命中：写出确定不属于标记前缀的部分，保留尾部 len(marker)-1
+				// 字节等下一帧拼接（标记可能跨帧）。
+				if keep := len(marker) - 1; len(pending) > keep {
+					cut := len(pending) - keep
+					if _, werr := pw.Write(pending[:cut]); werr != nil {
+						return
+					}
+					pending = append(pending[:0], pending[cut:]...)
 				}
 			case wsChError:
 				if len(msg[1:]) > 0 {
 					execMsg := string(msg[1:])
 					if !strings.Contains(execMsg, `"status":"Success"`) {
 						execErr = fmt.Errorf("%s", execMsg)
+						flush()
 						finalize()
 						return
 					}
@@ -292,16 +325,21 @@ func (m *Manager) ExecRaw(ctx context.Context, connID, ns, pod, container, scrip
 	return s, nil
 }
 
-// ExecStdinStream 流式标准输入（本机 tar 流导入）：写毕关闭 WS，kubelet
-// 关闭容器内 stdin，`tar xf -` 得到 EOF 后收尾。stderr 经 error 通道并回。
+// ExecStdinStream 流式标准输入（本机 tar 流导入）：写完 stdin 后按 exec 协议
+// 发 stdin 关闭信号——优先 v5.channel.k8s.io 的 [255,0] 关闭帧（通道 255 +
+// stdin 通道号），kubelet 据此向容器进程注入 EOF；随后继续读到 channel 3 的
+// Status 帧，Failure（tar 失败：只读文件系统、磁盘满、权限不足等）转成
+// error 返回，不再误报成功。旧集群只协商到 v4 时无关闭帧机制，退回整体关
+// WS（此时读不到 Status，行为同旧版）。stderr 经 error 通道并回。
 func (m *Manager) ExecStdinStream(ctx context.Context, connID, ns, pod, container, script string, stdin io.Reader) ([]byte, error) {
-	ws, err := m.dialExecWS(ctx, connID, ns, pod, container, true, script)
+	ws, err := m.dialExecWS(ctx, connID, ns, pod, container, true, script,
+		execSubprotocolV5, execSubprotocolV4)
 	if err != nil {
 		return nil, err
 	}
 	defer ws.Close()
 
-	stderr := &bytes.Buffer{}
+	status := &bytes.Buffer{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -311,7 +349,7 @@ func (m *Manager) ExecStdinStream(ctx context.Context, connID, ns, pod, containe
 				return
 			}
 			if len(msg) > 1 && msg[0] == wsChError {
-				stderr.Write(msg[1:])
+				status.Write(msg[1:])
 			}
 		}
 	}()
@@ -339,17 +377,22 @@ func (m *Manager) ExecStdinStream(ctx context.Context, connID, ns, pod, containe
 		default:
 		}
 	}
-	// 关闭 WS → kubelet 关闭容器内 stdin → tar 收到 EOF
-	_ = ws.Close()
+	if ws.Subprotocol() == execSubprotocolV5 {
+		// v5：专用关闭帧通知 stdin EOF，连接保持打开以读取 Status 帧。
+		if werr := ws.WriteMessage(websocket.BinaryMessage, []byte{wsCloseChannel, wsChStdin}); werr != nil {
+			return nil, werr
+		}
+	} else {
+		// v4 无关闭帧机制：整体关 WS，kubelet 关闭容器内 stdin，tar 收到 EOF。
+		_ = ws.Close()
+	}
+	// 读到 Status 帧或连接结束，拿到命令真实退出结果。
 	select {
 	case <-done:
 	case <-time.After(15 * time.Second):
 	}
-	if stderr.Len() > 0 {
-		msg := strings.TrimSpace(stderr.String())
-		if !strings.Contains(msg, `"status":"Success"`) {
-			return nil, fmt.Errorf("%s", msg)
-		}
+	if st := strings.TrimSpace(status.String()); st != "" && !strings.Contains(st, `"status":"Success"`) {
+		return nil, fmt.Errorf("%s", extractExecFailure(st))
 	}
 	return nil, nil
 }

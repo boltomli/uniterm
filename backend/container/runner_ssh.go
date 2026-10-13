@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 )
 
 type SSHRunner struct {
@@ -67,11 +68,22 @@ type sshRawStream struct {
 	io.Reader // ssh.StdoutPipe 返回 io.Reader，Close 由 sess 承担
 	sess      *ssh.Session
 	stderr    *bytes.Buffer
-	once      sync.Once
+	// stderrDone 在 stderr 排干 goroutine 结束后关闭；Wait 读缓冲前必须等它，
+	// 否则与 io.Copy 并发读写 bytes.Buffer 是数据竞争，还会漏掉尾部内容。
+	stderrDone chan struct{}
+	once       sync.Once
 }
 
 func (s *sshRawStream) Wait() error {
 	err := s.sess.Wait()
+	if s.stderrDone != nil {
+		// 等 stderr 排干 goroutine 收尾再读缓冲；远端发完 exit-status 但迟迟
+		// 不关通道时设上限，避免 Wait 无界挂起。
+		select {
+		case <-s.stderrDone:
+		case <-time.After(5 * time.Second):
+		}
+	}
 	if err != nil && strings.Contains(err.Error(), "exited without exit status") {
 		return nil // 远端被杀/会话关闭时的噪音退出态，不算错误
 	}
@@ -106,14 +118,16 @@ func (r *SSHRunner) RunRaw(_ context.Context, argv []string) (RawStream, error) 
 		return nil, err
 	}
 	stderrBuf := &bytes.Buffer{}
+	stderrDone := make(chan struct{})
 	go func() {
+		defer close(stderrDone)
 		_, _ = io.Copy(stderrBuf, stderr)
 	}()
 	if err := sess.Start(JoinShellCommand(argv)); err != nil {
 		sess.Close()
 		return nil, err
 	}
-	return &sshRawStream{Reader: stdout, sess: sess, stderr: stderrBuf}, nil
+	return &sshRawStream{Reader: stdout, sess: sess, stderr: stderrBuf, stderrDone: stderrDone}, nil
 }
 
 func (r *SSHRunner) run(argv []string, stdin []byte) ([]byte, error) {
@@ -134,12 +148,15 @@ func (r *SSHRunner) run(argv []string, stdin []byte) ([]byte, error) {
 		}
 		return stdout.Bytes(), nil
 	}
-	// 带标准输入：Start 后写入并关闭 stdin 再等退出，避免管道死锁。
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
-		return nil, err
-	}
+	// 带标准输入：StdinPipe 必须在 Start 之前取（Start 后再取会得到
+	// "ssh: StdinPipe after process started"，stdin 从未送达远端）。
+	// 写入并关闭 stdin 后再等退出，避免管道死锁。
 	w, err := sess.StdinPipe()
 	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	if err := sess.Start(JoinShellCommand(argv)); err != nil {
 		_ = sess.Close()
 		return nil, err
 	}
@@ -207,6 +224,9 @@ func (r *SSHRunner) RunStream(_ context.Context, argv []string) (LineStream, err
 		for sc.Scan() {
 			s.lines <- sc.Text()
 		}
+		// scanner 因超长单行（>256KiB，ErrTooLong）提前停止后必须继续排干
+		// stdout：否则远端阻塞在写 SSH 窗口上，sess.Wait() 永远不返回。
+		_, _ = io.Copy(io.Discard, stdout)
 		close(s.lines)
 		s.done <- sess.Wait()
 	}()

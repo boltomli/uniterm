@@ -113,6 +113,10 @@
         </div>
       </div>
 
+      <div v-if="queryResult?.truncated" class="truncated-hint">
+        ⚠ {{ t('db.truncatedRows', { count: queryResult.rows.length }) }}
+      </div>
+
       <div v-if="queryResult" class="result-grid">
         <DBResultGrid
           ref="resultGridRef"
@@ -1239,6 +1243,17 @@ function onEditRowCancel() {
   min-width: 0;
 }
 .result-grid { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+/* Shown when the backend capped the scan (maxQueryRows): the grid holds a
+   prefix of the result set, not the full data. */
+.truncated-hint {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--warning);
+  background: var(--warning-subtle);
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  margin-bottom: 0.25rem;
+}
 .result-footer {
   display: flex;
   align-items: center;

@@ -9,11 +9,19 @@ type ScriptStatement struct {
 	Line int
 }
 
-// SplitScript splits a SQL script into individual statements. It understands
-// string literals ('…', "…", `…`), line comments (-- and #), block comments
-// (/* … */), and the MySQL DELIMITER command used to define routines. The
-// DELIMITER line itself is consumed and not emitted as a statement.
-func SplitScript(script string) []ScriptStatement {
+// SplitScript splits a SQL script into individual statements for the given
+// dialect (a registered dbType such as "mysql", "postgres", "sqlserver"). It
+// understands string literals ('…', "…", `…`), line comments (--, and # for
+// MySQL-compatible dialects), block comments (/* … */), and the MySQL
+// DELIMITER command used to define routines. The DELIMITER line itself is
+// consumed and not emitted as a statement.
+//
+// `#` starts a line comment only in MySQL-family dialects: SQL Server uses it
+// in temp-table names (`SELECT * INTO #t FROM x`) and PostgreSQL as a bitwise
+// operator (`f # 4`), so treating it as a comment there would truncate
+// statements.
+func SplitScript(script string, dialect string) []ScriptStatement {
+	hashComment := hashCommentDialect(dialect)
 	var stmts []ScriptStatement
 
 	var b strings.Builder
@@ -80,14 +88,15 @@ func SplitScript(script string) []ScriptStatement {
 			continue
 		}
 
-		// line comment -- or # : skip to end of line (comments are not statement content)
+		// line comment -- (all dialects) or # (MySQL-family only) : skip to
+		// end of line (comments are not statement content)
 		if c == '-' && i+1 < n && script[i+1] == '-' {
 			for i < n && script[i] != '\n' {
 				i++
 			}
 			continue
 		}
-		if c == '#' {
+		if hashComment && c == '#' {
 			for i < n && script[i] != '\n' {
 				i++
 			}
@@ -156,6 +165,13 @@ func SplitScript(script string) []ScriptStatement {
 
 	emit()
 	return stmts
+}
+
+// hashCommentDialect reports whether `#` starts a line comment in the given
+// dialect. Only MySQL-compatible servers (MariaDB/TiDB register as "mysql")
+// support it.
+func hashCommentDialect(dialect string) bool {
+	return dialect == "mysql"
 }
 
 // matchDelimiterCmd checks whether the text starting at pos begins (after

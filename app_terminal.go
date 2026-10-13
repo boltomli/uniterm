@@ -35,20 +35,12 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	if sessionType == "container-file" {
 		return a.createContainerFileSession(config)
 	}
-	// Defensive credential fallback: the frontend may hold a connection
-	// snapshot taken before passwords were filled (or a stale copy from an
-	// older session). If the password is stored in the OS keychain, resolve
-	// it synchronously so the session never prompts for a password it
-	// already has. No-op when Password is already set, no store is wired,
-	// the keychain has no entry, or the config carries no connection ID.
-	// Password-auth connections only: for key/keyText, Password is the key
-	// passphrase and must never be filled from a stored login password —
-	// doing so makes an unencrypted key fail to parse.
-	if config.AuthType == "password" && config.Password == "" && config.ID != "" && a.connectionStore != nil {
-		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
-			config.Password = pw
-		}
-	}
+	// Resolve the secrets the frontend no longer receives (passwords, inline
+	// key text, sentinel/kubeconfig secrets) from the store, by connection
+	// ID. Password-auth connections additionally recover pre-enc:v1 keychain
+	// entries through EnsurePassword. Inline one-shot credentials supplied
+	// by the credential dialog always win over stored values.
+	a.fillStoredSecrets(&config)
 	// Resolve an identity reference into a concrete password/key config
 	// before the session manager dials.
 	if config.AuthType == "identity" {
@@ -461,6 +453,15 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	}
 	log.Writef("[tunnel] established for session=%s via ssh=%s, localPort=%d",
 		sessionID, config.TunnelSSHConnID, localPort)
+	// Record the ORIGINAL target host:port before rewriting the dial address.
+	// Every session dial path verifies and pins the host key under this
+	// address (hostKeyPinAddr), so a jump-host connection checks the target's
+	// real identity instead of re-trusting a fresh 127.0.0.1:<ephemeral>
+	// first-use entry on every connect — and known_hosts.json stops growing
+	// one entry per ephemeral port (security.md, "Jump-host targets are
+	// pinned under 127.0.0.1:<ephemeral port>").
+	config.HostKeyPinHost = config.Host
+	config.HostKeyPinPort = targetPort
 	config.Host = "127.0.0.1"
 	config.Port = localPort
 	config.Proxy = nil // proxy was consumed by the jump-host dial; local dial is direct
@@ -605,6 +606,7 @@ func (a *App) CloseSession(sessionID string) error {
 	if a.tunnelService != nil {
 		a.tunnelService.Stop(sessionID)
 	}
+	a.forgetSftpLocalRoots(sessionID)
 	return a.sessionManager.Close(sessionID)
 }
 
@@ -1203,6 +1205,14 @@ func (a *App) EnableSessionOutputLog(panelID, dir string) (string, error) {
 		a.sessionLogSettingsMu.RLock()
 		dir = a.customLogDir
 		a.sessionLogSettingsMu.RUnlock()
+	} else {
+		// A caller-pinned directory is an untrusted webview value: it must
+		// have been picked through the directory dialog (granted there). The
+		// empty-dir flow is unaffected — it uses the configured override
+		// (grant-checked when set) or the OS default.
+		if err := requireDirGrant(dir); err != nil {
+			return "", err
+		}
 	}
 	name, host, protocol := a.panelLogTitle(panelID)
 	a.sessionLogSettingsMu.RLock()
@@ -1231,6 +1241,9 @@ func (a *App) EnableSessionOutputLog(panelID, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The log file is produced Go-side; grant it so the "reveal in explorer"
+	// actions (OpenPathInExplorer) keep working on it.
+	fileGrants.addFile(path)
 	if sessionID != "" {
 		a.installWriter(sessionID, logger)
 	}
@@ -1283,10 +1296,22 @@ func (a *App) GetSessionOutputLogInfo(panelID string) SessionLogInfo {
 // directory used by new session logs. Empty clears the override and
 // restores the OS default. Existing log files are not migrated; the
 // change only affects logs enabled after this call.
-func (a *App) SetDefaultSessionLogDir(dir string) {
+//
+// A non-empty dir is an untrusted webview value: it must be granted first
+// (picked through OpenDirectoryDialog, or loaded from persisted settings at
+// startup / LoadSettings — same trust model as the zmodem download dir),
+// otherwise a compromised renderer could aim every future log at an
+// arbitrary directory.
+func (a *App) SetDefaultSessionLogDir(dir string) error {
+	if dir != "" {
+		if err := requireDirGrant(dir); err != nil {
+			return err
+		}
+	}
 	a.sessionLogSettingsMu.Lock()
 	a.customLogDir = dir
 	a.sessionLogSettingsMu.Unlock()
+	return nil
 }
 
 // setSessionLogFilename installs the template used for newly created logs.

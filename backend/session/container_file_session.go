@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 
 	"sync/atomic"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/utils"
 )
 
 // ContainerFileBackend 是容器文件会话的最小命令通道（由 container 包的
@@ -564,7 +568,15 @@ func (s *ContainerFileSession) extractTarInto(rs RawStream, rp, lp string, task 
 		}
 		entries++
 		name := strings.TrimSuffix(hdr.Name, "/")
-		rel := strings.TrimPrefix(strings.TrimPrefix(name, base), "/")
+		var rel string
+		switch {
+		case name == base:
+			rel = ""
+		case strings.HasPrefix(name, base+"/"):
+			rel = name[len(base)+1:]
+		default:
+			rel = name
+		}
 		if !rootHandled {
 			rootHandled = true
 			if rel == "" {
@@ -575,26 +587,69 @@ func (s *ContainerFileSession) extractTarInto(rs RawStream, rp, lp string, task 
 					}
 					continue
 				}
-				return s.extractTarFile(tr, hdr, lp, task, "")
+				return s.extractTarFile(lp, tr, hdr, lp, task, "")
 			}
 		}
 		if rel == "" {
 			continue
 		}
-		local := filepath.Join(lp, filepath.FromSlash(rel))
-		if err := s.extractTarFile(tr, hdr, local, task, rel); err != nil {
+		// 容器侧完全控制 tar header：`..`、绝对名、盘符名都可能把文件写出
+		// 下载目录（kubectl cp CVE-2019-1002101 类），先验证再落盘。
+		local, err := utils.SafeLocalJoin(lp, filepath.FromSlash(rel))
+		if err != nil {
+			return fmt.Errorf("container tar: unsafe entry name %q", hdr.Name)
+		}
+		if err := s.extractTarFile(lp, tr, hdr, local, task, rel); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// extractTarFile 把一个 tar entry 落盘；进度按字节累加并上报。
-func (s *ContainerFileSession) extractTarFile(tr *tar.Reader, hdr *tar.Header, local string, task *TransferTask, rel string) error {
+// tarLinkTargetInRoot 报告 tar 符号链接/硬链接的目标是否解析在 root 之内。
+// 容器侧完全控制 tar header（kubectl cp CVE-2019-1002101 类）：绝对目标或
+// "../" 目标会把链接指向任意本地文件，后续 entry 还能写穿它。目标按链接所
+// 在目录（link 所在目录 = local 的父目录）解析；绝对目标（IsAbs、以 "/" 或
+// "\" 开头、带盘符——Windows 下 "/x" 无 volume 也是 rooted）直接 Clean。
+func tarLinkTargetInRoot(root, local, link string) bool {
+	if link == "" {
+		return false
+	}
+	var resolved string
+	if filepath.IsAbs(link) || strings.HasPrefix(link, "/") || strings.HasPrefix(link, `\`) ||
+		filepath.VolumeName(link) != "" ||
+		(len(link) >= 2 && link[1] == ':' && isDriveLetter(link[0])) {
+		resolved = filepath.Clean(link)
+	} else {
+		resolved = filepath.Join(filepath.Dir(local), link)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func isDriveLetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// extractTarFile 把一个 tar entry 落盘；进度按字节累加并上报。root 是本次
+// 下载的根目录（lp），链接类 entry 的目标必须解析在它之内。
+func (s *ContainerFileSession) extractTarFile(root string, tr *tar.Reader, hdr *tar.Header, local string, task *TransferTask, rel string) error {
 	switch hdr.Typeflag {
 	case tar.TypeDir:
+		// 目录名处已有符号链接：MkdirAll 会跟随它，把后续文件写到目录外。
+		if fi, lerr := os.Lstat(local); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to create directory through symlink %q", local)
+		}
 		return os.MkdirAll(local, 0o755)
 	case tar.TypeSymlink, tar.TypeLink:
+		// 链接目标在下载目录之外（绝对目标、`../` 逃逸）：跳过该 entry，
+		// 不中断整个下载流——根 entry 的链接也走这里。
+		if !tarLinkTargetInRoot(root, local, hdr.Linkname) {
+			return nil
+		}
 		_ = os.Remove(local)
 		_ = os.Symlink(hdr.Linkname, local) // Windows 无特权时尽力而为
 		return nil
@@ -602,7 +657,16 @@ func (s *ContainerFileSession) extractTarFile(tr *tar.Reader, hdr *tar.Header, l
 		if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(local, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
+		mode := os.FileMode(hdr.Mode) & 0o777
+		// 先试 O_EXCL：已存在的路径若是符号链接，写穿它会篡改目录外的文件；
+		// 普通已存在文件（重复下载）才允许覆盖。
+		f, err := os.OpenFile(local, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+		if errors.Is(err, fs.ErrExist) {
+			if fi, lerr := os.Lstat(local); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write through symlink %q", local)
+			}
+			f, err = os.OpenFile(local, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+		}
 		if err != nil {
 			return err
 		}

@@ -8,6 +8,8 @@ export interface RedisKeyInfo {
     name: string
     type: 'string' | 'hash' | 'list' | 'set' | 'zset'
     ttl: number
+    /** Element count of the current type (STRLEN bytes for strings). */
+    length: number
 }
 
 // Tree node for the namespace view, shared by RedisTabContent (builds the

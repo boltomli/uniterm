@@ -281,6 +281,16 @@ import MenuDivider from './MenuDivider.vue'
 import { uiPx } from '../utils/uiScale'
 import { isMobilePlatform } from '../utils/platform'
 import { useLocalStateStore } from '../stores/localStateStore'
+import {
+  namesOf,
+  remapSelection,
+  buildModTimeIndex,
+  buildFileComparator,
+  filterEntries,
+  type SortProp,
+  type SortOrder,
+  type FileSortState,
+} from '../utils/fileList'
 
 export interface FileItem {
   name: string
@@ -362,14 +372,21 @@ const localStateStore = useLocalStateStore()
 const filterText = ref('')
 const showHidden = ref(false)
 const selectedItems = ref<FileItem[]>([])
+// Row-level membership checks run once per rendered row, so they read a Set
+// built once per selection change — a linear scan of the selection per row is
+// O(rows × selection) (Ctrl+A in a 20k-entry directory meant tens of millions
+// of comparisons per re-render).
+const selectedNames = computed(() => namesOf(selectedItems.value))
+// Same for the cut-clipboard row class (was a linear scan per row).
+const cutNames = computed(() => new Set(props.cutItemNames ?? []))
 // Keep the selection pointing at live row objects: after a refresh the list is
 // rebuilt with new objects, and stale ones would carry outdated fields (e.g.
-// the old permission mode when re-opening the chmod dialog).
+// the old permission mode when re-opening the chmod dialog). The remap goes
+// through a Map by name: one pass over each list instead of a `find` per
+// selected item (O(n·m) on a full-selection refresh).
 watch(() => props.files, (fresh) => {
   if (!selectedItems.value.length) return
-  selectedItems.value = selectedItems.value
-    .map(sel => fresh.find(f => f.name === sel.name))
-    .filter((f): f is FileItem => !!f)
+  selectedItems.value = remapSelection(selectedItems.value, fresh)
 })
 const lastClickedIndex = ref(-1)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
@@ -461,11 +478,9 @@ function onHeaderContextMenu(_column: any, event: MouseEvent) {
 // first row no matter the column or direction (sortable="custom" on the columns).
 // NOTE: these declarations MUST stay above `filteredFiles` — the watch on it
 // evaluates the computed once during setup, and its sort comparator reads
-// `sortState` / `columnSorters`. Declared below, that first evaluation hits a
-// TDZ ReferenceError whenever the list mounts with entries already present.
-type SortProp = 'name' | 'type' | 'modTime' | 'size'
-type SortOrder = 'ascending' | 'descending'
-const sortState = ref<{ prop: SortProp; order: SortOrder } | null>(null)
+// `sortState`. Declared below, that first evaluation hits a TDZ
+// ReferenceError whenever the list mounts with entries already present.
+const sortState = ref<FileSortState | null>(null)
 
 // One shared collator: `String#localeCompare` builds a new collator per call,
 // which dominates sort time on large directories. Default options keep the
@@ -477,46 +492,31 @@ function onSortChange({ prop, order }: { prop: SortProp; order: SortOrder | null
   sortState.value = order ? { prop, order } : null
 }
 
-const columnSorters: Record<SortProp, (a: FileItem, b: FileItem) => number> = {
-  name: (a, b) => nameCollator.compare(a.name, b.name),
-  type: (a, b) => fileTypeLabel(a).toLowerCase().localeCompare(fileTypeLabel(b).toLowerCase()),
-  modTime: (a, b) => {
-    const ta = a.modTime ? new Date(a.modTime).getTime() : 0
-    const tb = b.modTime ? new Date(b.modTime).getTime() : 0
-    return ta - tb
-  },
-  size: (a, b) => {
-    if (a.isDir && !b.isDir) return -1
-    if (!a.isDir && b.isDir) return 1
-    return a.size - b.size
-  },
-}
+// The '..' parent row is navigation, not an entry: it is always the first row,
+// for every column and in both directions (the comparator pins it).
+const parentRow: FileItem = { name: '..', size: 0, modTime: '', mode: '', isDir: true, isHidden: false, owner: '', group: '' }
 
-const filteredFiles = computed(() => {
-  let list = [...props.files]
-  if (!list.find(f => f.name === '..')) {
-    list.unshift({ name: '..', size: 0, modTime: '', mode: '', isDir: true, isHidden: false, owner: '', group: '' })
-  }
-  list.sort((a, b) => {
-    // '..' is navigation, not an entry: always keep it as the first row.
-    if (a.name === '..') return -1
-    if (b.name === '..') return 1
-    const s = sortState.value
-    if (s) {
-      const cmp = columnSorters[s.prop](a, b)
-      return s.order === 'descending' ? -cmp : cmp
-    }
-    if (a.isDir && !b.isDir) return -1
-    if (!a.isDir && b.isDir) return 1
-    return nameCollator.compare(a.name, b.name)
+// Sorted listing, computed ONCE per (files, sortState) change. Each row's
+// modTime is parsed a single time (buildModTimeIndex) instead of two `Date`
+// objects per comparison, and the comparator itself lives in utils/fileList.
+const sortedFiles = computed(() => {
+  const list = [...props.files]
+  if (!list.some(f => f.name === '..')) list.unshift(parentRow)
+  const modTimes = buildModTimeIndex(list)
+  const cmp = buildFileComparator<FileItem>({
+    sort: sortState.value,
+    collator: nameCollator,
+    modTimes,
+    typeLabel: fileTypeLabel,
   })
-  if (!showHidden.value) {
-    list = list.filter(f => f.name === '..' || (!f.name.startsWith('.') && !f.isHidden))
-  }
-  const q = filterText.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter(f => f.name.toLowerCase().includes(q))
+  return list.sort(cmp)
 })
+
+// The name filter runs ON TOP of the sorted computed: filtering preserves
+// order, so typing in the filter box no longer re-sorts the whole directory —
+// `sortedFiles` stays cached until the data or the sort state change.
+const filteredFiles = computed(() =>
+  filterEntries(sortedFiles.value, { showHidden: showHidden.value, query: filterText.value }))
 
 // --- Progressive loading ---------------------------------------------------
 // A directory can contain tens of thousands of entries. Rendering the whole
@@ -677,7 +677,7 @@ onMounted(() => {
 })
 
 function isSelected(row: FileItem): boolean {
-  return selectedItems.value.some(s => s.name === row.name)
+  return selectedNames.value.has(row.name)
 }
 
 function isSymlink(row: FileItem): boolean {
@@ -718,11 +718,10 @@ function onRowClick(row: FileItem, _column: any, event: MouseEvent) {
   }
   const index = filteredFiles.value.findIndex(f => f.name === row.name)
   if (event.ctrlKey || event.metaKey) {
-    const idx = selectedItems.value.findIndex(s => s.name === row.name)
-    if (idx >= 0) {
-      selectedItems.value.splice(idx, 1)
+    if (selectedNames.value.has(row.name)) {
+      selectedItems.value = selectedItems.value.filter(s => s.name !== row.name)
     } else {
-      selectedItems.value.push(row)
+      selectedItems.value = [...selectedItems.value, row]
     }
   } else if (event.shiftKey && lastClickedIndex.value >= 0) {
     const start = Math.min(lastClickedIndex.value, index)
@@ -758,7 +757,7 @@ function onRowContextMenu(row: FileItem, _column: any, event: MouseEvent) {
   }
   event.preventDefault()
   event.stopPropagation()
-  if (!selectedItems.value.some(s => s.name === row.name)) {
+  if (!selectedNames.value.has(row.name)) {
     selectedItems.value = [row]
   }
   if (selectedItems.value.length > 1) {
@@ -852,7 +851,7 @@ function doSelectAll() {
 
 function getRowClassName({ row }: { row: FileItem }): string {
   const cls: string[] = []
-  if (props.cutItemNames && props.cutItemNames.includes(row.name)) cls.push('cut-item-row')
+  if (cutNames.value.has(row.name)) cls.push('cut-item-row')
   if (row.name === quickTargetName.value) cls.push('quick-target-row')
   if (isSelected(row)) cls.push('row-selected')
   return cls.join(' ')
@@ -862,7 +861,7 @@ function onDragStart(event: DragEvent, row: FileItem) {
   if (event.dataTransfer) {
     // Carry the whole selection when the dragged row is part of it, so
     // ctrl/shift multi-selection drags up/ down more than one item.
-    const inSelection = selectedItems.value.some(s => s.name === row.name)
+    const inSelection = selectedNames.value.has(row.name)
     const dragged = (inSelection ? selectedItems.value : [row]).filter(i => i.name !== '..')
     event.dataTransfer.setData('application/sftp-file', JSON.stringify({
       mode: props.mode,

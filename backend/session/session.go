@@ -65,17 +65,17 @@ type CwdHookInjector interface {
 }
 
 type ConnectionConfig struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Remark   string `json:"remark,omitempty"`
-	Type     string `json:"type"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Remark string `json:"remark,omitempty"`
+	Type   string `json:"type"`
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	User   string `json:"user"`
 	// SSHAlgorithms customizes the negotiated algorithms for SSH-based
 	// sessions. nil keeps the compatible default.
 	SSHAlgorithms *SSHAlgoConfig `json:"sshAlgorithms,omitempty"`
-	AuthType string `json:"authType"`
+	AuthType      string         `json:"authType"`
 	// AuthType "agent" uses SSH_AUTH_SOCK on Unix. On Windows it uses Pageant,
 	// falling back to the Windows OpenSSH agent named pipe.
 	// AuthType "kerberos" uses the local Kerberos credential cache and
@@ -117,6 +117,13 @@ type ConnectionConfig struct {
 	// equivalent of "mstsc /admin". Mapped to the ActiveX
 	// IMsRdpClientAdvancedSettings8::ConnectToAdministerServer property.
 	RdpAdminSession bool `json:"rdpAdminSession"`
+	// RdpRedirectClipboard / RdpRedirectDrives opt in to local resource
+	// redirection for THIS connection. Both default to off: a connection
+	// saved before the fields existed (or synced from an older version) has
+	// them false, so the remote side cannot reach the clipboard or local
+	// disks via \\tsclient unless the user explicitly enabled it.
+	RdpRedirectClipboard bool `json:"rdpRedirectClipboard"`
+	RdpRedirectDrives    bool `json:"rdpRedirectDrives"`
 	// Local terminal shell path
 	ShellPath string `json:"shellPath,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)
@@ -167,6 +174,16 @@ type ConnectionConfig struct {
 	Proxy             *SocksProxy `json:"-"`
 	TunnelSSHUser     string      `json:"tunnelSSHUser,omitempty"`
 	TunnelSSHPassword string      `json:"tunnelSSHPassword,omitempty"`
+	// HostKeyPinHost/HostKeyPinPort carry the connection's ORIGINAL host:port
+	// for known-hosts pinning when the dial address is rewritten at connect
+	// time. Jump-host tunnels (setupJumpHostTunnel) replace Host/Port with
+	// 127.0.0.1:<ephemeral local port>; pinning under that address would
+	// re-trust the target on every connection — a compromised jump host could
+	// MITM it — and grow known_hosts.json by one entry per ephemeral port
+	// (breaking when a port is reused for another target). Runtime-only,
+	// never persisted; see hostKeyPinAddr.
+	HostKeyPinHost string `json:"-"`
+	HostKeyPinPort int    `json:"-"`
 	// SFTP max concurrent transfers (0 = unlimited)
 	SftpMaxConcurrency int `json:"sftpMaxConcurrency,omitempty"`
 	// FileTransferProto selects the file-transfer protocol used by the SSH
@@ -259,7 +276,7 @@ type ConnectionConfig struct {
 	ContainerRuntime   string `json:"containerRuntime,omitempty"`   // "docker" | "podman" | "nerdctl"
 	// 容器文件会话（type=container-file）的目标容器 ID；容器连接走 config.ID
 	// ContainerNamespace 仅 k8s 连接使用（目标 Pod 的资源 namespace）
-	ContainerID       string `json:"containerId,omitempty"`
+	ContainerID        string `json:"containerId,omitempty"`
 	ContainerNamespace string `json:"containerNamespace,omitempty"`
 	// LogOnConnect, when true, tells the App layer to enable the
 	// session output log automatically the first time this panel binds
@@ -370,7 +387,7 @@ type baseSession struct {
 	// fired after onStatusCallback. Cross-cutting concerns (the Android
 	// foreground-keepalive counter) register here so they survive the App
 	// layer re-registering onStatusCallback via SetOnStatusChangeCallback.
-	statusListeners []func(SessionStatus)
+	statusListeners  []func(SessionStatus)
 	mu               sync.RWMutex
 	pendingCols      int
 	pendingRows      int
