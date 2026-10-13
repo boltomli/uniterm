@@ -307,6 +307,10 @@ func (s *SyncService) setLastSyncedHash(hash string) {
 // verifyDecryptionScoped checks key against every scoped ciphertext file
 // present in dir. Returns nil when none exist (fresh remote).
 func verifyDecryptionScoped(files []string, dir string, key []byte) error {
+	formatVersion, err := readFormatVersion(dir)
+	if err != nil {
+		return err
+	}
 	for _, name := range files {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -316,7 +320,7 @@ func verifyDecryptionScoped(files []string, dir string, key []byte) error {
 		if err != nil {
 			return err
 		}
-		if _, err := decryptBytes(string(data), key, name); err != nil {
+		if _, err := decryptBytes(string(data), key, name, formatVersion); err != nil {
 			return fmt.Errorf("verify %s: %w", name, err)
 		}
 	}

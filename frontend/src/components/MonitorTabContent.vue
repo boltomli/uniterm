@@ -563,6 +563,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
+import { formatBytes } from '../utils/format'
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { SetMonitorActiveTab, SetMonitorPaused, GetProcessDetail, KillProcess, GetPorts, GetDisks, GetNetworkCards, GetServices, GetServiceDetail, GetServiceLogs, ServiceAction, GetDevices, GetHardwareFru, GetHardwareLan, GetHardwareSensors } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
@@ -838,14 +839,6 @@ const currentPerf = computed(() => {
       return { bigValue: '', color: 'var(--text-primary)', history: [] as number[], details: [] }
   }
 })
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
-}
 
 function formatIo(val: number | undefined): string {
   if (val == null) return '-'

@@ -211,6 +211,63 @@ function applyRFBOptions() {
   rfb.background = readThemeBackground()
 }
 
+// RFB event handlers are named instance-scope functions so they can be
+// re-bound: the cache-restore path hands this component the previous
+// instance's rfb, whose listeners still point at that dead instance's refs.
+function onRfbConnect() {
+  // issue #95: only flip to 'connected' on the noVNC connect event.
+  // Previously status='connected' was set as soon as the local proxy was
+  // up, well before the RFB handshake completed, producing a black
+  // screen with no error on security failure or wrong password.
+  lastError.value = ''
+  status.value = 'connected'
+}
+
+function onRfbSecurityFailure(e: any) {
+  const reason = e.detail?.reason ?? e.detail?.status
+  lastError.value = t('vnc.errorSecurity', { reason: String(reason ?? '') })
+  status.value = 'error'
+}
+
+function onRfbCredentialsRequired(e: any) {
+  const types = (e.detail?.types || []).join(', ')
+  lastError.value = t('vnc.errorCredentials', { types })
+  status.value = 'error'
+}
+
+function onRfbDisconnect(e: any) {
+  if (!e.detail.clean) {
+    if (!lastError.value) lastError.value = t('vnc.errorClosed')
+    status.value = 'error'
+  } else {
+    status.value = 'disconnected'
+  }
+}
+
+function onRfbClipboard(e: any) {
+  const text = e.detail.text
+  Clipboard.SetText(text).catch(() => {})
+}
+
+// Attach this instance's RFB handlers to `target`. Any pairs a previous
+// component instance left on the rfb (cache restore) are removed first —
+// the bound pairs are recorded on the rfb itself so the next binder can
+// drop them by reference — so handlers never stack and the restored tab
+// reacts to connect/securityfailure/credentials/disconnect/clipboard again.
+function bindRFBHandlers(target: any) {
+  const stale: Array<[string, (e: any) => void]> | undefined = target.__unitermHandlers
+  if (stale) stale.forEach(([type, fn]) => target.removeEventListener(type, fn))
+  const bound: Array<[string, (e: any) => void]> = [
+    ['connect', onRfbConnect],
+    ['securityfailure', onRfbSecurityFailure],
+    ['credentialsrequired', onRfbCredentialsRequired],
+    ['disconnect', onRfbDisconnect],
+    ['clipboard', onRfbClipboard],
+  ]
+  bound.forEach(([type, fn]) => target.addEventListener(type, fn))
+  target.__unitermHandlers = bound
+}
+
 function createRFB(RFB: any, proxyAddr: string, password: string) {
   if (!vncContainer.value || vncContainer.value.childElementCount > 0) {
     isIniting = false
@@ -241,40 +298,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
 
   applyRFBOptions()
 
-  // issue #95: only flip to 'connected' on the noVNC connect event.
-  // Previously status='connected' was set as soon as the local proxy was
-  // up, well before the RFB handshake completed, producing a black
-  // screen with no error on security failure or wrong password.
-  rfb.addEventListener('connect', () => {
-    lastError.value = ''
-    status.value = 'connected'
-  })
-
-  rfb.addEventListener('securityfailure', (e: any) => {
-    const reason = e.detail?.reason ?? e.detail?.status
-    lastError.value = t('vnc.errorSecurity', { reason: String(reason ?? '') })
-    status.value = 'error'
-  })
-
-  rfb.addEventListener('credentialsrequired', (e: any) => {
-    const types = (e.detail?.types || []).join(', ')
-    lastError.value = t('vnc.errorCredentials', { types })
-    status.value = 'error'
-  })
-
-  rfb.addEventListener('disconnect', (e: any) => {
-    if (!e.detail.clean) {
-      if (!lastError.value) lastError.value = t('vnc.errorClosed')
-      status.value = 'error'
-    } else {
-      status.value = 'disconnected'
-    }
-  })
-
-  rfb.addEventListener('clipboard', (e: any) => {
-    const text = e.detail.text
-    Clipboard.SetText(text).catch(() => {})
-  })
+  bindRFBHandlers(rfb)
 
   isIniting = false
 }
@@ -296,21 +320,12 @@ onMounted(() => {
     currentSessionId.value = props.sessionId
   }
 
-  const cached = panelStore.getVNCCache(props.panelId)
-  if (cached && vncContainer.value) {
-    const children = Array.from(cached.container.children)
-    children.forEach(child => vncContainer.value!.appendChild(child))
-    rfb = cached.rfb
-    panelStore.removeVNCCache(props.panelId)
-    status.value = 'connected'
-    applyRFBOptions()
-    watchThemeBackground()
-    return
-  }
-
-  // Register event listener BEFORE connect() — with synchronous VNC/SPICE
-  // connect the session:status event is emitted during CreateSession and
-  // would arrive before the listener if we registered it after.
+  // Register BEFORE connect() and before the cache-restore branch below:
+  // with synchronous VNC/SPICE connect the session:status event is emitted
+  // during CreateSession and would arrive before the listener if we
+  // registered it after — and a restored tab must keep the same wiring as a
+  // fresh one (security.md #14: restore used to skip both listeners, so
+  // disconnects showed no error overlay and Reconnect did nothing).
   unsubStatus = Events.On('session:status', (ev) => { const data: any = ev.data; 
     if (data.id !== currentSessionId.value) return
     switch (data.status) {
@@ -340,6 +355,26 @@ onMounted(() => {
     }
   })
 
+  // Tab right-click 「重连」(Reconnect) menu → forced reconnect of this panel.
+  window.addEventListener('panel:reconnect', onReconnectEvent)
+
+  const cached = panelStore.getVNCCache(props.panelId)
+  if (cached && vncContainer.value) {
+    const children = Array.from(cached.container.children)
+    children.forEach(child => vncContainer.value!.appendChild(child))
+    rfb = cached.rfb
+    // The cached rfb still carries the previous component instance's
+    // handlers (they write to that dead instance's refs); bindRFBHandlers
+    // drops them first and attaches this instance's, so handlers never
+    // stack and the restored tab reacts to connect/disconnect again.
+    bindRFBHandlers(rfb)
+    panelStore.removeVNCCache(props.panelId)
+    status.value = 'connected'
+    applyRFBOptions()
+    watchThemeBackground()
+    return
+  }
+
   const storedProxy = panelStore.getProxyAddr(props.panelId)
   if (storedProxy && props.config) {
     void resolvePassword().then((pw) => {
@@ -351,9 +386,6 @@ onMounted(() => {
   }
 
   watchThemeBackground()
-
-  // Tab right-click 「重连」(Reconnect) menu → forced reconnect of this panel.
-  window.addEventListener('panel:reconnect', onReconnectEvent)
 })
 
 onBeforeUnmount(() => {

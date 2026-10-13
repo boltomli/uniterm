@@ -15,6 +15,9 @@ import {
   createLineRegistry,
   recordWrittenLines,
   realignRegistry,
+  scheduleRealign,
+  cancelScheduledRealign,
+  REALIGN_DEBOUNCE_MS,
   type LineRegistryRowSource,
   type RegistryBufferLike,
 } from './terminalTimestamps'
@@ -143,10 +146,59 @@ describe('recordWrittenLines()', () => {
     text[7] = 'progress'
     src = source(wrapped, text)
     write(state, src, 9, 9, 2000)
-    // Row 7 joins late, so it takes the next number after row 9's — late
-    // registration, but registered.
-    expect(numbers(state)).toEqual([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [7, 7], [9, 6]])
-    expect(times(state)).toEqual([[0, 1000], [1, 1000], [2, 1000], [3, 1000], [4, 1000], [7, 2000], [9, 1000]])
+    // Trade-off (security.md perf item): the look-above window only probes
+    // rows a previous write never scanned — the scan watermark skips the
+    // whole 200-row rescan per write. A repaint into an already-probed
+    // blank row above the cursor is therefore no longer picked up; rows
+    // the cursor band travels through still register normally.
+    expect(numbers(state)).toEqual([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [9, 6]])
+  })
+
+  it('does not rescan rows above the band on later writes (scan watermark)', () => {
+    const state = createLineRegistry()
+    const wrapped = new Array(300).fill(false)
+    const text = new Array(300).fill('').map((_, i) => (i < 5 || i === 250 ? 'x' : ''))
+    const base = source(wrapped, text)
+    let probes = 0
+    const counting: LineRegistryRowSource = {
+      isWrapped: (y) => base.isWrapped(y),
+      hasContent: (y) => {
+        probes += 1
+        return base.hasContent(y)
+      },
+    }
+    write(state, counting, 0, 250, 1000)
+    expect(probes).toBeGreaterThan(0)
+    // Second write at the same cursor: the band row is already registered
+    // (Map lookup, no content probe) and every row above the band was
+    // scanned by the first write — nothing gets re-probed.
+    probes = 0
+    write(state, counting, 250, 250, 2000)
+    expect(probes).toBe(0)
+    expect(numbers(state)).toEqual([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [250, 6]])
+  })
+
+  it('still probes the look-above window on the first write after attach', () => {
+    const state = createLineRegistry()
+    // First write on a restored/attached terminal: the cursor already sits
+    // at row 250 and no row has ever been probed. The look-above window
+    // [50, 250) is fair game — content parked above the cursor registers.
+    const wrapped = new Array(251).fill(false)
+    const text = new Array(251).fill('').map((_, i) => (i === 200 || i === 250 ? 'x' : ''))
+    const base = source(wrapped, text)
+    const probed: number[] = []
+    const counting: LineRegistryRowSource = {
+      isWrapped: (y) => base.isWrapped(y),
+      hasContent: (y) => {
+        probed.push(y)
+        return base.hasContent(y)
+      },
+    }
+    write(state, counting, 250, 250, 1000)
+    // Row 200 (inside the window, above the band) joins late.
+    expect(numbers(state)).toEqual([[200, 1], [250, 2]])
+    // Nothing outside the window was touched.
+    expect(probed.filter((y) => y < 50 || y > 250)).toEqual([])
   })
 
   it('caps the map size by dropping the oldest numbers', () => {
@@ -214,6 +266,57 @@ describe('realignRegistry()', () => {
     realignRegistry(state, { lineOffset: 0, cursorAbs: 3, source: after })
     // Bottom lines keep the newest numbers; the top of the buffer goes blank.
     expect(numbers(state)).toEqual([[2, 4], [3, 5]])
+  })
+})
+
+describe('scheduleRealign()', () => {
+  it('coalesces a resize burst into one realign after the debounce window', () => {
+    vi.useFakeTimers()
+    try {
+      const state = createLineRegistry()
+      const src = source([false, false], ['a', 'b'])
+      write(state, src, 0, 2, 1000)
+
+      // After the reflow each line wraps onto two rows → starts at 0,2.
+      const after = source([false, true, false], ['a', 'b', 'b'])
+      let flushes = 0
+      const opts = () => {
+        flushes += 1
+        return { lineOffset: 0, cursorAbs: 2, source: after }
+      }
+
+      // A split-drag fires onResize per mouse move: every call except the
+      // last must be swallowed by the debounce.
+      scheduleRealign(state, opts)
+      vi.advanceTimersByTime(REALIGN_DEBOUNCE_MS - 1)
+      scheduleRealign(state, opts)
+      expect(numbers(state)).toEqual([[0, 1], [1, 2]]) // not realigned yet
+
+      vi.advanceTimersByTime(REALIGN_DEBOUNCE_MS)
+      expect(numbers(state)).toEqual([[0, 1], [2, 2]])
+      // Options are re-read at flush time, exactly once.
+      expect(flushes).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancelScheduledRealign drops a pending realign (terminal disposal)', () => {
+    vi.useFakeTimers()
+    try {
+      const state = createLineRegistry()
+      const src = source([false, false], ['a', 'b'])
+      write(state, src, 0, 2, 1000)
+      const after = source([false, true, false], ['a', 'b', 'b'])
+
+      scheduleRealign(state, () => ({ lineOffset: 0, cursorAbs: 2, source: after }))
+      cancelScheduledRealign(state)
+      vi.advanceTimersByTime(REALIGN_DEBOUNCE_MS * 2)
+      // Entries keep their pre-reflow keys — the rekey never ran.
+      expect(numbers(state)).toEqual([[0, 1], [1, 2]])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

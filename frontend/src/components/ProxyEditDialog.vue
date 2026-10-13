@@ -26,7 +26,7 @@
         <el-input v-model="form.user" />
       </el-form-item>
       <el-form-item :label="t('conn.password')">
-        <el-input v-model="form.pass" type="password" show-password />
+        <el-input v-model="form.pass" type="password" show-password :placeholder="savedPassPlaceholder" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -37,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { ElMessage } from 'element-plus'
 import { useProxyStore } from '../stores/proxyStore'
@@ -56,9 +56,14 @@ function newId(): string {
 
 const form = reactive<Proxy>({ id: '', name: '', kind: 'socks5', host: '', port: 1080, user: '', pass: '' })
 
+// LoadProxies 脱敏后 pass 恒为空，只带 hasPass 标志：编辑已有代理时显示
+// "已保存，留空保持"占位，留空保存由后端（SaveProxies）保留原值。
+const savedPassPlaceholder = ref('')
+
 watch(() => props.visible, (v) => {
   if (v) {
     Object.assign(form, props.proxy ?? { id: newId(), name: '', kind: 'socks5', host: '', port: 1080, user: '', pass: '' })
+    savedPassPlaceholder.value = props.proxy?.hasPass ? t('conn.savedSecretPlaceholder') : ''
   }
 })
 

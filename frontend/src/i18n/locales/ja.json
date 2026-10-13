@@ -625,6 +625,7 @@
   "settings.skillsLocked": "ロック中",
   "settings.skillsUnlocked": "ロック解除",
   "settings.skillsDeleteConfirm": "スキル「{name}」を削除しますか？この操作は元に戻せません。",
+  "settings.skillsOverwriteConfirm": "スキル「{name}」は既に存在します。上書きしますか？",
   "settings.modelDeleteConfirm": "モデル「{name}」を削除しますか？この操作は元に戻せません。",
   "settings.skillsDeleteLocked": "スキル「{name}」はロックされています。先にロックを解除してください。",
   "settings.skillsNoSkill": "スキルなし",

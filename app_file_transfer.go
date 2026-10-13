@@ -575,11 +575,52 @@ func extEditRootDir() string {
 	return filepath.Join(os.TempDir(), "uniterm-extedit")
 }
 
-// extEditSessionDir is a session's scratch dir. The PID prefix attributes the
-// dir to the app instance that created it — visible on disk without logs,
-// including after that instance has exited.
-func extEditSessionDir(sessionID string) string {
-	return filepath.Join(extEditRootDir(), fmt.Sprintf("%d-%s", os.Getpid(), sanitizePart(sessionID)))
+// extEditDirs maps a session id to the scratch dir created for it in this
+// process (see ensureExtEditSessionDir). Guarded by extEditMu.
+var extEditDirs = map[string]string{}
+
+// ensureExtEditSessionDir returns the session's scratch dir, creating it on
+// first use with os.MkdirTemp: the name still carries the PID (so the dir
+// stays attributable to this instance and is swept by the exit/age cleanups)
+// but ends in a random suffix, so another local user cannot predict,
+// pre-create or swap it — the pre-fix path was
+// os.TempDir()/uniterm-extedit/<pid>-<sanitized session id> with mode 0755.
+// The dir is created 0700: it holds a copy of a remote file being edited.
+// The path is memoized so a session's temp file keeps one stable location for
+// its whole life (single-instance editors are handed that path once and keep
+// writing there, issue #737).
+func ensureExtEditSessionDir(sessionID string) (string, error) {
+	extEditMu.Lock()
+	defer extEditMu.Unlock()
+	if d, ok := extEditDirs[sessionID]; ok {
+		return d, nil
+	}
+	root := extEditRootDir()
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", err
+	}
+	// Tighten a root created by an older build (0755); best-effort because
+	// a missing chmod must not block editing.
+	_ = os.Chmod(root, 0700)
+	d, err := os.MkdirTemp(root, fmt.Sprintf("%d-%s-*", os.Getpid(), sanitizePart(sessionID)))
+	if err != nil {
+		return "", err
+	}
+	extEditDirs[sessionID] = d
+	return d, nil
+}
+
+// releaseExtEditSessionDir wipes a session's scratch dir and forgets it, so a
+// later session with the same id gets a fresh (equally unpredictable) dir.
+// Callers stop the session's watchers first, so nothing references its files.
+func releaseExtEditSessionDir(sessionID string) {
+	extEditMu.Lock()
+	d := extEditDirs[sessionID]
+	delete(extEditDirs, sessionID)
+	extEditMu.Unlock()
+	if d != "" {
+		_ = os.RemoveAll(d)
+	}
 }
 
 const (
@@ -599,11 +640,13 @@ const (
 // like the old unique-name scheme instead of failing outright.
 func writeExtEditTemp(dir, stem string, sum []byte, ext string, content []byte) (string, error) {
 	tmp := filepath.Join(dir, fmt.Sprintf("%s-%x%s", stem, sum, ext))
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// 0600: the file is a copy of a remote file being edited and must not be
+	// readable by other local users while it sits in the scratch dir.
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		// Locked by a live editor copy: fall back to a unique name.
 		tmp = filepath.Join(dir, stem+"-"+hex.EncodeToString(sum)+"-"+strconv.FormatUint(extEditRunSeq.Add(1), 10)+ext)
-		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		f, err = os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return "", err
 		}
@@ -763,8 +806,8 @@ func (a *App) emitExtEditStarted(sessionID, remotePath, tmp string) {
 // returned runCtx cancels the run (killing an editor launched with it, see
 // registerExternalEdit) and runKey unregisters it on launch failure.
 func (a *App) startExtEditWatcher(sessionID, remotePath string, fs fileTransferSession, content []byte) (tmp string, runCtx context.Context, runKey string, err error) {
-	dir := extEditSessionDir(sessionID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := ensureExtEditSessionDir(sessionID)
+	if err != nil {
 		return "", nil, "", err
 	}
 	base := sanitizePart(path.Base(remotePath))
@@ -948,7 +991,7 @@ func cancelExternalEdits(sessionID string) {
 	extEditMu.Unlock()
 	// Best-effort wipe of the session's scratch dir — no watcher references
 	// its files anymore.
-	_ = os.RemoveAll(extEditSessionDir(sessionID))
+	releaseExtEditSessionDir(sessionID)
 }
 
 // cleanupExtEditsOnExit deletes every external-edit scratch dir belonging to

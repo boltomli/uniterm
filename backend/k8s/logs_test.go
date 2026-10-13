@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -80,12 +81,14 @@ func TestLogStreamDeliversLines(t *testing.T) {
 // transient pod log disconnect fires onReconnect and reopens the
 // stream, onEnd is reserved for the terminal case.
 func TestLogReconnectDoesNotCallOnEnd(t *testing.T) {
-	var hits int
+	// Atomic: the handler runs on server goroutines while the test body
+	// reads it, so a plain int is a data race under -race.
+	var hits atomic.Int32
 	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		n := hits.Add(1)
 		flusher, _ := w.(http.Flusher)
 		w.WriteHeader(200)
-		if hits == 1 {
+		if n == 1 {
 			fmt.Fprintln(w, "boot-line")
 			flusher.Flush()
 			hj, ok := w.(http.Hijacker)
@@ -157,8 +160,8 @@ func TestLogReconnectDoesNotCallOnEnd(t *testing.T) {
 	if preRecon == 0 {
 		t.Errorf("onReconnect called %d times (want >= 1)", preRecon)
 	}
-	if hits < 2 {
-		t.Errorf("server saw %d requests, want >= 2", hits)
+	if hits.Load() < 2 {
+		t.Errorf("server saw %d requests, want >= 2", hits.Load())
 	}
 
 	cancel()
@@ -193,4 +196,123 @@ func TestBuildLogPath(t *testing.T) {
 	if !strings.Contains(p, "follow=false") || !strings.Contains(p, "previous=true") {
 		t.Errorf("previous path wrong: %q", p)
 	}
+}
+
+// TestLogStream4xxTerminates guards the fix: a 4xx from the apiserver is
+// terminal for pod logs too. The old loop retried forever, so a pod the user
+// can no longer read (deleted, RBAC revoked) left the UI stuck on
+// "reconnecting" and the goroutine never exited.
+func TestLogStream4xxTerminates(t *testing.T) {
+	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"kind":"Status","code":403,"message":"forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	kc := &Kubeconfig{
+		CurrentContext: "t",
+		Contexts:       map[string]contextEntry{"t": {Cluster: "c", User: "u"}},
+		Clusters:       map[string]clusterEntry{"c": {Server: srv.URL, CertificateAuthorityData: ca}},
+		Users:          map[string]userEntry{"u": {Token: "x"}},
+	}
+	client, base, _ := BuildClient(kc, "t")
+
+	ended := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := startLogStream(ctx, client, base, "/api/v1/namespaces/default/pods/p1/log?follow=true&container=c",
+		func(string) {},
+		func(err error) { ended <- err },
+		nil, make(chan struct{}))
+	if err != nil {
+		t.Fatalf("startLogStream: %v", err)
+	}
+
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Fatal("onEnd got nil error for a 403, want the HTTP error")
+		}
+		if !strings.Contains(err.Error(), "403") {
+			t.Fatalf("onEnd error = %q, want it to mention 403", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("log stream did not terminate on 403")
+	}
+}
+
+// TestLogReconnectUsesSinceTime guards the anti-replay fix: the first
+// attempt's tailLines window must not be reused on reconnect (it replays the
+// last N lines every time the stream bounces). The loop must resume with
+// sinceTime set to the timestamp of the last delivered line.
+func TestLogReconnectUsesSinceTime(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		n := len(queries)
+		mu.Unlock()
+		flusher, _ := w.(http.Flusher)
+		if n == 1 {
+			// First attempt: one timestamped line, then drop the transport.
+			w.WriteHeader(200)
+			fmt.Fprintln(w, "2024-01-02T03:04:05.123456789Z boot line")
+			flusher.Flush()
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		// Subsequent attempts: hold the stream open.
+		w.WriteHeader(200)
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	kc := &Kubeconfig{
+		CurrentContext: "t",
+		Contexts:       map[string]contextEntry{"t": {Cluster: "c", User: "u"}},
+		Clusters:       map[string]clusterEntry{"c": {Server: srv.URL, CertificateAuthorityData: ca}},
+		Users:          map[string]userEntry{"u": {Token: "x"}},
+	}
+	client, base, _ := BuildClient(kc, "t")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := startLogStream(ctx, client, base,
+		"/api/v1/namespaces/default/pods/p1/log?follow=true&container=c&timestamps=true&tailLines=100",
+		func(string) {},
+		func(error) {},
+		func(error) {},
+		make(chan struct{}))
+	if err != nil {
+		t.Fatalf("startLogStream: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(queries)
+		var last string
+		if n > 0 {
+			last = queries[n-1]
+		}
+		mu.Unlock()
+		if n >= 2 {
+			if !strings.Contains(last, "sinceTime=") {
+				t.Fatalf("reconnect query = %q, want sinceTime", last)
+			}
+			if !strings.Contains(last, "2024-01-02T03%3A04%3A05") {
+				t.Fatalf("reconnect query = %q, want sinceTime anchored to the last delivered line", last)
+			}
+			if strings.Contains(last, "tailLines=") {
+				t.Fatalf("reconnect query = %q, must not replay the tailLines window", last)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("log stream never reconnected")
 }

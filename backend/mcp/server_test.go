@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -143,7 +144,7 @@ func newTestServerWithPolicy(t *testing.T, policy Policy) (url, token string) {
 		Connect: func(id string) (string, error) { return "s-new", nil },
 		Approve: func(req ApprovalRequest) error { return nil },
 		Audit:   func(entry AuditEntry) {},
-		Policy: func() Policy { return policy },
+		Policy:  func() Policy { return policy },
 	}
 	srv := NewServer(env)
 	token, hash := GenerateToken()
@@ -251,7 +252,7 @@ func TestDeniedApprovalBlocksExec(t *testing.T) {
 		Sessions:     func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
 		ListSessions: func() []SessionSummary { return []SessionSummary{{ID: "s1", Type: "ssh", Status: "connected"}} },
 		Approve:      func(req ApprovalRequest) error { return fmt.Errorf("denied by user: no") },
-		Audit: func(entry AuditEntry) {},
+		Audit:        func(entry AuditEntry) {},
 		Policy:       func() Policy { return PolicyConfirmAll },
 	}
 	srv := NewServer(env)
@@ -336,8 +337,10 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 	os.MkdirAll(filepath.Dir(outside), 0755)
 
 	env := Env{
-		Sessions:     func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
-		FileSession:  func(id string) (FileExecutor, error) { return fakeFileExecutor{}, map[bool]error{true: nil, false: fmt.Errorf("session %s not found", id)}[id == "s1"] },
+		Sessions: func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
+		FileSession: func(id string) (FileExecutor, error) {
+			return fakeFileExecutor{}, map[bool]error{true: nil, false: fmt.Errorf("session %s not found", id)}[id == "s1"]
+		},
 		ListSessions: func() []SessionSummary { return []SessionSummary{{ID: "s1", Type: "ssh", Status: "connected"}} },
 		Approve:      func(req ApprovalRequest) error { return nil },
 		Audit:        func(entry AuditEntry) {},
@@ -443,7 +446,7 @@ func TestDownloadFileGradesAtLeastWrite(t *testing.T) {
 			approvals = append(approvals, req)
 			return nil
 		},
-		Audit: func(entry AuditEntry) {},
+		Audit:  func(entry AuditEntry) {},
 		Policy: func() Policy { return PolicyConfirmWrite },
 		ResolveLocalPath: func(p string) (string, error) {
 			return ResolveMcpLocalPath(p, []string{dir})
@@ -485,5 +488,86 @@ func TestDownloadFileGradesAtLeastWrite(t *testing.T) {
 	}
 	if len(approvals) != 1 {
 		t.Fatalf("download_file must request approval under confirm_write, approvals = %d", len(approvals))
+	}
+}
+
+// Regression (security.md medium): Start always called Stop() first, so
+// (re)starting the endpoint on the port it already listens on tore down every
+// connected MCP client and its in-flight tool calls — and the App layer calls
+// Start on each SaveLocalState (every tab change / slider drag). Start on the
+// running port must be a no-op that keeps live connections alive.
+func TestStartSamePortKeepsExistingListener(t *testing.T) {
+	// Reserve a free loopback port the usual way, then release it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release port: %v", err)
+	}
+
+	s := NewServer(Env{})
+	if err := s.Start(port); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer s.Stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	if err := s.Start(port); err != nil {
+		t.Fatalf("re-start on the same port: %v", err)
+	}
+	if !s.Running() || s.Port() != port {
+		t.Fatalf("Running()=%v Port()=%d, want running on %d", s.Running(), s.Port(), port)
+	}
+
+	// A restart closes established connections; a no-op must not.
+	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
+	if err == nil {
+		t.Fatal("unexpected payload on a raw connection")
+	}
+	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
+		t.Fatalf("second Start dropped the live client connection: %v", err)
+	}
+}
+
+// A different port must still rebind: the old listener goes away, the new
+// port accepts connections.
+func TestStartNewPortRebinds(t *testing.T) {
+	reserve := func() int {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("reserve port: %v", err)
+		}
+		p := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		return p
+	}
+	oldPort, newPort := reserve(), reserve()
+
+	s := NewServer(Env{})
+	if err := s.Start(oldPort); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer s.Stop()
+	if err := s.Start(newPort); err != nil {
+		t.Fatalf("re-start on new port: %v", err)
+	}
+	if s.Port() != newPort {
+		t.Fatalf("Port() = %d, want %d", s.Port(), newPort)
+	}
+	if c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(newPort))); err != nil {
+		t.Fatalf("dial new port: %v", err)
+	} else {
+		c.Close()
 	}
 }

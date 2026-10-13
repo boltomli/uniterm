@@ -208,10 +208,11 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { Table2, Eye, Code2, Database, MoreHorizontal, PanelLeft } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
 import { useI18n } from '../i18n'
+import { useTabBarOverflow } from '../composables/useTabBarOverflow'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
@@ -408,7 +409,7 @@ function clearDragState() {
 // ── Tab bar overflow: wheel scroll + "more" dropdown ──
 
 const docTabsScrollRef = ref<HTMLElement | null>(null)
-const docTabsShowMore = ref(false)
+const { showMore: docTabsShowMore, measure: measureDocTabsOverflow } = useTabBarOverflow(docTabsScrollRef)
 const docMoreMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const docMoreMenuVisible = ref(false)
 
@@ -416,27 +417,8 @@ function onDocMoreToggle(e: MouseEvent) {
   if (e.currentTarget instanceof HTMLElement) docMoreMenuRef.value?.toggle(e.currentTarget)
 }
 
-function updateDocTabsOverflow() {
-  const el = docTabsScrollRef.value
-  if (!el) return
-  docTabsShowMore.value = el.scrollWidth > el.clientWidth + 1
-}
-
-watch(() => docs.value.length, () => nextTick(updateDocTabsOverflow))
-watch(activeDocId, () => nextTick(updateDocTabsOverflow))
-
-let docTabsResize: ResizeObserver | null = null
-
-onMounted(() => {
-  docTabsResize = new ResizeObserver(updateDocTabsOverflow)
-  if (docTabsScrollRef.value) docTabsResize.observe(docTabsScrollRef.value)
-  nextTick(updateDocTabsOverflow)
-})
-
-onBeforeUnmount(() => {
-  docTabsResize?.disconnect()
-  docTabsResize = null
-})
+watch(() => docs.value.length, () => nextTick(measureDocTabsOverflow))
+watch(activeDocId, () => nextTick(measureDocTabsOverflow))
 
 function onTabsWheel(e: WheelEvent) {
   if (docTabsScrollRef.value) docTabsScrollRef.value.scrollLeft += e.deltaY

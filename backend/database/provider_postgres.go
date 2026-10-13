@@ -63,6 +63,15 @@ func (p *postgresProvider) DBType() string {
 // the previous implementation discarded the SafePgIdent error and silently
 // produced broken SQL.
 func (p *postgresProvider) Quote(name string) string {
+	return pgQuoteIdent(name)
+}
+
+// pgQuoteIdent returns name wrapped in double quotes with any embedded quote
+// doubled. Doubling is what keeps an identifier inert inside its quotes, so it
+// is safe for every legal Postgres name — including ones containing `..`,
+// `/` or `\`, which the Safe*Ident path checks reject but Postgres accepts.
+// Package-level so the dump-DDL path shares it with Quote.
+func pgQuoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
@@ -660,8 +669,10 @@ func pgCreateTableSQL(conn *sql.Conn, schema, tableName, quotedTable string) (st
 		if err := rows.Scan(&name, &ty, &notnull, &dflt); err != nil {
 			return "", err
 		}
-		quotedName, _ := SafePgIdent(name)
-		line := "  " + quotedName + " " + ty
+		// Quote by doubling rather than routing through SafePgIdent, whose
+		// path checks reject legal names (`..`, `/`, `\`) and whose error
+		// was discarded here — silently emitting an empty identifier.
+		line := "  " + pgQuoteIdent(name) + " " + ty
 		if dflt.Valid && dflt.String != "" {
 			line += " DEFAULT " + dflt.String
 		}

@@ -233,9 +233,19 @@ func (s *Server) SetTokens(tokens map[string]TokenInfo) {
 	s.tokens = tokens
 }
 
-// Start brings up the listener on 127.0.0.1:port. Idempotent: a running
-// server is stopped first when the port changed, or the call is a no-op.
+// Start brings up the listener on 127.0.0.1:port. Starting the port the
+// server already listens on is a no-op: the App layer calls Start from
+// SaveLocalState, which fires on every UI toggle, and a restart would drop
+// every connected MCP client and its in-flight tool calls. Requesting a
+// different port (or 0 = "pick one") stops the running server first.
 func (s *Server) Start(port int) error {
+	s.mu.Lock()
+	running, current := s.started, s.port
+	s.mu.Unlock()
+	if running && (port == 0 || port == current) {
+		return nil
+	}
+
 	s.Stop()
 
 	srv := mcp.NewServer(&mcp.Implementation{

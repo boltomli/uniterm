@@ -40,6 +40,15 @@ func GetSessionCwd(sessionID string) string {
 	return sessionCwds.m[sessionID]
 }
 
+// forgetSessionCwd drops a session's cached cwd. The SessionManager calls it
+// when a session is closed (and on startup eviction) so entries never outlive
+// their sessions for the life of the app.
+func forgetSessionCwd(sessionID string) {
+	sessionCwds.mu.Lock()
+	delete(sessionCwds.m, sessionID)
+	sessionCwds.mu.Unlock()
+}
+
 const (
 	osc7Prefix            = "\x1b]7;"
 	osc7BEL               = "\x07"
@@ -224,7 +233,8 @@ func buildStartupCwdHook(shell string) (string, bool) {
 // pty echo, so the WSL injection arms echo-off first (printing an
 // echo-armed marker) and only then sends the hook body, which must never
 // render.
-func buildShellCwdHookBody(shell string) (string, bool) {	base := shellBasename(shell)
+func buildShellCwdHookBody(shell string) (string, bool) {
+	base := shellBasename(shell)
 	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
 	switch base {
 	case "bash":
@@ -528,4 +538,3 @@ func closeSSHSessionAsync(sess *ssh.Session) {
 		go func() { _ = sess.Close() }()
 	}
 }
-

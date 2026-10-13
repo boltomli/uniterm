@@ -707,17 +707,44 @@ func (s *FTPSession) Copy(oldPath, newPath string) error {
 		return err
 	}
 	defer r.Close()
-	data, err := io.ReadAll(r)
+	// Spool the download through a temp file: FTP control replies are
+	// strictly sequential — RETR's completion reply (226) must be read
+	// before STOR's EPSV can open the upload's data connection, so the two
+	// directions cannot overlap here. Spooling keeps memory at one copy
+	// buffer instead of holding the whole file (a full read plus a string
+	// round-trip used roughly twice the file size per copy).
+	tmp, err := os.CreateTemp("", "uniterm-ftp-copy-*")
 	if err != nil {
 		return err
 	}
+	defer func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}()
+	if _, err := io.Copy(tmp, r); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Consume RETR's completion reply now: the upload issues the next
+	// control command and replies arrive in command order — a stale 226
+	// would poison STOR's EPSV response.
+	if err := r.Close(); err != nil {
+		return err
+	}
+	src, err := os.Open(tmp.Name())
+	if err != nil {
+		return err
+	}
+	defer src.Close()
 	// Create parent directories for destination
 	parentDir := path.Dir(n)
 	if err := s.mkdirAllRemote(parentDir); err != nil {
 		return err
 	}
 	// Upload
-	return s.ftpStor(n, strings.NewReader(string(data)))
+	return s.ftpStor(n, src)
 }
 
 // Move moves a remote file via FTP Rename (server-side, no data transfer).

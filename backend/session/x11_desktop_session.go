@@ -86,6 +86,31 @@ func (s *X11DesktopSession) Connect(config ConnectionConfig) error {
 	return fmt.Errorf("x11-desktop: use X11DesktopConnect (not Session.Connect); set deferConnect: true at create time")
 }
 
+// probeLocalX proves the local X server accepts a connection and then closes
+// it: the X11 forward opens its own connection to the display, so keeping this
+// probe alive only leaked a socket (and the X server state behind it) for the
+// life of the process.
+func probeLocalX(display string) error {
+	conn, err := DialLocalX(display)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// killVcXsrv stops the dedicated VcXsrv process this session started and
+// clears it, so a later Disconnect (or a retried connect) never touches a
+// dead process. Safe when nothing was started.
+func (s *X11DesktopSession) killVcXsrv() {
+	if s.vcxsrv == nil {
+		return
+	}
+	if s.vcxsrv.Process != nil {
+		_ = s.vcxsrv.Process.Kill()
+	}
+	s.vcxsrv = nil
+}
+
 // ConnectX11Desktop opens an SSH connection with X11 forwarding and runs
 // the desktop command on the remote host. Blocks until the remote command
 // exits (or the SSH connection drops).
@@ -139,17 +164,15 @@ func (s *X11DesktopSession) ConnectX11Desktop(cfg ConnectionConfig) error {
 			return fmt.Errorf("x11-desktop: $DISPLAY is empty")
 		}
 	}
-	if _, derr := DialLocalX(display); derr != nil {
-		if s.vcxsrv != nil {
-			s.vcxsrv.Process.Kill()
-			s.vcxsrv = nil
-		}
+	if err := probeLocalX(display); err != nil {
+		s.killVcXsrv()
 		s.setStatus(StatusError)
-		return fmt.Errorf("x11-desktop: local X server unreachable: %w", derr)
+		return fmt.Errorf("x11-desktop: local X server unreachable: %w", err)
 	}
 
 	client, err := DialSSHClient(cfg)
 	if err != nil {
+		s.killVcXsrv()
 		s.setStatus(StatusError)
 		return fmt.Errorf("x11-desktop: %w", err)
 	}
@@ -158,6 +181,7 @@ func (s *X11DesktopSession) ConnectX11Desktop(cfg ConnectionConfig) error {
 	sess, err := client.NewSession()
 	if err != nil {
 		client.Close()
+		s.killVcXsrv()
 		s.setStatus(StatusError)
 		return fmt.Errorf("x11-desktop: new session: %w", err)
 	}
@@ -176,6 +200,7 @@ func (s *X11DesktopSession) ConnectX11Desktop(cfg ConnectionConfig) error {
 	default:
 		sess.Close()
 		client.Close()
+		s.killVcXsrv()
 		s.setStatus(StatusError)
 		return fmt.Errorf("x11-desktop: x11 forward: %w", ferr)
 	}
@@ -209,10 +234,7 @@ func (s *X11DesktopSession) Disconnect() error {
 		if s.sshClient != nil {
 			s.sshClient.Close()
 		}
-		if s.vcxsrv != nil {
-			s.vcxsrv.Process.Kill()
-			s.vcxsrv = nil
-		}
+		s.killVcXsrv()
 		s.setStatus(StatusDisconnected)
 	})
 	return nil
@@ -222,7 +244,9 @@ func (s *X11DesktopSession) Disconnect() error {
 // remote X clients and the local X server, bypassing this session.
 // Resize is a no-op because the remote desktop's size is determined by
 // the X server, not by xterm.js dimensions.
-func (s *X11DesktopSession) Write(_ []byte) error { return fmt.Errorf("x11-desktop: not a terminal session") }
+func (s *X11DesktopSession) Write(_ []byte) error {
+	return fmt.Errorf("x11-desktop: not a terminal session")
+}
 func (s *X11DesktopSession) Resize(_, _ int) error { return nil }
 
 func (s *X11DesktopSession) IsConnected() bool { return s.Status() == StatusConnected }

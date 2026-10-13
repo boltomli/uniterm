@@ -1105,19 +1105,16 @@ func (s *S3Session) downloadObject(task *TransferTask, key, localPath string) er
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
-	dst, err := os.Create(localPath)
-	if err != nil {
-		return err
-	}
 	// Write and read errors must surface: otherwise a full disk or a dropped
 	// link leaves a short local file reported as completed (security.md
-	// 文件会话 Medium "Write and read errors are ignored"). Close before
-	// returning so a flush failure is not dropped either.
-	if cerr := copyDownloadStream(dst, rc, task, func() { s.emitTransferProgress(task) }); cerr != nil {
-		dst.Close()
-		return cerr
-	}
-	return dst.Close()
+	// 文件会话 Medium "Write and read errors are ignored"). writePartFile
+	// owns Close/Rename: on any failure the .part is removed and a
+	// pre-existing target keeps its bytes, so a failed or cancelled stream
+	// never leaves a truncated file under the final name (security.md
+	// 文件会话 Low "Partial files are left under the final name").
+	return writePartFile(localPath, func(f *os.File) error {
+		return copyDownloadStream(f, rc, task, func() { s.emitTransferProgress(task) })
+	})
 }
 
 func (s *S3Session) uploadDir(localDir, remoteDir string, task *TransferTask) error {

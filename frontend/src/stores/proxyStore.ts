@@ -24,7 +24,8 @@ export const useProxyStore = defineStore('proxy', () => {
   }
 
   async function save() {
-    await SaveProxies({ proxies: proxies.value } as any)
+    const payload: ProxyStoreData = { proxies: proxies.value }
+    await SaveProxies(payload)
   }
 
   // Reload from disk when the backend pushes updated proxy data (e.g. after a

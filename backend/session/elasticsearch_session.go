@@ -186,7 +186,9 @@ func buildEsAuthHeader(config ConnectionConfig) string {
 	return ""
 }
 
-// Disconnect releases the HTTP client.
+// Disconnect releases the HTTP client. The transport's keep-alive sockets are
+// closed first: dropping the client alone leaves them open until the idle
+// timeout (90 s) long after the session is gone.
 func (s *ElasticsearchSession) Disconnect() error {
 	s.mu.Lock()
 	if s.closed {
@@ -194,8 +196,12 @@ func (s *ElasticsearchSession) Disconnect() error {
 		return nil
 	}
 	s.closed = true
+	client := s.httpClient
 	s.httpClient = nil
 	s.mu.Unlock()
+	if client != nil && client.Transport != nil {
+		client.CloseIdleConnections()
+	}
 	s.setStatus(StatusDisconnected)
 	return nil
 }
@@ -207,7 +213,7 @@ func (s *ElasticsearchSession) IsConnected() bool {
 	return s.status == StatusConnected && s.httpClient != nil && !s.closed
 }
 
-func (s *ElasticsearchSession) Write(data []byte) error  { return nil }
+func (s *ElasticsearchSession) Write(data []byte) error     { return nil }
 func (s *ElasticsearchSession) Resize(cols, rows int) error { return nil }
 
 func (s *ElasticsearchSession) client() (*http.Client, string, string, error) {

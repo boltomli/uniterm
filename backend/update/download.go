@@ -53,6 +53,36 @@ func updateCacheDir() (string, error) {
 	return dir, nil
 }
 
+// removeStaleStageDirs deletes the stage-* directories left behind by
+// earlier downloads. Every download stages exactly one directory, and
+// Clear() deliberately keeps installer stages so a detached updater script
+// can still find its payload — which meant repeated check-then-cancel cycles
+// piled up ~100 MB installer copies in the user cache. Starting a new
+// download supersedes all previous staging, so nothing under stage-* is
+// needed any more. If the detached script of an already-applied installer
+// ever raced a new download, that script re-hashes its payload immediately
+// before launch and aborts instead of running a swapped file.
+func removeStaleStageDirs() {
+	root, err := updateCacheDir()
+	if err != nil {
+		log.Writef("[update] staging dir unavailable, skipping stale stage cleanup: %v", err)
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		log.Writef("[update] listing staging dir failed, skipping stale stage cleanup: %v", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "stage-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err != nil {
+			log.Writef("[update] removing stale stage dir %s: %v", e.Name(), err)
+		}
+	}
+}
+
 // parseChecksums parses a GNU `sha256sum`-style checksums.txt into
 // filename → lowercase hex digest.
 func parseChecksums(data []byte) map[string]string {
@@ -79,6 +109,7 @@ func parseChecksums(data []byte) map[string]string {
 // Progress is reported through onProgress (may be nil).
 func (m *Manager) Download(candidates []UpdateAsset, onProgress func(Progress)) (*PendingUpdate, error) {
 	m.Clear()
+	removeStaleStageDirs()
 	var lastErr error
 	for i, cand := range candidates {
 		log.Writef("[update] trying candidate %d/%d: %s (%s)", i+1, len(candidates), cand.Name, cand.Source)

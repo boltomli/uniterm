@@ -70,12 +70,15 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
         if (!command || command.includes('__AI_DONE_')) continue
         // A long command that overflows the panel width wraps onto the rows
         // below the prompt. Walk down while each row is marked as a wrapped
-        // continuation (isWrapped) and append it so the full command is
-        // captured instead of being truncated at the wrap point (issue 639).
+        // continuation and append it so the full command is captured instead
+        // of being truncated at the wrap point (issue 639). isWrapped is a
+        // BOOLEAN property on xterm's IBufferLine (calling it as a function
+        // always threw, ending the loop on the first row), and the walk must
+        // include the last visible row (cy <= bottomY).
         let full = command
-        for (let cy = y + 1; cy < bottomY; cy++) {
+        for (let cy = y + 1; cy <= bottomY; cy++) {
           const cont = buffer.getLine(cy)
-          if (!cont || typeof cont.isWrapped !== 'function' || !cont.isWrapped()) break
+          if (!cont || !cont.isWrapped) break
           full += stripAnsi(cont.translateToString().trim())
         }
         if (full.length > MAX_COMMAND_LENGTH) continue

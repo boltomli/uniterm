@@ -3,8 +3,10 @@ package k8s
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -32,10 +34,24 @@ func runLogLoop(ctx context.Context, client *http.Client, base, path string,
 	defer close(done)
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
+	// lastTS is the timestamp of the most recent delivered line (the UI
+	// requests timestamps=true, so each line opens with an RFC3339 stamp).
+	// Reconnects resume with sinceTime=lastTS instead of re-sending the
+	// original tailLines window, which replayed the last N lines on every
+	// apiserver/pod-log connection bounce.
+	var lastTS time.Time
+	attemptPath := path
 	for {
-		err := runOneLogStream(ctx, client, base, path, cb)
+		err := runOneLogStream(ctx, client, base, attemptPath, cb, &lastTS)
 		if ctx.Err() != nil {
 			onEnd(ctx.Err())
+			return
+		}
+		var statusErr *httpStatusError
+		if errors.As(err, &statusErr) && statusErr.terminal() {
+			// 401/403/404/… will never succeed; end the stream so the UI
+			// stops showing "reconnecting" instead of spinning forever.
+			onEnd(err)
 			return
 		}
 		if err == nil {
@@ -43,6 +59,7 @@ func runLogLoop(ctx context.Context, client *http.Client, base, path string,
 			onEnd(nil)
 			return
 		}
+		attemptPath = withSinceTime(path, lastTS)
 		// Transport / scanner error — likely apiserver bounce. Surface
 		// a transient reconnect signal (if wired) and back off; onEnd is
 		// reserved for the terminal case so the manager doesn't drop the
@@ -64,8 +81,41 @@ func runLogLoop(ctx context.Context, client *http.Client, base, path string,
 	}
 }
 
+// withSinceTime rewrites the log query to resume just after since and drops
+// the tailLines window so the reconnect doesn't replay it. A zero time leaves
+// the path untouched (no timestamped line delivered yet).
+func withSinceTime(path string, since time.Time) string {
+	if since.IsZero() {
+		return path
+	}
+	u, err := url.Parse(path)
+	if err != nil {
+		return path
+	}
+	q := u.Query()
+	q.Set("sinceTime", since.UTC().Format(time.RFC3339Nano))
+	q.Del("tailLines")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// logLineTS extracts the RFC3339 timestamp the apiserver prepends when
+// timestamps=true. ok=false for lines without one (timestamps=false, or a
+// message that doesn't start with a parseable stamp).
+func logLineTS(line string) (time.Time, bool) {
+	sp := strings.IndexByte(line, ' ')
+	if sp <= 0 {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, line[:sp])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
+
 func runOneLogStream(ctx context.Context, client *http.Client, base, path string,
-	cb func(string)) error {
+	cb func(string), lastTS *time.Time) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", base+path, nil)
 	if err != nil {
 		return err
@@ -75,10 +125,7 @@ func runOneLogStream(ctx context.Context, client *http.Client, base, path string
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		buf := make([]byte, 512)
-		n, _ := resp.Body.Read(buf)
-		resp.Body.Close()
-		return fmt.Errorf("log HTTP %d: %s", resp.StatusCode, string(buf[:n]))
+		return readStatusError("log", resp)
 	}
 	defer resp.Body.Close()
 	scanner := bufio.NewScanner(resp.Body)
@@ -87,7 +134,11 @@ func runOneLogStream(ctx context.Context, client *http.Client, base, path string
 	// even multi-KiB stack traces from panic'd pods.
 	scanner.Buffer(make([]byte, 0, 4*1024), 4*1024*1024)
 	for scanner.Scan() {
-		cb(scanner.Text())
+		line := scanner.Text()
+		if ts, ok := logLineTS(line); ok {
+			*lastTS = ts
+		}
+		cb(line)
 	}
 	return scanner.Err()
 }

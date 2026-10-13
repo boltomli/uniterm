@@ -4,11 +4,40 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
+
+// httpStatusError wraps a non-2xx apiserver response so the retry loops can
+// tell terminal errors (401/403/404 — retrying every 30s forever just spams
+// the UI's "reconnecting" state) from the recoverable 410 Gone (the
+// resourceVersion expired; a fresh watch from the current state succeeds).
+type httpStatusError struct {
+	Op   string // "watch" or "log", for the message
+	Code int
+	Body string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s HTTP %d: %s", e.Op, e.Code, e.Body)
+}
+
+// terminal reports whether the retry loop must stop: any 4xx except 410 Gone.
+func (e *httpStatusError) terminal() bool {
+	return e.Code >= 400 && e.Code < 500 && e.Code != http.StatusGone
+}
+
+// readStatusError drains up to 512 bytes of the body for diagnostics.
+func readStatusError(op string, resp *http.Response) error {
+	body := make([]byte, 512)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	return &httpStatusError{Op: op, Code: resp.StatusCode, Body: string(body[:n])}
+}
 
 // WatchEvent 是 apiserver 推给我们的原始事件（object 保持 JSON 原文）。
 type WatchEvent struct {
@@ -43,10 +72,21 @@ func runWatchLoop(ctx context.Context, client *http.Client, base, path string,
 	defer close(done)
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
+	// rv is the resourceVersion of the last delivered event. Reconnects
+	// resume from it instead of the original (stale) query parameter, so an
+	// apiserver bounce doesn't replay the entire watch history.
+	var rv string
 	for {
-		err := runOneWatch(ctx, client, base, path, cb)
+		err := runOneWatch(ctx, client, base, withResourceVersion(path, rv), cb, &rv)
 		if ctx.Err() != nil {
 			onEnd(ctx.Err())
+			return
+		}
+		var statusErr *httpStatusError
+		if errors.As(err, &statusErr) && statusErr.terminal() {
+			// 401/403/404/… will never succeed; ending the stream lets the
+			// UI stop showing "reconnecting" instead of spinning forever.
+			onEnd(err)
 			return
 		}
 		if err == nil {
@@ -56,6 +96,11 @@ func runWatchLoop(ctx context.Context, client *http.Client, base, path string,
 			// the backoff branch below (K8S-02).
 			onEnd(nil)
 			return
+		}
+		if errors.As(err, &statusErr) && statusErr.Code == http.StatusGone {
+			// 410 Gone: our resourceVersion is too old to resume from.
+			// Drop it and let the next attempt start from current state.
+			rv = ""
 		}
 		// Transport / scanner error — likely apiserver bounce. Surface a
 		// transient reconnect signal (if wired) and back off; onEnd is
@@ -78,8 +123,38 @@ func runWatchLoop(ctx context.Context, client *http.Client, base, path string,
 	}
 }
 
+// withResourceVersion rewrites the watch query so it resumes at rv. An empty
+// rv leaves the path untouched (first attempt, or after a 410 reset).
+func withResourceVersion(path, rv string) string {
+	if rv == "" {
+		return path
+	}
+	u, err := url.Parse(path)
+	if err != nil {
+		return path
+	}
+	q := u.Query()
+	q.Set("resourceVersion", rv)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// watchEventRV extracts metadata.resourceVersion from a watch event (the
+// object is kept as raw JSON precisely so bookkeeping like this stays cheap).
+func watchEventRV(ev WatchEvent) string {
+	var wrapper struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(ev.Object, &wrapper); err != nil {
+		return ""
+	}
+	return wrapper.Metadata.ResourceVersion
+}
+
 func runOneWatch(ctx context.Context, client *http.Client, base, path string,
-	cb func(WatchEvent)) error {
+	cb func(WatchEvent), rv *string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", base+path, nil)
 	if err != nil {
 		return err
@@ -91,10 +166,7 @@ func runOneWatch(ctx context.Context, client *http.Client, base, path string,
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		body := make([]byte, 512)
-		n, _ := resp.Body.Read(body)
-		resp.Body.Close()
-		return fmt.Errorf("watch HTTP %d: %s", resp.StatusCode, string(body[:n]))
+		return readStatusError("watch", resp)
 	}
 	defer resp.Body.Close()
 	scanner := bufio.NewScanner(resp.Body)
@@ -110,6 +182,9 @@ func runOneWatch(ctx context.Context, client *http.Client, base, path string,
 		var ev WatchEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
+		}
+		if got := watchEventRV(ev); got != "" {
+			*rv = got
 		}
 		cb(ev)
 	}

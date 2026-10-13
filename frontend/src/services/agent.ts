@@ -1418,13 +1418,22 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       try {
         store.status = 'executing'
         const skillStore = useSkillStore()
-        await skillStore.saveByAgent(name, description, body)
-        store.addMessage({
-          id: `msg-${Date.now()}`,
-          role: 'tool',
-          content: `[Skill saved: ${name}] The user can now invoke it with /${name}.`,
-          tool_call_id: tu.id
-        })
+        const result = await skillStore.saveByAgent(name, description, body)
+        if (result === 'declined') {
+          store.addMessage({
+            id: `msg-${Date.now()}`,
+            role: 'tool',
+            content: `[Skill not saved: the user declined to overwrite the existing skill "${name}".]`,
+            tool_call_id: tu.id
+          })
+        } else {
+          store.addMessage({
+            id: `msg-${Date.now()}`,
+            role: 'tool',
+            content: `[Skill saved: ${name}] The user can now invoke it with /${name}.`,
+            tool_call_id: tu.id
+          })
+        }
       } catch (e: any) {
         store.addMessage({
           id: `msg-${Date.now()}`,

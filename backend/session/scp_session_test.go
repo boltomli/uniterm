@@ -560,3 +560,46 @@ func TestScpDismissTransfer(t *testing.T) {
 		t.Fatal("dismissed task still present")
 	}
 }
+
+// TestScpSingleFileDownloadKeepsExistingFileOnError: a single-file download
+// whose remote side fails before any byte arrives must not leave the local
+// target truncated (security.md 文件会话 Low: the local file used to be
+// os.Create'd — i.e. truncated to zero — before the remote side was even
+// asked for the file, so a missing/permission-denied remote path wiped the
+// existing local content). The download runs through the production entry
+// (Get -> startTransfer -> scpFetchFile) against the in-process SSH test
+// server, whose exec channel closes without sending a file directive.
+func TestScpSingleFileDownloadKeepsExistingFileOnError(t *testing.T) {
+	addr, _, _ := startChannelTestServer(t)
+	client := dialTestSSHClient(t, addr)
+
+	local := filepath.Join(t.TempDir(), "target.bin")
+	if err := os.WriteFile(local, []byte("OLD-BYTES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events := captureTransferEvents(t)
+
+	s := NewSCPSession("test-scp")
+	s.sshClient = client
+
+	id, err := s.Get("/remote/does-not-exist.bin", local, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	ev := waitForTask(t, events, id)
+	if ev["status"] != "error" {
+		t.Fatalf("status = %v, want error", ev["status"])
+	}
+
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatalf("read local target: %v", err)
+	}
+	if string(got) != "OLD-BYTES" {
+		t.Fatalf("local file = %q, want OLD-BYTES (a failed download must not truncate it)", got)
+	}
+	if _, err := os.Stat(local + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("stale .part file left behind: err=%v", err)
+	}
+}

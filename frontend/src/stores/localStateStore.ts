@@ -83,13 +83,39 @@ export const useLocalStateStore = defineStore('localState', () => {
     return initPromise
   }
 
+  // Debounced persistence: slider drags fire update() on every step, so
+  // writes coalesce into a single trailing save 300ms after the last patch.
+  // The patch itself lands in state synchronously (the UI reacts at once),
+  // and the returned promise resolves only once the merged state has
+  // actually been persisted. Saves are chained so a later write never
+  // overtakes an in-flight one.
+  const SAVE_DELAY_MS = 300
+  let saveTimer: NodeJS.Timeout | undefined
+  let saveChain: Promise<void> = Promise.resolve()
+  let flushWaiters: Array<() => void> = []
+
+  function flushPendingSave() {
+    saveTimer = undefined
+    const waiters = flushWaiters
+    flushWaiters = []
+    const snapshot = { ...state.value } as LocalState
+    const run = saveChain.then(async () => {
+      try {
+        await SaveLocalState(snapshot)
+      } catch {
+        // ignore save errors
+      }
+    })
+    saveChain = run
+    for (const resolve of waiters) run.then(resolve)
+  }
+
   async function update(patch: Partial<LocalState>) {
     state.value = { ...state.value, ...patch } as LocalState
-    try {
-      await SaveLocalState(state.value as LocalState)
-    } catch {
-      // ignore save errors
-    }
+    clearTimeout(saveTimer)
+    const flushed = new Promise<void>((resolve) => flushWaiters.push(resolve))
+    saveTimer = setTimeout(flushPendingSave, SAVE_DELAY_MS)
+    await flushed
   }
 
   return { state, loaded, init, update }

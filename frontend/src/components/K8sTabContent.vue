@@ -330,6 +330,7 @@ function onResizeEnd() {
 }
 
 async function connect() {
+  error.value = ''  // 重连前清掉上一次的致命错误：成功后模板 v-if="error" 必须消失
   k8sStore.setConnStatus(props.connection.id, 'connecting')
   try {
     const cfg = props.connection

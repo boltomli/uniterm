@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74
+	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/cloudsoda/go-smb2 v0.0.0-20260701064823-d8c5600d73b8
 	github.com/creack/pty v1.1.24
 	github.com/go-git/go-git/v5 v5.19.2
@@ -50,7 +51,6 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
-	github.com/alicebob/miniredis/v2 v2.40.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff // indirect

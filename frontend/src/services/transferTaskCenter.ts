@@ -1,8 +1,14 @@
 import { Events } from '@wailsio/runtime'
+import { markRaw, ref } from 'vue'
 import { usePanelStore } from '../stores/panelStore'
 import type { TransferTaskUI } from '../stores/panelStore'
 
 export type TransferDoneCallback = (status: string, type: string) => void
+
+/** Bumped on every per-file add/status flip. File entries are markRaw'd —
+ *  mutating a raw object cannot trigger Vue — so readers that render entry
+ *  status (TransferPanel's per-file rows) must read this ref to repaint. */
+export const fileEntriesRevision = ref(0)
 
 // App-level routing of backend `sftp:transfer` events into the per-panel task
 // lists held by panelStore. Routes are keyed (session id → list key) and
@@ -81,7 +87,7 @@ function applyTransferEvent(tasks: TransferTaskUI[], msg: Record<string, any>, o
         fileCount: msg.fileCount || 0,
         completedFiles: 0,
         currentFile: '',
-        files: [],
+        files: new Map(),
         failedFiles: [],
       })
       while (tasks.length > 80) tasks.shift()
@@ -108,26 +114,31 @@ function applyTransferEvent(tasks: TransferTaskUI[], msg: Record<string, any>, o
     const t = tasks.find(t => t.id === msg.taskId)
     if (t) {
       t.currentFile = msg.name || msg.file
-      t.files.push({ path: msg.file, status: 'running' })
+      const entry = t.files.get(msg.file)
+      if (entry) entry.status = 'running'
+      else t.files.set(msg.file, markRaw({ path: msg.file, status: 'running' }))
       t.fileCount = msg.fileCount || t.fileCount
+      fileEntriesRevision.value++
     }
   } else if (msg.event === 'file-done') {
     const t = tasks.find(t => t.id === msg.taskId)
     if (t) {
-      const f = t.files.find((f: any) => f.path === msg.file)
-      if (f) f.status = 'done'
-      else t.files.push({ path: msg.file, status: 'done' })
+      const entry = t.files.get(msg.file)
+      if (entry) entry.status = 'done'
+      else t.files.set(msg.file, markRaw({ path: msg.file, status: 'done' }))
       t.completedFiles = msg.completedFiles ?? t.completedFiles
       t.fileCount = msg.fileCount || t.fileCount
+      fileEntriesRevision.value++
     }
   } else if (msg.event === 'file-failed') {
     const t = tasks.find(t => t.id === msg.taskId)
     if (t) {
-      const f = t.files.find((f: any) => f.path === msg.file)
-      if (f) f.status = 'failed'
-      else t.files.push({ path: msg.file, status: 'failed' })
+      const entry = t.files.get(msg.file)
+      if (entry) entry.status = 'failed'
+      else t.files.set(msg.file, markRaw({ path: msg.file, status: 'failed' }))
       t.failedFiles.push({ path: msg.file, error: msg.error })
       t.fileCount = msg.fileCount || t.fileCount
+      fileEntriesRevision.value++
     }
   } else if (msg.event === 'paused') {
     const t = tasks.find(t => t.id === msg.taskId)

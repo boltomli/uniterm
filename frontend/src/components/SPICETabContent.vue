@@ -215,29 +215,12 @@ onMounted(() => {
     currentSessionId.value = props.sessionId
   }
 
-  // Restore cached DOM + SPICE if available (zero-delay tab switch)
-  const cached = panelStore.getSPICECache(props.panelId)
-  if (cached && spiceContainer.value) {
-    const children = Array.from(cached.container.children)
-    children.forEach(child => spiceContainer.value!.appendChild(child))
-    sc = cached.sc
-    panelStore.removeSPICECache(props.panelId)
-    status.value = 'connected'
-    return
-  }
-
-  const storedProxy = panelStore.getProxyAddr(props.panelId)
-  if (storedProxy && props.config) {
-    status.value = 'connected'
-    void resolvePassword().then((pw) => initSpice(storedProxy, pw))
-  } else if (currentSessionId.value) {
-    status.value = 'connected'
-    connect()
-  } else {
-    connect()
-  }
-
-  unsubStatus =Events.On('session:status', (ev) => { const data: any = ev.data; 
+  // Register BEFORE connect() and before the cache-restore branch below:
+  // a restored tab must keep the same wiring as a fresh one — session:status
+  // (error/disconnect handling), the tab right-click 重连 menu and the
+  // canvas auto-scale observer (security.md #14: restore used to skip all
+  // three, so disconnects showed no overlay and Reconnect did nothing).
+  unsubStatus =Events.On('session:status', (ev) => { const data: any = ev.data;
     if (data.id !== currentSessionId.value) return
     switch (data.status) {
       case 'connected':
@@ -273,6 +256,28 @@ onMounted(() => {
     })
     mo.observe(spiceContainer.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['width', 'height'] })
     ;(spiceContainer.value as any).__domObserver = mo
+  }
+
+  // Restore cached DOM + SPICE if available (zero-delay tab switch)
+  const cached = panelStore.getSPICECache(props.panelId)
+  if (cached && spiceContainer.value) {
+    const children = Array.from(cached.container.children)
+    children.forEach(child => spiceContainer.value!.appendChild(child))
+    sc = cached.sc
+    panelStore.removeSPICECache(props.panelId)
+    status.value = 'connected'
+    return
+  }
+
+  const storedProxy = panelStore.getProxyAddr(props.panelId)
+  if (storedProxy && props.config) {
+    status.value = 'connected'
+    void resolvePassword().then((pw) => initSpice(storedProxy, pw))
+  } else if (currentSessionId.value) {
+    status.value = 'connected'
+    connect()
+  } else {
+    connect()
   }
 })
 

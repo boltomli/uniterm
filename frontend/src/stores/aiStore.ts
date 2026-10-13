@@ -152,6 +152,62 @@ async function loadSessionsFromBackend(): Promise<{ sessions: AISession[], curre
   }
 }
 
+/**
+ * One message's wire shape for SaveAISessions.
+ */
+export interface SerializedMessage {
+  id: string
+  role: string
+  content: string
+  thinking: string
+  createdAt: number
+  thinkingDurationMs: number
+  tool_call_id: string
+  tool_calls: NonNullable<AIMessage['tool_calls']>
+  pendingTools: NonNullable<AIMessage['pendingTools']>
+  attachments?: AIAttachment[]
+  _rawApiMsg: string
+}
+
+/**
+ * One session's wire shape for SaveAISessions. Cached per session so a flush
+ * can skip re-serializing sessions that did not change.
+ */
+export interface SerializedSession {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+  messages: SerializedMessage[]
+}
+
+/**
+ * Map a live AISession to its wire shape. This is the expensive step (per
+ * message field copying + JSON.stringify of _rawApiMsg), so doSave only calls
+ * it for sessions marked dirty since the last flush.
+ */
+function serializeSession(s: AISession): SerializedSession {
+  return {
+    id: s.id,
+    name: s.name,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    messages: s.messages.map(m => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      thinking: m.thinking || '',
+      createdAt: m.createdAt || 0,
+      thinkingDurationMs: m.thinkingDurationMs || 0,
+      tool_call_id: m.tool_call_id || '',
+      tool_calls: m.tool_calls || [],
+      pendingTools: m.pendingTools || [],
+      attachments: m.attachments?.length ? m.attachments : undefined,
+      _rawApiMsg: m._rawApiMsg ? JSON.stringify(m._rawApiMsg) : '',
+    })),
+  }
+}
+
 export const useAIStore = defineStore('ai', () => {
   const visible = ref(false)
   const messages = ref<AIMessage[]>([])
@@ -358,6 +414,11 @@ export const useAIStore = defineStore('ai', () => {
     sessions.value = data.sessions
       .filter(s => s.messages.length > 0)
       .sort((a, b) => b.updatedAt - a.updatedAt)
+    // Freshly loaded sessions have no serialization state worth reusing.
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+    dirtySessionIds.clear()
+    serializedCache.clear()
     // Always start with a fresh session after restart
     currentSessionId.value = null
     initialized.value = true
@@ -394,34 +455,55 @@ export const useAIStore = defineStore('ai', () => {
   }
 
 
-  async function doSave() {
-    try {
-      const data = {
-        sessions: sessions.value.map(s => ({
-          id: s.id,
-          name: s.name,
-          createdAt: s.createdAt,
-          updatedAt: s.updatedAt,
-          messages: s.messages.map(m => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            thinking: m.thinking || '',
-            createdAt: m.createdAt || 0,
-            thinkingDurationMs: m.thinkingDurationMs || 0,
-            tool_call_id: m.tool_call_id || '',
-            tool_calls: m.tool_calls || [],
-            pendingTools: m.pendingTools || [],
-            attachments: m.attachments?.length ? m.attachments : undefined,
-            _rawApiMsg: m._rawApiMsg ? JSON.stringify(m._rawApiMsg) : '',
-          }))
-        })),
-        currentSessionId: currentSessionId.value || '',
+  // ── Persistence: 500ms trailing debounce + dirty-session serialization ──
+  // addMessage and friends used to hit SaveAISessions synchronously on every
+  // message, re-serializing all sessions (attachments + JSON.stringify of
+  // _rawApiMsg per message). Now doSave() only marks sessions dirty and arms a
+  // timer; the flush serializes dirty sessions afresh and serves clean ones
+  // from a cached payload entry.
+  //
+  // The payload still lists EVERY session (clean ones via their cache entry):
+  // backend AISessionStore.Save deletes shard files absent from the payload
+  // (backend/store/ai_session_store.go:99-121), so a dirty-only payload would
+  // wipe the other sessions from disk.
+  const SAVE_DEBOUNCE_MS = 500
+  const dirtySessionIds = new Set<string>()
+  const serializedCache = new Map<string, SerializedSession>()
+  let saveTimer: NodeJS.Timeout | undefined
+
+  function flushSave() {
+    saveTimer = undefined
+    const liveIds = new Set<string>()
+    const payload: SerializedSession[] = sessions.value.map(s => {
+      liveIds.add(s.id)
+      if (!dirtySessionIds.has(s.id)) {
+        const cached = serializedCache.get(s.id)
+        if (cached) return cached
       }
-      await SaveAISessions(data as any)
-    } catch {
-      // ignore save errors
+      const entry = serializeSession(s)
+      serializedCache.set(s.id, entry)
+      return entry
+    })
+    const flushedIds = Array.from(dirtySessionIds)
+    dirtySessionIds.clear()
+    // Drop cache entries for sessions deleted in this window.
+    for (const id of Array.from(serializedCache.keys())) {
+      if (!liveIds.has(id)) serializedCache.delete(id)
     }
+    SaveAISessions({ sessions: payload, currentSessionId: currentSessionId.value || '' }).catch(() => {
+      // The write failed: re-mark what was dirty so the next doSave retries
+      // instead of serving a payload that never reached disk.
+      for (const id of flushedIds) dirtySessionIds.add(id)
+    })
+  }
+
+  // Marks `sessionId` (default: the current session) as needing re-serialization
+  // and (re)arms the debounce timer.
+  function doSave(sessionId?: string) {
+    const id = sessionId ?? currentSessionId.value
+    if (id) dirtySessionIds.add(id)
+    clearTimeout(saveTimer)
+    saveTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS)
   }
 
   function createSession(name?: string) {
@@ -476,8 +558,9 @@ export const useAIStore = defineStore('ai', () => {
   }
 
   // Issue #756: drop one message (and its tool-result pairs) from the current
-  // session. messages[] and the owning session share the same reactive objects,
-  // so splicing the view array also splices the session; doSave persists it.
+  // session. The view array and the owning session's array are DIFFERENT
+  // arrays (switchSession copies messages with reactive({...m})), so the view
+  // splice alone would resurrect the message on the next switch — splice both.
   function deleteMessage(messageId: string) {
     const idx = messages.value.findIndex(m => m.id === messageId)
     if (idx === -1) return
@@ -494,17 +577,33 @@ export const useAIStore = defineStore('ai', () => {
         else break
       }
     }
+    const removedIds = new Set(messages.value.slice(idx, end).map(x => x.id))
     messages.value.splice(idx, end - idx)
+    removeFromCurrentSession(removedIds)
     doSave()
   }
 
   // Issue #756: drop the message AND everything after it (context rollback,
-  // Trae-style partial deletion). Same shared-array semantics as deleteMessage.
+  // Trae-style partial deletion). Same dual-array semantics as deleteMessage.
   function truncateFrom(messageId: string) {
     const idx = messages.value.findIndex(m => m.id === messageId)
     if (idx === -1) return
+    const removedIds = new Set(messages.value.slice(idx).map(x => x.id))
     messages.value.splice(idx)
+    removeFromCurrentSession(removedIds)
     doSave()
+  }
+
+  // Splice the removed ids out of the session that backs the current view.
+  // Keeps the session array as the source of truth for doSave serialization.
+  function removeFromCurrentSession(removedIds: Set<string>) {
+    const s = sessions.value.find(x => x.id === currentSessionId.value)
+    if (!s) return
+    const next = s.messages.filter(x => !removedIds.has(x.id))
+    if (next.length !== s.messages.length) {
+      s.messages = next
+      s.updatedAt = Date.now()
+    }
   }
 
   // Issue #756: serialize the current session to markdown for export.
@@ -533,7 +632,7 @@ export const useAIStore = defineStore('ai', () => {
     const s = sessions.value.find(s => s.id === sessionId)
     if (s) {
       s.name = name
-      doSave()
+      doSave(sessionId)
     }
   }
 

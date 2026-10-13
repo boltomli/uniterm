@@ -21,7 +21,11 @@ type ScriptStatement struct {
 // operator (`f # 4`), so treating it as a comment there would truncate
 // statements.
 func SplitScript(script string, dialect string) []ScriptStatement {
-	hashComment := hashCommentDialect(dialect)
+	// MySQL-family dialects (MySQL/MariaDB/TiDB register as "mysql") treat
+	// `#` as a line comment, honour backslash escapes inside strings, and
+	// keep /*! … */ executable comments. Only PostgreSQL dollar-quotes.
+	mysqlFamily := mysqlFamilyDialect(dialect)
+	dollarQuote := dialect == "postgres"
 	var stmts []ScriptStatement
 
 	var b strings.Builder
@@ -42,24 +46,27 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 	}
 
 	for i < n {
+		// DELIMITER command at any line start (including the very first
+		// line, which the old after-'\n' check missed), but only when not
+		// mid-statement. matchDelimiterCmd skips leading whitespace.
+		if flushed && (i == 0 || script[i-1] == '\n') {
+			if d, consumed, ok := matchDelimiterCmd(script, i); ok {
+				delimiter = d
+				i += consumed
+				// skip rest of that line
+				for i < n && script[i] != '\n' {
+					i++
+				}
+				// leave line counting to next loop; b is empty
+				continue
+			}
+		}
+
 		c := script[i]
 
 		// newline tracking for line numbers
 		if c == '\n' {
 			line++
-			// Detect DELIMITER command at line start (only when not mid-statement).
-			if flushed {
-				if d, consumed, ok := matchDelimiterCmd(script, i+1); ok {
-					delimiter = d
-					i += consumed
-					// skip rest of that line
-					for i < n && script[i] != '\n' {
-						i++
-					}
-					// leave line counting to next loop; b is empty
-					continue
-				}
-			}
 			b.WriteByte(c)
 			i++
 			continue
@@ -72,8 +79,33 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 			continue
 		}
 
-		// block comment /* ... */ : skip entirely
+		// block comment /* ... */ : skip entirely — except MySQL executable
+		// comments (/*! ... */), whose inner SQL the server runs (mysqldump
+		// relies on this for SET FOREIGN_KEY_CHECKS=0 etc.). Keep those
+		// verbatim as statement content.
 		if c == '/' && i+1 < n && script[i+1] == '*' {
+			if mysqlFamily && i+2 < n && script[i+2] == '!' {
+				start := i
+				startLine := line
+				j := i + 2
+				for j < n {
+					if script[j] == '*' && j+1 < n && script[j+1] == '/' {
+						j += 2
+						break
+					}
+					if script[j] == '\n' {
+						line++
+					}
+					j++
+				}
+				if flushed {
+					stmtStartLine = startLine
+					flushed = false
+				}
+				b.WriteString(script[start:j])
+				i = j
+				continue
+			}
 			i += 2
 			for i < n {
 				if script[i] == '*' && i+1 < n && script[i+1] == '/' {
@@ -96,11 +128,37 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 			}
 			continue
 		}
-		if hashComment && c == '#' {
+		if mysqlFamily && c == '#' {
 			for i < n && script[i] != '\n' {
 				i++
 			}
 			continue
+		}
+
+		// PostgreSQL dollar-quoted bodies: $$ … $$ / $tag$ … $tag$ are one
+		// literal unit (the body of CREATE FUNCTION / DO blocks); their
+		// inner ';' must not split the statement.
+		if dollarQuote && c == '$' {
+			if tag, ok := matchDollarQuote(script, i); ok {
+				closer := "$" + tag + "$"
+				if flushed {
+					stmtStartLine = line
+					flushed = false
+				}
+				end := strings.Index(script[i+len(closer):], closer)
+				stop := n
+				if end >= 0 {
+					stop = i + len(closer) + end + len(closer)
+				}
+				for k := i; k < stop; k++ {
+					if script[k] == '\n' {
+						line++
+					}
+				}
+				b.WriteString(script[i:stop])
+				i = stop
+				continue
+			}
 		}
 
 		// string literals
@@ -113,7 +171,11 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 			i++
 			for i < n {
 				ch := script[i]
-				if ch == '\\' && quote != '`' {
+				// Backslash escapes are a MySQL-family extension; treating
+				// them as escapes in PG/MSSQL/Oracle/SQLite turned 'a\'
+				// into an unterminated string that swallowed the rest of
+				// the script.
+				if mysqlFamily && ch == '\\' && quote != '`' {
 					b.WriteByte(ch)
 					if i+1 < n {
 						b.WriteByte(script[i+1])
@@ -167,11 +229,37 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 	return stmts
 }
 
-// hashCommentDialect reports whether `#` starts a line comment in the given
-// dialect. Only MySQL-compatible servers (MariaDB/TiDB register as "mysql")
-// support it.
-func hashCommentDialect(dialect string) bool {
+// mysqlFamilyDialect reports whether dialect is MySQL-family (MySQL,
+// MariaDB and TiDB all register as "mysql"). Those dialects treat `#` as a
+// line comment, honour backslash escapes in string literals, and execute
+// /*! … */ comments.
+func mysqlFamilyDialect(dialect string) bool {
 	return dialect == "mysql"
+}
+
+// matchDollarQuote checks whether script[pos:] starts with a PostgreSQL
+// dollar-quote opener ($$ or $tag$) and returns the tag (empty for $$).
+// Tags must look like identifiers and may not start with a digit, so
+// placeholders like $1 are not mistaken for an opener.
+func matchDollarQuote(script string, pos int) (string, bool) {
+	if pos+1 >= len(script) || script[pos] != '$' {
+		return "", false
+	}
+	j := pos + 1
+	start := j
+	if j < len(script) && (script[j] >= '0' && script[j] <= '9') {
+		return "", false
+	}
+	for j < len(script) && (script[j] == '_' ||
+		(script[j] >= 'a' && script[j] <= 'z') ||
+		(script[j] >= 'A' && script[j] <= 'Z') ||
+		(script[j] >= '0' && script[j] <= '9')) {
+		j++
+	}
+	if j >= len(script) || script[j] != '$' {
+		return "", false
+	}
+	return script[start:j], true
 }
 
 // matchDelimiterCmd checks whether the text starting at pos begins (after

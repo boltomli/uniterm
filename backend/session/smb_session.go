@@ -16,11 +16,54 @@ import (
 	"github.com/cloudsoda/go-smb2"
 )
 
+// smbRemoteFile is the open-file surface the SMB transfer paths use.
+// *smb2.File satisfies it; tests inject fakes (a live *smb2.File cannot be
+// fabricated without a server).
+type smbRemoteFile interface {
+	io.Reader
+	io.Writer
+	io.ReaderAt
+	io.WriterAt
+	io.Closer
+}
+
+// smbShare is the subset of *smb2.Share the SMB session calls. The field is
+// an interface so tests can inject a fake share (security.md 文件会话 Medium:
+// Disconnect used to nil a concrete *smb2.Share out from under running
+// transfers, panicking the whole app).
+type smbShare interface {
+	Open(name string) (smbRemoteFile, error)
+	Create(name string) (smbRemoteFile, error)
+	Stat(name string) (os.FileInfo, error)
+	ReadDir(dirname string) ([]os.FileInfo, error)
+	Mkdir(name string, perm os.FileMode) error
+	Remove(name string) error
+	RemoveAll(name string) error
+	Rename(oldpath, newpath string) error
+	Chmod(name string, mode os.FileMode) error
+	Umount() error
+}
+
+// smbShareImpl adapts *smb2.Share to smbShare; only Open/Create need
+// overriding because they return the concrete *smb2.File.
+type smbShareImpl struct{ *smb2.Share }
+
+func (a *smbShareImpl) Open(name string) (smbRemoteFile, error)   { return a.Share.Open(name) }
+func (a *smbShareImpl) Create(name string) (smbRemoteFile, error) { return a.Share.Create(name) }
+
+// smbConn is the subset of *smb2.Session the SMB session calls.
+type smbConn interface {
+	Echo() error
+	Logoff() error
+	Mount(sharename string, opts ...smb2.MountOption) (*smb2.Share, error)
+	ListSharenames() ([]string, error)
+}
+
 type SMBSession struct {
 	baseSession
 	localFSOps
-	conn      *smb2.Session
-	share     *smb2.Share
+	conn      smbConn
+	share     smbShare
 	cwd       string
 	mu        sync.RWMutex
 	transfers map[string]*TransferTask
@@ -73,8 +116,11 @@ func (s *SMBSession) Connect(config ConnectionConfig) error {
 
 	// Always start at share list root. If a share was specified, the frontend
 	// will auto-navigate into it after the initial listing.
+	s.mu.Lock()
 	s.conn = smbConn
+	s.share = nil
 	s.cwd = "/"
+	s.mu.Unlock()
 	s.setStatus(StatusConnected)
 	go s.startKeepAlive()
 	return nil
@@ -111,29 +157,90 @@ func (s *SMBSession) startKeepAlive() {
 func (s *SMBSession) Write(data []byte) error     { return nil }
 func (s *SMBSession) Resize(cols, rows int) error { return nil }
 
+// cancelAllTransfers cancels every tracked transfer so its worker unwinds
+// through the existing task.ctx.Err() branches (finishing as "cancelled")
+// instead of hitting a torn-down transport mid-call. Callers must not hold
+// s.mu.
+func (s *SMBSession) cancelAllTransfers() {
+	s.mu.RLock()
+	tasks := make([]*TransferTask, 0, len(s.transfers))
+	for _, t := range s.transfers {
+		tasks = append(tasks, t)
+	}
+	s.mu.RUnlock()
+	for _, t := range tasks {
+		if t.cancel != nil {
+			t.cancel()
+		}
+	}
+}
+
 func (s *SMBSession) Disconnect() error {
-	if s.share != nil {
-		s.share.Umount()
-		s.share = nil
-	}
-	if s.conn != nil {
-		s.conn.Logoff()
-		s.conn = nil
-	}
+	// Cancel running transfers BEFORE tearing the transport down
+	// (security.md 文件会话 Medium: Disconnect racing a directory transfer used
+	// to leave workers dereferencing the nil-ed share — process-wide panic).
+	s.cancelAllTransfers()
+	s.mu.Lock()
+	share, conn := s.share, s.conn
+	s.share = nil
+	s.conn = nil
 	s.cwd = "/"
+	s.mu.Unlock()
+	if share != nil {
+		share.Umount()
+	}
+	if conn != nil {
+		conn.Logoff()
+	}
 	s.setStatus(StatusDisconnected)
 	return nil
 }
 
 func (s *SMBSession) IsConnected() bool {
-	return s.Status() == StatusConnected && s.conn != nil
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+	return s.Status() == StatusConnected && conn != nil
 }
 
-func (s *SMBSession) requireShare() error {
-	if s.share == nil {
-		return fmt.Errorf("SMB session not connected")
+// requireShare returns the mounted share, or an error when none is mounted.
+// Callers must use only the returned reference for the whole operation:
+// Disconnect may unmount s.share at any time (security.md 文件会话 Medium).
+func (s *SMBSession) requireShare() (smbShare, error) {
+	s.mu.RLock()
+	share := s.share
+	s.mu.RUnlock()
+	if share == nil {
+		return nil, fmt.Errorf("SMB session not connected")
 	}
-	return nil
+	return share, nil
+}
+
+// requireConn returns the SMB session connection, or an error when the
+// transport is gone. Like requireShare, callers use only the returned
+// reference.
+func (s *SMBSession) requireConn() (smbConn, error) {
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+	if conn == nil {
+		return nil, fmt.Errorf("SMB session not connected")
+	}
+	return conn, nil
+}
+
+// unmountShare detaches share (when it is still the session's mounted share)
+// and returns to the share-list root. Running transfers are cancelled before
+// the umount so their workers observe a cancelled task, not a dead handle.
+func (s *SMBSession) unmountShare(share smbShare) {
+	s.cancelAllTransfers()
+	s.mu.Lock()
+	if s.share == share {
+		s.share = nil
+		s.cwd = "/"
+	}
+	s.mu.Unlock()
+	share.Umount()
 }
 
 // smbDir returns the parent directory for an SMB path.
@@ -175,6 +282,8 @@ func (s *SMBSession) smbInternal(p string) string {
 func (s *SMBSession) resolveRemote(p string) (string, error) {
 	// "" means "list current directory" (used by refresh).
 	if p == "" {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 		return s.cwd, nil
 	}
 	return p, nil
@@ -184,8 +293,8 @@ func (s *SMBSession) nextTaskID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, atomic.AddInt64(&s.taskSeq, 1))
 }
 
-func (s *SMBSession) readRemoteFile(remotePath string) ([]byte, error) {
-	f, err := s.share.Open(remotePath)
+func (s *SMBSession) readRemoteFile(share smbShare, remotePath string) ([]byte, error) {
+	f, err := share.Open(remotePath)
 	if err != nil {
 		return nil, err
 	}
@@ -193,8 +302,8 @@ func (s *SMBSession) readRemoteFile(remotePath string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-func (s *SMBSession) writeRemoteFile(remotePath string, content []byte) error {
-	f, err := s.share.Create(remotePath)
+func (s *SMBSession) writeRemoteFile(share smbShare, remotePath string, content []byte) error {
+	f, err := share.Create(remotePath)
 	if err != nil {
 		return err
 	}
@@ -203,26 +312,27 @@ func (s *SMBSession) writeRemoteFile(remotePath string, content []byte) error {
 	return err
 }
 
-func (s *SMBSession) mkdirAllRemote(dir string) error {
+func (s *SMBSession) mkdirAllRemote(share smbShare, dir string) error {
 	if dir == "" || dir == "." || dir == "/" {
 		return nil
 	}
-	fi, err := s.share.Stat(dir)
+	fi, err := share.Stat(dir)
 	if err == nil && fi.IsDir() {
 		return nil
 	}
-	if err := s.mkdirAllRemote(smbDir(dir)); err != nil {
+	if err := s.mkdirAllRemote(share, smbDir(dir)); err != nil {
 		return err
 	}
-	return s.share.Mkdir(dir, 0755)
+	return share.Mkdir(dir, 0755)
 }
 
 // listShares returns all available shares as directory entries.
 func (s *SMBSession) listShares() (FileListResult, error) {
-	if s.conn == nil {
-		return FileListResult{}, fmt.Errorf("SMB session not connected")
+	conn, err := s.requireConn()
+	if err != nil {
+		return FileListResult{}, err
 	}
-	names, err := s.conn.ListSharenames()
+	names, err := conn.ListSharenames()
 	if err != nil {
 		return FileListResult{}, fmt.Errorf("smb list shares: %w", err)
 	}
@@ -239,11 +349,10 @@ func (s *SMBSession) listShares() (FileListResult, error) {
 }
 
 func (s *SMBSession) ListRemote(dir string) (FileListResult, error) {
-	// No share mounted: show share list at root
-	if s.share == nil {
-		if s.conn == nil {
-			return FileListResult{}, fmt.Errorf("SMB session not connected")
-		}
+	// No share mounted: show share list at root (requireShare's error is the
+	// same not-connected error listShares returns when the conn is gone too).
+	share, err := s.requireShare()
+	if err != nil {
 		return s.listShares()
 	}
 
@@ -252,7 +361,7 @@ func (s *SMBSession) ListRemote(dir string) (FileListResult, error) {
 		return FileListResult{}, err
 	}
 	internal := s.smbInternal(target)
-	entries, err := s.share.ReadDir(internal)
+	entries, err := share.ReadDir(internal)
 	if err != nil {
 		return FileListResult{}, err
 	}
@@ -274,12 +383,15 @@ func (s *SMBSession) ListRemote(dir string) (FileListResult, error) {
 }
 
 func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
+	s.mu.RLock()
+	share, conn := s.share, s.conn
+	s.mu.RUnlock()
 	// No share mounted yet: navigating into a share name mounts it. A deeper
 	// path ("/share/sub/dir") mounts the share and lands directly in the
 	// subdirectory, so a post-reconnect re-navigate with the previous cwd
 	// restores the location in one step.
-	if s.share == nil {
-		if s.conn == nil {
+	if share == nil {
+		if conn == nil {
 			return FileListResult{}, fmt.Errorf("SMB session not connected")
 		}
 		sharePath := strings.TrimPrefix(dir, "/")
@@ -290,27 +402,27 @@ func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 		if idx := strings.Index(sharePath, "/"); idx >= 0 {
 			shareName, subDir = sharePath[:idx], sharePath[idx+1:]
 		}
-		share, err := s.conn.Mount(shareName)
+		mounted, err := conn.Mount(shareName)
 		if err != nil {
 			return FileListResult{}, fmt.Errorf("smb mount share %s: %w", shareName, err)
 		}
-		s.share = share
-		s.cwd = "/" + sharePath
+		// Validate a subdirectory target before installing the mount, so a
+		// bad path leaves the session exactly as it was.
 		if subDir != "" {
-			fi, err := share.Stat(subDir)
+			fi, err := mounted.Stat(subDir)
 			if err != nil {
-				share.Umount()
-				s.share = nil
-				s.cwd = "/"
+				mounted.Umount()
 				return FileListResult{}, fmt.Errorf("no such directory: %s: %w", dir, err)
 			}
 			if !fi.IsDir() {
-				share.Umount()
-				s.share = nil
-				s.cwd = "/"
+				mounted.Umount()
 				return FileListResult{}, fmt.Errorf("not a directory: %s", dir)
 			}
 		}
+		s.mu.Lock()
+		s.share = &smbShareImpl{Share: mounted}
+		s.cwd = "/" + sharePath
+		s.mu.Unlock()
 		return s.ListRemote("")
 	}
 
@@ -321,28 +433,24 @@ func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 
 	// "/" from inside a share → go back to share list
 	if target == "/" {
-		s.share.Umount()
-		s.share = nil
-		s.cwd = "/"
+		s.unmountShare(share)
 		return s.listShares()
 	}
 
 	// Navigate up: handle going from share root back to share list
 	if dir == ".." {
 		// If at share root (cwd is "/sharename" or ""), unmount and list shares
-		cwdTrimmed := strings.TrimPrefix(strings.TrimSuffix(s.cwd, "/"), "/")
+		s.mu.RLock()
+		cwd := s.cwd
+		s.mu.RUnlock()
+		cwdTrimmed := strings.TrimPrefix(strings.TrimSuffix(cwd, "/"), "/")
 		if cwdTrimmed == "" || !strings.Contains(cwdTrimmed, "/") {
 			// At share root, go back to share list
-			s.share.Umount()
-			s.share = nil
-			s.cwd = "/"
+			s.unmountShare(share)
 			return s.listShares()
 		}
 		// Navigate to parent directory
 		parent := smbDir(target)
-		if parent == "" {
-			parent = ""
-		}
 		s.mu.Lock()
 		s.cwd = parent
 		s.mu.Unlock()
@@ -352,7 +460,7 @@ func (s *SMBSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 	// Root directory: skip Stat (SMB can't stat empty path)
 	internal := s.smbInternal(target)
 	if internal != "" {
-		fi, err := s.share.Stat(internal)
+		fi, err := share.Stat(internal)
 		if err != nil {
 			// Wrap the underlying error: a dead link surfaces here as Stat
 			// failure, and the frontend's reconnect detection matches on the
@@ -376,18 +484,20 @@ func (s *SMBSession) Symlink(_, _ string) error {
 }
 
 func (s *SMBSession) MakeDir(dir string) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	p, err := s.resolveRemote(dir)
 	if err != nil {
 		return err
 	}
-	return s.share.Mkdir(s.smbInternal(p), 0755)
+	return share.Mkdir(s.smbInternal(p), 0755)
 }
 
 func (s *SMBSession) Remove(p string, recursive bool) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	target, err := s.resolveRemote(p)
@@ -396,14 +506,14 @@ func (s *SMBSession) Remove(p string, recursive bool) error {
 	}
 	internal := s.smbInternal(target)
 	if recursive {
-		return s.share.RemoveAll(internal)
+		return share.RemoveAll(internal)
 	}
-	fi, err := s.share.Stat(internal)
+	fi, err := share.Stat(internal)
 	if err != nil {
 		return err
 	}
 	if fi.IsDir() {
-		entries, err := s.share.ReadDir(internal)
+		entries, err := share.ReadDir(internal)
 		if err != nil {
 			return err
 		}
@@ -411,11 +521,12 @@ func (s *SMBSession) Remove(p string, recursive bool) error {
 			return fmt.Errorf("directory not empty (%d items)", len(entries))
 		}
 	}
-	return s.share.Remove(internal)
+	return share.Remove(internal)
 }
 
 func (s *SMBSession) Rename(oldName, newName string) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	old, err := s.resolveRemote(oldName)
@@ -426,22 +537,24 @@ func (s *SMBSession) Rename(oldName, newName string) error {
 	if err != nil {
 		return err
 	}
-	return s.share.Rename(s.smbInternal(old), s.smbInternal(n))
+	return share.Rename(s.smbInternal(old), s.smbInternal(n))
 }
 
 func (s *SMBSession) Chmod(p string, mode os.FileMode) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	target, err := s.resolveRemote(p)
 	if err != nil {
 		return err
 	}
-	return s.share.Chmod(s.smbInternal(target), mode)
+	return share.Chmod(s.smbInternal(target), mode)
 }
 
 func (s *SMBSession) Copy(oldPath, newPath string) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	old, err := s.resolveRemote(oldPath)
@@ -453,7 +566,7 @@ func (s *SMBSession) Copy(oldPath, newPath string) error {
 		return err
 	}
 	oldInternal := s.smbInternal(old)
-	fi, err := s.share.Stat(oldInternal)
+	fi, err := share.Stat(oldInternal)
 	if err != nil {
 		return err
 	}
@@ -461,15 +574,15 @@ func (s *SMBSession) Copy(oldPath, newPath string) error {
 		return fmt.Errorf("cannot copy directory via SMB: %s", old)
 	}
 	newInternal := s.smbInternal(n)
-	if err := s.mkdirAllRemote(smbDir(newInternal)); err != nil {
+	if err := s.mkdirAllRemote(share, smbDir(newInternal)); err != nil {
 		return err
 	}
-	src, err := s.share.Open(oldInternal)
+	src, err := share.Open(oldInternal)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	dst, err := s.share.Create(newInternal)
+	dst, err := share.Create(newInternal)
 	if err != nil {
 		return err
 	}
@@ -487,18 +600,20 @@ func (s *SMBSession) Move(oldPath, newPath string) error {
 }
 
 func (s *SMBSession) GetContent(remotePath string) ([]byte, error) {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return nil, err
 	}
 	p, err := s.resolveRemote(remotePath)
 	if err != nil {
 		return nil, err
 	}
-	return s.readRemoteFile(s.smbInternal(p))
+	return s.readRemoteFile(share, s.smbInternal(p))
 }
 
 func (s *SMBSession) PutContent(remotePath string, content []byte) error {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return err
 	}
 	p, err := s.resolveRemote(remotePath)
@@ -507,14 +622,15 @@ func (s *SMBSession) PutContent(remotePath string, content []byte) error {
 	}
 	internal := s.smbInternal(p)
 	parentDir := smbDir(internal)
-	if err := s.mkdirAllRemote(parentDir); err != nil {
+	if err := s.mkdirAllRemote(share, parentDir); err != nil {
 		return err
 	}
-	return s.writeRemoteFile(internal, content)
+	return s.writeRemoteFile(share, internal, content)
 }
 
 func (s *SMBSession) Get(remotePath, localPath string, recursive bool) (string, error) {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return "", err
 	}
 	rp, err := s.resolveRemote(remotePath)
@@ -552,9 +668,9 @@ func (s *SMBSession) Get(remotePath, localPath string, recursive bool) (string, 
 		}()
 		var err error
 		if recursive {
-			err = s.downloadDir(rp, lp, task)
+			err = s.downloadDir(share, rp, lp, task)
 		} else {
-			err = s.downloadFile(task, rp, lp)
+			err = s.downloadFile(share, task, rp, lp)
 		}
 		if err != nil {
 			if task.ctx.Err() != nil {
@@ -573,7 +689,8 @@ func (s *SMBSession) Get(remotePath, localPath string, recursive bool) (string, 
 }
 
 func (s *SMBSession) Put(localPath, remotePath string, recursive bool) (string, error) {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return "", err
 	}
 	lp := localPath
@@ -611,9 +728,9 @@ func (s *SMBSession) Put(localPath, remotePath string, recursive bool) (string, 
 		}()
 		var err error
 		if recursive {
-			err = s.uploadDir(lp, rp, task)
+			err = s.uploadDir(share, lp, rp, task)
 		} else {
-			err = s.uploadFile(task, lp, rp)
+			err = s.uploadFile(share, task, lp, rp)
 		}
 		if err != nil {
 			if task.ctx.Err() != nil {
@@ -650,7 +767,8 @@ func (s *SMBSession) CancelTransfer(taskID string) error {
 // and smbInternal's share-name stripping is not idempotent. skipCompleted is
 // ignored — the transfer restarts from scratch.
 func (s *SMBSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (string, error) {
-	if err := s.requireShare(); err != nil {
+	share, err := s.requireShare()
+	if err != nil {
 		return "", err
 	}
 	tfType := spec.Type
@@ -684,15 +802,15 @@ func (s *SMBSession) RetryTransfer(spec TransferSpec, skipCompleted []string) (s
 		var err error
 		if spec.Recursive {
 			if tfType == "download" {
-				err = s.downloadDir(spec.RemotePath, spec.LocalPath, task)
+				err = s.downloadDir(share, spec.RemotePath, spec.LocalPath, task)
 			} else {
-				err = s.uploadDir(spec.LocalPath, spec.RemotePath, task)
+				err = s.uploadDir(share, spec.LocalPath, spec.RemotePath, task)
 			}
 		} else {
 			if tfType == "download" {
-				err = s.downloadFile(task, spec.RemotePath, spec.LocalPath)
+				err = s.downloadFile(share, task, spec.RemotePath, spec.LocalPath)
 			} else {
-				err = s.uploadFile(task, spec.LocalPath, spec.RemotePath)
+				err = s.uploadFile(share, task, spec.LocalPath, spec.RemotePath)
 			}
 		}
 		if err != nil {
@@ -748,15 +866,15 @@ func (s *SMBSession) ResumeTransfer(taskID string) error {
 }
 
 // calcSmbRemoteDirSize recursively sums up all file sizes under a remote SMB directory.
-func (s *SMBSession) calcSmbRemoteDirSize(remoteDir string) (int64, error) {
+func (s *SMBSession) calcSmbRemoteDirSize(share smbShare, remoteDir string) (int64, error) {
 	var total int64
-	entries, err := s.share.ReadDir(remoteDir)
+	entries, err := share.ReadDir(remoteDir)
 	if err != nil {
 		return 0, err
 	}
 	for _, e := range entries {
 		if e.IsDir() {
-			sub, err := s.calcSmbRemoteDirSize(smbJoin(remoteDir, e.Name()))
+			sub, err := s.calcSmbRemoteDirSize(share, smbJoin(remoteDir, e.Name()))
 			if err != nil {
 				return 0, err
 			}
@@ -768,10 +886,13 @@ func (s *SMBSession) calcSmbRemoteDirSize(remoteDir string) (int64, error) {
 	return total, nil
 }
 
-func (s *SMBSession) downloadDir(remoteDir, localDir string, task *TransferTask) error {
+func (s *SMBSession) downloadDir(share smbShare, remoteDir, localDir string, task *TransferTask) error {
+	if share == nil {
+		return fmt.Errorf("SMB session not connected")
+	}
 	// Calculate total size for progress tracking
 	if task.loadTotal() <= 0 {
-		if total, err := s.calcSmbRemoteDirSize(remoteDir); err == nil {
+		if total, err := s.calcSmbRemoteDirSize(share, remoteDir); err == nil {
 			task.setTotal(total)
 		}
 	}
@@ -779,7 +900,7 @@ func (s *SMBSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 	if err := os.MkdirAll(localDir, 0755); err != nil {
 		return err
 	}
-	entries, err := s.share.ReadDir(remoteDir)
+	entries, err := share.ReadDir(remoteDir)
 	if err != nil {
 		return err
 	}
@@ -797,11 +918,11 @@ func (s *SMBSession) downloadDir(remoteDir, localDir string, task *TransferTask)
 			return jerr
 		}
 		if e.IsDir() {
-			if err := s.downloadDir(rp, lp, task); err != nil {
+			if err := s.downloadDir(share, rp, lp, task); err != nil {
 				return err
 			}
 		} else {
-			if err := s.downloadFile(task, rp, lp); err != nil {
+			if err := s.downloadFile(share, task, rp, lp); err != nil {
 				return err
 			}
 		}
@@ -945,36 +1066,41 @@ func (s *SMBSession) pipelinedCopy(task *TransferTask, size int64,
 	return nil
 }
 
-func (s *SMBSession) downloadFile(task *TransferTask, remotePath, localPath string) error {
+func (s *SMBSession) downloadFile(share smbShare, task *TransferTask, remotePath, localPath string) error {
+	if share == nil {
+		return fmt.Errorf("SMB session not connected")
+	}
 	// Stat the file for its own size (needed to chunk the reads); only set
 	// the task total if it isn't already carrying a directory-wide total.
 	var size int64
-	if fi, err := s.share.Stat(remotePath); err == nil {
+	if fi, err := share.Stat(remotePath); err == nil {
 		size = fi.Size()
 		if task.loadTotal() <= 0 && size > 0 {
 			task.setTotal(size)
 		}
 	}
 
-	f, err := s.share.Open(remotePath)
+	f, err := share.Open(remotePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	dst, err := os.Create(localPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	return s.pipelinedCopy(task, size, f.ReadAt,
-		func(buf []byte, off int64) error {
-			_, err := dst.WriteAt(buf, off)
-			return err
-		})
+	// Write through a same-directory .part file so a failed or cancelled
+	// transfer never leaves a truncated file under the final name and never
+	// destroys the file that was already there (security.md 文件会话 Low).
+	return writePartFile(localPath, func(dst *os.File) error {
+		return s.pipelinedCopy(task, size, f.ReadAt,
+			func(buf []byte, off int64) error {
+				_, err := dst.WriteAt(buf, off)
+				return err
+			})
+	})
 }
 
-func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) error {
+func (s *SMBSession) uploadDir(share smbShare, localDir, remoteDir string, task *TransferTask) error {
+	if share == nil {
+		return fmt.Errorf("SMB session not connected")
+	}
 	// Calculate total size for progress tracking
 	if task.loadTotal() <= 0 {
 		if total, err := calcLocalDirSize(localDir); err == nil {
@@ -982,7 +1108,7 @@ func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) e
 		}
 	}
 
-	if err := s.mkdirAllRemote(remoteDir); err != nil {
+	if err := s.mkdirAllRemote(share, remoteDir); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(localDir)
@@ -998,11 +1124,11 @@ func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) e
 		lp := filepath.Join(localDir, entry.Name())
 		rp := remoteDir + "/" + entry.Name()
 		if entry.IsDir() {
-			if err := s.uploadDir(lp, rp, task); err != nil {
+			if err := s.uploadDir(share, lp, rp, task); err != nil {
 				return err
 			}
 		} else {
-			if err := s.uploadFile(task, lp, rp); err != nil {
+			if err := s.uploadFile(share, task, lp, rp); err != nil {
 				return err
 			}
 		}
@@ -1010,7 +1136,10 @@ func (s *SMBSession) uploadDir(localDir, remoteDir string, task *TransferTask) e
 	return nil
 }
 
-func (s *SMBSession) uploadFile(task *TransferTask, localPath, remotePath string) error {
+func (s *SMBSession) uploadFile(share smbShare, task *TransferTask, localPath, remotePath string) error {
+	if share == nil {
+		return fmt.Errorf("SMB session not connected")
+	}
 	// Stat the local file for its own size (needed to chunk the reads); only
 	// set the task total if it isn't already carrying a directory-wide total.
 	var size int64
@@ -1026,7 +1155,7 @@ func (s *SMBSession) uploadFile(task *TransferTask, localPath, remotePath string
 		return err
 	}
 	defer src.Close()
-	dst, err := s.share.Create(remotePath)
+	dst, err := share.Create(remotePath)
 	if err != nil {
 		return err
 	}

@@ -2,11 +2,14 @@ package session
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,5 +339,135 @@ func TestDialSSHWithCipherFallbackRebuildsClientConfig(t *testing.T) {
 	}
 	if cleanupCalls != 2 {
 		t.Fatalf("attempt cleanup called %d times, want 2", cleanupCalls)
+	}
+}
+
+// startRecordingSOCKS5 runs a minimal SOCKS5 proxy that records every CONNECT
+// target, answers success and then drops the connection: there is no SSH
+// server behind it, so the dial under test fails afterwards — the assertion is
+// that the dial went THROUGH the proxy at all.
+func startRecordingSOCKS5(t *testing.T) (addr string, targets func() []string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake socks5: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	var mu sync.Mutex
+	var seen []string
+	record := func(target string) {
+		mu.Lock()
+		seen = append(seen, target)
+		mu.Unlock()
+	}
+	snapshot := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+				head := make([]byte, 2)
+				if _, err := io.ReadFull(c, head); err != nil {
+					return
+				}
+				methods := make([]byte, int(head[1]))
+				if _, err := io.ReadFull(c, methods); err != nil {
+					return
+				}
+				if _, err := c.Write([]byte{0x05, 0x00}); err != nil {
+					return
+				}
+				req := make([]byte, 4)
+				if _, err := io.ReadFull(c, req); err != nil {
+					return
+				}
+				var host string
+				switch req[3] {
+				case 0x01:
+					b := make([]byte, 4)
+					if _, err := io.ReadFull(c, b); err != nil {
+						return
+					}
+					host = net.IP(b).String()
+				case 0x03:
+					l := make([]byte, 1)
+					if _, err := io.ReadFull(c, l); err != nil {
+						return
+					}
+					b := make([]byte, int(l[0]))
+					if _, err := io.ReadFull(c, b); err != nil {
+						return
+					}
+					host = string(b)
+				case 0x04:
+					b := make([]byte, 16)
+					if _, err := io.ReadFull(c, b); err != nil {
+						return
+					}
+					host = net.IP(b).String()
+				default:
+					return
+				}
+				pb := make([]byte, 2)
+				if _, err := io.ReadFull(c, pb); err != nil {
+					return
+				}
+				port := binary.BigEndian.Uint16(pb)
+				record(net.JoinHostPort(host, strconv.Itoa(int(port))))
+				if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+					return
+				}
+			}(c)
+		}
+	}()
+	return ln.Addr().String(), snapshot
+}
+
+// socksProxyFor turns a listen address into the ConnectionConfig proxy field.
+func socksProxyFor(t *testing.T, addr string) *SocksProxy {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split %q: %v", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("port of %q: %v", addr, err)
+	}
+	return &SocksProxy{Kind: "socks5", Host: host, Port: port}
+}
+
+// DialSSHClient (the container runner and X11 Desktop path) used to dial the
+// target directly, ignoring the connection's configured proxy: on a network
+// that only reaches the host through a proxy it simply failed, and elsewhere
+// it bypassed the user's proxy policy.
+func TestDialSSHClientRoutesThroughConfiguredProxy(t *testing.T) {
+	proxyAddr, targets := startRecordingSOCKS5(t)
+	cfg := ConnectionConfig{
+		Host:  "uniterm-no-such-host.example",
+		Port:  22,
+		User:  "tester",
+		Proxy: socksProxyFor(t, proxyAddr),
+	}
+
+	// The fake proxy has no SSH server behind it, so the handshake fails —
+	// the point is that the CONNECT reached the proxy first.
+	_, err := DialSSHClient(cfg)
+	if err == nil {
+		t.Fatal("expected the handshake against the fake proxy to fail")
+	}
+	want := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	if got := targets(); len(got) == 0 || got[0] != want {
+		t.Fatalf("proxy saw %v, want CONNECT to %s (direct dial bypassed the proxy)", got, want)
 	}
 }

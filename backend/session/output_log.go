@@ -450,6 +450,15 @@ const logFlushInterval = 1 * time.Second
 
 const bannerHeader = "=== uniTerm session log ==="
 
+// Seams for tests: permission bits cannot be observed from os.Stat on
+// Windows, so tests wrap these two call sites to record the requested modes
+// while still forwarding to the real functions. Production behaviour is
+// unchanged — they hold the os functions.
+var (
+	mkdirAll    = os.MkdirAll
+	openLogFile = os.OpenFile
+)
+
 // Enable opens the log file and writes the header banner. Returns the
 // final path. If dir is empty, defaultSessionLogDir() is used.
 // filenameTemplate supports %S (session), %H (host), %M (month), %D (day),
@@ -460,7 +469,7 @@ func (l *OutputLogger) Enable(dir, filenameTemplate, name, host, protocol string
 	if dir == "" {
 		dir = defaultSessionLogDir()
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := mkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir log dir %s: %w", dir, err)
 	}
 	now := time.Now()
@@ -480,7 +489,7 @@ func (l *OutputLogger) Enable(dir, filenameTemplate, name, host, protocol string
 		} else {
 			candidate = filepath.Join(dir, fmt.Sprintf("%s_%d%s", base, suffix, ext))
 		}
-		f, err := os.OpenFile(candidate, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err := openLogFile(candidate, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			file = f
 			final = candidate

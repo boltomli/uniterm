@@ -9,7 +9,10 @@ import { LoadAIModels, SaveAIModels } from '../../bindings/github.com/ys-ll/unit
 // settings.ai alongside the device-local activeModelId.
 export const useAIConfigStore = defineStore('aiConfig', () => {
   const maxTurns = ref<number>(DEFAULT_SETTINGS.ai.maxTurns)
-  const models = ref<AIModelConfig[]>([...DEFAULT_SETTINGS.ai.models])
+  // structuredClone, not [...models]: the array copy still shared the model
+  // OBJECTS with DEFAULT_SETTINGS, so editing the default model edited the
+  // default itself ("reset" stopped resetting).
+  const models = ref<AIModelConfig[]>(structuredClone(DEFAULT_SETTINGS.ai.models))
   const loaded = ref(false)
 
   async function load() {
@@ -17,7 +20,7 @@ export const useAIConfigStore = defineStore('aiConfig', () => {
       const cfg = await LoadAIModels()
       if (cfg) {
         maxTurns.value = cfg.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns
-        models.value = cfg.models?.length ? cfg.models : [...DEFAULT_SETTINGS.ai.models]
+        models.value = cfg.models?.length ? cfg.models : structuredClone(DEFAULT_SETTINGS.ai.models)
       }
     } catch {
       // keep defaults

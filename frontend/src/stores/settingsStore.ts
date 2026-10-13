@@ -14,8 +14,16 @@ let unsubSettingsChanged: (() => void) | null = null
 let unsubAiChanged: (() => void) | null = null
 
 export const useSettingsStore = defineStore('settings', () => {
-  const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
+  // Deep clone so nested objects (terminal, ai.models, keyboard bindings) are
+  // ours to mutate: the old `{ ...DEFAULT_SETTINGS }` shallow copy meant a
+  // failed load + one edit rewrote DEFAULT_SETTINGS itself ("reset" stopped
+  // resetting).
+  const settings = ref<AppSettings>(structuredClone(DEFAULT_SETTINGS))
   const loaded = ref(false)
+  // Set when LoadSettings throws: `settings` then holds pure defaults, and
+  // persisting them would overwrite the user's real settings.json. Every
+  // save() is blocked until a later LoadSettings succeeds.
+  const loadFailed = ref(false)
   const availableShells = ref<string[]>([])
 
   const theme = computed(() => settings.value.theme)
@@ -100,8 +108,11 @@ export const useSettingsStore = defineStore('settings', () => {
       if (loadedSettings) {
         settings.value = mergeSettings(loadedSettings)
       }
+      loadFailed.value = false
     } catch {
-      // use defaults
+      // Load failed: `settings` holds DEFAULT_SETTINGS. Keep loadFailed set so
+      // save() refuses to write them over the user's real settings.json.
+      loadFailed.value = true
     } finally {
       loaded.value = true
     }
@@ -133,8 +144,10 @@ export const useSettingsStore = defineStore('settings', () => {
         settings.value = mergeSettings(loadedSettings)
         loaded.value = true
       }
+      loadFailed.value = false
     } catch {
-      // use defaults
+      // Same rule as init(): a failed load must never unblock saving defaults.
+      loadFailed.value = true
     }
     await useAIConfigStore().load()
     recomposeAi()
@@ -152,6 +165,10 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function save() {
+    // A failed LoadSettings leaves `settings` holding pure defaults; writing
+    // them would replace the user's real settings.json. Block until a later
+    // LoadSettings succeeds.
+    if (loadFailed.value) return
     try {
       await SaveSettings(settings.value)
       // Mirror the syncable AI slice into ai.json (skipped when unchanged).
@@ -266,8 +283,9 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // Auto-save when AI models change
-  watch(() => settings.value.ai, save, { deep: true })
+  // No deep watcher on settings.value.ai: every mutator above calls save()
+  // explicitly (and SettingsTab binds ai.maxTurns with @change="save()").
+  // The watcher caused double saves and, after a failed load, wrote defaults.
 
   // Apply theme when it changes
   watch(() => settings.value.theme, applyTheme)
@@ -283,11 +301,16 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   })
 
-  // Listen for settings changes from sync
+  // Listen for settings changes from sync. The incoming payload is a legacy
+  // settings.json whose `ai` slice may predate ai.json — keep the live ai
+  // composition so a sync pull cannot drag stale models back (the ai.json
+  // side arrives separately via store:ai:changed below).
   unsubSettingsChanged?.()
   unsubSettingsChanged =Events.On('store:settings:changed', (ev) => { const data: AppSettings = ev.data; 
     if (data) {
+      const liveAi = settings.value.ai
       settings.value = mergeSettings(data)
+      settings.value.ai = liveAi
       loaded.value = true
       applyUiFontSize()
       applyTheme()
@@ -363,7 +386,7 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     },
     ai: {
       maxTurns: loaded.ai?.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns,
-      models: loaded.ai?.models?.length ? loaded.ai.models : DEFAULT_SETTINGS.ai.models,
+      models: loaded.ai?.models?.length ? loaded.ai.models : structuredClone(DEFAULT_SETTINGS.ai.models),
       activeModelId: loaded.ai?.activeModelId || DEFAULT_SETTINGS.ai.activeModelId
     },
     keyboard: normalizeKeyBindings(loaded.keyboard || {}),

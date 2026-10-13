@@ -3,7 +3,6 @@ package sync
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -514,6 +513,17 @@ func (s *SyncService) pushLocalConfig(repo *GitRepo, encKey []byte, username, to
 	if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("encrypt files: %v", err))
 		return nil, fmt.Errorf("encrypt files: %w", err)
+	}
+	// Every push re-encrypts the scoped files under name-bound AAD, so
+	// upgrade the repo's recorded format version (same salt, new stamp):
+	// from this push on, decrypts in this repo reject legacy nil-AAD
+	// ciphertext instead of accepting slot-moved blobs forever.
+	if salt, err := ReadSaltFile(s.repoPath); err != nil {
+		return nil, fmt.Errorf("read salt: %w", err)
+	} else if salt != nil {
+		if err := WriteSaltFile(s.repoPath, salt); err != nil {
+			return nil, fmt.Errorf("stamp format version: %w", err)
+		}
 	}
 	if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync"), files); err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("commit: %v", err))
@@ -1157,7 +1167,13 @@ func (s *SyncService) VerifySyncPassword(password, username, token string) error
 		return ErrWrongSyncPassword
 	}
 
-	if _, err := decryptBytes(string(encrypted), key, "connections.json"); err != nil {
+	// The local mirror carries the same .sync-salt as the remote, so its
+	// format version governs whether the nil-AAD fallback may be tried.
+	formatVersion, err := readFormatVersion(s.repoPath)
+	if err != nil {
+		return fmt.Errorf("read format version: %w", err)
+	}
+	if _, err := decryptBytes(string(encrypted), key, "connections.json", formatVersion); err != nil {
 		return ErrWrongSyncPassword
 	}
 	return nil
@@ -1195,7 +1211,14 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 		return utils.UserErr("salt_missing")
 	}
 
-	// Verify old password can decrypt the repo.
+	// Verify old password can decrypt the repo. The repo's current format
+	// version governs the nil-AAD fallback for the rotation below: a legacy
+	// repo (v0) may still hold pre-SYNC-P1-1 ciphertexts, and rotation is
+	// exactly the migration that re-encrypts them under name-bound AAD.
+	formatVersion, err := readFormatVersion(s.repoPath)
+	if err != nil {
+		return fmt.Errorf("read format version: %w", err)
+	}
 	oldKey := DeriveKey(oldPassword, oldSalt)
 	if err := verifyDecryption(s.repoPath, oldKey); err != nil {
 		return utils.UserErr("current_password_mismatch")
@@ -1233,7 +1256,7 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 			}
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		plaintext, err := decryptBytes(string(ciphertext), oldKey, name)
+		plaintext, err := decryptBytes(string(ciphertext), oldKey, name, formatVersion)
 		if err != nil {
 			return fmt.Errorf("decrypt %s: %w", name, err)
 		}
@@ -1252,16 +1275,11 @@ func (s *SyncService) ChangePassword(oldPassword, newPassword string) error {
 		}
 	}
 
-	// Atomic swap of .sync-salt.
-	saltPath := filepath.Join(s.repoPath, ".sync-salt")
-	saltTmp := saltPath + ".tmp"
-	if err := os.WriteFile(saltTmp, []byte(hex.EncodeToString(newSalt)), 0600); err != nil {
-		os.Remove(saltTmp)
-		return fmt.Errorf("write .sync-salt.tmp: %w", err)
-	}
-	if err := os.Rename(saltTmp, saltPath); err != nil {
-		os.Remove(saltTmp)
-		return fmt.Errorf("rename .sync-salt: %w", err)
+	// Atomic swap of .sync-salt. WriteSaltFile stamps the current format
+	// version — rotation re-encrypts every file under name-bound AAD, so
+	// from here on this repo rejects legacy nil-AAD ciphertext.
+	if err := WriteSaltFile(s.repoPath, newSalt); err != nil {
+		return fmt.Errorf("write .sync-salt: %w", err)
 	}
 
 	username := config.Username

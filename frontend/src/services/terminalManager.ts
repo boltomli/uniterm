@@ -21,7 +21,8 @@ import { installImeCompatibilityPatch } from '../utils/xtermImeCompatibility'
 import {
   bufferRowSource,
   createLineRegistry,
-  realignRegistry,
+  cancelScheduledRealign,
+  scheduleRealign,
   type LineRegistryState,
 } from './terminalTimestamps'
 
@@ -462,13 +463,18 @@ export function acquireTerminal(
     // A resize reflows the (normal) buffer: physical rows move but logical
     // lines keep their identity. Re-key the registry so each entry points at
     // the row its line now starts at. Uses the normal buffer explicitly so a
-    // resize while an alternate-screen app is up still realigns.
+    // resize while an alternate-screen app is up still realigns. Debounced:
+    // a split-drag fires onResize per mouse move and each rekey walks the
+    // whole buffer — stutter with long scrollback. The thunk re-reads the
+    // buffer at flush time so the settled resize is what gets re-keyed.
     m.resizeDispose = terminal.onResize(() => {
-      const buf = terminal.buffer.normal
-      realignRegistry(m.lineRegistry, {
-        lineOffset: m.lineOffset,
-        cursorAbs: m.lineOffset + buf.baseY + buf.cursorY,
-        source: bufferRowSource(buf),
+      scheduleRealign(m.lineRegistry, () => {
+        const buf = terminal.buffer.normal
+        return {
+          lineOffset: m.lineOffset,
+          cursorAbs: m.lineOffset + buf.baseY + buf.cursorY,
+          source: bufferRowSource(buf),
+        }
       })
     })
 
@@ -486,6 +492,19 @@ export function acquireTerminal(
   return managed.terminal
 }
 
+// Drop the sessionStore buffer (~256 KB/session, F-019 close-tab leak) once
+// the terminal that feeds it is truly gone — removeSession had no callers, so
+// closing a tab left the chunks resident for the rest of the app session.
+// Guarded so a missing pinia context can never break terminal disposal —
+// same defensive style as sessionStore's zmodem cancel-window probe.
+function dropSessionBuffer(sessionId: string): void {
+  try {
+    useSessionStore().removeSession(sessionId)
+  } catch (e) {
+    console.warn('[terminalManager] failed to remove session buffer', e)
+  }
+}
+
 export function releaseTerminal(sessionId: string, ref: string): void {
   const managed = terminals.get(sessionId)
   if (!managed) return
@@ -497,6 +516,7 @@ export function releaseTerminal(sessionId: string, ref: string): void {
     // If acquireTerminal is called within 500ms, the timer is cancelled.
     managed.disposeTimer = setTimeout(() => {
       disposeMirror(sessionId)
+      cancelScheduledRealign(managed.lineRegistry)
       managed.trimDispose?.dispose()
       managed.trimDispose = null
       managed.resizeDispose?.dispose()
@@ -508,6 +528,7 @@ export function releaseTerminal(sessionId: string, ref: string): void {
       managed.imeDispose = null
       managed.terminal.dispose()
       terminals.delete(sessionId)
+      dropSessionBuffer(sessionId)
     }, 500)
   }
 }
@@ -517,8 +538,10 @@ export function disposeTerminal(sessionId: string): void {
   if (!managed) return
   if (managed.disposeTimer) {
     clearTimeout(managed.disposeTimer)
+    managed.disposeTimer = null
   }
   disposeMirror(sessionId)
+  cancelScheduledRealign(managed.lineRegistry)
   managed.trimDispose?.dispose()
   managed.trimDispose = null
   managed.resizeDispose?.dispose()
@@ -530,6 +553,7 @@ export function disposeTerminal(sessionId: string): void {
   managed.imeDispose = null
   managed.terminal.dispose()
   terminals.delete(sessionId)
+  dropSessionBuffer(sessionId)
 }
 
 // Transfer a terminal from oldSessionId to newSessionId so the
@@ -562,6 +586,9 @@ export function transferTerminal(oldSessionId: string, newSessionId: string): bo
   } catch (e) {
     console.warn('[terminalManager] headless mirror re-creation failed', e)
   }
+  // The old id now has no managed terminal; only drop its buffer when the
+  // ids differ — a same-id "transfer" would destroy the buffer being kept.
+  if (oldSessionId !== newSessionId) dropSessionBuffer(oldSessionId)
   return true
 }
 

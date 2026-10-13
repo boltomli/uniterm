@@ -254,6 +254,10 @@ function hpaTargets(h: any): string {
   return specs.join(',') || '<none>'
 }
 
+// 共享排序 Collator：列表每次 watch 事件都会重排，逐次 localeCompare 会重复做
+// ICU 比较；进程级单例摊平成本（K8sResourceList 的名称列/文本列共用）。
+export const textCollator = new Intl.Collator()
+
 // ── 路径 helper ────────────────────────────────────────────────
 
 function coreListPath(plural: string, ns: string): string {

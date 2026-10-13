@@ -628,6 +628,7 @@
   "settings.skillsLocked": "Locked",
   "settings.skillsUnlocked": "Unlocked",
   "settings.skillsDeleteConfirm": "Delete skill \"{name}\"? This cannot be undone.",
+  "settings.skillsOverwriteConfirm": "A skill named \"{name}\" already exists. Overwrite it?",
   "settings.modelDeleteConfirm": "Delete model \"{name}\"? This cannot be undone.",
   "settings.skillsDeleteLocked": "Skill \"{name}\" is locked. Unlock it first.",
   "settings.skillsNoSkill": "No skills",

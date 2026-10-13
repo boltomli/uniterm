@@ -292,6 +292,7 @@ import { Database, Layers, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal,
 import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
+import { useTabBarOverflow } from '../composables/useTabBarOverflow'
 import { msg } from '../services/message'
 import { uiPx } from '../utils/uiScale'
 import {
@@ -543,7 +544,7 @@ function clearTabDragState() {
 // ── Tab bar overflow: wheel scroll + "more" dropdown ──
 
 const tabScrollRef = ref<HTMLElement | null>(null)
-const tabShowMore = ref(false)
+const { showMore: tabShowMore, measure: measureTabOverflow } = useTabBarOverflow(tabScrollRef)
 const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreTabsMenuVisible = ref(false)
 
@@ -551,27 +552,8 @@ function onMoreTabsToggle(e: MouseEvent) {
   if (e.currentTarget instanceof HTMLElement) moreTabsMenuRef.value?.toggle(e.currentTarget)
 }
 
-function updateTabOverflow() {
-  const el = tabScrollRef.value
-  if (!el) return
-  tabShowMore.value = el.scrollWidth > el.clientWidth + 1
-}
-
-watch(() => tabs.value.length, () => nextTick(updateTabOverflow))
-watch(activeTabId, () => nextTick(updateTabOverflow))
-
-let tabBarResize: ResizeObserver | null = null
-
-onMounted(() => {
-  tabBarResize = new ResizeObserver(updateTabOverflow)
-  if (tabScrollRef.value) tabBarResize.observe(tabScrollRef.value)
-  nextTick(updateTabOverflow)
-})
-
-onUnmounted(() => {
-  tabBarResize?.disconnect()
-  tabBarResize = null
-})
+watch(() => tabs.value.length, () => nextTick(measureTabOverflow))
+watch(activeTabId, () => nextTick(measureTabOverflow))
 
 function onTabsWheel(e: WheelEvent) {
   if (tabScrollRef.value) tabScrollRef.value.scrollLeft += e.deltaY

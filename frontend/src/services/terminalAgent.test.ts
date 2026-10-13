@@ -114,7 +114,18 @@ vi.mock('../stores/sessionStore', () => ({
 }))
 
 // ---- import after mocks ----
-import { watchOutput, executeCommand, truncateOutput, startCommand, sendTerminalKey, captureTerminal } from './terminalAgent'
+import {
+  watchOutput,
+  executeCommand,
+  truncateOutput,
+  startCommand,
+  sendTerminalKey,
+  captureTerminal,
+  scanTailPrompt,
+  capOutput,
+  TAIL_SCAN_CHARS,
+  OUTPUT_CAP_CHARS,
+} from './terminalAgent'
 import type { ExecuteResult, WatchResult } from './terminalAgent'
 // ---- helpers ----
 const MOCK_TIMESTAMP = 1700000000000
@@ -417,6 +428,114 @@ describe('watchOutput', () => {
     // (it's prevented by the resolved flag)
     expect(resolved).toBe(false)
     vi.useRealTimers()
+  })
+})
+
+// Bounded per-event work for watchOutput (security.md batch2): prompt
+// detection scans only a small tail window and raw output is capped, so a
+// long-running command cannot make each session:data event re-scan (and
+// retain) the full stream.
+describe('watchOutput bounded tail scan', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setFakeScreen([PROMPT + ' '])
+    mockIsTerminalActive.mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    mockIsTerminalActive.mockReturnValue(true)
+    vi.useRealTimers()
+  })
+
+  it('scanTailPrompt only processes a bounded window of multi-MB output', () => {
+    const filler = ('x'.repeat(120) + '\n').repeat(18000) // ~2.1MB
+    expect(filler.length).toBeGreaterThan(2 * 1024 * 1024)
+
+    const scan = scanTailPrompt(filler + `${PROMPT} `)
+    expect(scan).not.toBeNull()
+    expect(scan!.line).toBe(PROMPT)
+    // The string fed to stripAnsi + line splitting must stay bounded no
+    // matter how large the total output is.
+    expect(scan!.scannedLength).toBeLessThanOrEqual(TAIL_SCAN_CHARS + 1)
+  })
+
+  it('scanTailPrompt keeps the initial-prompt guard semantics', () => {
+    // First (and only) line is the prompt → index 0, no earlier lines: the
+    // watcher must not treat this as completion.
+    const alone = scanTailPrompt(`${PROMPT} `)
+    expect(alone).not.toBeNull()
+    expect(alone!.line).toBe(PROMPT)
+    expect(alone!.index).toBe(0)
+    expect(alone!.hasEarlierLines).toBe(false)
+
+    // Prompt on a later line → resolvable (index >= 1, still fully in window).
+    const afterOutput = scanTailPrompt(`echo hi\nhi\n${PROMPT} `)
+    expect(afterOutput).not.toBeNull()
+    expect(afterOutput!.line).toBe(PROMPT)
+    expect(afterOutput!.index).toBe(2)
+    expect(afterOutput!.hasEarlierLines).toBe(false)
+  })
+
+  it('scanTailPrompt reports earlier lines once output leaves the window', () => {
+    const scan = scanTailPrompt('filler line\n'.repeat(1000) + `${PROMPT} `)
+    expect(scan).not.toBeNull()
+    expect(scan!.line).toBe(PROMPT)
+    expect(scan!.hasEarlierLines).toBe(true)
+    expect(scan!.scannedLength).toBeLessThanOrEqual(TAIL_SCAN_CHARS + 1)
+  })
+
+  it('capOutput keeps only the newest 64KB, dropping the head at a line boundary', () => {
+    const capped = capOutput('HEAD-MARKER\n' + 'h'.repeat(70000) + '\nTAIL-MARKER line\n')
+    expect(capped.length).toBeLessThanOrEqual(OUTPUT_CAP_CHARS)
+    expect(capped).not.toContain('HEAD-MARKER')
+    expect(capped).toContain('TAIL-MARKER line')
+
+    // Under the cap → untouched.
+    expect(capOutput('small\noutput')).toBe('small\noutput')
+  })
+
+  it('resolves when the prompt reappears beyond the tail window', async () => {
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+
+    setFakeScreen([`${PROMPT} big`, 'row of output', `${PROMPT} `])
+    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
+
+    // ~72KB of output — far past the 4KB scan window; the prompt that follows
+    // must still be detected as the last complete line.
+    const filler = 'row of output with some padding text\n'.repeat(2000)
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', filler + `${PROMPT} `) })
+
+    const result: WatchResult = await promise
+    expect(result.timedOut).toBe(false)
+    expect(result.output).toContain('row of output')
+  })
+
+  it('drops the oldest output beyond the 64KB cap on the raw-stream fallback', async () => {
+    vi.useFakeTimers()
+    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
+    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
+      capturedCallback = callback
+      return () => { }
+    })
+
+    // No screen available → watchOutput falls back to the raw stream, which
+    // exposes the retained output.
+    mockIsTerminalActive.mockReturnValue(false)
+
+    const { promise } = watchOutput('s1', '', 1000)
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'HEAD-MARKER\n' + 'h'.repeat(70000) + '\n') })
+    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'TAIL-MARKER line\n') })
+    vi.advanceTimersByTime(1000)
+    vi.advanceTimersByTime(100) // screen-read settle delay
+
+    const result: WatchResult = await promise
+    expect(result.output.length).toBeLessThanOrEqual(OUTPUT_CAP_CHARS)
+    expect(result.output).not.toContain('HEAD-MARKER')
+    expect(result.output).toContain('TAIL-MARKER line')
   })
 })
 

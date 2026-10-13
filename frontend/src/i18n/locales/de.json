@@ -625,6 +625,7 @@
   "settings.skillsLocked": "Gesperrt",
   "settings.skillsUnlocked": "Entsperrt",
   "settings.skillsDeleteConfirm": "Skill „{name}“ löschen? Dies kann nicht rückgängig gemacht werden.",
+  "settings.skillsOverwriteConfirm": "Ein Skill namens „{name}“ existiert bereits. Überschreiben?",
   "settings.modelDeleteConfirm": "Modell „{name}“ löschen? Dies kann nicht rückgängig gemacht werden.",
   "settings.skillsDeleteLocked": "Skill „{name}“ ist gesperrt. Zuerst entsperren.",
   "settings.skillsNoSkill": "Keine Skills",

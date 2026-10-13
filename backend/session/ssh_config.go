@@ -137,6 +137,64 @@ func sshHostKeys() []string {
 	}
 }
 
+// sshCertAlgoSuffix marks a host-key algorithm that negotiates a certificate
+// instead of a plain key (x/crypto does not export it).
+const sshCertAlgoSuffix = "-cert-v01@openssh.com"
+
+// preferPinnedHostKeyAlgorithms reorders algos so that every algorithm which
+// would negotiate a key type already pinned for pinAddr comes first, keeping
+// the relative order of both groups. This mirrors OpenSSH: known host key
+// types are offered first, so a server that ADDS a second key type (say
+// ed25519 next to the pinned RSA) still negotiates the pinned one instead of
+// tripping a false "host key CHANGED — possible MITM" alert. Nothing is
+// pinned for pinAddr (or the store is unavailable) → algos is returned
+// unchanged. The verification callback stays strict: preferring a type only
+// changes what is negotiated, never what is accepted.
+func preferPinnedHostKeyAlgorithms(algos []string, pinAddr string) []string {
+	if len(algos) == 0 {
+		return algos
+	}
+	pinned := storedHostKeyTypes(pinAddr)
+	if len(pinned) == 0 {
+		return algos
+	}
+	preferred := make([]string, 0, len(algos))
+	rest := make([]string, 0, len(algos))
+	for _, a := range algos {
+		if matchesPinnedKeyType(a, pinned) {
+			preferred = append(preferred, a)
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	if len(preferred) == 0 {
+		return algos
+	}
+	return append(preferred, rest...)
+}
+
+// matchesPinnedKeyType reports whether negotiating algo yields a server key of
+// one of the pinned types: same key type (certificate or plain, matching the
+// pin's own form), plus the rsa-sha2-* signature variants of a pinned ssh-rsa
+// key — those all carry the "ssh-rsa" key blob the pin was recorded under.
+func matchesPinnedKeyType(algo string, pinned []string) bool {
+	algoCert := strings.HasSuffix(algo, sshCertAlgoSuffix)
+	algoBase := strings.TrimSuffix(algo, sshCertAlgoSuffix)
+	for _, p := range pinned {
+		if strings.HasSuffix(p, sshCertAlgoSuffix) != algoCert {
+			continue // a certificate pin must not promote a plain key algorithm
+		}
+		pBase := strings.TrimSuffix(p, sshCertAlgoSuffix)
+		if algoBase == pBase {
+			return true
+		}
+		if pBase == "ssh-rsa" && (algoBase == "rsa-sha2-256" || algoBase == "rsa-sha2-512") {
+			return true
+		}
+	}
+	return false
+}
+
 // sshAlgorithms returns the compatible-mode set: the full support set with
 // security-leaning ordering.
 func sshAlgorithms() sshAlgoSet {

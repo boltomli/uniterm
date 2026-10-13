@@ -14,7 +14,7 @@ vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   RecordRecentConnection: recordRecentMock,
   SaveConnections: vi.fn(async () => {}),
   LoadConnections: vi.fn(async () => ({ groups: [], connections: [] })),
-  DisableSessionOutputLog: vi.fn(async () => {}),
+  ReleasePanel: vi.fn(async () => {}),
   RegisterSessionForPanel: vi.fn(async () => {}),
   UnregisterSession: vi.fn(async () => {}),
 }))

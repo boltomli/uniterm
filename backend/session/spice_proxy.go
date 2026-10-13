@@ -15,17 +15,16 @@ import (
 )
 
 // SPICEProxy bridges WebSocket (frontend spice-html5) to TCP (SPICE server).
-// One instance per SPICE session, bound to a random local port.
+// One instance per SPICE session, bound to a random local port. The client
+// bookkeeping (wsPair / wsPairRegistry) is shared with VNCProxy.
 type SPICEProxy struct {
 	listener net.Listener
 	target   string
 	token    string // per-listen secret carried in the returned URL; rejects anyone who finds the port
 	stopCh   chan struct{}
 	stopOnce sync.Once
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	wsConn   *websocket.Conn
-	tcpConn  net.Conn
+	wg       sync.WaitGroup // the http.Serve goroutine
+	pairs    wsPairRegistry
 }
 
 func NewSPICEProxy(target string) *SPICEProxy {
@@ -63,12 +62,19 @@ func (p *SPICEProxy) Start() (string, error) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		pair, ok := p.pairs.claim()
+		if !ok {
+			log.Writef("[SPICEProxy] Rejecting additional WebSocket connection")
+			http.Error(w, "already connected", http.StatusConflict)
+			return
+		}
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
+			p.pairs.drop(pair)
 			log.Writef("[SPICEProxy] WebSocket upgrade failed: %v", err)
 			return
 		}
-		p.handleWebSocket(ws)
+		p.handleWebSocket(ws, pair)
 	})
 
 	p.wg.Add(1)
@@ -82,45 +88,40 @@ func (p *SPICEProxy) Start() (string, error) {
 	return fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.token), nil
 }
 
-func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
-	p.mu.Lock()
-	if p.wsConn != nil {
-		p.mu.Unlock()
-		log.Writef("[SPICEProxy] Rejecting additional WebSocket connection")
+// handleWebSocket bridges one claimed pair. It returns as soon as the pumps
+// are running: the pair (not the handler's lifetime) owns the slot, so a
+// second connection stays rejected until both pumps exit.
+func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn, pair *wsPair) {
+	if !p.pairs.attachWS(pair, ws) {
 		ws.Close()
+		p.pairs.drop(pair)
 		return
 	}
-	p.wsConn = ws
-	p.mu.Unlock()
 	log.Writef("[SPICEProxy] WebSocket client connected")
 
 	// Allow large SPICE frames (up to 16 MB).
 	ws.SetReadLimit(16 << 20)
 
-	defer func() {
-		p.mu.Lock()
-		if p.wsConn == ws {
-			p.wsConn = nil
-		}
-		p.mu.Unlock()
-	}()
-
 	tcp, err := net.DialTimeout("tcp", p.target, 5*time.Second)
 	if err != nil {
 		log.Writef("[SPICEProxy] TCP dial to %s failed: %v", p.target, err)
 		ws.Close()
+		p.pairs.drop(pair)
+		return
+	}
+	if !p.pairs.attachTCP(pair, tcp) {
+		tcp.Close()
+		ws.Close()
+		p.pairs.drop(pair)
 		return
 	}
 	log.Writef("[SPICEProxy] TCP connection to %s established", p.target)
 
-	p.mu.Lock()
-	p.tcpConn = tcp
-	p.mu.Unlock()
-
-	p.wg.Add(2)
+	var pumps sync.WaitGroup
+	pumps.Add(2)
 
 	go func() {
-		defer p.wg.Done()
+		defer pumps.Done()
 		defer tcp.Close()
 		for {
 			select {
@@ -143,7 +144,7 @@ func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
 	}()
 
 	go func() {
-		defer p.wg.Done()
+		defer pumps.Done()
 		defer ws.Close()
 		buf := make([]byte, 32768)
 		for {
@@ -163,24 +164,25 @@ func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
 			}
 		}
 	}()
+
+	go func() {
+		pumps.Wait()
+		p.pairs.drop(pair)
+	}()
 }
 
-// Stop closes all connections and waits for goroutines to exit.
-// Listener is closed before wg.Wait() so handleWebSocket has no
-// window to accept and spawn goroutines that never reach Done
-// (SESSION-04).
+// Stop closes every active pair and returns once none of them is left
+// running. The listener is closed before waiting so an in-flight handler
+// cannot claim a slot nobody will ever close (SESSION-04), and it is safe to
+// call Stop more than once.
 func (p *SPICEProxy) Stop() {
 	p.stopOnce.Do(func() { close(p.stopCh) })
-	p.mu.Lock()
-	if p.wsConn != nil {
-		p.wsConn.Close()
-	}
-	if p.tcpConn != nil {
-		p.tcpConn.Close()
-	}
-	p.mu.Unlock()
+	pairs := p.pairs.closeAll()
 	if p.listener != nil {
 		p.listener.Close()
+	}
+	for _, pr := range pairs {
+		<-pr.done
 	}
 	p.wg.Wait()
 }

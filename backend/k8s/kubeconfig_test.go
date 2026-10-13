@@ -3,6 +3,7 @@ package k8s
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +94,76 @@ func TestListContexts(t *testing.T) {
 	}
 	if dev == nil || !dev.Current || dev.Namespace != "dev-ns" {
 		t.Errorf("dev context wrong: %+v", dev)
+	}
+}
+
+// eksKubeconfig mirrors the EKS shape: the user authenticates via the `aws
+// eks get-token` exec plugin (client.authentication.k8s.io/v1beta1). We do
+// not run exec plugins, so connecting through this context must fail with a
+// readable error instead of silently connecting with no credentials and
+// surfacing as opaque 401s.
+const eksKubeconfig = `
+apiVersion: v1
+kind: Config
+current-context: arn:aws:eks:us-west-2:123456789012:cluster/prod
+contexts:
+- name: arn:aws:eks:us-west-2:123456789012:cluster/prod
+  context:
+    cluster: arn:aws:eks:us-west-2:123456789012:cluster/prod
+    user: arn:aws:eks:us-west-2:123456789012:cluster/prod
+clusters:
+- name: arn:aws:eks:us-west-2:123456789012:cluster/prod
+  cluster:
+    server: https://example.yl4.us-east-1.eks.amazonaws.com
+    # Skip CA loading so the exec-plugin rejection is the first thing that
+    # fires; a bogus CA would error out earlier and mask it.
+    insecure-skip-tls-verify: true
+users:
+- name: arn:aws:eks:us-west-2:123456789012:cluster/prod
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+      args:
+      - eks
+      - get-token
+      - --cluster-name
+      - prod
+      env:
+      - name: AWS_PROFILE
+        value: prod-admin
+`
+
+func TestBuildClientRejectsExecPlugin(t *testing.T) {
+	raw := []byte(eksKubeconfig)
+	kc, err := ParseBytes(raw)
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	if kc.Users["arn:aws:eks:us-west-2:123456789012:cluster/prod"].Exec == nil {
+		t.Fatal("parser dropped the exec config; test fixture is wrong")
+	}
+
+	_, _, err = BuildClient(kc, "arn:aws:eks:us-west-2:123456789012:cluster/prod")
+	if err == nil {
+		t.Fatal("BuildClient accepted a kubeconfig whose user relies on an exec plugin")
+	}
+	if !strings.Contains(err.Error(), "exec credential plugins are not supported") {
+		t.Fatalf("error = %q, want it to say exec credential plugins are not supported", err)
+	}
+}
+
+// ConnectWith must surface the same rejection (it goes through
+// BuildClientWithDial); the UI calls Connect, not BuildClient directly.
+func TestManagerConnectRejectsExecPlugin(t *testing.T) {
+	raw := []byte(eksKubeconfig)
+
+	m := NewManager()
+	_, err := m.Connect(t.Context(), raw, "arn:aws:eks:us-west-2:123456789012:cluster/prod")
+	if err == nil {
+		t.Fatal("Connect accepted a kubeconfig whose user relies on an exec plugin")
+	}
+	if !strings.Contains(err.Error(), "exec credential plugins are not supported") {
+		t.Fatalf("error = %q, want it to say exec credential plugins are not supported", err)
 	}
 }

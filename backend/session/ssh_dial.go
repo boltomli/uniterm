@@ -56,7 +56,13 @@ func dialSSHWithCipherFallback(addr string, sets []sshAlgoSet, newConfig sshClie
 		}
 		attempt := *config
 		attempt.Config = set.config()
-		attempt.HostKeyAlgorithms = set.HostKeys
+		// Offer a key type that is already pinned for this address first
+		// (OpenSSH behavior) so a server that added a second key type keeps
+		// negotiating the pinned one — see preferPinnedHostKeyAlgorithms.
+		// addr is the dial address; for a jump-host rewrite it holds no pin,
+		// which leaves the order untouched (hostKeyPinAddr callers below
+		// reorder against the original host:port themselves).
+		attempt.HostKeyAlgorithms = preferPinnedHostKeyAlgorithms(set.HostKeys, addr)
 		// Bound the handshake itself: ClientConfig.Timeout only covers
 		// ssh.Dial's TCP connect, so a server or middlebox that accepts TCP
 		// and then stalls would otherwise leave Connect at "Connecting"
@@ -133,7 +139,12 @@ func dialSSHTCP(addr string, clientConfig *ssh.ClientConfig, upstream *SocksProx
 	}
 	// Bound the handshake (see dialSSHWithCipherFallback); cleared on success.
 	_ = raw.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
-	conn, chans, reqs, err := ssh.NewClientConn(raw, addr, clientConfig)
+	// Offer an already-pinned key type first so a server that added a second
+	// key type keeps negotiating the pinned one (see
+	// preferPinnedHostKeyAlgorithms). The caller's config is left untouched.
+	attempt := *clientConfig
+	attempt.HostKeyAlgorithms = preferPinnedHostKeyAlgorithms(clientConfig.HostKeyAlgorithms, addr)
+	conn, chans, reqs, err := ssh.NewClientConn(raw, addr, &attempt)
 	if err != nil {
 		raw.Close()
 		return nil, fmt.Errorf("ssh handshake: %w", err)
@@ -169,9 +180,17 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Pin-aware host key order (the dial helper only sees the dial address,
+	// which a jump-host rewrite replaced with 127.0.0.1:<ephemeral>).
+	for i := range sets {
+		sets[i].HostKeys = preferPinnedHostKeyAlgorithms(sets[i].HostKeys, pinAddr)
+	}
 	factory := newConfig(nil)
 	client, err := dialSSHWithAuthRetry(addr, sets, factory, factory, func() (net.Conn, error) {
-		return net.DialTimeout("tcp", addr, 30*time.Second)
+		// Route through the configured proxy like every other SSH dial path
+		// (ssh_session, tunnels, sftp): dialing direct ignored the user's
+		// proxy policy and simply failed on proxy-only networks.
+		return dialFirstHop(addr, config.Proxy)
 	})
 	if err != nil {
 		return nil, err

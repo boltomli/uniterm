@@ -63,9 +63,16 @@ func (e *HostKeyChangedError) Error() string {
 // legacy mode (accept every key, mirroring the old no-verification callback)
 // so unit tests and dev contexts work without app-startup wiring.
 type knownHostsStore struct {
-	mu      sync.RWMutex
-	path    string
+	mu sync.RWMutex
+	// path == "" selects legacy mode (accept every key).
+	path string
+	// loaded marks the file as read (successfully or not) for this path;
+	// loadErr remembers WHY a read failed. A file that exists but cannot be
+	// read or parsed puts the store in a failed state: every handshake is
+	// refused and nothing may be persisted, so a corrupt file can never be
+	// silently replaced by an empty one (which would drop every pin).
 	loaded  bool
+	loadErr error
 	entries map[string][]knownKey
 }
 
@@ -80,6 +87,7 @@ func ConfigureKnownHosts(path string) {
 	knownHosts.mu.Lock()
 	knownHosts.path = path
 	knownHosts.loaded = false
+	knownHosts.loadErr = nil
 	knownHosts.entries = make(map[string][]knownKey)
 	knownHosts.mu.Unlock()
 	if path == "" {
@@ -92,9 +100,12 @@ func ConfigureKnownHosts(path string) {
 //
 // Callback behavior:
 //  1. legacy/unconfigured (empty path) → accept unconditionally;
-//  2. unknown hostport → accept and persist the entry (FirstTrust=true);
-//  3. known hostport, key matches a stored entry → accept (FirstTrust stays false);
-//  4. known hostport, presented key differs from every stored entry (a
+//  2. state file exists but cannot be read or parsed → refuse (fail closed)
+//     and never persist, so a corrupt file is never overwritten by a TOFU
+//     entry (see loadLocked);
+//  3. unknown hostport → accept and persist the entry (FirstTrust=true);
+//  4. known hostport, key matches a stored entry → accept (FirstTrust stays false);
+//  5. known hostport, presented key differs from every stored entry (a
 //     different key type counts as changed) → abort with HostKeyChangedError.
 func NewHostKeyVerifier(hostport string) (cb ssh.HostKeyCallback, trust *TrustEvent) {
 	trust = &TrustEvent{}
@@ -122,7 +133,12 @@ func NewHostKeyVerifier(hostport string) (cb ssh.HostKeyCallback, trust *TrustEv
 		if knownHosts.path == "" {
 			return nil // reconfigured to legacy mode meanwhile
 		}
-		knownHosts.loadLocked()
+		if err := knownHosts.loadLocked(); err != nil {
+			// Fail closed: the state file exists but could not be loaded, so
+			// nothing is known about this host — refusing beats trusting an
+			// unverifiable first use (and persisting over the broken file).
+			return err
+		}
 		keys := knownHosts.entries[hostport]
 		trust.Fingerprint = fp
 		if hasHostKey(keys, key, blob) {
@@ -188,6 +204,36 @@ func hasHostKey(keys []knownKey, key ssh.PublicKey, blob string) bool {
 	return false
 }
 
+// storedHostKeyTypes returns the distinct key types pinned for hostport (in
+// file order), or nil when the store is unconfigured, the host has no entry,
+// or the state file could not be loaded. It is the input for
+// preferPinnedHostKeyAlgorithms: the negotiated host key type must match a
+// pinned type or the handshake reports CHANGED.
+func storedHostKeyTypes(hostport string) []string {
+	knownHosts.mu.Lock()
+	defer knownHosts.mu.Unlock()
+	if knownHosts.path == "" {
+		return nil
+	}
+	if err := knownHosts.loadLocked(); err != nil {
+		return nil // fail closed in the callback; nothing to prefer
+	}
+	keys := knownHosts.entries[hostport]
+	if len(keys) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if k.Type == "" || seen[k.Type] {
+			continue
+		}
+		seen[k.Type] = true
+		out = append(out, k.Type)
+	}
+	return out
+}
+
 // hostKeyFingerprint returns the OpenSSH-style fingerprint: "SHA256:" plus the
 // unpadded standard-base64 of the sha256 over the key's wire encoding — the
 // same format as ssh.FingerprintSHA256 / ssh-keygen -lf.
@@ -211,40 +257,51 @@ func fingerprintOfBlob(blob []byte) string {
 }
 
 // loadLocked reads the state file once per ConfigureKnownHosts (called under
-// mu). A missing file starts empty; an unreadable/unparsable file logs and
-// starts empty rather than blocking connections — changed-key detection still
-// guards every key that gets stored afterwards.
-func (kh *knownHostsStore) loadLocked() {
+// mu). A missing file starts empty and returns nil; a file that exists but
+// cannot be read or parsed is recorded in kh.loadErr and returned, and that
+// error fails every handshake until the file is repaired or removed — an
+// unreadable file must never degrade to "trust everything" (and the next TOFU
+// would then rewrite it, destroying the pins it still held).
+func (kh *knownHostsStore) loadLocked() error {
 	if kh.loaded {
-		return
+		return kh.loadErr
 	}
 	kh.loaded = true
 	if kh.path == "" {
-		return
+		return nil
 	}
 	if kh.entries == nil {
 		kh.entries = make(map[string][]knownKey)
 	}
 	data, err := os.ReadFile(kh.path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Writef("[known_hosts] cannot read %s: %v — starting empty", kh.path, err)
+		if os.IsNotExist(err) {
+			return nil
 		}
-		return
+		kh.loadErr = fmt.Errorf("known hosts: cannot read %s: %w", kh.path, err)
+		log.Writef("[known_hosts] %v — refusing connections until it is fixed or removed", kh.loadErr)
+		return kh.loadErr
 	}
 	var file []knownHostFileEntry
 	if err := json.Unmarshal(data, &file); err != nil {
-		log.Writef("[known_hosts] cannot parse %s: %v — starting empty", kh.path, err)
-		return
+		kh.loadErr = fmt.Errorf("known hosts: %s is corrupt (cannot parse: %w) — refusing connections until it is fixed or removed", kh.path, err)
+		log.Writef("[known_hosts] %v", kh.loadErr)
+		return kh.loadErr
 	}
 	for _, e := range file {
 		kh.entries[e.Host] = e.Keys
 	}
+	return nil
 }
 
 // persistLocked rewrites the whole state file atomically (temp file in the
 // same directory + rename) with mode 0600. Chmod is best-effort on Windows.
+// It refuses to write while the store is in the failed state (loadErr), so a
+// corrupt file is never replaced by whatever happens to be in memory.
 func (kh *knownHostsStore) persistLocked() error {
+	if kh.loadErr != nil {
+		return kh.loadErr
+	}
 	if kh.path == "" {
 		return nil
 	}

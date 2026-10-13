@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/ys-ll/uniterm/backend/credentials"
+	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/session"
 )
 
@@ -24,10 +25,10 @@ type PasswordStore interface {
 
 type ConnectionStore struct {
 	configDir     string
-	passwordStore PasswordStore       // nil = passwords kept in JSON (backward compat)
-	legacy         LegacyPasswordSource // optional fallback to pre-enc:v1 keychain entries
-	mu            sync.Mutex    // serializes Save + populatePasswords writes (STORE-05/06).
-	pwdMu         sync.RWMutex  // guards pwdCache for F-110 async keychain fill.
+	passwordStore PasswordStore        // nil = passwords kept in JSON (backward compat)
+	legacy        LegacyPasswordSource // optional fallback to pre-enc:v1 keychain entries
+	mu            sync.Mutex           // serializes Save + populatePasswords writes (STORE-05/06).
+	pwdMu         sync.RWMutex         // guards pwdCache for F-110 async keychain fill.
 	pwdCache      map[string]string
 	lastSavedHash string // F-105: skip no-op rewrites keyed by canonical content hash.
 }
@@ -293,14 +294,25 @@ func (s *ConnectionStore) populatePasswords(data *session.ConnectionStoreData) e
 		copy(clean.Connections, data.Connections)
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.writeJSONLocked(s.encryptForSaveLocked(clean))
+		enc, err := s.encryptForSaveLocked(clean)
+		if err != nil {
+			// Fail closed, like Save: with no usable cipher (locked store)
+			// the plaintext recovered above must NOT be persisted. Skip the
+			// re-save; the caller still gets the decrypted data in memory.
+			log.Writef("[connection_store] skip lazy re-save (encrypt failed): %v", err)
+			return nil
+		}
+		return s.writeJSONLocked(enc)
 	}
 	return nil
 }
 
 // encryptForSaveLocked returns a copy of data with plaintext password fields
-// encrypted. Caller must hold s.mu.
-func (s *ConnectionStore) encryptForSaveLocked(data session.ConnectionStoreData) session.ConnectionStoreData {
+// encrypted. It fails closed: an Encrypt error (locked credential store)
+// aborts the conversion so the caller can skip the re-save instead of
+// writing plaintext to disk — mirroring Save's behaviour. Caller must hold
+// s.mu.
+func (s *ConnectionStore) encryptForSaveLocked(data session.ConnectionStoreData) (session.ConnectionStoreData, error) {
 	out := data
 	out.Connections = make([]session.ConnectionConfig, len(data.Connections))
 	copy(out.Connections, data.Connections)
@@ -308,31 +320,38 @@ func (s *ConnectionStore) encryptForSaveLocked(data session.ConnectionStoreData)
 		conn := &out.Connections[i]
 		if conn.AuthType == "identity" {
 			// Mirror Save(): identity connections never use these locally
-			// assigned credentials; clearing them keeps stale values (and any
-			// enc:v1: leftovers) out of the rewritten file.
+			// assigned credentials; clearing the password keeps stale values
+			// (and any enc:v1: leftovers) out of the rewritten file. User,
+			// however, is the explicit username override typed into the
+			// connection form (issue #959) and is kept, exactly like Save.
 			conn.Password = ""
-			conn.User = ""
 			continue
 		}
 		if s.passwordStore == nil {
 			continue
 		}
-		encryptIfPlain := func(field *string) {
+		encryptIfPlain := func(field *string) error {
 			if *field != "" && !credentials.IsEncrypted(*field) {
-				if enc, err := s.passwordStore.Encrypt(*field); err == nil {
-					*field = enc
+				enc, err := s.passwordStore.Encrypt(*field)
+				if err != nil {
+					return err
 				}
+				*field = enc
 			}
+			return nil
 		}
 		if conn.AuthType == "keyText" {
-			encryptIfPlain(&conn.KeyContent)
+			if err := encryptIfPlain(&conn.KeyContent); err != nil {
+				return session.ConnectionStoreData{}, err
+			}
 		}
-		encryptIfPlain(&conn.Password)
-		encryptIfPlain(&conn.SentinelPassword)
-		encryptIfPlain(&conn.TunnelSSHPassword)
-		encryptIfPlain(&conn.K8sConfigInline)
+		for _, field := range []*string{&conn.Password, &conn.SentinelPassword, &conn.TunnelSSHPassword, &conn.K8sConfigInline} {
+			if err := encryptIfPlain(field); err != nil {
+				return session.ConnectionStoreData{}, err
+			}
+		}
 	}
-	return out
+	return out, nil
 }
 
 // EnsurePassword returns the cached decrypted password for a connection ID.

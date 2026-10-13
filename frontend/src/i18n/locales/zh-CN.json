@@ -628,6 +628,7 @@
   "settings.skillsLocked": "已锁定",
   "settings.skillsUnlocked": "已解锁",
   "settings.skillsDeleteConfirm": "确定要删除技能「{name}」吗？此操作不可撤销。",
+  "settings.skillsOverwriteConfirm": "技能「{name}」已存在，要覆盖它吗？",
   "settings.modelDeleteConfirm": "确定要删除模型「{name}」吗？此操作不可撤销。",
   "settings.skillsDeleteLocked": "技能「{name}」已锁定，请先解锁再删除。",
   "settings.skillsNoSkill": "暂无技能",

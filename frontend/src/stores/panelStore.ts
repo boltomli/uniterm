@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 import type { Panel, PanelStatus, ConnectionConfig } from '../types/workspace'
-import { DisableSessionOutputLog, RegisterSessionForPanel, UnregisterSession } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ReleasePanel, RegisterSessionForPanel, UnregisterSession } from '../../bindings/github.com/ys-ll/uniterm/app'
 
 export interface TransferFileState {
   path: string
@@ -27,7 +27,10 @@ export interface TransferTaskUI {
   fileCount: number
   completedFiles: number
   currentFile: string
-  files: TransferFileState[]
+  /** Per-path file detail of this task — O(1) lookup by path, insertion
+   *  order preserved; entries are markRaw'd by transferTaskCenter so a
+   *  100k-file upload does not become 100k deep-reactive proxies. */
+  files: Map<string, TransferFileState>
   failedFiles: { path: string; error: string }[]
 }
 
@@ -92,10 +95,11 @@ export const usePanelStore = defineStore('panel', () => {
 
   function removePanel(id: string) {
     const p = panelState.panels.get(id)
-    // Close any active output log so the footer banner is written and
-    // the file handle is released. Fire-and-forget; the backend logs
-    // any error via its own facilities.
-    DisableSessionOutputLog(id).catch(() => {})
+    // Release the panel's backend state: flushes and closes any active
+    // output log (footer banner written, handle released) and drops the
+    // per-panel auto-trigger bookkeeping so the maps shrink. Fire-and-forget;
+    // the backend logs any error via its own facilities.
+    ReleasePanel(id).catch(() => {})
     if (p?.sessionId) {
       UnregisterSession(p.sessionId).catch(() => {})
     }

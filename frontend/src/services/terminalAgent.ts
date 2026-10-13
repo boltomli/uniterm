@@ -218,6 +218,80 @@ function extractScreenOutput(screen: string, timedOut: boolean): string {
   return lines.join('\n').trim()
 }
 
+// Bounded tail window used for prompt detection: only the last
+// TAIL_SCAN_CHARS characters of the accumulated output are stripped and split
+// on each session:data event, so per-event work stays constant no matter how
+// much a long-running command has emitted (previously every event re-scanned
+// the full stream — O(n²) over a command's lifetime).
+export const TAIL_SCAN_CHARS = 4096
+
+// Upper bound on the raw output watchOutput retains for the no-screen
+// fallback. Beyond this the oldest content is dropped (aligned to a line
+// boundary) as new data arrives.
+export const OUTPUT_CAP_CHARS = 64 * 1024
+
+export interface TailScan {
+  /** Last non-blank display line within the scanned tail window. */
+  line: string
+  /** Index of that line within the window (0-based, window-relative). */
+  index: number
+  /**
+   * True when the window does not start at the beginning of the output — the
+   * line's real index in the full output is then guaranteed >= 1, which keeps
+   * the "first line of output is not completion" guard intact even though
+   * `index` itself is window-relative.
+   */
+  hasEarlierLines: boolean
+  /** Length of the string actually stripped/split — bounded by TAIL_SCAN_CHARS. */
+  scannedLength: number
+}
+
+// Find the last non-blank display line of `output` by scanning only its tail.
+// The window covers the last TAIL_SCAN_CHARS characters and begins on a line
+// boundary (so neither a half ANSI sequence nor a half line can be mistaken
+// for the last line); trailing blank lines are walked over with a bounded
+// backward scan. Returns null when the window carries no non-blank line.
+export function scanTailPrompt(output: string): TailScan | null {
+  // Trim trailing whitespace (blank lines) so the window ends at the last
+  // non-blank line; the walk is floored one window-length back so it cannot
+  // scan an unbounded run of trailing newlines.
+  let end = output.length
+  const floor = Math.max(0, end - TAIL_SCAN_CHARS)
+  while (end > floor && /\s/.test(output[end - 1])) end--
+
+  let start = 0
+  if (end > TAIL_SCAN_CHARS) {
+    const cut = end - TAIL_SCAN_CHARS
+    const nl = output.indexOf('\n', cut)
+    // Start right after a line boundary when one is in reach. Otherwise the
+    // tail is a single over-long line: its 4096-char fragment can never match
+    // a prompt (prompts are short), so the raw fragment still keeps the scan
+    // bounded without changing completion semantics.
+    start = nl !== -1 && nl + 1 < end ? nl + 1 : cut
+  }
+  const window = output.slice(start, end)
+  const lines = toDisplayLines(stripAnsi(window))
+  let last = lines.length - 1
+  while (last >= 0 && lines[last].trimEnd() === '') last--
+  if (last < 0) return null
+  return {
+    line: lines[last].trimEnd(),
+    index: last,
+    hasEarlierLines: start > 0,
+    scannedLength: window.length,
+  }
+}
+
+// Retain at most OUTPUT_CAP_CHARS characters of raw output, dropping the
+// oldest content at a line boundary so the retained head never begins
+// mid-line. Inputs at or under the cap are returned unchanged.
+export function capOutput(output: string): string {
+  if (output.length <= OUTPUT_CAP_CHARS) return output
+  const cut = output.length - OUTPUT_CAP_CHARS
+  const nl = output.indexOf('\n', cut)
+  return nl !== -1 && nl + 1 < output.length ? output.slice(nl + 1) : output.slice(cut)
+}
+
 // Watch session output and resolve when the command finishes.
 //
 // Completion is detected by the shell prompt reappearing: `promptLine` is the
@@ -273,14 +347,6 @@ export function watchOutput(
     resolved = true
   }
 
-  function getLastDisplayLine(text: string): { line: string; index: number } | null {
-    const lines = toDisplayLines(stripAnsi(text))
-    let last = lines.length - 1
-    while (last >= 0 && lines[last].trimEnd() === '') last--
-    if (last < 0) return null
-    return { line: lines[last].trimEnd(), index: last }
-  }
-
   function looksLikePrompt(line: string): boolean {
     // Common prompt terminators: $, #, >, %, :
     // Avoid matching plain text lines that happen to end with these chars by
@@ -326,8 +392,8 @@ export function watchOutput(
 
     const checkIdle = () => {
       if (resolved || !promptLine) return
-      const lastInfo = getLastDisplayLine(output)
-      if (!lastInfo || lastInfo.index < 1) return
+      const lastInfo = scanTailPrompt(output)
+      if (!lastInfo || (!lastInfo.hasEarlierLines && lastInfo.index < 1)) return
       if (looksLikePrompt(lastInfo.line)) {
         finish(false)
       }
@@ -346,6 +412,9 @@ export function watchOutput(
       if (payload.id !== sessionId || resolved) return
 
       output += payload.data
+      // Cap the retained stream so a long-running command cannot grow it
+      // without bound (the no-screen fallback reconstructs output from it).
+      output = capOutput(output)
 
       // Reset idle detection whenever new data arrives.
       if (idleTimeoutId) {
@@ -354,8 +423,8 @@ export function watchOutput(
       }
       idleTimeoutId = setTimeout(checkIdle, IDLE_MS)
 
-      const lastInfo = getLastDisplayLine(output)
-      if (!lastInfo || lastInfo.index < 1) return
+      const lastInfo = scanTailPrompt(output)
+      if (!lastInfo || (!lastInfo.hasEarlierLines && lastInfo.index < 1)) return
 
       // Exact prompt match (works when the prompt is static and ANSI-stripped).
       if (promptLine && lastInfo.line === promptLine) {

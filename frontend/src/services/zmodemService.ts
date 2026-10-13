@@ -1,4 +1,6 @@
 import Zmodem from 'zmodem.js/src/zmodem_browser'
+import type { Session, Detection } from 'zmodem.js/src/zmodem_browser'
+import { ElMessageBox } from 'element-plus'
 import {
   SessionEndZmodem,
   SessionEndZmodemWithTrailing,
@@ -12,10 +14,13 @@ import {
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import { useZmodemStore } from '../stores/zmodemStore'
+import { t } from '../i18n'
 import { queuedSessionWrite } from './sessionWriter'
 
 const dialogLocks = new Set<string>()
 const TRANSFER_TIMEOUT_MS = 20_000
+// Rename conflict resolution probes <name>.1, <name>.2, ... up to this cap.
+const MAX_RENAME_ATTEMPTS = 100
 const CANCEL_WRITE_TIMEOUT_MS = 2_000
 // After the cancel sequence, wait for the residual binary stream to drain
 // before leaving binary mode. See waitBinaryQuiet.
@@ -45,10 +50,18 @@ interface ActivityWatchdog {
   race<T>(promise: Promise<T>): Promise<T>
 }
 
+export type ZmodemOverwriteChoice = 'overwrite' | 'rename' | 'cancel'
+export type ZmodemOverwriteConfirm = (
+  filename: string, path: string,
+) => Promise<ZmodemOverwriteChoice>
+
 export interface ZmodemServiceOptions {
   sessionId: string
   direction?: 'upload' | 'download'
   getDefaultDownloadDir?: () => string
+  // Resolves what to do when the download target already exists. Defaults to
+  // an ElMessageBox prompt offering overwrite / rename / skip.
+  confirmOverwrite?: ZmodemOverwriteConfirm
   onComplete?: (files: string[], hint?: string) => void
   onError?: (err: string) => void
   onWarning?: (warning: string) => void
@@ -59,7 +72,7 @@ export interface ZmodemServiceOptions {
 
 export function startZmodemService(options: ZmodemServiceOptions) {
   let binaryUnsub: (() => void) | null = null
-  let currentZsession: import('zmodem.js/src/zmodem_browser').Session | null = null
+  let currentZsession: Session | null = null
   let aborted = false
   let disposed = false
   let notified = false
@@ -412,7 +425,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
       if (captureTrailingOutput) appendTrailingOutput(octets)
     },
     sender,
-    on_detect: (detection: import('zmodem.js/src/zmodem_browser').Detection) => {
+    on_detect: (detection: Detection) => {
       if (disposed || dialogLocks.has(sessionId)) return
       const zsession = detection.confirm()
       currentZsession = zsession
@@ -464,6 +477,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
             zsession, sessionId, getSaveDir, () => aborted, abortCtl, watchdog,
             beginTerminalRestore,
             () => { receivedFileOffer = true },
+            options.confirmOverwrite ?? defaultConfirmOverwrite,
           )
           await finishTransfer(files)
         }
@@ -536,7 +550,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
 }
 
 async function handleSend(
-  zsession: import('zmodem.js/src/zmodem_browser').Session,
+  zsession: Session,
   sessionId: string,
   paths: string[],
   drainWrites: () => Promise<void>,
@@ -623,7 +637,7 @@ async function sendFileChunks(
 }
 
 async function handleReceive(
-  zsession: import('zmodem.js/src/zmodem_browser').Session,
+  zsession: Session,
   sessionId: string,
   getSaveDir: () => Promise<string>,
   isAborted: () => boolean,
@@ -631,6 +645,7 @@ async function handleReceive(
   watchdog: ActivityWatchdog,
   onSessionEnd: () => void,
   onOffer: () => void,
+  confirmOverwrite: ZmodemOverwriteConfirm,
 ): Promise<string[]> {
   const store = useZmodemStore()
   const files: string[] = []
@@ -655,7 +670,7 @@ async function handleReceive(
       onOffer()
       const windowsPath = /^[a-zA-Z]:[\\/]/.test(saveDir) || saveDir.startsWith('\\\\')
       const sep = windowsPath ? '\\' : '/'
-      await receiveOffer(offer, saveDir, sep, sessionId, offerCount++, store, watchdog, files)
+      await receiveOffer(offer, saveDir, sep, sessionId, offerCount++, store, watchdog, files, confirmOverwrite)
     })()
     activeOffers.add(task)
     task.catch(err => {
@@ -676,12 +691,23 @@ async function handleReceive(
 async function receiveOffer(
   offer: any, saveDir: string, sep: string, sessionId: string, offerIndex: number,
   store: ReturnType<typeof useZmodemStore>, watchdog: ActivityWatchdog, files: string[],
+  confirmOverwrite: ZmodemOverwriteConfirm,
 ) {
   watchdog.touch()
   const details = offer.get_details()
   const filename = safeDownloadFilename(details.name, sep === '\\')
   const size = details.size || 0
-  const finalSavePath = `${saveDir}${saveDir.endsWith('/') || saveDir.endsWith('\\') ? '' : sep}${filename}`
+  let finalSavePath = `${saveDir}${saveDir.endsWith('/') || saveDir.endsWith('\\') ? '' : sep}${filename}`
+  // Refuse to clobber an existing file silently: ask the user first.
+  if (await fileExists(finalSavePath)) {
+    const choice = await confirmOverwrite(filename, finalSavePath)
+    if (choice === 'cancel') {
+      // Skip only this file; later offers keep arriving in this session.
+      try { offer.skip() } catch {}
+      return
+    }
+    if (choice === 'rename') finalSavePath = await nextAvailablePath(finalSavePath)
+  }
   const transferId = `${sessionId}-dl-${offerIndex}`
   store.addTransfer(sessionId, {
     id: transferId, sessionId, filename, size, transferred: 0,
@@ -722,6 +748,49 @@ async function receiveOffer(
   } catch (err) {
     store.updateTransfer(sessionId, transferId, { status: 'error', error: errorMessage(err) })
     throw err
+  }
+}
+
+// The backend FileSize binding rejects for a missing path, so it doubles as
+// an existence probe for the incoming download target.
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await FileSize(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Rename conflict resolution: probe <path>.1, <path>.2, ... for the first
+// free suffix so a rename never clobbers another file either.
+async function nextAvailablePath(path: string): Promise<string> {
+  for (let i = 1; i <= MAX_RENAME_ATTEMPTS; i++) {
+    const candidate = `${path}.${i}`
+    if (!(await fileExists(candidate))) return candidate
+  }
+  throw new Error(`No free filename left for ${path} after ${MAX_RENAME_ATTEMPTS} rename attempts`)
+}
+
+// Default conflict prompt. Buttons reuse the existing SFTP conflict labels;
+// distinguishCancelAndClose makes the rename button reject with 'cancel' and
+// the X/ESC dismissals with 'close', so only an explicit rename button click
+// opts into a new name and every dismissal leaves the existing file intact.
+async function defaultConfirmOverwrite(filename: string): Promise<ZmodemOverwriteChoice> {
+  try {
+    await ElMessageBox.confirm(
+      filename,
+      t('sftp.dialog.conflictPrompt'),
+      {
+        confirmButtonText: t('sftp.dialog.conflictOverwrite'),
+        cancelButtonText: t('sftp.dialog.conflictRename'),
+        distinguishCancelAndClose: true,
+        type: 'warning',
+      },
+    )
+    return 'overwrite'
+  } catch (action) {
+    return action === 'cancel' ? 'rename' : 'cancel'
   }
 }
 

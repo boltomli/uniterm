@@ -264,3 +264,53 @@ func TestDownloadRejectsTamperedAsset(t *testing.T) {
 		t.Fatal("a tampered asset must never be staged for Apply")
 	}
 }
+
+// TestDownloadClearsStaleStageDirs: every download creates a fresh stage-*
+// directory and Clear() deliberately keeps installer stages for the detached
+// updater script, so repeated check-then-cancel cycles used to leave about
+// 100 MB each in the user cache. A new download supersedes all previous
+// staging, so afterwards only the freshly staged directory may remain.
+func TestDownloadClearsStaleStageDirs(t *testing.T) {
+	payload := []byte("installer-bytes")
+	srv := assetServer(t, payload)
+	t.Setenv("UNITERM_UPDATE_API_BASE", srv.URL)
+
+	root, err := updateCacheDir()
+	if err != nil {
+		t.Fatalf("updateCacheDir: %v", err)
+	}
+	for _, name := range []string{"stage-leftover-one", "stage-leftover-two"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "uniterm.exe"), []byte("old payload"), 0644); err != nil {
+			t.Fatalf("seed %s payload: %v", name, err)
+		}
+	}
+
+	m := NewManager()
+	cand := UpdateAsset{
+		Name:   "uniterm-windows-amd64-installer-v1.9.9.exe",
+		URL:    srv.URL + "/uniterm-windows-amd64-installer-v1.9.9.exe",
+		SHA256: sha256Hex(payload),
+	}
+	pend, err := m.Download([]UpdateAsset{cand}, nil)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read staging root: %v", err)
+	}
+	var stages []string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "stage-") {
+			stages = append(stages, e.Name())
+		}
+	}
+	if len(stages) != 1 || filepath.Join(root, stages[0]) != pend.StageDir {
+		t.Fatalf("staging root should hold exactly the fresh stage dir, got %v (staged %s)", stages, pend.StageDir)
+	}
+}

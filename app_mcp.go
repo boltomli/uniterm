@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -67,9 +66,33 @@ func (a *App) ensureMCPServer() *mcp.Server {
 	return a.mcpServer
 }
 
+// mcpEndpoint is the endpoint configuration StartMCP applied. Two of them
+// compare equal when the endpoint would bind identically.
+type mcpEndpoint struct {
+	enabled bool
+	port    int
+}
+
+func (a *App) mcpLastEndpoint() *mcpEndpoint {
+	a.mcpAppliedMu.Lock()
+	defer a.mcpAppliedMu.Unlock()
+	return a.mcpApplied
+}
+
+func (a *App) setMCPLastEndpoint(ep *mcpEndpoint) {
+	a.mcpAppliedMu.Lock()
+	a.mcpApplied = ep
+	a.mcpAppliedMu.Unlock()
+}
+
 // StartMCP brings the MCP endpoint up per local state and installs the
 // active token set. Called from initStores (auto-start) and from
-// SaveLocalState when the user toggles the switch.
+// SaveLocalState when the user toggles the switch — the latter fires on
+// every tab change, sidebar toggle and slider drag, so the listener is only
+// touched when the effective endpoint (enabled flag + port) actually changed.
+// Tokens are reloaded on every call, because they hot-reload from mcp.json;
+// Server.Start itself is a no-op for the port it already listens on, so live
+// client connections survive an unchanged save.
 func (a *App) StartMCP() error {
 	if a.localStateStore == nil {
 		return fmt.Errorf("local state store not initialized")
@@ -81,15 +104,24 @@ func (a *App) StartMCP() error {
 	}
 	cfg := state.MCP
 	if cfg == nil || !cfg.Enabled {
+		a.setMCPLastEndpoint(nil)
 		srv.Stop()
 		return nil
 	}
 	srv.SetTokens(a.mcpLoadTokens())
-	port := mcp.DefaultPort
+
+	want := mcpEndpoint{enabled: true, port: mcp.DefaultPort}
 	if cfg.Port > 0 {
-		port = cfg.Port
+		want.port = cfg.Port
 	}
-	return srv.Start(port)
+	if prev := a.mcpLastEndpoint(); prev != nil && *prev == want && srv.Running() {
+		return nil
+	}
+	if err := srv.Start(want.port); err != nil {
+		return err
+	}
+	a.setMCPLastEndpoint(&want)
+	return nil
 }
 
 // MCPStatus_ reports endpoint state to the settings UI.
@@ -660,12 +692,12 @@ func (a *App) mcpConnect(connectionID string) (string, error) {
 		return "", fmt.Errorf("ssh connection %s not found", connectionID)
 	}
 
-	// Same resolution chain as CreateSession (app_terminal.go).
-	if config.Password == "" && config.ID != "" {
-		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
-			config.Password = pw
-		}
-	}
+	// Same resolution chain as CreateSession (app_terminal.go): the SHARED
+	// guarded helper resolves stored secrets by connection ID (same-auth-type
+	// transfer, password-auth-only keychain fallback — an unguarded password
+	// fill here used to break unencrypted keys), then identity and proxy
+	// references are materialized.
+	a.fillStoredSecrets(&config)
 	if config.AuthType == "identity" {
 		mc, err := a.materializeIdentity(config)
 		if err != nil {
@@ -688,16 +720,10 @@ func (a *App) mcpConnect(connectionID string) (string, error) {
 	}
 	ssh := s.(*session.SSHSession)
 	ssh.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   s.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(s.ID(), string(data))
 	})
 	ssh.SetOnBinaryCallback(func(data []byte) {
-		a.emit("session:binary", map[string]interface{}{
-			"id":   s.ID(),
-			"data": base64.StdEncoding.EncodeToString(data),
-		})
+		a.emitSessionBinary(s.ID(), data)
 	})
 	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		payload := map[string]interface{}{
@@ -720,7 +746,12 @@ func (a *App) mcpConnect(connectionID string) (string, error) {
 	})
 
 	// Connect in the background; the tool call already passed the approval
-	// gate, and the user sees the tab while the handshake runs.
+	// gate, and the user sees the tab while the handshake runs. The jump-host
+	// tunnel is established first (same ordering as launchConnectGoroutine):
+	// SSHSession.Connect doesn't read TunnelSSHConnID itself, so without this
+	// a bastion-only host dialed around the bastion over the wrong network
+	// path. setupJumpHostTunnel rewrites Host/Port to the local listener;
+	// failSessionConnect tears the tunnel down on any failure.
 	configCopy := config
 	go func() {
 		defer func() {
@@ -728,6 +759,10 @@ func (a *App) mcpConnect(connectionID string) (string, error) {
 				log.Writef("mcp connect panic: %v", r)
 			}
 		}()
+		if err := a.setupJumpHostTunnel(s.ID(), "ssh", &configCopy); err != nil {
+			a.failSessionConnect(s, err)
+			return
+		}
 		if err := s.Connect(configCopy); err != nil {
 			a.failSessionConnect(s, err)
 		}

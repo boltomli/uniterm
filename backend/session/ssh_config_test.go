@@ -3,8 +3,11 @@ package session
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"io"
 	"net"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +230,95 @@ func TestWrapSSHAlgorithmErrorPassthrough(t *testing.T) {
 	plain := io.EOF
 	if got := wrapSSHAlgorithmError(SSHAlgoModeCompatible, plain); got != plain {
 		t.Fatalf("unrelated error must pass through unchanged")
+	}
+}
+
+// negotiateHostKeyAlgo mirrors SSH host-key algorithm negotiation: the first
+// algorithm in the CLIENT's preference order that the server also offers wins.
+func negotiateHostKeyAlgo(clientOrder, serverOffer []string) string {
+	for _, c := range clientOrder {
+		for _, s := range serverOffer {
+			if c == s {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
+// indexOfAlgo returns the position of algo in order, or -1.
+func indexOfAlgo(order []string, algo string) int {
+	for i, a := range order {
+		if a == algo {
+			return i
+		}
+	}
+	return -1
+}
+
+// A host whose RSA key is pinned must keep negotiating RSA when the server
+// later ADDS an ed25519 key: offering the pinned type first (as OpenSSH does)
+// is what keeps the handshake from reporting a false "host key CHANGED" for a
+// perfectly ordinary key addition. The callback itself must stay strict — a
+// key of an unpinned type is still refused.
+func TestHostKeyAlgorithmsPreferPinnedType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts.json")
+	ConfigureKnownHosts(path)
+	configureLegacy(t)
+	const addr = "pinned.example:22"
+
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	pinned, err := ssh.NewPublicKey(&rsaPriv.PublicKey)
+	if err != nil {
+		t.Fatalf("ssh rsa public key: %v", err)
+	}
+	if cb, _ := NewHostKeyVerifier(addr); cb(addr, nil, pinned) != nil {
+		t.Fatal("first connection must be trusted")
+	}
+
+	order := preferPinnedHostKeyAlgorithms(sshHostKeys(), addr)
+	rsaFamily := []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	for _, a := range rsaFamily {
+		i := indexOfAlgo(order, a)
+		if i < 0 {
+			t.Fatalf("preferred order dropped %q: %v", a, order)
+		}
+		for _, other := range []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA521} {
+			if j := indexOfAlgo(order, other); j >= 0 && j < i {
+				t.Fatalf("pinned %q must be offered before %q (order: %v)", a, other, order)
+			}
+		}
+	}
+
+	// Server that offers its new ed25519 key first: the pinned RSA type must
+	// still win negotiation, so the callback sees the pinned key — no CHANGED.
+	serverOffer := []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	if got := negotiateHostKeyAlgo(order, serverOffer); got != ssh.KeyAlgoRSASHA256 {
+		t.Fatalf("negotiated %q, want the pinned rsa-sha2-256 (order: %v)", got, order)
+	}
+	cb, trust := NewHostKeyVerifier(addr)
+	if err := cb(addr, nil, pinned); err != nil {
+		t.Fatalf("server adding an ed25519 key must not report CHANGED: %v", err)
+	}
+	if trust.FirstTrust {
+		t.Fatal("reconnecting the pinned key must not report FirstTrust")
+	}
+
+	// Baseline: without the preference the server's ed25519 key wins and the
+	// callback rejects it — the false MITM alert this fix removes.
+	if got := negotiateHostKeyAlgo(sshHostKeys(), serverOffer); got != ssh.KeyAlgoED25519 {
+		t.Fatalf("test premise broken: raw order negotiates %q, want ssh-ed25519", got)
+	}
+	if err := cb(addr, nil, newTestPublicKey(t)); err == nil {
+		t.Fatal("a key of an unpinned type must still be rejected")
+	}
+
+	// Nothing pinned → the caller's order is left alone.
+	unpinned := "unpinned.example:22"
+	if got := preferPinnedHostKeyAlgorithms(sshHostKeys(), unpinned); !slices.Equal(got, sshHostKeys()) {
+		t.Fatalf("unpinned host must keep the default order: %v", got)
 	}
 }

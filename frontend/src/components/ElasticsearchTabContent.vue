@@ -306,9 +306,10 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { RefreshCw, Layers, MoreHorizontal, ChevronRight, ChevronDown, Database, Plus, Trash2, PanelLeft } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
+import { useTabBarOverflow } from '../composables/useTabBarOverflow'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
@@ -529,7 +530,9 @@ function onTabCloseAll() {
 // ── Tab bar overflow: wheel scroll + "more" dropdown ──
 
 const tabScrollRef = ref<HTMLElement | null>(null)
-const tabShowMore = ref(false)
+// Shared overflow composable (see useTabBarOverflow): observes the strip
+// when it appears, unobserves when it goes away, disconnects on unmount.
+const { showMore: tabShowMore, measure: updateTabOverflow } = useTabBarOverflow(tabScrollRef)
 const moreTabsMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const moreTabsMenuVisible = ref(false)
 
@@ -537,27 +540,8 @@ function onMoreTabsToggle(e: MouseEvent) {
   if (e.currentTarget instanceof HTMLElement) moreTabsMenuRef.value?.toggle(e.currentTarget)
 }
 
-function updateTabOverflow() {
-  const el = tabScrollRef.value
-  if (!el) return
-  tabShowMore.value = el.scrollWidth > el.clientWidth + 1
-}
-
 watch(() => tabs.value.length, () => nextTick(updateTabOverflow))
 watch(activeTabId, () => nextTick(updateTabOverflow))
-
-let tabBarResize: ResizeObserver | null = null
-
-onMounted(() => {
-  tabBarResize = new ResizeObserver(updateTabOverflow)
-  if (tabScrollRef.value) tabBarResize.observe(tabScrollRef.value)
-  nextTick(updateTabOverflow)
-})
-
-onBeforeUnmount(() => {
-  tabBarResize?.disconnect()
-  tabBarResize = null
-})
 
 function onTabsWheel(e: WheelEvent) {
   if (tabScrollRef.value) tabScrollRef.value.scrollLeft += e.deltaY

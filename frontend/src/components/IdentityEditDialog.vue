@@ -21,7 +21,7 @@
         <el-input v-model="form.username" />
       </el-form-item>
       <el-form-item v-if="form.authType === 'password'" :label="t('conn.password')">
-        <el-input v-model="passwordInput" type="password" show-password />
+        <el-input v-model="passwordInput" type="password" show-password :placeholder="savedPasswordPlaceholder" />
       </el-form-item>
       <template v-else-if="form.authType === 'key'">
         <el-form-item :label="t('conn.keyPath')">
@@ -36,13 +36,13 @@
           </el-input>
         </el-form-item>
         <el-form-item :label="t('conn.keyPassphrase')">
-          <el-input v-model="passphraseInput" type="password" show-password :placeholder="t('conn.keyPassphrasePlaceholder')" />
+          <el-input v-model="passphraseInput" type="password" show-password :placeholder="savedPasswordPlaceholder || t('conn.keyPassphrasePlaceholder')" />
         </el-form-item>
       </template>
       <template v-else>
         <el-form-item :label="t('conn.keyContent')">
           <template v-if="!keyContentRevealed">
-            <el-button size="small" @click="keyContentRevealed = true">
+            <el-button size="small" @click="revealKeyText">
               <el-icon><Eye :size="lucideSize('0.875rem')" /></el-icon>
               <span style="margin-left: 0.25rem">{{ t('conn.keyTextReveal') }}</span>
             </el-button>
@@ -53,7 +53,7 @@
               type="textarea"
               :rows="7"
               class="key-text-area mono"
-              :placeholder="t('conn.keyContentPlaceholder')"
+              :placeholder="savedKeyContentPlaceholder || t('conn.keyContentPlaceholder')"
               spellcheck="false"
             />
             <div class="key-content-actions">
@@ -69,7 +69,7 @@
           </template>
         </el-form-item>
         <el-form-item :label="t('conn.keyPassphrase')">
-          <el-input v-model="passphraseInput" type="password" show-password :placeholder="t('conn.keyPassphrasePlaceholder')" />
+          <el-input v-model="passphraseInput" type="password" show-password :placeholder="savedPasswordPlaceholder || t('conn.keyPassphrasePlaceholder')" />
         </el-form-item>
       </template>
     </el-form>
@@ -85,7 +85,7 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { ElMessage } from 'element-plus'
-import { OpenFileDialog, OpenPrivateKeyFile } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { OpenFileDialog, OpenPrivateKeyFile, ResolveIdentitySecret } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { backendErrorText } from '../utils/backendError'
 import { FolderOpen, Eye, EyeOff } from '@lucide/vue'
 import { useIdentityStore } from '../stores/identityStore'
@@ -116,14 +116,28 @@ const passphraseInput = ref('')
 // button by default so the PEM is never on screen until the user asks to see it.
 const keyContentRevealed = ref(false)
 
+// LoadIdentities 脱敏后 password/keyContent 恒为空，只带 hasPassword/
+// hasKeyContent 标志。留空保存 → 后端保留原值；标志只在认证方式与载入时
+// 一致时才随 save 回传——切换 authType 后旧密钥不再适用（登录密码不能
+// 变成密钥口令），此时清除标志，留空即真正清除。
+const originalAuthType = ref<string | null>(null)
+const savedPasswordPlaceholder = ref('')
+const savedKeyContentPlaceholder = ref('')
+
 watch(() => props.visible, (v) => {
   if (v) {
     // Always re-hide the keyText paste area when opening, so a prior reveal in
     // another identity can't leak into this edit.
     keyContentRevealed.value = false
     Object.assign(form, props.identity ?? { id: newId(), name: '', username: '', authType: 'password', password: '', keyPath: '', keyContent: '' })
+    originalAuthType.value = props.identity?.authType ?? null
+    const keepPassword = !!props.identity?.hasPassword
+    const keepKeyContent = !!props.identity?.hasKeyContent
+    savedPasswordPlaceholder.value = keepPassword ? t('conn.savedSecretPlaceholder') : ''
+    savedKeyContentPlaceholder.value = keepKeyContent ? t('conn.savedKeyContentPlaceholder') : ''
     // Hydrate only the field matching the stored authType; the other mode
-    // starts empty rather than echoing an unrelated secret.
+    // starts empty rather than echoing an unrelated secret. With redaction the
+    // stored values are blank anyway — the placeholder signals "saved".
     passwordInput.value = form.authType === 'password' ? (form.password ?? '') : ''
     passphraseInput.value = (form.authType === 'key' || form.authType === 'keyText') ? (form.password ?? '') : ''
   }
@@ -136,6 +150,21 @@ async function selectKeyFile() {
   } catch (e) { console.error('select key file:', e) }
 }
 
+// revealKeyText loads the stored key text on demand (by connection ID via
+// ResolveIdentitySecret) when the user asks to see it — LoadIdentities never
+// ships the plaintext, so an empty textarea would otherwise be shown for a
+// saved key.
+async function revealKeyText() {
+  keyContentRevealed.value = true
+  if (form.keyContent || !props.identity?.hasKeyContent) return
+  try {
+    const secret = await ResolveIdentitySecret(props.identity.id) as { keyContent?: string }
+    form.keyContent = secret.keyContent ?? ''
+  } catch (e) {
+    ElMessage.error(backendErrorText(e))
+  }
+}
+
 async function importKeyText() {
   try {
     const content = await OpenPrivateKeyFile()
@@ -143,7 +172,7 @@ async function importKeyText() {
       form.keyContent = content
       keyContentRevealed.value = true
     }
-  } catch (e: any) {
+  } catch (e) {
     ElMessage.error(backendErrorText(e))
   }
 }
@@ -159,6 +188,11 @@ async function save() {
   // 只保留当前认证方式对应的密钥字段，避免切换后残留路径/密钥文本。
   if (form.authType !== 'key') entity.keyPath = undefined
   if (form.authType !== 'keyText') entity.keyContent = undefined
+  // 认证方式变了 → 旧密钥不适用，去掉"留空保持"标志（留空即清除）。
+  if (props.identity && form.authType !== originalAuthType.value) {
+    entity.hasPassword = false
+    entity.hasKeyContent = false
+  }
   if (props.identity) await store.update(entity)
   else await store.add(entity)
   ElMessage.success(t('settings.saved'))

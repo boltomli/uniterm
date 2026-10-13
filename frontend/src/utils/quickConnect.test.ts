@@ -85,3 +85,21 @@ describe('parseQuickConnect protocols', () => {
     expect(cfg.type).toBe('ssh')
   })
 })
+
+describe('parseQuickConnect credentials and IPv6', () => {
+  // Credentials split from the host at the LAST '@' (passwords may contain
+  // '@'), userinfo splits at the FIRST ':' (passwords may contain ':');
+  // bracketed IPv6 literals keep their colons and lose the brackets.
+  const cases: [string, Partial<ConnectionConfig>][] = [
+    ['user:p@ss@host', { type: 'ssh', user: 'user', password: 'p@ss', host: 'host', port: 22 }],
+    ['[::1]:22', { type: 'ssh', host: '::1', port: 22 }],
+    ['user:p@ss@[::1]:22', { type: 'ssh', user: 'user', password: 'p@ss', host: '::1', port: 22 }],
+    ['ssh [::1]:2222', { type: 'ssh', host: '::1', port: 2222 }],
+  ]
+  for (const [input, expected] of cases) {
+    it(`parses "${input}"`, () => {
+      const cfg = parseQuickConnect(input)
+      expect(cfg).toMatchObject(expected)
+    })
+  }
+})

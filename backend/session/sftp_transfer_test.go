@@ -180,6 +180,7 @@ func TestDirDownloadContinuesAfterPerFileFailure(t *testing.T) {
 		t.Fatal("failed task was deleted from transfers map")
 	}
 }
+
 // waitTaskRemoved polls until the task id is gone from s.transfers (deletion
 // happens right after the complete event, so a short deadline-bounded wait is
 // deterministic).
@@ -339,4 +340,81 @@ func TestRetryTransferSkipsCompletedFiles(t *testing.T) {
 	if kept {
 		t.Fatal("dismissed task still present")
 	}
+}
+
+// TestSFTPDownloadFailureKeepsExistingLocalFile pins the partial-file fix
+// (security.md 文件会话 Low "Partial files are left under the final name
+// after a failure or cancel"): both SFTP download paths — the single-file
+// task in startTransfer and the per-file directory walker transferFile —
+// must write through "<name>.part" so a cancelled download neither truncates
+// the file already sitting at the destination nor stays behind under the
+// final name.
+func TestSFTPDownloadFailureKeepsExistingLocalFile(t *testing.T) {
+	s, root := newTestSFTPSession(t)
+	remote := filepath.Join(root, "remote.bin")
+	if err := os.WriteFile(remote, []byte(strings.Repeat("R", 256*1024)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newDst := func(t *testing.T) string {
+		t.Helper()
+		dst := filepath.Join(t.TempDir(), "local.bin")
+		if err := os.WriteFile(dst, []byte("OLD"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dst
+	}
+	requireUntouched := func(t *testing.T, dst string) {
+		t.Helper()
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "OLD" {
+			t.Fatalf("local content = %q (%d bytes), want the original OLD untouched", got, len(got))
+		}
+		if _, err := os.Stat(dst + ".part"); !os.IsNotExist(err) {
+			t.Fatalf(".part file left behind (stat err = %v)", err)
+		}
+	}
+
+	t.Run("single-file task cancelled at start", func(t *testing.T) {
+		dst := newDst(t)
+		events := make(chan map[string]any, 64)
+		prev := TransferEventSink
+		TransferEventSink = func(sid string, payload map[string]any) {
+			if payload["event"] == "start" {
+				// Cancel between "task started" and "local file created" —
+				// the window in which the pre-fix code truncated dst.
+				_ = s.CancelTransfer(payload["taskId"].(string))
+			}
+			select {
+			case events <- payload:
+			default:
+			}
+		}
+		t.Cleanup(func() { TransferEventSink = prev })
+
+		id, err := s.Get(remote, dst, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitForTask(t, events, id)
+		if done["status"] != "cancelled" {
+			t.Fatalf("status = %v, want cancelled", done["status"])
+		}
+		requireUntouched(t, dst)
+	})
+
+	t.Run("per-file walker with a cancelled task", func(t *testing.T) {
+		dst := newDst(t)
+		task := &TransferTask{ID: "dl-9", Type: "download", LocalPath: dst, RemotePath: remote, Status: "running"}
+		task.start()
+		task.cancel()
+		t.Cleanup(task.done)
+		if err := s.transferFile(task, dst, remote, "download"); err == nil {
+			t.Fatal("transferFile on a cancelled task must fail")
+		}
+		requireUntouched(t, dst)
+	})
 }

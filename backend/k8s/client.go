@@ -42,6 +42,16 @@ func BuildClientWithDial(kc *Kubeconfig, ctxName string, dialOverride DialFunc) 
 	if !ok {
 		return nil, "", "", nil, fmt.Errorf("user %q not found", ctx.User)
 	}
+	if user.Exec != nil {
+		// EKS/GKE/OIDC/kubelogin users authenticate via an exec plugin. We
+		// never run those (executing a command named in a config file is a
+		// code-execution vector, and the UI has no approval flow for it), so
+		// reject the context with a readable error instead of connecting with
+		// no credentials and surfacing opaque 401s later.
+		return nil, "", "", nil, fmt.Errorf(
+			"context %q: exec credential plugins are not supported (user %q runs %q); export a token or client certificate instead",
+			ctxName, ctx.User, user.Exec.Command)
+	}
 
 	tlsCfg, err := buildTLSConfig(cluster, user)
 	if err != nil {

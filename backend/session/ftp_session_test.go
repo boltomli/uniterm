@@ -149,8 +149,10 @@ type fakeFTP struct {
 	ln       net.Listener
 	mu       sync.Mutex
 	cmds     []string
+	reps     []string // server reply lines, in send order
 	conns    []*fakeFTPConn
 	handlers []func(*fakeFTPConn)
+	stors    map[string][]byte // STOR path -> uploaded body
 	wg       sync.WaitGroup
 }
 
@@ -194,13 +196,7 @@ func newFakeFTP(t *testing.T, handlers ...func(*fakeFTPConn)) *fakeFTP {
 	}()
 	t.Cleanup(func() {
 		ln.Close()
-		fs.mu.Lock()
-		conns := append([]*fakeFTPConn(nil), fs.conns...)
-		fs.mu.Unlock()
-		for _, fc := range conns {
-			fc.conn.Close()
-			fc.closeData()
-		}
+		fs.killConns()
 		fs.wg.Wait()
 	})
 	return fs
@@ -213,6 +209,24 @@ func (fs *fakeFTP) transcript() []string {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return append([]string(nil), fs.cmds...)
+}
+
+// recordStor stores a body received on STOR (mutex-guarded).
+func (fs *fakeFTP) recordStor(path string, data []byte) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.stors == nil {
+		fs.stors = make(map[string][]byte)
+	}
+	fs.stors[path] = data
+}
+
+// stored returns the body STOR uploaded for path.
+func (fs *fakeFTP) stored(path string) ([]byte, bool) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	b, ok := fs.stors[path]
+	return b, ok
 }
 
 // read reads one command line and records it in the transcript.
@@ -229,8 +243,18 @@ func (f *fakeFTPConn) read() (string, error) {
 }
 
 func (f *fakeFTPConn) send(line string) error {
+	f.srv.mu.Lock()
+	f.srv.reps = append(f.srv.reps, line)
+	f.srv.mu.Unlock()
 	_, err := io.WriteString(f.conn, line+"\r\n")
 	return err
+}
+
+// replies returns every server reply line sent so far (all conns, in order).
+func (fs *fakeFTP) replies() []string {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]string(nil), fs.reps...)
 }
 
 // listenData opens a fresh passive data listener for the next EPSV/PASV.
@@ -293,9 +317,10 @@ type ftpFakeFile struct {
 }
 
 type ftpPlainOpts struct {
-	feat    []string          // FEAT feature lines (sent with a leading space)
-	listing map[string]string // MLSD <path> -> listing payload
-	files   map[string]*ftpFakeFile
+	feat       []string          // FEAT feature lines (sent with a leading space)
+	listing    map[string]string // MLSD <path> -> listing payload
+	files      map[string]*ftpFakeFile
+	refuseStor bool // answer STOR with 550 instead of accepting the upload
 }
 
 // ftpPlainServer serves a full plaintext session: login, FEAT, TYPE, passive
@@ -363,6 +388,18 @@ func ftpPlainServer(opts ftpPlainOpts) func(*fakeFTPConn) {
 				})
 			case "DELE", "RMD":
 				f.send("250 Okay")
+			case "STOR":
+				if opts.refuseStor {
+					f.send("550 Permission denied")
+					continue
+				}
+				f.serveData(func(dc net.Conn) {
+					body, err := io.ReadAll(dc)
+					if err != nil {
+						return
+					}
+					f.srv.recordStor(arg, body)
+				})
 			case "QUIT":
 				f.send("221 Bye")
 				return
@@ -677,5 +714,132 @@ func TestFTPTransferFileReturnsReadError(t *testing.T) {
 	}
 	if errors.Is(err, io.EOF) {
 		t.Errorf("truncation must not look like a clean end of stream: %v", err)
+	}
+}
+
+// --- Copy (download + re-upload) -------------------------------------------
+
+// killConns closes every accepted control connection and pending data
+// listener, unblocking a command goroutine stuck waiting for a reply.
+func (fs *fakeFTP) killConns() {
+	fs.mu.Lock()
+	conns := append([]*fakeFTPConn(nil), fs.conns...)
+	fs.mu.Unlock()
+	for _, fc := range conns {
+		fc.conn.Close()
+		fc.closeData()
+	}
+}
+
+// copyWatchdog runs s.Copy on its own goroutine and fails the test if it
+// never returns: a broken download/upload hand-off can hang on the control
+// connection instead of erroring, and a hang would otherwise wedge cleanup
+// (Disconnect also takes connMu).
+func copyWatchdog(t *testing.T, fs *fakeFTP, s *FTPSession, oldPath, newPath string) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- s.Copy(oldPath, newPath) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(15 * time.Second):
+		fs.killConns() // unblock the stuck Copy so cleanup can finish
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+		t.Fatal("Copy hung instead of returning")
+		return nil
+	}
+}
+
+// ftpCopyPayload builds a payload comfortably larger than one socket buffer
+// so a Copy implementation must cope with backpressure, not just one read.
+func ftpCopyPayload() string {
+	var b strings.Builder
+	for b.Len() < 256*1024 {
+		fmt.Fprintf(&b, "line %08d of the FTP copy payload\n", b.Len())
+	}
+	return b.String()
+}
+
+// TestFTPCopyCopiesFileContent: FTP has no server-side copy — Copy must
+// download the source and re-upload it byte-identically. A reset download
+// and a refused upload must both surface as errors instead of hanging or
+// reporting a short-but-successful copy (security.md 文件会话 Medium
+// "FTP Copy holds the whole file in memory twice" — behavioural guard).
+func TestFTPCopyCopiesFileContent(t *testing.T) {
+	payload := ftpCopyPayload()
+
+	t.Run("content", func(t *testing.T) {
+		fs := newFakeFTP(t, ftpPlainServer(ftpPlainOpts{
+			feat:  []string{"MLST size;type;"},
+			files: map[string]*ftpFakeFile{"/src.bin": {data: payload}},
+		}))
+		s := connectPlain(t, fs)
+		if err := copyWatchdog(t, fs, s, "/src.bin", "/dst.bin"); err != nil {
+			t.Fatalf("Copy: %v\nftp transcript: %v\nftp replies: %v", err, fs.transcript(), fs.replies())
+		}
+		got, ok := fs.stored("/dst.bin")
+		if !ok {
+			t.Fatal("server never received STOR /dst.bin")
+		}
+		if string(got) != payload {
+			t.Fatalf("copied %d bytes, want the source's %d bytes byte-identically", len(got), len(payload))
+		}
+	})
+
+	t.Run("download failure surfaces", func(t *testing.T) {
+		fs := newFakeFTP(t, ftpPlainServer(ftpPlainOpts{
+			feat:  []string{"MLST size;type;"},
+			files: map[string]*ftpFakeFile{"/src.bin": {data: payload, abort: true}},
+		}))
+		s := connectPlain(t, fs)
+		if err := copyWatchdog(t, fs, s, "/src.bin", "/dst.bin"); err == nil {
+			t.Fatal("Copy must report a data connection reset during download")
+		}
+	})
+
+	t.Run("upload refusal surfaces", func(t *testing.T) {
+		fs := newFakeFTP(t, ftpPlainServer(ftpPlainOpts{
+			feat:       []string{"MLST size;type;"},
+			files:      map[string]*ftpFakeFile{"/src.bin": {data: payload}},
+			refuseStor: true,
+		}))
+		s := connectPlain(t, fs)
+		if err := copyWatchdog(t, fs, s, "/src.bin", "/dst.bin"); err == nil {
+			t.Fatal("Copy must report a refused upload")
+		}
+	})
+}
+
+// TestFTPCopyDoesNotBufferWholeFile reads this package's ftp_session.go and
+// asserts the Copy body does not buffer the file in memory: io.ReadAll plus
+// a string(data) round-trip held roughly twice the file size per copy
+// (security.md 文件会话 Medium "FTP Copy holds the whole file in memory
+// twice"). Copy must stream through io.Copy instead.
+func TestFTPCopyDoesNotBufferWholeFile(t *testing.T) {
+	src, err := os.ReadFile("ftp_session.go")
+	if err != nil {
+		t.Fatalf("read ftp_session.go: %v", err)
+	}
+	code := string(src)
+	start := strings.Index(code, "func (s *FTPSession) Copy(")
+	if start < 0 {
+		t.Fatal("FTPSession.Copy not found in ftp_session.go")
+	}
+	rest := code[start:]
+	end := strings.Index(rest, "\nfunc ")
+	if end < 0 {
+		end = len(rest)
+	}
+	body := rest[:end]
+	for _, bad := range []string{"io.ReadAll", "strings.NewReader(string("} {
+		if strings.Contains(body, bad) {
+			t.Errorf("FTPSession.Copy still buffers the whole file: body contains %q", bad)
+		}
+	}
+	if !strings.Contains(body, "io.Copy") {
+		t.Errorf("FTPSession.Copy must stream through io.Copy; body:\n%s", body)
 	}
 }

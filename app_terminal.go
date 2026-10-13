@@ -176,17 +176,11 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	}
 
 	s.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   s.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(s.ID(), string(data))
 	})
 
 	s.SetOnBinaryCallback(func(data []byte) {
-		a.emit("session:binary", map[string]interface{}{
-			"id":   s.ID(),
-			"data": base64.StdEncoding.EncodeToString(data),
-		})
+		a.emitSessionBinary(s.ID(), data)
 	})
 
 	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
@@ -365,10 +359,7 @@ func (a *App) failSessionConnect(s session.Session, err error) {
 			"status":       "error",
 			"errorMessage": err.Error(),
 		})
-		a.emit("session:data", map[string]interface{}{
-			"id":   s.ID(),
-			"data": fmt.Sprintf("\r\n\x1b[31m[Connection failed: %v]\x1b[0m\r\nPress Enter to retry...\r\n", err),
-		})
+		a.emitSessionData(s.ID(), fmt.Sprintf("\r\n\x1b[31m[Connection failed: %v]\x1b[0m\r\nPress Enter to retry...\r\n", err))
 	}
 	if a.sessionManager != nil {
 		_ = a.sessionManager.Close(s.ID())
@@ -498,16 +489,10 @@ func (a *App) DuplicateSSHChannel(sourceSessionID string, config session.Connect
 	s.SetEncoding(config.Encoding)
 
 	s.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   s.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(s.ID(), string(data))
 	})
 	s.SetOnBinaryCallback(func(data []byte) {
-		a.emit("session:binary", map[string]interface{}{
-			"id":   s.ID(),
-			"data": base64.StdEncoding.EncodeToString(data),
-		})
+		a.emitSessionBinary(s.ID(), data)
 	})
 	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		payload := map[string]interface{}{
@@ -780,6 +765,37 @@ func (a *App) ReadFileChunkBase64(path string, offset int64, length int64) (stri
 	return base64.StdEncoding.EncodeToString(buf[:n]), nil
 }
 
+// maxWriteFileBase64Bytes caps one WriteFileBase64 payload once decoded: the
+// whole value crosses the IPC bridge as a single string and is written in one
+// shot, so an unbounded argument means an unbounded allocation. A var so
+// tests can shrink it.
+var maxWriteFileBase64Bytes = 64 << 20 // 64 MiB
+
+// openRootFileForWrite opens the final path component of path for writing
+// through os.Root, refusing a symlink at the target. Root.OpenFile resolves
+// the name against the root fd, so a link swapped in after the grant check
+// cannot escape the directory (same protection AppendFileBase64 already had;
+// WriteFileBase64 used os.WriteFile, which follows symlinks). The caller
+// closes the returned file.
+func openRootFileForWrite(path string, flag int, perm os.FileMode) (*os.File, error) {
+	dir, name := filepath.Split(path)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open target directory: %w", err)
+	}
+	defer root.Close()
+	if info, statErr := root.Lstat(name); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to write symbolic link: %s", path)
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("inspect file: %w", statErr)
+	}
+	f, err := root.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	return f, nil
+}
+
 func (a *App) WriteFileBase64(path string, base64Data string) error {
 	if err := requireFileGrant(path); err != nil {
 		return err
@@ -788,7 +804,18 @@ func (a *App) WriteFileBase64(path string, base64Data string) error {
 	if err != nil {
 		return fmt.Errorf("decode base64: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	if len(data) > maxWriteFileBase64Bytes {
+		return fmt.Errorf("payload of %d bytes exceeds the %d byte limit", len(data), maxWriteFileBase64Bytes)
+	}
+	f, err := openRootFileForWrite(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	return nil
 }
 
 func (a *App) AppendFileBase64(path string, base64Data string, offset int64) error {
@@ -806,22 +833,11 @@ func (a *App) AppendFileBase64(path string, base64Data string, offset int64) err
 	} else {
 		flag |= os.O_APPEND
 	}
-	// Resolve the final component through os.Root. Root.OpenFile guarantees
-	// that a symlink swapped in after Lstat cannot escape the parent directory.
-	dir, name := filepath.Split(path)
-	root, err := os.OpenRoot(dir)
+	// Resolve the final component through os.Root so a symlink swapped in
+	// after Lstat cannot escape the parent directory.
+	f, err := openRootFileForWrite(path, flag, 0644)
 	if err != nil {
-		return fmt.Errorf("open download directory: %w", err)
-	}
-	defer root.Close()
-	if info, statErr := root.Lstat(name); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to write symbolic link: %s", path)
-	} else if statErr != nil && !os.IsNotExist(statErr) {
-		return fmt.Errorf("inspect file: %w", statErr)
-	}
-	f, err := root.OpenFile(name, flag, 0644)
-	if err != nil {
-		return fmt.Errorf("open file: %w", err)
+		return err
 	}
 	defer f.Close()
 
@@ -1131,6 +1147,24 @@ func (a *App) UnregisterSession(sessionID string) {
 	a.installWriter(sessionID, nil)
 }
 
+// ReleasePanel drops every per-panel bookkeeping entry when the frontend
+// closes a tab: it closes the panel's output log (flushing buffered output
+// and writing the footer, then deleting panelLogs[panelID]) and forgets the
+// LogOnConnect auto-enable mark. Without it both maps grew by one entry per
+// panel ever opened — for the life of the process.
+//
+// Sessions are unregistered separately (UnregisterSession); this only owns
+// the panel-keyed state. Idempotent and safe to call for unknown panels.
+func (a *App) ReleasePanel(panelID string) {
+	if panelID == "" {
+		return
+	}
+	_ = a.DisableSessionOutputLog(panelID)
+	a.panelLogMu.Lock()
+	delete(a.panelAutoTriggered, panelID)
+	a.panelLogMu.Unlock()
+}
+
 // installWriter finds the given session and installs (or clears) the
 // output-log writer callback. Non-terminal session types silently
 // ignore the request.
@@ -1275,6 +1309,22 @@ func (a *App) DisableSessionOutputLog(panelID string) error {
 		logger.Disable()
 	}
 	return nil
+}
+
+// disableAllPanelLogs closes every per-panel session log at shutdown, in
+// panel order: Disable flushes the buffered output (up to 64 KiB / 1s) and
+// writes the footer, and detaches the writer from any session bound to the
+// panel. Without this the last second of terminal output was lost on quit.
+func (a *App) disableAllPanelLogs() {
+	a.panelLogMu.Lock()
+	panels := make([]string, 0, len(a.panelLogs))
+	for id := range a.panelLogs {
+		panels = append(panels, id)
+	}
+	a.panelLogMu.Unlock()
+	for _, id := range panels {
+		_ = a.DisableSessionOutputLog(id)
+	}
 }
 
 // GetSessionOutputLogInfo returns the current log state for a panel.

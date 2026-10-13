@@ -220,11 +220,18 @@ func TestWebDAVBackendFetchAllRejectsTraversalNames(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			mirror := t.TempDir()
-			// Ancestors cover both one-level ("..\evil" on Windows) and
-			// two-level ("../../evil.txt") escapes from mirror.
-			outside := filepath.Dir(filepath.Dir(mirror))
-			outsideBefore := testFilesUnder(t, outside)
+			// Nest the mirror two levels deep inside this test function's
+			// private temp tree so a ".."/"../.." escape lands inside the
+			// scanned area, which is itself private to this test. Scanning
+			// the shared %TEMP% root (the previous approach) raced with
+			// other packages' tests under `go test ./...`.
+			base := t.TempDir() // <temp>/<TestName...>/001 — private per test
+			mirror := filepath.Join(base, "lvl0", "lvl1")
+			if err := os.MkdirAll(mirror, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			scanRoot := filepath.Dir(base) // <temp>/<TestName...> — still private
+			outsideBefore := testFilesUnder(t, scanRoot)
 
 			err := b.FetchAll(mirror)
 			if err == nil {
@@ -233,7 +240,7 @@ func TestWebDAVBackendFetchAllRejectsTraversalNames(t *testing.T) {
 			if !strings.Contains(err.Error(), "disallowed") {
 				t.Fatalf("FetchAll error must call out the rejected manifest entry, got: %v", err)
 			}
-			for path := range testFilesUnder(t, outside) {
+			for path := range testFilesUnder(t, scanRoot) {
 				if !outsideBefore[path] {
 					t.Fatalf("FetchAll leaked a file outside %s: %s", mirror, path)
 				}

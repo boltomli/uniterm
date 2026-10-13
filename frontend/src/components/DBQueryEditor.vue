@@ -225,7 +225,7 @@ import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTab
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
-import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult } from '../types/database'
+import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult, DbRow, DbCellValue } from '../types/database'
 
 const { t } = useI18n()
 
@@ -262,7 +262,7 @@ const pageSize = ref(100)
 const browseMode = ref(false)
 const browseHasMore = ref(false)
 const resultFilter = ref('')
-const sortProp = ref('')
+const sortProp = ref(-1)
 const sortOrder = ref<'ascending' | 'descending' | null>(null)
 
 const historyOpen = ref(false)
@@ -287,15 +287,15 @@ const displayRows = computed(() => {
   const q = resultFilter.value.trim().toLowerCase()
   if (q) {
     rows = rows.filter(row =>
-      Object.values(row).some(v => v != null && String(v).toLowerCase().includes(q))
+      row.some(v => v != null && String(v).toLowerCase().includes(q))
     )
   }
-  if (sortProp.value && sortOrder.value) {
-    const prop = sortProp.value
+  if (sortProp.value >= 0 && sortOrder.value) {
+    const idx = sortProp.value
     const dir = sortOrder.value === 'ascending' ? 1 : -1
     rows = [...rows].sort((a, b) => {
-      const av = a[prop]
-      const bv = b[prop]
+      const av = a[idx]
+      const bv = b[idx]
       if (av == null && bv == null) return 0
       if (av == null) return -1 * dir
       if (bv == null) return 1 * dir
@@ -337,14 +337,22 @@ function buildExportText(format: 'csv' | 'txt' | 'json'): string {
   const cols = queryResult.value?.columns.map(c => c.name) || []
   const rows = displayRows.value
   if (format === 'json') {
-    return JSON.stringify(rows.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? null]))), null, 2)
+    // JSON object keys must be unique: suffix repeated column names so a
+    // JOIN's duplicate `id` columns both survive the export.
+    const seen = new Map<string, number>()
+    const keys = cols.map(c => {
+      const n = seen.get(c) ?? 0
+      seen.set(c, n + 1)
+      return n === 0 ? c : `${c}#${n + 1}`
+    })
+    return JSON.stringify(rows.map(r => Object.fromEntries(keys.map((k, i) => [k, r[i] ?? null]))), null, 2)
   }
   if (format === 'txt') {
     // Tab-separated with a header line; matches what spreadsheet tools paste back.
-    return [cols.join('\t'), ...rows.map(r => cols.map(c => fmtCell(r[c])).join('\t'))].join('\n')
+    return [cols.join('\t'), ...rows.map(r => cols.map((_, i) => fmtCell(r[i])).join('\t'))].join('\n')
   }
   // BOM so Excel detects UTF-8; CRLF per RFC 4180.
-  return '﻿' + [cols.map(csvCell).join(','), ...rows.map(r => cols.map(c => csvCell(r[c])).join(','))].join('\r\n')
+  return '﻿' + [cols.map(csvCell).join(','), ...rows.map(r => cols.map((_, i) => csvCell(r[i])).join(','))].join('\r\n')
 }
 
 async function onExportResults(format: 'csv' | 'txt' | 'json') {
@@ -559,6 +567,10 @@ async function onExecute() {
   loading.value = true
   cancelled = false
   resultFilter.value = ''
+  // Sorting is positional now; the next result may have a different column
+  // layout, so an index carried over could point at the wrong column.
+  sortProp.value = -1
+  sortOrder.value = null
   const started = performance.now()
 
   // If user edited away from browse SQL, leave browse mode
@@ -699,8 +711,8 @@ async function onPageSizeChange(size: number) {
   await onExecute()
 }
 
-function onSortChange(payload: { field: string; order: 'asc' | 'desc' | null }) {
-  sortProp.value = payload.field || ''
+function onSortChange(payload: { index: number; order: 'asc' | 'desc' | null }) {
+  sortProp.value = payload.index
   sortOrder.value = payload.order === 'asc' ? 'ascending' : payload.order === 'desc' ? 'descending' : null
 }
 
@@ -730,7 +742,7 @@ async function onSaveEdits() {
           { [ed.field]: ed.newValue },
           ed.where,
         )
-        resultGridRef.value?.markCommitted(ed.row, ed.field)
+        resultGridRef.value?.markCommitted(ed.row, ed.fieldIndex)
       } catch (e: any) {
         ok = false
         resultGridRef.value?.revertRow(ed.row)
@@ -753,21 +765,15 @@ function onUndoEdits() {
   resultGridRef.value?.revertAll()
 }
 
-function rowIndexOf(row: Record<string, any>): number {
+function rowIndexOf(row: DbRow): number {
   const rows = queryResult.value?.rows
   if (!rows?.length) return -1
   const direct = rows.indexOf(row)
   if (direct >= 0) return direct
-  const pks = resolvedPrimaryKeys.value
-  if (pks.length > 0) {
-    const byPk = rows.findIndex(r => pks.every(pk => r?.[pk] === row?.[pk]))
-    if (byPk >= 0) return byPk
-  }
-  const cols = queryResult.value?.columns?.map(c => c.name) || Object.keys(row)
-  return rows.findIndex(r => cols.every(c => r?.[c] === row?.[c]))
+  return rows.findIndex(r => r.length === row.length && r.every((v, i) => v === row[i]))
 }
 
-function startEditRowByRow(row: Record<string, any>) {
+function startEditRowByRow(row: DbRow) {
   const idx = rowIndexOf(row)
   if (idx < 0) {
     error.value = t('db.noPrimaryKey')
@@ -776,7 +782,7 @@ function startEditRowByRow(row: Record<string, any>) {
   startEditRow(idx)
 }
 
-async function onDeleteRowByRow(row: Record<string, any>) {
+async function onDeleteRowByRow(row: DbRow) {
   const idx = rowIndexOf(row)
   if (idx < 0) {
     error.value = t('db.noPrimaryKey')
@@ -830,9 +836,10 @@ async function onDeleteRow(rowIndex: number) {
   }
 
   const row = queryResult.value!.rows[rowIndex]
-  const where: Record<string, any> = {}
+  const where: Record<string, DbCellValue> = {}
   for (const pk of pks) {
-    where[pk] = row[pk] ?? null
+    const pkIdx = queryResult.value!.columns.findIndex(c => c.name === pk)
+    where[pk] = pkIdx >= 0 ? row[pkIdx] ?? null : null
   }
 
   try {
@@ -886,7 +893,7 @@ async function onInsertConfirm() {
   if (!props.tableName) return
 
   const includedCols = insertColumns.value.filter(c => !insertAutoIncrement.value[c])
-  const values: Record<string, any> = {}
+  const values: Record<string, string | null> = {}
   for (const col of includedCols) {
     values[col] = insertNulls.value[col] ? null : (insertValues.value[col] ?? '')
   }
@@ -945,12 +952,12 @@ function startEditRow(rowIndex: number) {
   editRowColumns.value = queryResult.value.columns.map(c => c.name)
   editRowValues.value = {}
   editNulls.value = {}
-  for (const col of editRowColumns.value) {
-    if (row[col] === null) {
+  for (const [i, col] of editRowColumns.value.entries()) {
+    if (row[i] === null) {
       editRowValues.value[col] = ''
       editNulls.value[col] = true
     } else {
-      editRowValues.value[col] = String(row[col] ?? '')
+      editRowValues.value[col] = String(row[i] ?? '')
       editNulls.value[col] = false
     }
   }
@@ -967,14 +974,15 @@ async function onEditRowConfirm() {
   }
   if (editingRowIndex.value < 0) return
 
+  const cols = queryResult.value!.columns
   const row = queryResult.value!.rows[editingRowIndex.value]
-  const set: Record<string, any> = {}
-  for (const col of editRowColumns.value) {
+  const set: Record<string, DbCellValue> = {}
+  for (const [i, col] of editRowColumns.value.entries()) {
     if (editNulls.value[col]) {
-      if (row[col] !== null) set[col] = null
+      if (row[i] !== null) set[col] = null
     } else {
       const newVal = editRowValues.value[col] ?? ''
-      const oldVal = String(row[col] ?? '')
+      const oldVal = String(row[i] ?? '')
       if (newVal !== oldVal) set[col] = newVal
     }
   }
@@ -983,17 +991,18 @@ async function onEditRowConfirm() {
     return
   }
 
-  const where: Record<string, any> = {}
+  const where: Record<string, DbCellValue> = {}
   for (const pk of pks) {
-    where[pk] = row[pk] ?? null
+    const pkIdx = cols.findIndex(c => c.name === pk)
+    where[pk] = pkIdx >= 0 ? row[pkIdx] ?? null : null
   }
 
   try {
     await DBUpdateRow(props.sessionId, props.dbName || '', props.tableName, set, where)
     const idx = editingRowIndex.value
-    const updatedRow = { ...queryResult.value!.rows[idx] }
-    for (const col of editRowColumns.value) {
-      updatedRow[col] = editNulls.value[col] ? null : editRowValues.value[col]
+    const updatedRow = [...queryResult.value!.rows[idx]]
+    for (const [i, col] of editRowColumns.value.entries()) {
+      updatedRow[i] = editNulls.value[col] ? null : editRowValues.value[col]
     }
     queryResult.value = {
       ...queryResult.value!,

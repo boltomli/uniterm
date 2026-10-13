@@ -658,41 +658,49 @@ func (s *ContainerFileSession) extractTarFile(root string, tr *tar.Reader, hdr *
 			return err
 		}
 		mode := os.FileMode(hdr.Mode) & 0o777
-		// 先试 O_EXCL：已存在的路径若是符号链接，写穿它会篡改目录外的文件；
-		// 普通已存在文件（重复下载）才允许覆盖。
-		f, err := os.OpenFile(local, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-		if errors.Is(err, fs.ErrExist) {
-			if fi, lerr := os.Lstat(local); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("refusing to write through symlink %q", local)
-			}
-			f, err = os.OpenFile(local, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+		// 覆盖/拒绝语义与旧的 O_EXCL-then-O_TRUNC 决策一致：已存在路径若是
+		// 符号链接，写穿它会篡改目录外的文件；普通已存在文件（重复下载）才
+		// 允许覆盖；新建文件采用 header 的 mode。entry 正文现在经
+		// <name>.part 落盘、成功后原子改名——中途流失败不会在最终名下留下
+		// 截断的文件（security.md 文件会话 Low "Partial files are left
+		// under the final name"）。
+		fi, lerr := os.Lstat(local)
+		if lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlink %q", local)
 		}
-		if err != nil {
-			return err
+		// .part 同样先查：种下的 local.part 链接会把写入重定向到别处。
+		if pf, perr := os.Lstat(local + ".part"); perr == nil && pf.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlink %q", local+".part")
 		}
-		defer f.Close()
-		buf := make([]byte, 64*1024)
-		for {
-			task.waitIfPaused()
-			if task.ctx.Err() != nil {
-				return task.ctx.Err()
-			}
-			n, rerr := tr.Read(buf)
-			if n > 0 {
-				if _, werr := f.Write(buf[:n]); werr != nil {
-					return werr
+		newTarget := errors.Is(lerr, fs.ErrNotExist)
+		return writePartFile(local, func(f *os.File) error {
+			if newTarget {
+				if err := f.Chmod(mode); err != nil {
+					return err
 				}
-				task.addProgress(int64(n))
-				s.emitTransferProgress(task)
 			}
-			if rerr == io.EOF {
-				break
+			buf := make([]byte, 64*1024)
+			for {
+				task.waitIfPaused()
+				if task.ctx.Err() != nil {
+					return task.ctx.Err()
+				}
+				n, rerr := tr.Read(buf)
+				if n > 0 {
+					if _, werr := f.Write(buf[:n]); werr != nil {
+						return werr
+					}
+					task.addProgress(int64(n))
+					s.emitTransferProgress(task)
+				}
+				if rerr == io.EOF {
+					return nil
+				}
+				if rerr != nil {
+					return rerr
+				}
 			}
-			if rerr != nil {
-				return rerr
-			}
-		}
-		return f.Close()
+		})
 	}
 	return nil
 }

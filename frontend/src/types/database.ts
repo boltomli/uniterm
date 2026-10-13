@@ -33,9 +33,18 @@ export interface QueryResultColumn {
   type: string
 }
 
+/** A single result cell as decoded from the backend's JSON: a scalar, null,
+ *  or a nested structure (JSON columns, encoded bytes). */
+export type DbCellValue = null | string | number | boolean | DbCellValue[] | { [key: string]: DbCellValue }
+
+/** One positional result row; cell (r, c) matches columns[c]. */
+export type DbRow = DbCellValue[]
+
 export interface QueryResult {
   columns: QueryResultColumn[]
-  rows: Record<string, any>[]
+  /** Positional rows: cell (r, c) is rows[r][c], matching columns[c]. Column
+   *  names may repeat (JOINs), so always address cells by index. */
+  rows: DbRow[]
   /** True when the backend capped the scan (see maxQueryRows) and rows are missing. */
   truncated?: boolean
 }

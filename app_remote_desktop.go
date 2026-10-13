@@ -154,6 +154,11 @@ func (a *App) X11DesktopConnect(connectionID string, sessionID string) error {
 		return fmt.Errorf("connection %s is not an x11-desktop", connectionID)
 	}
 
+	// Resolve the stored secrets through the SHARED guarded helper (mirrors
+	// CreateSession): same-auth-type transfer only, password-auth-only
+	// keychain fallback.
+	a.fillStoredSecrets(cfg)
+
 	// Resolve an identity reference into a concrete password/key config
 	// before handing the connection to the X11 dialer.
 	if cfg.AuthType == "identity" {
@@ -164,6 +169,15 @@ func (a *App) X11DesktopConnect(connectionID string, sessionID string) error {
 		cfg = &m
 	}
 
+	// Resolve a proxy reference into a concrete proxy config: DialSSHClient
+	// routes the first hop through config.Proxy, so without this the X11
+	// Desktop dial silently bypassed the user's proxy policy.
+	mc, err := a.materializeProxy(*cfg)
+	if err != nil {
+		return err
+	}
+	cfg = &mc
+
 	sess, ok := a.sessionManager.Get(sessionID)
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
@@ -172,7 +186,15 @@ func (a *App) X11DesktopConnect(connectionID string, sessionID string) error {
 	if !ok {
 		return fmt.Errorf("session %s is not x11-desktop", sessionID)
 	}
+	// Establish the jump-host tunnel before dialing (same ordering as
+	// CreateSession): ConnectX11Desktop doesn't read TunnelSSHConnID itself.
+	if err := a.setupJumpHostTunnel(sessionID, "x11-desktop", cfg); err != nil {
+		return err
+	}
 	if err := x11Sess.ConnectX11Desktop(*cfg); err != nil {
+		if a.tunnelService != nil {
+			a.tunnelService.Stop(sessionID) // 与其它连接一致：连接失败时回收隧道
+		}
 		return err
 	}
 	return nil

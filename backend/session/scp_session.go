@@ -1376,18 +1376,19 @@ func (s *SCPSession) startTransfer(task *TransferTask) {
 
 		var err error
 		if task.Type == "download" {
-			localFile, e := os.Create(task.LocalPath)
-			if e != nil {
-				s.emitTransferEvent(task, e)
-				return
-			}
-			defer localFile.Close()
-			err = s.scpFetchFile(task.RemotePath, localFile, task,
-				func(size int64) { task.setTotal(size) },
-				func(n int64) {
-					task.addProgress(n)
-					s.emitTransferProgress(task)
-				})
+			// The body goes to "<name>.part" and is renamed onto the target
+			// only once it is complete (security.md 文件会话 Low: "Partial
+			// files are left under the final name after a failure or
+			// cancel") — a missing/permission-denied remote path must not
+			// truncate the file already sitting at task.LocalPath.
+			err = writePartFile(task.LocalPath, func(localFile *os.File) error {
+				return s.scpFetchFile(task.RemotePath, localFile, task,
+					func(size int64) { task.setTotal(size) },
+					func(n int64) {
+						task.addProgress(n)
+						s.emitTransferProgress(task)
+					})
+			})
 		} else {
 			fi, e := os.Stat(task.LocalPath)
 			if e != nil {

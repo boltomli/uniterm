@@ -49,14 +49,18 @@ func ExportUniterm(data session.ConnectionStoreData, password string) ([]byte, e
 		return nil, err
 	}
 	f.Encrypted = true
-	f.KDF = &utmKDF{Algo: kdfAlgo, Iterations: kdfIterations, Salt: encodeSalt(salt)}
+	f.KDF = &utmKDF{Algo: kdfAlgo, Iterations: defaultKDFIterations, Salt: encodeSalt(salt)}
+	// Derive the field-encryption key ONCE and reuse it for every secret:
+	// PBKDF2 at 600k iterations per field would block an export of hundreds
+	// of connections for minutes.
+	key := deriveKey(password, salt, defaultKDFIterations)
 	for i := range f.Connections {
 		c := &f.Connections[i]
 		for _, field := range []*string{&c.Password, &c.KeyContent, &c.SentinelPassword, &c.TunnelSSHPassword, &c.K8sConfigInline, &c.PostLoginScript} {
 			if *field == "" || strings.HasPrefix(*field, credentials.Prefix) {
 				continue
 			}
-			enc, err := encryptField(*field, password, salt)
+			enc, err := encryptField(*field, key)
 			if err != nil {
 				return nil, err
 			}
@@ -82,16 +86,24 @@ func parseUniterm(data []byte, opts ParseOptions) (*ImportResult, error) {
 		if f.KDF == nil {
 			return nil, fmt.Errorf("missing kdf block")
 		}
+		// Honor the file's iteration count (older exports wrote 100k) but
+		// bounds-check it: an absurd value is either a weakened file or a
+		// DoS lever against this importer.
+		if err := validateKDFIterations(f.KDF.Iterations); err != nil {
+			return nil, err
+		}
 		salt, err := decodeSalt(f.KDF.Salt)
 		if err != nil {
 			return nil, fmt.Errorf("decode salt: %w", err)
 		}
+		// Derive ONCE for the whole file, then reuse per field.
+		key := deriveKey(opts.Password, salt, f.KDF.Iterations)
 		for i := range f.Connections {
 			c := &f.Connections[i]
 			// Password decrypts strictly: a failure here means the wrong
 			// import password (it has always been encrypted when non-empty).
 			if c.Password != "" {
-				plain, err := decryptField(c.Password, opts.Password, salt)
+				plain, err := decryptField(c.Password, key)
 				if err != nil {
 					return nil, fmt.Errorf("wrong import password")
 				}
@@ -104,7 +116,7 @@ func parseUniterm(data []byte, opts ParseOptions) (*ImportResult, error) {
 				if !strings.HasPrefix(*field, credentials.Prefix) {
 					continue
 				}
-				plain, err := decryptField(*field, opts.Password, salt)
+				plain, err := decryptField(*field, key)
 				if err != nil {
 					return nil, fmt.Errorf("wrong import password")
 				}

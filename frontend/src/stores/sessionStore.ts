@@ -1,15 +1,15 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
+import { markRaw, reactive } from 'vue'
 import { Events } from '@wailsio/runtime'
 import type { SessionStatus } from '../types/session'
 import { useZmodemStore } from './zmodemStore'
 
-interface SessionData {
-  id: string
-  status: SessionStatus
-  // Detected remote OS (e.g. "windows-openssh") reported by the backend on
-  // connect. Empty when unknown or not applicable.
-  remoteOS?: string
+// Chunk payload for one session. Constructed with markRaw (see
+// newSessionData) so it sits OUTSIDE the deep-reactive graph: every
+// session:data chunk would otherwise be proxied on push and wake every deep
+// watcher over the store, for data no render reads through the proxy —
+// consumers go through getData/getDataFromChunk.
+interface SessionBuffer {
   data: string[]
   // Monotonically increasing count of chunks ever appended to this session.
   // Unlike data.length, it is NOT reset when `data` is trimmed from the front,
@@ -20,6 +20,22 @@ interface SessionData {
   // cap so total resident memory per session stays bounded under real-world
   // chunk sizes (F-019 P0).
   bytes: number
+}
+
+interface SessionData {
+  id: string
+  // status/remoteOS stay reactive: App.vue's hasLiveSessions iterates
+  // .values() reading s.status, and the tab status dot reads it too.
+  status: SessionStatus
+  // Detected remote OS (e.g. "windows-openssh") reported by the backend on
+  // connect. Empty when unknown or not applicable.
+  remoteOS?: string
+  // Non-reactive chunk buffer (markRaw) — see SessionBuffer.
+  buf: SessionBuffer
+}
+
+function newSessionData(id: string): SessionData {
+  return { id, status: 'connecting', buf: markRaw({ data: [], seq: 0, bytes: 0 }) }
 }
 
 // Chunk-count cap (legacy protection against pathological tiny-chunk floods).
@@ -38,25 +54,28 @@ const MAX_BYTES = 256 * 1024
 const MAX_BYTES_TO = 192 * 1024
 
 function pushChunk(s: SessionData, chunk: string) {
-  s.data.push(chunk)
-  s.bytes += chunk.length
-  s.seq++
-  if (s.data.length > MAX_CHUNKS) {
-    const drop = s.data.length - TRIM_TO
-    for (let i = 0; i < drop; i++) s.bytes -= s.data[i].length
-    s.data.splice(0, drop)
+  // s.buf is markRaw — all mutations below run on the raw object, so
+  // per-chunk pushes never enter the reactive graph.
+  const buf = s.buf
+  buf.data.push(chunk)
+  buf.bytes += chunk.length
+  buf.seq++
+  if (buf.data.length > MAX_CHUNKS) {
+    const drop = buf.data.length - TRIM_TO
+    for (let i = 0; i < drop; i++) buf.bytes -= buf.data[i].length
+    buf.data.splice(0, drop)
   }
-  if (s.bytes > MAX_BYTES) {
+  if (buf.bytes > MAX_BYTES) {
     let dropIdx = 0
     let dropped = 0
-    const target = s.bytes - MAX_BYTES_TO
-    while (dropIdx < s.data.length && dropped < target) {
-      dropped += s.data[dropIdx].length
+    const target = buf.bytes - MAX_BYTES_TO
+    while (dropIdx < buf.data.length && dropped < target) {
+      dropped += buf.data[dropIdx].length
       dropIdx++
     }
     if (dropIdx > 0) {
-      s.data.splice(0, dropIdx)
-      s.bytes -= dropped
+      buf.data.splice(0, dropIdx)
+      buf.bytes -= dropped
     }
   }
 }
@@ -78,7 +97,7 @@ let unsubSessionData: (() => void) | null = null
 unsubSessionStatus =Events.On('session:status', (ev) => { const payload: { id: string; status: SessionStatus; remoteOS?: string } = ev.data; 
   let s = sessionState.sessions.get(payload.id)
   if (!s) {
-    s = { id: payload.id, status: 'connecting', data: [], seq: 0, bytes: 0 }
+    s = newSessionData(payload.id)
     sessionState.sessions.set(payload.id, s)
   }
   s.status = payload.status
@@ -100,7 +119,7 @@ unsubSessionData =Events.On('session:data', (ev) => { const payload: { id: strin
   }
   let s = sessionState.sessions.get(payload.id)
   if (!s) {
-    s = { id: payload.id, status: 'connecting', data: [], seq: 0, bytes: 0 }
+    s = newSessionData(payload.id)
     sessionState.sessions.set(payload.id, s)
   }
   pushChunk(s, payload.data)
@@ -122,7 +141,7 @@ export const useSessionStore = defineStore('session', () => {
         existing.status = 'connecting'
       }
     } else {
-      sessionState.sessions.set(id, { id, status: 'connecting', data: [], seq: 0, bytes: 0 })
+      sessionState.sessions.set(id, newSessionData(id))
     }
   }
 
@@ -153,7 +172,7 @@ export const useSessionStore = defineStore('session', () => {
   function getData(id: string): string {
     const s = sessionState.sessions.get(id)
     if (!s) return ''
-    const raw = s.data.join('')
+    const raw = s.buf.data.join('')
     // When the buffer is trimmed (2000→1000 chunks), the joined string may
     // start mid-escape-sequence (e.g. DA2, OSC color queries). Those broken
     // fragments lack the \x1b prefix and xterm.js renders them as garbled text.
@@ -174,7 +193,7 @@ export const useSessionStore = defineStore('session', () => {
   // resume from a remembered position even after the buffer has been trimmed.
   function getChunkCount(id: string): number {
     const s = sessionState.sessions.get(id)
-    return s ? s.seq : 0
+    return s ? s.buf.seq : 0
   }
 
   // Return all chunks with sequence number >= startSeq, joined. `startSeq` is a
@@ -185,11 +204,11 @@ export const useSessionStore = defineStore('session', () => {
     const s = sessionState.sessions.get(id)
     if (!s) return ''
     // Number of chunks already dropped from the front of `data`.
-    const base = s.seq - s.data.length
+    const base = s.buf.seq - s.buf.data.length
     let idx = startSeq - base
-    if (idx >= s.data.length) return ''
+    if (idx >= s.buf.data.length) return ''
     if (idx < 0) idx = 0
-    return s.data.slice(idx).join('')
+    return s.buf.data.slice(idx).join('')
   }
 
   // Drop the buffered output for `id` (F-019 cleanup-on-close). Calling before
@@ -198,16 +217,16 @@ export const useSessionStore = defineStore('session', () => {
   function clearData(id: string) {
     const s = sessionState.sessions.get(id)
     if (s) {
-      s.data.length = 0
-      s.bytes = 0
+      s.buf.data.length = 0
+      s.buf.bytes = 0
     }
   }
 
   function removeSession(id: string) {
     const s = sessionState.sessions.get(id)
     if (s) {
-      s.data.length = 0
-      s.bytes = 0
+      s.buf.data.length = 0
+      s.buf.bytes = 0
     }
     sessionState.sessions.delete(id)
   }

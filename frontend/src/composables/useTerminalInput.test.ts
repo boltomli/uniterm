@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest'
+import type { Terminal } from '@xterm/xterm'
 import { useTerminalInput } from './useTerminalInput'
 
 // handleInput schedules cursor-position reads through requestAnimationFrame
 // (PR #434 rAF coalescing). The default vitest environment is node, which
 // has no rAF — run the callback synchronously so assertions see the result.
 beforeAll(() => {
-  const g = globalThis as any
+  const g = globalThis as { requestAnimationFrame?: unknown; cancelAnimationFrame?: unknown }
   if (typeof g.requestAnimationFrame !== 'function') {
     g.requestAnimationFrame = (cb: FrameRequestCallback) => {
       cb(0)
@@ -20,19 +21,24 @@ function mkTerminal(opts: {
 } = { lines: [] }) {
   const { cursorY = 0, lines, rows = 24 } = opts
   const wrapped = new Set(opts.wrapped ?? [])
+  // Structural stand-in for the two buffer members the composable touches;
+  // full Terminal is a class, so this needs an unchecked cast.
   return {
     rows,
     buffer: {
       active: {
         y: cursorY,
         baseY: 0,
+        // Mirror xterm's IBufferLine: isWrapped is a BOOLEAN property, not
+        // a function — the old function-shaped mock papered over the
+        // production bug where cont.isWrapped() was called as a function.
         getLine: (y: number) => lines[y] === undefined ? undefined : {
           translateToString: () => lines[y],
-          isWrapped: () => wrapped.has(y),
+          isWrapped: wrapped.has(y),
         },
       },
     },
-  } as any
+  } as unknown as Terminal
 }
 
 describe('useTerminalInput', () => {
@@ -126,7 +132,7 @@ describe('useTerminalInput', () => {
   })
 
   describe('getCurrentCommandFromTerminal (cursor-row first scan)', () => {
-    function makeInput(terminal: any, onExtract?: (cmd: string) => void) {
+    function makeInput(terminal: Terminal | null, onExtract?: (cmd: string) => void) {
       return useTerminalInput(terminal, {
         mode: 'ssh',
         sessionId: 's1',
@@ -237,6 +243,26 @@ describe('useTerminalInput', () => {
       }), (cmd) => extracted.push(cmd))
       t.handleInput('\r')
       expect(extracted).toEqual(['cat foobar'])
+    })
+
+    it('joins a continuation that sits on the LAST visible row', () => {
+      const extracted: string[] = []
+      // bottomY is the last visible row; the old `cy < bottomY` loop stopped
+      // one row short and truncated commands wrapped onto the viewport edge.
+      const t = makeInput(mkTerminal({
+        cursorY: 2,
+        rows: 3,
+        lines: [
+          'user@host:~$ echo aaa',
+          'bbbbbbbbbbbbbbbbbb',
+          'cccccccccccccccccccc', // row 2 === bottomY
+        ],
+        wrapped: [1, 2],
+      }), (cmd) => extracted.push(cmd))
+      t.handleInput('\r')
+      expect(extracted).toEqual([
+        'echo aaabbbbbbbbbbbbbbbbbbcccccccccccccccccccc',
+      ])
     })
   })
 })

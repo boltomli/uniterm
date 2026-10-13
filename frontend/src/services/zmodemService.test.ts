@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const {
   mockAppendFileBase64,
   mockFileSize,
+  mockMessageBoxConfirm,
   mockOpenDirectoryDialog,
   mockOpenMultipleFilesDialog,
   mockSessionEndZmodem,
@@ -23,6 +24,7 @@ const {
   return {
     mockAppendFileBase64: vi.fn().mockResolvedValue(undefined),
     mockFileSize: vi.fn().mockResolvedValue(3),
+    mockMessageBoxConfirm: vi.fn().mockResolvedValue('confirm'),
     mockOpenDirectoryDialog: vi.fn().mockResolvedValue('C:\\Downloads'),
     mockOpenMultipleFilesDialog: vi.fn().mockResolvedValue([]),
     mockSessionEndZmodem: vi.fn().mockResolvedValue(undefined),
@@ -58,6 +60,12 @@ vi.mock('@wailsio/runtime', () => ({
     }),
     Off: vi.fn(),
   },
+}))
+
+// The default overwrite/rename/cancel prompt goes through ElMessageBox; the
+// node test environment has no DOM, so the module is replaced wholesale.
+vi.mock('element-plus', () => ({
+  ElMessageBox: { confirm: mockMessageBoxConfirm },
 }))
 
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
@@ -165,6 +173,10 @@ describe('startZmodemService', () => {
     mockOpenDirectoryDialog.mockResolvedValue('C:\\Downloads')
     mockOpenMultipleFilesDialog.mockResolvedValue([])
     mockAppendFileBase64.mockResolvedValue(undefined)
+    // Default: FileSize resolves, so a download target "already exists" and
+    // the prompt resolves to overwrite; upload sizing keeps working too.
+    mockFileSize.mockResolvedValue(3)
+    mockMessageBoxConfirm.mockResolvedValue('confirm')
     mockSessionWriteBinary.mockResolvedValue(undefined)
     mockSessionStartZmodem.mockResolvedValue(undefined)
     mockSessionEndZmodem.mockResolvedValue(undefined)
@@ -969,5 +981,108 @@ describe('startZmodemService', () => {
 
     expect(onError).toHaveBeenCalledWith('Unsafe ZMODEM filename: "..\\\\evil.txt"')
     expect(mockAppendFileBase64).not.toHaveBeenCalled()
+  })
+
+  describe('existing download target confirmation', () => {
+    const existingPath = 'C:\\Downloads\\large.bin'
+    type ConfirmOverwrite = (
+      filename: string, path: string,
+    ) => Promise<'overwrite' | 'rename' | 'cancel'>
+
+    async function runDownload(confirmOverwrite: ConfirmOverwrite) {
+      const s = makeDownload([[1, 2, 3]])
+      const onComplete = vi.fn()
+      const onError = vi.fn()
+      startZmodemService({ sessionId: 's-exists', confirmOverwrite, onComplete, onError })
+      sentryInstances[0].on_detect({ confirm: () => s.zsession })
+      await sleepTicks()
+      return { s, onComplete, onError }
+    }
+
+    it('prompts and keeps the original path when the user chooses overwrite', async () => {
+      const confirmOverwrite = vi.fn().mockResolvedValue('overwrite')
+      mockFileSize.mockResolvedValue(12)
+
+      const { onComplete, onError } = await runDownload(confirmOverwrite)
+
+      expect(confirmOverwrite).toHaveBeenCalledTimes(1)
+      expect(confirmOverwrite).toHaveBeenCalledWith('large.bin', existingPath)
+      expect(mockMessageBoxConfirm).not.toHaveBeenCalled()
+      expect(mockAppendFileBase64).toHaveBeenCalledTimes(1)
+      expect(mockAppendFileBase64).toHaveBeenNthCalledWith(1, existingPath, 'AQID', 0)
+      expect(mockStore.addTransfer).toHaveBeenCalledWith(
+        's-exists',
+        expect.objectContaining({ savePath: existingPath }),
+      )
+      expect(onComplete).toHaveBeenCalledWith([existingPath])
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('writes to the .1 suffix when the user chooses rename', async () => {
+      const confirmOverwrite = vi.fn().mockResolvedValue('rename')
+      mockFileSize.mockImplementation((path: string) =>
+        path === existingPath
+          ? Promise.resolve(12)
+          : Promise.reject(new Error('file not found')),
+      )
+
+      const { onComplete, onError } = await runDownload(confirmOverwrite)
+
+      expect(confirmOverwrite).toHaveBeenCalledWith('large.bin', existingPath)
+      expect(mockAppendFileBase64).toHaveBeenCalledTimes(1)
+      expect(mockAppendFileBase64).toHaveBeenNthCalledWith(1, `${existingPath}.1`, 'AQID', 0)
+      expect(mockStore.addTransfer).toHaveBeenCalledWith(
+        's-exists',
+        expect.objectContaining({ savePath: `${existingPath}.1` }),
+      )
+      expect(onComplete).toHaveBeenCalledWith([`${existingPath}.1`])
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('probes past occupied rename suffixes to the first free one', async () => {
+      const confirmOverwrite = vi.fn().mockResolvedValue('rename')
+      mockFileSize.mockImplementation((path: string) =>
+        path === existingPath || path === `${existingPath}.1`
+          ? Promise.resolve(12)
+          : Promise.reject(new Error('file not found')),
+      )
+
+      const { onComplete, onError } = await runDownload(confirmOverwrite)
+
+      expect(mockAppendFileBase64).toHaveBeenNthCalledWith(1, `${existingPath}.2`, 'AQID', 0)
+      expect(onComplete).toHaveBeenCalledWith([`${existingPath}.2`])
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('skips only this offer without aborting the session on cancel', async () => {
+      const confirmOverwrite = vi.fn().mockResolvedValue('cancel')
+
+      const { s, onComplete, onError } = await runDownload(confirmOverwrite)
+
+      expect(confirmOverwrite).toHaveBeenCalledWith('large.bin', existingPath)
+      expect(s.offer.skip).toHaveBeenCalled()
+      expect(s.offer.accept).not.toHaveBeenCalled()
+      expect(mockAppendFileBase64).not.toHaveBeenCalled()
+      expect(mockStore.addTransfer).not.toHaveBeenCalled()
+      // Skipping one file is not a session cancel: no CAN sequence, no abort,
+      // no error — the session ends normally with zero received files.
+      expect(s.zsession.abort).not.toHaveBeenCalled()
+      expect(mockSessionWriteBinary).not.toHaveBeenCalled()
+      expect(onComplete).toHaveBeenCalledWith([])
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('accepts silently without prompting when the target does not exist', async () => {
+      const confirmOverwrite = vi.fn()
+      mockFileSize.mockRejectedValue(new Error('file not found'))
+
+      const { onComplete, onError } = await runDownload(confirmOverwrite)
+
+      expect(confirmOverwrite).not.toHaveBeenCalled()
+      expect(mockMessageBoxConfirm).not.toHaveBeenCalled()
+      expect(mockAppendFileBase64).toHaveBeenNthCalledWith(1, existingPath, 'AQID', 0)
+      expect(onComplete).toHaveBeenCalledWith([existingPath])
+      expect(onError).not.toHaveBeenCalled()
+    })
   })
 })

@@ -76,10 +76,10 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 		Timeout:           30 * time.Second,
 		HostKeyCallback:   cb,
 		Config:            algoSet.config(),
-		HostKeyAlgorithms: algoSet.HostKeys,
+		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, clientConfig.Timeout)
+	conn, err := dialFirstHop(addr, config.Proxy)
 	if err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("mosh ssh dial: %w", err)

@@ -625,6 +625,7 @@
   "settings.skillsLocked": "Verrouillé",
   "settings.skillsUnlocked": "Déverrouillé",
   "settings.skillsDeleteConfirm": "Supprimer la compétence « {name} » ? Cette action est irréversible.",
+  "settings.skillsOverwriteConfirm": "Une compétence nommée « {name} » existe déjà. La remplacer ?",
   "settings.modelDeleteConfirm": "Supprimer le modèle « {name} » ? Cette action est irréversible.",
   "settings.skillsDeleteLocked": "La compétence « {name} » est verrouillée. Déverrouillez-la d'abord.",
   "settings.skillsNoSkill": "Aucune compétence",

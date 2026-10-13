@@ -2,13 +2,16 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/mcp"
+	"github.com/ys-ll/uniterm/backend/store"
 )
 
 func TestMcpNotifyStrings(t *testing.T) {
@@ -191,5 +194,143 @@ func TestMcpApproveSerializesDialogs(t *testing.T) {
 	}
 	if err := <-errB; err != nil {
 		t.Fatalf("B must be approved, got %v", err)
+	}
+}
+
+// ── SaveLocalState → MCP endpoint stability ───────────────────────────────
+
+// freeLoopbackPort reserves a loopback port with :0 and releases it, so a
+// test can hand a real (currently free) port to the MCP listener.
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve loopback port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release loopback port: %v", err)
+	}
+	return port
+}
+
+// tcpConnAlive reports whether c is still connected. A read that hits a
+// freshly set deadline means "nothing yet, link intact"; EOF or a reset
+// means the server closed it. The deadline is reset on every probe so an
+// earlier timeout can never mask a later close.
+func tcpConnAlive(t *testing.T, c net.Conn) bool {
+	t.Helper()
+	if err := c.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	buf := make([]byte, 1)
+	_, err := c.Read(buf)
+	if err == nil {
+		return false // unexpected payload on a raw connection
+	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return true
+	}
+	return false
+}
+
+func mcpTestApp(t *testing.T) *App {
+	t.Helper()
+	dir := t.TempDir()
+	a := NewApp(t.TempDir())
+	a.dataDir = dir
+	a.localStateStore = store.NewLocalStateStore(dir)
+	t.Cleanup(func() {
+		if a.mcpServer != nil {
+			a.mcpServer.Stop()
+		}
+	})
+	return a
+}
+
+// Regression (security.md medium): every SaveLocalState called StartMCP,
+// which stopped and re-bound the listener — dropping every connected MCP
+// client and its in-flight tool calls. localStateStore.update fires on each
+// tab change, sidebar toggle and slider drag, so this happened constantly.
+// Saving the same endpoint repeatedly must leave client connections alone.
+func TestSaveLocalStateKeepsMCPClientWhenEndpointUnchanged(t *testing.T) {
+	a := mcpTestApp(t)
+	port := freeLoopbackPort(t)
+	state := store.LocalState{MCP: &store.MCPSettings{Enabled: true, Port: port}}
+
+	if err := a.SaveLocalState(state); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	if !a.GetMCPStatus().Running {
+		t.Fatal("MCP endpoint must be running after the first save")
+	}
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("dial MCP endpoint: %v", err)
+	}
+	defer conn.Close()
+
+	for i := range 3 {
+		if err := a.SaveLocalState(state); err != nil {
+			t.Fatalf("save %d: %v", i+1, err)
+		}
+	}
+	if !tcpConnAlive(t, conn) {
+		t.Fatal("SaveLocalState with an unchanged MCP endpoint dropped a live client connection")
+	}
+}
+
+// Changing the configured port still has to restart the endpoint: the old
+// listener must go away and the new port must accept connections.
+func TestSaveLocalStateRestartsMCPWhenPortChanges(t *testing.T) {
+	a := mcpTestApp(t)
+	oldPort := freeLoopbackPort(t)
+	state := store.LocalState{MCP: &store.MCPSettings{Enabled: true, Port: oldPort}}
+
+	if err := a.SaveLocalState(state); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(oldPort)))
+	if err != nil {
+		t.Fatalf("dial MCP endpoint: %v", err)
+	}
+	defer conn.Close()
+
+	newPort := freeLoopbackPort(t)
+	state.MCP.Port = newPort
+	if err := a.SaveLocalState(state); err != nil {
+		t.Fatalf("save with new port: %v", err)
+	}
+	if tcpConnAlive(t, conn) {
+		t.Fatal("old listener must be stopped when the configured port changes")
+	}
+	if !a.GetMCPStatus().Running || a.GetMCPStatus().Port != newPort {
+		t.Fatalf("status after port change = %+v, want running on %d", a.GetMCPStatus(), newPort)
+	}
+	if c2, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(newPort))); err != nil {
+		t.Fatalf("dial new MCP endpoint: %v", err)
+	} else {
+		c2.Close()
+	}
+}
+
+// Disabling the endpoint stops it — and a later enable must bring it back.
+func TestSaveLocalStateStopsMCPWhenDisabled(t *testing.T) {
+	a := mcpTestApp(t)
+	port := freeLoopbackPort(t)
+	if err := a.SaveLocalState(store.LocalState{MCP: &store.MCPSettings{Enabled: true, Port: port}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := a.SaveLocalState(store.LocalState{MCP: &store.MCPSettings{Enabled: false, Port: port}}); err != nil {
+		t.Fatalf("save disabled: %v", err)
+	}
+	if a.GetMCPStatus().Running {
+		t.Fatal("endpoint must stop when MCP is disabled")
+	}
+	if err := a.SaveLocalState(store.LocalState{MCP: &store.MCPSettings{Enabled: true, Port: port}}); err != nil {
+		t.Fatalf("save enabled: %v", err)
+	}
+	if !a.GetMCPStatus().Running {
+		t.Fatal("endpoint must start again when MCP is re-enabled")
 	}
 }

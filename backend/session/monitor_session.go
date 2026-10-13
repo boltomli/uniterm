@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"regexp"
@@ -114,16 +115,24 @@ type NetCardInfo struct {
 
 type MonitorSession struct {
 	baseSession
-	client    *ssh.Client
-	config    ConnectionConfig
-	ticker    *time.Ticker
-	quit      chan struct{}
-	quitOnce  sync.Once
+	client   *ssh.Client
+	config   ConnectionConfig
+	ticker   *time.Ticker
+	quit     chan struct{}
+	quitOnce sync.Once
+	// connMu serializes the tail of Connect with Disconnect, so a tab closed
+	// mid-dial can neither lose the live client nor be flipped back to
+	// Connected afterwards.
+	connMu    sync.Mutex
 	state     monitorState
 	activeTab string
 	paused    bool
 	mu        sync.RWMutex
 }
+
+// monitorDial is the SSH dial seam Connect uses (tests swap it to interleave
+// a Disconnect with an in-flight dial).
+var monitorDial = dialSSHTCP
 
 func NewMonitorSession(id string) *MonitorSession {
 	return &MonitorSession{
@@ -191,7 +200,7 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 		HostKeyAlgorithms: algoSet.HostKeys,
 	}
 
-	client, err := dialSSHTCP(addr, clientConfig, config.Proxy)
+	client, err := monitorDial(addr, clientConfig, config.Proxy)
 	if err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("ssh dial: %w", err)
@@ -200,15 +209,84 @@ func (s *MonitorSession) Connect(config ConnectionConfig) error {
 		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 	}
 
-	s.client = client
+	// The tab may have been closed while the dial was in flight (up to 30 s).
+	// Claim the connection under connMu and abort if quit is already closed,
+	// instead of resurrecting a session Disconnect just tore down.
+	s.connMu.Lock()
+	aborted := s.quitClosed()
+	if !aborted {
+		s.mu.Lock()
+		s.client = client
+		s.ticker = time.NewTicker(performancePollSec * time.Second)
+		s.mu.Unlock()
+	}
+	s.connMu.Unlock()
+	if aborted {
+		client.Close()
+		s.setStatus(StatusDisconnected)
+		return fmt.Errorf("monitor session closed during connect")
+	}
+
 	s.setStatus(StatusConnected)
 
 	go s.pushSystemInfo()
 
-	s.ticker = time.NewTicker(performancePollSec * time.Second)
-	go s.pollLoop()
+	s.mu.RLock()
+	ticker := s.ticker
+	s.mu.RUnlock()
+	go s.pollLoop(ticker)
 
+	// Disconnect can still race the Connected flip above; make sure it wins.
+	if s.quitClosed() {
+		s.teardownConn()
+		s.setStatus(StatusDisconnected)
+		return fmt.Errorf("monitor session closed during connect")
+	}
 	return nil
+}
+
+// quitClosed reports whether Disconnect has run.
+func (s *MonitorSession) quitClosed() bool {
+	select {
+	case <-s.quit:
+		return true
+	default:
+		return false
+	}
+}
+
+// teardownConn drops and closes whatever Connect managed to install. Safe to
+// call more than once.
+func (s *MonitorSession) teardownConn() {
+	s.connMu.Lock()
+	s.mu.Lock()
+	client := s.client
+	ticker := s.ticker
+	s.client = nil
+	s.ticker = nil
+	s.mu.Unlock()
+	s.connMu.Unlock()
+
+	if ticker != nil {
+		ticker.Stop()
+	}
+	if client != nil {
+		client.Close()
+	}
+}
+
+// getClient returns the connected SSH client. API methods go through it
+// instead of reading s.client directly, so a call made before the dial
+// finished (or after Disconnect) fails with an error rather than panicking on
+// a nil client.
+func (s *MonitorSession) getClient() (*ssh.Client, error) {
+	s.mu.RLock()
+	client := s.client
+	s.mu.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("monitor session %s is not connected", s.id)
+	}
+	return client, nil
 }
 
 func (s *MonitorSession) pushSystemInfo() {
@@ -223,7 +301,11 @@ func (s *MonitorSession) pushSystemInfo() {
 }
 
 func (s *MonitorSession) collectSystemInfo() map[string]interface{} {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil
 	}
@@ -296,13 +378,13 @@ func safeIndex(arr []string, idx int) string {
 	return ""
 }
 
-func (s *MonitorSession) pollLoop() {
+func (s *MonitorSession) pollLoop(ticker *time.Ticker) {
 	sysTicks := 0
 	for {
 		select {
 		case <-s.quit:
 			return
-		case <-s.ticker.C:
+		case <-ticker.C:
 			s.mu.RLock()
 			tab := s.activeTab
 			paused := s.paused
@@ -329,21 +411,17 @@ func (s *MonitorSession) pollLoop() {
 			// periodically (every 30s) so uptime and the other identity fields
 			// keep updating instead of freezing.
 			sysTicks++
-			if sysTicks%(30/performancePollSec) == 0 {
+			if systemInfoTick(sysTicks, paused) {
 				s.pushSystemInfo()
 			}
 		}
 	}
 }
 
-func (s *MonitorSession) collectPerformance() {
-	session, err := s.client.NewSession()
-	if err != nil {
-		return
-	}
-	defer session.Close()
-
-	script := `exec 2>/dev/null
+// monitorPerformanceScript is the raw body of one performance poll tick: CPU,
+// memory, swap, disk and per-interface counters as one JSON line, followed by
+// the per-CPU and per-NIC detail sections.
+const monitorPerformanceScript = `exec 2>/dev/null
 cpu_line=$(head -1 /proc/stat)
 cpu_user=$(echo "$cpu_line" | awk '{print $2+$3}')
 cpu_system=$(echo "$cpu_line" | awk '{print $4}')
@@ -410,7 +488,75 @@ echo "---NET---"
 awk 'NR>2{split($1,a,":"); n=a[1]; if(n!="lo") print n,$2,$10}' /proc/net/dev
 `
 
-	out, err := session.Output(script)
+const (
+	// monitorPollTimeoutSec bounds one poll-loop remote command; a host whose
+	// process list or /proc read wedges must not stall the loop.
+	monitorPollTimeoutSec = 15
+	// monitorHardwareTimeoutSec bounds the inventory probes (lshw, lspci,
+	// ipmitool over a slow BMC link).
+	monitorHardwareTimeoutSec = 30
+)
+
+// monitorRemoteCmd shapes a raw remote script into the command line the
+// session runs over SSH. Every monitor command goes through here so the
+// deadline policy lives in exactly one place: the script runs under coreutils
+// `timeout`, so a wedged remote command (a D-state process, a BMC that never
+// answers) fails its tick instead of hanging the poll loop forever.
+func monitorRemoteCmd(timeoutSec int, script string) string {
+	return fmt.Sprintf("timeout %d sh -c %s", timeoutSec, shellQuote(script))
+}
+
+// shellQuote wraps s in single quotes so a multi-line script survives as one
+// `sh -c` argument (a lone quote becomes '"'"').
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+// monitorPerformanceCmd builds the remote command for one performance tick.
+func monitorPerformanceCmd() string {
+	return monitorRemoteCmd(monitorPollTimeoutSec, monitorPerformanceScript)
+}
+
+// memoryMetrics turns raw /proc/meminfo counters (in KiB) into the GB
+// used/free figures and the usage percentage reported by both the performance
+// and the process payloads. The used figure clamps at 0: LXC containers can
+// report MemAvail above MemTotal (and SwapFree above SwapTotal), which an
+// unsigned subtraction would wrap into absurd values.
+func memoryMetrics(totalKB, freeKB uint64) (usedGB, freeGB, usagePct float64) {
+	var usedKB uint64
+	if freeKB < totalKB {
+		usedKB = totalKB - freeKB
+	}
+	usedGB = float64(usedKB) / 1024 / 1024
+	freeGB = float64(freeKB) / 1024 / 1024
+	if totalKB > 0 {
+		usagePct = float64(usedKB) / float64(totalKB) * 100
+	}
+	return usedGB, freeGB, usagePct
+}
+
+// systemInfoTick reports whether tick sysTicks (one tick per
+// performancePollSec) should refresh the system-info block, which otherwise
+// only runs once at connect. A paused session collects nothing.
+func systemInfoTick(sysTicks int, paused bool) bool {
+	if paused {
+		return false
+	}
+	return sysTicks%(30/performancePollSec) == 0
+}
+
+func (s *MonitorSession) collectPerformance() {
+	client, err := s.getClient()
+	if err != nil {
+		return
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return
+	}
+	defer session.Close()
+
+	out, err := session.Output(monitorPerformanceCmd())
 	if err != nil {
 		log.Writef("monitor %s performance poll failed: %v", s.ID(), err)
 		return
@@ -501,21 +647,12 @@ awk 'NR>2{split($1,a,":"); n=a[1]; if(n!="lo") print n,$2,$10}' /proc/net/dev
 	}
 
 	memTotalGB := float64(m.MemTotal) / 1024 / 1024
-	memUsedGB := float64(m.MemTotal-m.MemAvail) / 1024 / 1024
-	memFreeGB := float64(m.MemAvail) / 1024 / 1024
-	memUsage := 0.0
-	if m.MemTotal > 0 {
-		memUsage = float64(m.MemTotal-m.MemAvail) / float64(m.MemTotal) * 100
-	}
+	memUsedGB, memFreeGB, memUsage := memoryMetrics(m.MemTotal, m.MemAvail)
 	memCachedGB := float64(m.MemCached) / 1024 / 1024
 	memBuffersGB := float64(m.MemBuffers) / 1024 / 1024
 
 	swapTotalGB := float64(m.SwapTotal) / 1024 / 1024
-	swapUsedGB := float64(m.SwapTotal-m.SwapFree) / 1024 / 1024
-	swapUsage := 0.0
-	if m.SwapTotal > 0 {
-		swapUsage = float64(m.SwapTotal-m.SwapFree) / float64(m.SwapTotal) * 100
-	}
+	swapUsedGB, _, swapUsage := memoryMetrics(m.SwapTotal, m.SwapFree)
 
 	// "Total CPU" style metric ≈ usage × cores (as HexHub shows)
 	cpuTotalPct := cpuUsage
@@ -693,14 +830,9 @@ func (s *MonitorSession) computePerNic(netPart string) []map[string]interface{} 
 	return result
 }
 
-func (s *MonitorSession) collectProcesses() {
-	session, err := s.client.NewSession()
-	if err != nil {
-		return
-	}
-	defer session.Close()
-
-	script := `exec 2>/dev/null
+// monitorProcessScript is the raw body of one process-tab tick: a summary
+// line (CPU/memory/load) plus the ps listing.
+const monitorProcessScript = `exec 2>/dev/null
 cpu_line=$(head -1 /proc/stat)
 cpu_total=$(echo "$cpu_line" | awk '{print $2+$3+$4+$5+$6+$7+$8+$9}')
 cpu_idle=$(echo "$cpu_line" | awk '{print $5}')
@@ -722,14 +854,58 @@ proc_count=$(ps -e | wc -l)
 proc_count=$((proc_count > 0 ? proc_count - 1 : 0))
 cores=$(nproc || echo 1)
 [ -z "$cores" ] && cores=1
-ps -eo pid,ppid,user,stat,pcpu,pmem,comm,args --sort=-pcpu | tail -n +2 || true
+ps -eo pid,ppid,user,stat,pcpu,pmem,comm,args --sort=-pcpu | tail -n +2 | head -n 2000 | cut -c1-1024 || true
 echo "---SUMMARY---"
 printf '{"cpu_total":%s,"cpu_idle":%s,"cores":%s,"proc_count":%s,"mem_total":%s,"mem_avail":%s,"mem_cached":%s,"mem_buffers":%s,"load1":%s,"load5":%s,"load15":%s}\n' \
   "$cpu_total" "$cpu_idle" "$cores" "$proc_count" \
   "$mem_total" "$mem_avail" "$mem_cached" "$mem_buffers" \
   $loadavg`
 
-	out, err := session.Output(script)
+// readSessionOutput runs cmd and returns its stdout, reading at most limit
+// bytes so a chatty host cannot push megabytes into the parser (and on to the
+// frontend) each tick.
+func readSessionOutput(session *ssh.Session, cmd string, limit int64) ([]byte, error) {
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := session.Start(cmd); err != nil {
+		return nil, err
+	}
+	out, err := io.ReadAll(io.LimitReader(stdout, limit))
+	if err != nil {
+		session.Close()
+		return out, err
+	}
+	if int64(len(out)) >= limit {
+		// Cap reached: stop the remote command instead of draining the rest.
+		session.Close()
+		return out, nil
+	}
+	return out, session.Wait()
+}
+
+// monitorProcessOutputLimit caps one process-tab response in memory; the
+// remote side is bounded by head/cut, this is the local backstop.
+const monitorProcessOutputLimit = 2 << 20
+
+// monitorProcessCmd builds the remote command for one process-list tick.
+func monitorProcessCmd() string {
+	return monitorRemoteCmd(monitorPollTimeoutSec, monitorProcessScript)
+}
+
+func (s *MonitorSession) collectProcesses() {
+	client, err := s.getClient()
+	if err != nil {
+		return
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return
+	}
+	defer session.Close()
+
+	out, err := readSessionOutput(session, monitorProcessCmd(), monitorProcessOutputLimit)
 	if err != nil {
 		return
 	}
@@ -767,12 +943,7 @@ printf '{"cpu_total":%s,"cpu_idle":%s,"cores":%s,"proc_count":%s,"mem_total":%s,
 			}
 
 			memTotalGB := float64(rawSummary.MemTotal) / 1024 / 1024
-			memUsedGB := float64(rawSummary.MemTotal-rawSummary.MemAvail) / 1024 / 1024
-			memFreeGB := float64(rawSummary.MemAvail) / 1024 / 1024
-			memUsage := 0.0
-			if rawSummary.MemTotal > 0 {
-				memUsage = float64(rawSummary.MemTotal-rawSummary.MemAvail) / float64(rawSummary.MemTotal) * 100
-			}
+			memUsedGB, memFreeGB, memUsage := memoryMetrics(rawSummary.MemTotal, rawSummary.MemAvail)
 
 			summary["cpu"] = map[string]interface{}{
 				"usage":     roundFloat(cpuUsage, 1),
@@ -847,7 +1018,11 @@ func parseProcessRows(out string) []map[string]interface{} {
 }
 
 func (s *MonitorSession) GetProcessDetail(pid int) (map[string]interface{}, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -1003,7 +1178,17 @@ date -d "@$start_epoch" "+%%Y-%%m-%%d %%H:%%M:%%S" 2>/dev/null || echo '-'`, pid
 	return result, nil
 }
 func (s *MonitorSession) KillProcess(pid int, signal string) error {
-	session, err := s.client.NewSession()
+	// pid 1 is init and negative pids are process-group/wildcard kills
+	// (`kill -9 -1` signals everything the SSH user may touch), so only pids
+	// 2 and up are ever sent to the host.
+	if pid < 2 {
+		return fmt.Errorf("invalid pid %d: refusing to signal pids below 2", pid)
+	}
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return err
 	}
@@ -1085,7 +1270,11 @@ func collectMounts(devs []map[string]interface{}) []string {
 }
 
 func (s *MonitorSession) GetPorts() ([]PortInfo, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -1280,7 +1469,11 @@ func (s *MonitorSession) GetDisks() ([]DiskInfo, error) {
 	// Both get a hard timeout so a stale NFS mount (where df blocks forever)
 	// cannot wedge the whole call. df runs without args and therefore reports
 	// every mounted filesystem, which is exactly what the full disk list wants.
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -1426,7 +1619,7 @@ timeout 10 df -hTP 2>/dev/null || timeout 10 df -hT 2>/dev/null || timeout 10 df
 	}
 
 	// Fallback to text parsing
-	session2, err := s.client.NewSession()
+	session2, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -1540,7 +1733,11 @@ func appendDfOnlyDisks(disks []DiskInfo, rows []dfEntry) []DiskInfo {
 }
 
 func (s *MonitorSession) GetNetworkCards() ([]NetCardInfo, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -1859,14 +2056,26 @@ func (s *MonitorSession) Write(data []byte) error {
 }
 
 func (s *MonitorSession) Disconnect() error {
+	// The whole critical section (quit + fields + status hand-off) runs under
+	// connMu so it cannot interleave with Connect's tail: whoever gets there
+	// first decides the final state, and the loser cleans up after itself.
+	s.connMu.Lock()
 	s.quitOnce.Do(func() {
 		close(s.quit)
 	})
-	if s.ticker != nil {
-		s.ticker.Stop()
+	s.mu.Lock()
+	client := s.client
+	ticker := s.ticker
+	s.client = nil
+	s.ticker = nil
+	s.mu.Unlock()
+	s.connMu.Unlock()
+
+	if ticker != nil {
+		ticker.Stop()
 	}
-	if s.client != nil {
-		s.client.Close()
+	if client != nil {
+		client.Close()
 	}
 	s.setStatus(StatusDisconnected)
 	return nil
@@ -2326,8 +2535,10 @@ func validServiceAction(action string) bool {
 }
 
 // validUnitName rejects anything but the characters a systemd unit name may
-// contain, so a hostile name cannot escape the shell command.
-var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9@._\-]+$`)
+// contain, so a hostile name cannot escape the shell command. The first
+// character must be alphanumeric: a leading `-` (or `.`/`_`) would turn the
+// name into an option of `systemctl` (`-H host`), which is option injection.
+var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._\-]*$`)
 
 func validUnitName(name string) bool {
 	return unitNameRe.MatchString(name)
@@ -2362,7 +2573,11 @@ func (s *MonitorSession) GetServiceLogs(name string, lines int) (string, error) 
 		return "", fmt.Errorf("invalid unit name: %s", name)
 	}
 	n := clampLogLines(lines)
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return "", err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return "", err
 	}
@@ -2387,7 +2602,11 @@ exit 0`, name, n, name, n)
 // exit status clean when systemctl is missing entirely (non-systemd hosts),
 // which surfaces as an empty list.
 func (s *MonitorSession) GetServices() ([]ServiceInfo, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2418,7 +2637,11 @@ func (s *MonitorSession) GetServiceDetail(name string) (map[string]string, error
 	if !validUnitName(name) {
 		return nil, fmt.Errorf("invalid unit name: %s", name)
 	}
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2442,7 +2665,11 @@ func (s *MonitorSession) ServiceAction(name, action string) error {
 	if !validServiceAction(action) {
 		return fmt.Errorf("invalid action: %s", action)
 	}
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return err
 	}
@@ -2464,7 +2691,11 @@ func (s *MonitorSession) ServiceAction(name, action string) error {
 // CPU, ...); `lspci` is the fallback (PCI only) for hosts without lshw. Both
 // run in one SSH round-trip, separated by a __SPLIT__ marker.
 func (s *MonitorSession) GetDevices() ([]DeviceInfo, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2479,7 +2710,7 @@ if command -v lspci >/dev/null 2>&1; then
     lspci -mm || lspci
 fi
 exit 0`
-	out, err := session.Output(script)
+	out, err := session.Output(monitorRemoteCmd(monitorHardwareTimeoutSec, script))
 	if err != nil {
 		return nil, err
 	}
@@ -2509,7 +2740,11 @@ exit 0`
 // explicit `exit 0` so "tool not found" degrades to empty data rather than
 // an error (the trailing `command -v && echo` would otherwise exit 1).
 func (s *MonitorSession) GetHardwareFru() (*FruInfo, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2520,7 +2755,7 @@ if command -v ipmitool >/dev/null 2>&1; then
     ipmitool fru print || true
 fi
 exit 0`
-	out, err := session.Output(script)
+	out, err := session.Output(monitorRemoteCmd(monitorHardwareTimeoutSec, script))
 	if err != nil {
 		return nil, err
 	}
@@ -2531,7 +2766,11 @@ exit 0`
 // `ipmitool lan print` (IP address, MAC, gateway, ...). Non-standard fields
 // are filtered out; a missing ipmitool leaves an empty result.
 func (s *MonitorSession) GetHardwareLan() ([]LanField, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2542,7 +2781,7 @@ if command -v ipmitool >/dev/null 2>&1; then
     ipmitool lan print 1 || ipmitool lan print || true
 fi
 exit 0`
-	out, err := session.Output(script)
+	out, err := session.Output(monitorRemoteCmd(monitorHardwareTimeoutSec, script))
 	if err != nil {
 		return nil, err
 	}
@@ -2553,7 +2792,11 @@ exit 0`
 // list`. A missing ipmitool leaves an empty result (hasIpmi false) instead of
 // failing the call.
 func (s *MonitorSession) GetHardwareSensors() (*HardwareSensors, error) {
-	session, err := s.client.NewSession()
+	client, err := s.getClient()
+	if err != nil {
+		return nil, err
+	}
+	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -2565,7 +2808,7 @@ if command -v ipmitool >/dev/null 2>&1; then
     ipmitool sensor list || true
 fi
 exit 0`
-	out, err := session.Output(script)
+	out, err := session.Output(monitorRemoteCmd(monitorHardwareTimeoutSec, script))
 	if err != nil {
 		return nil, err
 	}

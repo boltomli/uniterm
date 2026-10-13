@@ -317,42 +317,83 @@ func otherSource(source string) string {
 	return "gitee"
 }
 
-// fetchChecksums downloads checksums.txt from the given release (if present)
-// and parses it into name → sha256. Returns an empty map when unavailable.
+// fetchChecksums downloads checksums.txt together with its detached
+// signature checksums.txt.sig from the given release, verifies the signature
+// against the embedded ed25519 public key and only then parses the file into
+// name → sha256.
+//
+// The signature is what ties the hashes to the release publisher: without it
+// they only prove integrity of bytes served by the same host as the payload.
+// A missing signature, a failed fetch or a rejected signature returns an
+// empty map — the same fail-closed path as a missing checksums.txt, so every
+// candidate is refused at download time.
 func fetchChecksums(rel *release) map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	var sumsURL, sigURL string
 	for _, a := range rel.Assets {
-		if a.Name != "checksums.txt" {
-			continue
+		switch a.Name {
+		case "checksums.txt":
+			sumsURL = a.BrowserDownloadURL
+		case "checksums.txt.sig":
+			sigURL = a.BrowserDownloadURL
 		}
-		if err := validateAssetURL(a.BrowserDownloadURL); err != nil {
-			log.Writef("[update] skipping checksums.txt: %v", err)
-			continue
-		}
-		req, err := http.NewRequestWithContext(ctx, "GET", a.BrowserDownloadURL, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "uniTerm")
-		resp, err := downloadHTTPClient().Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			log.Writef("[update] checksums fetch failed: %v", err)
-			continue
-		}
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		sums := parseChecksums(data)
-		log.Writef("[update] parsed %d checksums", len(sums))
-		return sums
 	}
-	return map[string]string{}
+	if sumsURL == "" {
+		log.Writef("[update] release has no checksums.txt; downloads will be refused (fail closed)")
+		return map[string]string{}
+	}
+	if sigURL == "" {
+		log.Writef("[update] release has no checksums.txt.sig; refusing unsigned checksums (fail closed)")
+		return map[string]string{}
+	}
+	if err := validateAssetURL(sumsURL); err != nil {
+		log.Writef("[update] skipping checksums.txt: %v", err)
+		return map[string]string{}
+	}
+	if err := validateAssetURL(sigURL); err != nil {
+		log.Writef("[update] skipping checksums.txt.sig: %v", err)
+		return map[string]string{}
+	}
+
+	data, err := fetchReleaseAsset(ctx, sumsURL, "checksums.txt")
+	if err != nil {
+		log.Writef("[update] checksums fetch failed: %v (fail closed)", err)
+		return map[string]string{}
+	}
+	sig, err := fetchReleaseAsset(ctx, sigURL, "checksums.txt.sig")
+	if err != nil {
+		log.Writef("[update] checksums signature fetch failed: %v (fail closed)", err)
+		return map[string]string{}
+	}
+	if err := VerifyChecksumsSignature(data, sig); err != nil {
+		log.Writef("[update] checksums.txt signature rejected: %v (fail closed)", err)
+		return map[string]string{}
+	}
+
+	sums := parseChecksums(data)
+	log.Writef("[update] checksums.txt signature verified; parsed %d checksums", len(sums))
+	return sums
+}
+
+// fetchReleaseAsset downloads one release asset body, honouring the same URL
+// allowlist as the asset candidates and the caller's context budget.
+func fetchReleaseAsset(ctx context.Context, assetURL, label string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", assetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "uniTerm")
+	resp, err := downloadHTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: HTTP %d", label, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // classifyAsset buckets an asset name by its update payload kind. Any .zip is

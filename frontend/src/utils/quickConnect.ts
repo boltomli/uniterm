@@ -41,26 +41,49 @@ function buildQuickProtocols(): Record<string, { type: string; dbType?: string }
 
 const QUICK_PROTOCOLS = buildQuickProtocols()
 
-// Helper: parse [user[:password]@]host[:port]
+// Helper: parse [user[:password]@]host[:port].
+// - credentials split from the host at the LAST '@' (passwords may contain
+//   '@'); userinfo splits at the FIRST ':' (passwords may contain ':').
+// - bracketed IPv6 literals ([::1]:22) keep their colons; the brackets are
+//   stripped here because the backend's net.JoinHostPort re-adds them.
 function parseHost(s: string) {
-  const m = s.match(/^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/)
-  if (!m) return { host: s }
   let user = ''
   let pass = ''
-  if (m[1]) {
-    const colonIdx = m[1].indexOf(':')
+  let rest = s
+  const atIdx = s.lastIndexOf('@')
+  if (atIdx >= 0) {
+    const info = s.slice(0, atIdx)
+    rest = s.slice(atIdx + 1)
+    const colonIdx = info.indexOf(':')
     if (colonIdx >= 0) {
-      user = m[1].slice(0, colonIdx)
-      pass = m[1].slice(colonIdx + 1)
+      user = info.slice(0, colonIdx)
+      pass = info.slice(colonIdx + 1)
     } else {
-      user = m[1]
+      user = info
     }
   }
+  if (rest.startsWith('[')) {
+    // Bracketed IPv6 literal: [::1] or [::1]:22
+    const close = rest.indexOf(']')
+    const after = close >= 0 ? rest.slice(close + 1) : ''
+    const pm = after.match(/^:(\d+)$/)
+    if (close > 0 && (!after || pm)) {
+      return {
+        user,
+        password: pass || undefined,
+        host: rest.slice(1, close),
+        port: pm ? parseInt(pm[1]) : undefined,
+      }
+    }
+    return { host: s }
+  }
+  const m = rest.match(/^([^:]+)(?::(\d+))?$/)
+  if (!m) return { host: s }
   return {
     user,
     password: pass || undefined,
-    host: m[2],
-    port: m[3] ? parseInt(m[3]) : undefined,
+    host: m[1],
+    port: m[2] ? parseInt(m[2]) : undefined,
   }
 }
 

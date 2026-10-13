@@ -625,6 +625,7 @@
   "settings.skillsLocked": "잠김",
   "settings.skillsUnlocked": "잠금 해제",
   "settings.skillsDeleteConfirm": "스킬 \"{name}\"을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+  "settings.skillsOverwriteConfirm": "스킬 \"{name}\"이(가) 이미 존재합니다. 덮어쓰시겠습니까?",
   "settings.modelDeleteConfirm": "모델 \"{name}\"을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
   "settings.skillsDeleteLocked": "스킬 \"{name}\"이(가) 잠겨 있습니다. 먼저 잠금을 해제하세요.",
   "settings.skillsNoSkill": "스킬 없음",

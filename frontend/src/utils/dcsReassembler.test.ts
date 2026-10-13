@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DcsReassembler } from './dcsReassembler'
+import { DcsReassembler, MAX_DCS_BUFFER } from './dcsReassembler'
 
 // A minimal but structurally valid sixel image: DCS introducer, P1;P2
 // params, 'q' final, a raster attributes block and one sixel data line,
@@ -100,5 +100,49 @@ describe('DcsReassembler', () => {
       { text: '\x1bP0;1q~~', dcs: true },
       { text: '\x1bX', dcs: false },
     ])
+  })
+
+  it('resumes the scan from the last examined byte (cursor, not rescan)', () => {
+    // Feed the body in many chunks; only the chunk that carries ST should
+    // produce output, and the reassembled DCS must be exactly the fed bytes.
+    const d = new DcsReassembler()
+    const chunks = ['\x1bP0;1q']
+    for (let i = 0; i < 50; i++) chunks.push('#'.repeat(1000))
+    chunks.push('\x1b', '\\tail')
+    const segs = feedAll(d, chunks)
+    const body = '\x1bP0;1q' + '#'.repeat(50 * 1000)
+    expect(segs).toEqual([
+      { text: body + '\x1b\\', dcs: true },
+      { text: 'tail', dcs: false },
+    ])
+  })
+
+  it('holds an unterminated DCS below the size cap', () => {
+    const d = new DcsReassembler()
+    const big = 'a'.repeat(MAX_DCS_BUFFER - 16)
+    expect(d.feed('\x1bP0;1q' + big)).toEqual([])
+  })
+
+  it('flushes an over-cap DCS so later output is not held hostage', () => {
+    const d = new DcsReassembler()
+    const big = 'a'.repeat(MAX_DCS_BUFFER + 1)
+    // The oversized body surfaces immediately, marked as DCS so the
+    // highlighter still bypasses it.
+    const first = d.feed('\x1bP0;1q' + big)
+    expect(first).toEqual([{ text: '\x1bP0;1q' + big, dcs: true }])
+    // Subsequent plain output must flow through instead of being buffered.
+    expect(d.feed('plain output\n')).toEqual([{ text: 'plain output\n', dcs: false }])
+    // And a fresh DCS afterwards still reassembles normally.
+    expect(d.feed(QUERY)).toEqual([{ text: QUERY, dcs: true }])
+  })
+
+  it('flushes across chunk boundary once the cap is crossed', () => {
+    const d = new DcsReassembler()
+    const part1 = 'a'.repeat(MAX_DCS_BUFFER - 10)
+    const part2 = 'b'.repeat(64)
+    expect(d.feed('\x1bP' + part1)).toEqual([])
+    // Crossing the cap flushes everything buffered so far.
+    expect(d.feed(part2)).toEqual([{ text: '\x1bP' + part1 + part2, dcs: true }])
+    expect(d.feed('after')).toEqual([{ text: 'after', dcs: false }])
   })
 })

@@ -24,7 +24,8 @@ export const useIdentityStore = defineStore('identity', () => {
   }
 
   async function save() {
-    await SaveIdentities({ identities: identities.value } as any)
+    const payload: IdentityStoreData = { identities: identities.value }
+    await SaveIdentities(payload)
   }
 
   // Reload from disk when the backend pushes updated identity data (e.g. after

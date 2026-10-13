@@ -32,9 +32,23 @@ type Manager struct {
 	// kubeconfigCache memoizes ParseBytes results keyed on sha256 of the
 	// raw YAML bytes — kubeconfigs are re-parsed on every tab open, and
 	// a 20-context config pays a full yaml.Unmarshal + per-cluster base64
-	// decode + per-user X509KeyPair parse each time (F-405).
-	kubeconfigCache sync.Map // map[string]*Kubeconfig (sha256 hex → *Kubeconfig)
+	// decode + per-user X509KeyPair parse each time (F-405). Entries expire
+	// after kubeconfigCacheTTL (lazily, on lookup) so parsed client keys
+	// don't outlive the connection they were opened for.
+	kubeconfigCache sync.Map // map[string]kubeconfigCacheEntry (sha256 hex → entry)
 }
+
+// kubeconfigCacheTTL bounds how long a parsed kubeconfig stays cached.
+var kubeconfigCacheTTL = 5 * time.Minute
+
+type kubeconfigCacheEntry struct {
+	kc *Kubeconfig
+	at time.Time
+}
+
+// execDialHandshakeTimeout bounds the pod-exec WebSocket upgrade so a hung
+// apiserver can't block opening a terminal forever.
+var execDialHandshakeTimeout = 15 * time.Second
 
 type connection struct {
 	id           string
@@ -119,14 +133,20 @@ func (m *Manager) SetEventEmitter(e EventEmitter) {
 func (m *Manager) cachedParseBytes(raw []byte) (*Kubeconfig, error) {
 	key := sha256Hex(raw)
 	if v, ok := m.kubeconfigCache.Load(key); ok {
-		return v.(*Kubeconfig), nil
+		e := v.(kubeconfigCacheEntry)
+		if time.Since(e.at) < kubeconfigCacheTTL {
+			return e.kc, nil
+		}
+		// Expired: drop the stale entry (parsed client keys must not live
+		// forever) and re-parse below.
+		m.kubeconfigCache.Delete(key)
 	}
 	kc, err := ParseBytes(raw)
 	if err != nil {
 		return nil, err
 	}
-	actual, _ := m.kubeconfigCache.LoadOrStore(key, kc)
-	return actual.(*Kubeconfig), nil
+	actual, _ := m.kubeconfigCache.LoadOrStore(key, kubeconfigCacheEntry{kc: kc, at: time.Now()})
+	return actual.(kubeconfigCacheEntry).kc, nil
 }
 
 func sha256Hex(b []byte) string {
@@ -418,8 +438,12 @@ func (m *Manager) DialExec(connID, ns, pod, container string, cols, rows int) (*
 	u.RawQuery = q.Encode()
 
 	dialer := websocket.Dialer{
-		TLSClientConfig: conn.tlsConfig,
-		Subprotocols:    []string{"v4.channel.k8s.io"},
+		// Bound the upgrade so a hung apiserver can't block opening a
+		// terminal forever (the REST client already bounds its own
+		// handshakes; this zero-value dialer had no timeout at all).
+		HandshakeTimeout: execDialHandshakeTimeout,
+		TLSClientConfig:  conn.tlsConfig,
+		Subprotocols:     []string{"v4.channel.k8s.io"},
 	}
 	if conn.dialOverride != nil {
 		dialer.NetDialContext = conn.dialOverride
@@ -428,7 +452,11 @@ func (m *Manager) DialExec(connID, ns, pod, container string, cols, rows int) (*
 	if conn.token != "" {
 		header.Set("Authorization", "Bearer "+conn.token)
 	}
-	c, _, err := dialer.Dial(u.String(), header)
+	// DialContext (not Dial) so the same deadline covers the TCP connect
+	// phase too, not just the HTTP upgrade.
+	ctx, cancel := context.WithTimeout(context.Background(), execDialHandshakeTimeout)
+	defer cancel()
+	c, _, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		return nil, fmt.Errorf("exec dial: %w", err)
 	}

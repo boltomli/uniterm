@@ -10,14 +10,15 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newSalt: %v", err)
 	}
-	enc, err := encryptField("hunter2", "correct horse", salt)
+	key := deriveKey("correct horse", salt, defaultKDFIterations)
+	enc, err := encryptField("hunter2", key)
 	if err != nil {
 		t.Fatalf("encryptField: %v", err)
 	}
 	if strings.Contains(enc, "hunter2") {
 		t.Fatalf("ciphertext leaks plaintext: %q", enc)
 	}
-	got, err := decryptField(enc, "correct horse", salt)
+	got, err := decryptField(enc, key)
 	if err != nil {
 		t.Fatalf("decryptField: %v", err)
 	}
@@ -28,15 +29,30 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 
 func TestDecryptWrongPasswordFails(t *testing.T) {
 	salt, _ := newSalt()
-	enc, _ := encryptField("secret", "right", salt)
-	if _, err := decryptField(enc, "wrong", salt); err == nil {
+	right := deriveKey("right", salt, defaultKDFIterations)
+	wrong := deriveKey("wrong", salt, defaultKDFIterations)
+	enc, _ := encryptField("secret", right)
+	if _, err := decryptField(enc, wrong); err == nil {
 		t.Fatalf("expected error decrypting with wrong password")
+	}
+}
+
+func TestValidateKDFIterations(t *testing.T) {
+	for _, bad := range []int{-1, 0, 9999, 5_000_001} {
+		if err := validateKDFIterations(bad); err == nil {
+			t.Errorf("iterations=%d must be rejected", bad)
+		}
+	}
+	for _, ok := range []int{10000, 100000, defaultKDFIterations, 5_000_000} {
+		if err := validateKDFIterations(ok); err != nil {
+			t.Errorf("iterations=%d must be accepted: %v", ok, err)
+		}
 	}
 }
 
 func TestNewIDsUnique(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		id := newConnectionID()
 		if seen[id] {
 			t.Fatalf("duplicate id %q", id)

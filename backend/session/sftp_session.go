@@ -3,12 +3,14 @@ package session
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1105,11 +1107,82 @@ func (s *SFTPSession) ResumeTransfer(taskID string) error {
 
 // --- Recursive helpers ---
 
+// errLocalCopyDstInSrc reports a local recursive copy whose destination
+// sits inside the source tree (or on the source itself).
+var errLocalCopyDstInSrc = errors.New("copy destination is inside the source directory")
+
+// comparableLocalCopyPath normalises p for overlap comparison: absolute,
+// Clean'ed and symlink-resolved when the path exists (Clean alone when it
+// does not, so a not-yet-created destination still compares). Windows paths
+// fold to lower case because NTFS paths are case-insensitive. Same shape as
+// app.comparableDataDir behind SetDataDir's checkMigratePaths.
+func comparableLocalCopyPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	} else {
+		p = filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	} else {
+		p = filepath.Clean(p)
+	}
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
+}
+
+// isLocalCopyOutsideRel reports whether a filepath.Rel result escapes the
+// base directory it was computed against.
+func isLocalCopyOutsideRel(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// checkLocalCopyPaths rejects a local recursive copy whose destination
+// lands inside the source (or is the same path). Such a copy MkdirAll's the
+// destination, then lists the source — which now contains it — and walks
+// into its own output until the path limit is hit or the disk fills
+// (security.md 文件会话 Low: "Local recursive copy can loop forever").
+// The comparison is lexical after symlink resolution, mirroring
+// app.checkMigratePaths. Call it once at the walker's entry point.
+func checkLocalCopyPaths(src, dst string) error {
+	s := comparableLocalCopyPath(src)
+	d := comparableLocalCopyPath(dst)
+	if rel, err := filepath.Rel(s, d); err == nil && !isLocalCopyOutsideRel(rel) {
+		return fmt.Errorf("%w: %s is inside %s", errLocalCopyDstInSrc, dst, src)
+	}
+	return nil
+}
+
 // localCopyRecursive copies files and directories on the local filesystem.
+// The destination-inside-source guard runs here, once, before any directory
+// is created; localCopyTree walks the children unchecked (every child pair
+// keeps the same containment relation).
 func localCopyRecursive(src, dst string) error {
-	si, err := os.Stat(src)
+	if err := checkLocalCopyPaths(src, dst); err != nil {
+		return err
+	}
+	return localCopyTree(src, dst, nil)
+}
+
+// localCopyTree walks src into dst. seen lists the symlink-resolved source
+// directories already materialised on this branch (see copyLocalSymlink);
+// it stays nil on the normal path, where links are recreated as links and
+// nothing is ever followed.
+func localCopyTree(src, dst string, seen []string) error {
+	// Lstat, not Stat: a symlink must never be recursed into. Following it
+	// is what let a copy walk a link loop until the path limit or the disk
+	// ran out (security.md 文件会话 Low: "Local recursive copy can loop
+	// forever").
+	si, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	if si.Mode()&os.ModeSymlink != 0 {
+		return copyLocalSymlink(src, dst, seen, nil, func(resolved, rdst string, seen []string) error {
+			return localCopyTree(resolved, rdst, seen)
+		})
 	}
 	if si.IsDir() {
 		if err := os.MkdirAll(dst, si.Mode()); err != nil {
@@ -1120,24 +1193,98 @@ func localCopyRecursive(src, dst string) error {
 			return err
 		}
 		for _, entry := range entries {
-			if err := localCopyRecursive(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+			if err := localCopyTree(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name()), seen); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
+	return copyLocalFileContents(src, dst, si.Mode())
+}
+
+// copyLocalSymlink recreates the symlink src at dst without following it.
+// When the OS refuses symlink creation (Windows without Developer Mode or
+// the symlink privilege) the target's content is materialised instead —
+// what the pre-fix Stat-based walker always did — but cycle-checked: a
+// link resolving into a directory already materialised on this branch is a
+// loop, not a subtree, and must be reported instead of walked (otherwise
+// dst/loop/loop/… grows until ENAMETOOLONG again). walkDir performs that
+// materialised-subtree walk for the caller (it carries the caller's progress
+// and cancellation state); task is the caller's transfer task, nil for
+// copies without transfer tracking — same convention as copyDownloadStream.
+func copyLocalSymlink(src, dst string, seen []string, task *TransferTask, walkDir func(resolved, dst string, seen []string) error) error {
+	target, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+	// Anything already at dst but a directory must go: a stale file or link
+	// would either make Symlink fail or keep pointing at the old target.
+	if fi, lerr := os.Lstat(dst); lerr == nil {
+		if fi.IsDir() {
+			return fmt.Errorf("cannot replace directory %s with a symlink", dst)
+		}
+		if err := os.Remove(dst); err != nil {
+			return err
+		}
+	}
+	if serr := os.Symlink(target, dst); serr != nil {
+		return materializeLocalSymlink(src, dst, seen, task, walkDir, serr)
+	}
+	return nil
+}
+
+// materializeLocalSymlink implements copyLocalSymlink's fallback when os.Symlink is
+// refused by the OS: copy the target's content, or its tree when the target
+// is a directory, with the seen-set cycle check.
+func materializeLocalSymlink(src, dst string, seen []string, task *TransferTask, walkDir func(resolved, dst string, seen []string) error, symlinkErr error) error {
+	resolved, rerr := filepath.EvalSymlinks(src)
+	if rerr != nil {
+		return fmt.Errorf("symlink %s: %w (os.Symlink: %v)", src, rerr, symlinkErr)
+	}
+	key := comparableLocalCopyPath(resolved)
+	for _, s := range seen {
+		if s == key {
+			// The link points back at a directory already being
+			// materialised on this branch: a loop, not a subtree.
+			return fmt.Errorf("symlink loop: %s is already being copied on this branch (os.Symlink: %v)", src, symlinkErr)
+		}
+	}
+	fi, serr := os.Stat(resolved)
+	if serr != nil {
+		return fmt.Errorf("symlink %s: %w (os.Symlink: %v)", src, serr, symlinkErr)
+	}
+	if !fi.IsDir() {
+		// A single dereference of a file target: bounded by the file's
+		// size, never recursive.
+		if task != nil {
+			return copyFile(resolved, dst, task)
+		}
+		return copyLocalFileContents(resolved, dst, fi.Mode())
+	}
+	if err := walkDir(resolved, dst, append(seen, key)); err != nil {
+		return fmt.Errorf("materialise symlink %s: %w (os.Symlink: %v)", src, err, symlinkErr)
+	}
+	return nil
+}
+
+// copyLocalFileContents copies one regular file onto dst, preserving mode.
+// The write is only reported successful when the final Close succeeds, so a
+// full disk cannot pass as a completed copy.
+func copyLocalFileContents(src, dst string, mode os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, si.Mode())
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func (s *SFTPSession) rmRecursive(p string) error {
@@ -1251,13 +1398,14 @@ func (s *SFTPSession) startTransfer(task *TransferTask) {
 			if fi != nil {
 				task.setTotal(fi.Size())
 			}
-			localFile, e := os.Create(task.LocalPath)
-			if e != nil {
-				s.emitTransferEvent(task, e)
-				return
-			}
-			defer localFile.Close()
-			if e := s.copyFileDownload(task, remoteFile, localFile); e != nil {
+			// The body goes to "<name>.part" and is renamed onto the target
+			// only once it is complete (security.md 文件会话 Low: "Partial
+			// files are left under the final name after a failure or
+			// cancel") — a cancel or a dropped link must not truncate the
+			// file already sitting at task.LocalPath.
+			if e := writePartFile(task.LocalPath, func(localFile *os.File) error {
+				return s.copyFileDownload(task, remoteFile, localFile)
+			}); e != nil {
 				if task.ctx.Err() != nil {
 					// cancelled mid-transfer: not a transfer error
 					task.Status = "cancelled"
@@ -1566,12 +1714,11 @@ func (s *SFTPSession) transferFile(task *TransferTask, localPath, remotePath, tf
 			return err
 		}
 		defer src.Close()
-		dst, err := os.Create(localPath)
-		if err != nil {
-			return err
-		}
-		defer dst.Close()
-		return s.copyFileDownload(task, src, dst)
+		// Same .part protocol as the single-file task: no final name until
+		// the whole body landed (security.md 文件会话 Low).
+		return writePartFile(localPath, func(dst *os.File) error {
+			return s.copyFileDownload(task, src, dst)
+		})
 	}
 	src, err := os.Open(localPath)
 	if err != nil {

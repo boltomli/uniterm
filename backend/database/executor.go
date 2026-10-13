@@ -32,8 +32,11 @@ type QueryResultColumn struct {
 }
 
 type QueryResult struct {
+	// Columns keeps the result-set column metadata in ordinal order.
+	// Duplicate names are preserved as-is (SELECT a.id, b.id yields two
+	// entries named "id"); consumers must address cells by index.
 	Columns   []QueryResultColumn `json:"columns"`
-	Rows      []map[string]any    `json:"rows"`
+	Rows      [][]any             `json:"rows"`
 	Truncated bool                `json:"truncated"`
 }
 
@@ -67,7 +70,7 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 	}
 
 	guids := guidColumns(rows)
-	var result []map[string]any
+	var result [][]any
 	truncated := false
 	for rows.Next() {
 		if len(result) >= maxQueryRows {
@@ -84,9 +87,9 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return nil, err
 		}
-		row := make(map[string]any, len(cols))
-		for i, col := range cols {
-			row[col] = scanToAnyCol(values[i], isGuidCol(guids, i))
+		row := make([]any, len(cols))
+		for i := range cols {
+			row[i] = scanToAnyCol(values[i], isGuidCol(guids, i))
 		}
 		result = append(result, row)
 	}
@@ -100,7 +103,7 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 	}
 
 	if len(result) == 0 {
-		return &QueryResult{Columns: columns, Rows: []map[string]any{}, Truncated: truncated}, nil
+		return &QueryResult{Columns: columns, Rows: [][]any{}, Truncated: truncated}, nil
 	}
 	return &QueryResult{Columns: columns, Rows: result, Truncated: truncated}, nil
 }

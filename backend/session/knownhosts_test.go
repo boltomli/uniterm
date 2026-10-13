@@ -249,6 +249,53 @@ func TestKnownHostsReloadsFromDiskOnReconfigure(t *testing.T) {
 	}
 }
 
+func TestKnownHostsCorruptFileFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts.json")
+	garbage := []byte("{ this is not a json array [")
+	if err := os.WriteFile(path, garbage, 0o600); err != nil {
+		t.Fatalf("seed corrupt known-hosts file: %v", err)
+	}
+	ConfigureKnownHosts(path)
+	configureLegacy(t)
+	key := newTestPublicKey(t)
+	const addr = "corrupt.example:22"
+
+	// A file that exists but cannot be parsed must refuse the connection:
+	// silently starting empty would trust this key as first-use and then
+	// overwrite every previously pinned entry.
+	cb, trust := NewHostKeyVerifier(addr)
+	err := cb(addr, nil, key)
+	if err == nil {
+		t.Fatal("corrupt known-hosts file must fail closed (connection refused)")
+	}
+	if trust != nil && trust.FirstTrust {
+		t.Fatal("refused handshake must not report FirstTrust")
+	}
+	if want := path; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must contain the state file path %q: %s", want, err)
+	}
+
+	// And the corrupt file must still be there, byte for byte: nothing may
+	// persist over it while the store is in the failed state.
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("re-read known-hosts file: %v", rerr)
+	}
+	if !bytes.Equal(after, garbage) {
+		t.Fatalf("corrupt file was rewritten: %q", after)
+	}
+
+	// Failure is sticky for the configured path (恒拒): every later handshake
+	// is refused too, not just the first one.
+	if err := cb(addr, nil, newTestPublicKey(t)); err == nil {
+		t.Fatal("second handshake on a corrupt store must also be refused")
+	}
+	// A different host is refused as well — no partial acceptance.
+	if err := cb("other.example:22", nil, key); err == nil {
+		t.Fatal("handshake for another host must also be refused")
+	}
+}
+
 func TestKnownHostsFileModeIs0600(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not meaningful on Windows")

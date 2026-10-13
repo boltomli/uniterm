@@ -140,6 +140,7 @@ func (sm *SessionManager) Init() {
 		switch s.Status() {
 		case StatusDisconnected, StatusError:
 			delete(sm.sessions, id)
+			forgetSessionCwd(id)
 		}
 	}
 }
@@ -149,6 +150,7 @@ func (sm *SessionManager) Close(sessionID string) error {
 	sess, ok := sm.sessions[sessionID]
 	delete(sm.sessions, sessionID)
 	sm.mu.Unlock()
+	forgetSessionCwd(sessionID)
 
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)

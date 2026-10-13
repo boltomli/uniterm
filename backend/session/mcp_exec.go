@@ -24,8 +24,8 @@ const (
 	// the mcp package (session must not depend on it).
 	DefaultMCPMaxOutput = 64 * 1024
 
-	// mcpCommandTTL bounds how long a finished async command's output stays
-	// pollable after completion.
+	// mcpCommandTTL bounds how long a registered command's output stays
+	// pollable (measured from registration; the runner is not waited on).
 	mcpCommandTTL = 10 * time.Minute
 
 	// mcpMaxConcurrentCommands caps simultaneously running exec channels
@@ -119,6 +119,9 @@ func (s *SSHSession) MCPExec(cmd string, syncTimeoutMs, hardTimeoutMs, maxOutput
 		return nil, nil, -1, "", fmt.Errorf("session %s is not connected", s.id)
 	}
 
+	// The slot is claimed here and released by mcpRunCommand when the command
+	// actually finishes — not when this call returns, because the sync-timeout
+	// path returns while the command is still running.
 	mcpRegistry.mu.Lock()
 	if mcpRegistry.running >= mcpMaxConcurrentCommands {
 		mcpRegistry.mu.Unlock()
@@ -126,16 +129,12 @@ func (s *SSHSession) MCPExec(cmd string, syncTimeoutMs, hardTimeoutMs, maxOutput
 	}
 	mcpRegistry.running++
 	mcpRegistry.mu.Unlock()
-	defer func() {
-		mcpRegistry.mu.Lock()
-		mcpRegistry.running--
-		mcpRegistry.mu.Unlock()
-	}()
 
 	// Hold the client for the command's whole lifetime so closing the source
-	// tab mid-command does not tear down the transport under us.
+	// tab mid-command does not tear down the transport under us. The matching
+	// release runs in mcpRunCommand, because the sync-timeout path returns
+	// while the command is still running.
 	ref.acquire()
-	defer ref.release()
 
 	c := &mcpCommand{
 		id:    uuid.New().String(),
@@ -143,7 +142,6 @@ func (s *SSHSession) MCPExec(cmd string, syncTimeoutMs, hardTimeoutMs, maxOutput
 		state: "running",
 	}
 	mcpRegisterCommand(c)
-	defer mcpRetireCommand(c)
 
 	// Session teardown (tab closed / disconnect) kills running commands.
 	quitCh := s.quit
@@ -156,7 +154,7 @@ func (s *SSHSession) MCPExec(cmd string, syncTimeoutMs, hardTimeoutMs, maxOutput
 		}
 	}()
 
-	go s.mcpRunCommand(c, ref.client, cmd, hardTimeoutMs)
+	go s.mcpRunCommand(c, ref, cmd, hardTimeoutMs)
 
 	syncTimeout := time.Duration(syncTimeoutMs) * time.Millisecond
 	select {
@@ -171,7 +169,9 @@ func (s *SSHSession) MCPExec(cmd string, syncTimeoutMs, hardTimeoutMs, maxOutput
 }
 
 // mcpRegisterCommand installs the command in the global registry with a TTL
-// reaper so finished commands don't accumulate.
+// reaper so finished commands don't accumulate. Nothing waits on c.done here:
+// a command that outlives its sync budget must stay invisible to the caller's
+// return path, and the reaper is the only thing that removes the entry.
 func mcpRegisterCommand(c *mcpCommand) {
 	mcpRegistry.mu.Lock()
 	mcpRegistry.commands[c.id] = c
@@ -183,14 +183,20 @@ func mcpRegisterCommand(c *mcpCommand) {
 	})
 }
 
-func mcpRetireCommand(c *mcpCommand) {
-	<-c.done // wait for the runner to finish before allowing removal
-}
-
-// mcpRunCommand drives one exec channel to completion.
-func (s *SSHSession) mcpRunCommand(c *mcpCommand, client *ssh.Client, cmd string, hardTimeoutMs int) {
+// mcpRunCommand drives one exec channel to completion. It owns everything
+// acquired for the command's lifetime: the concurrency slot, the client ref
+// and the done channel waiters are all released when it returns, whether the
+// command exited, errored or hit the hard timeout.
+func (s *SSHSession) mcpRunCommand(c *mcpCommand, ref *sshClientRef, cmd string, hardTimeoutMs int) {
+	defer func() {
+		mcpRegistry.mu.Lock()
+		mcpRegistry.running--
+		mcpRegistry.mu.Unlock()
+	}()
+	defer ref.release()
 	defer close(c.done)
 
+	client := ref.client
 	sess, err := client.NewSession()
 	if err != nil {
 		c.setState("error", -1, err)

@@ -116,7 +116,7 @@ import {
 import { useK8sStore } from '../stores/k8sStore'
 import { useI18n } from '../i18n'
 import K8sCreateDialog from './K8sCreateDialog.vue'
-import { getResource, age, type ColoredCell } from '../services/k8sResources'
+import { getResource, age, textCollator, type ColoredCell, type ColumnDef } from '../services/k8sResources'
 import { fetchPodMetrics, fetchNodeMetrics, type Usage } from '../services/k8sMetrics'
 import { requestJSON } from '../services/k8sClient'
 import { crdListPath, evalJsonPath } from '../services/k8sCrd'
@@ -196,7 +196,7 @@ const filtered = computed(() => {
   const list = f ? items.value.filter(matches) : items.value.slice()
   // 默认按名称升序（对齐 k9s）；否则 watch 增删的项会追加到 Map 末尾，
   // 删除后重建的资源就跑到列表最下面找不到了。点表头排序仍可覆盖。
-  return list.sort((a, b) => (a.metadata?.name || '').localeCompare(b.metadata?.name || ''))
+  return list.sort((a, b) => textCollator.compare(a.metadata?.name || '', b.metadata?.name || ''))
 })
 const crdFiltered = computed(() => {
   const f = filter.value.trim().toLowerCase()
@@ -206,7 +206,7 @@ const crdFiltered = computed(() => {
     return cols.some(pc => String(evalJsonPath(o, pc.jsonPath) ?? '').toLowerCase().includes(f))
   }
   const list = f ? crdItems.value.filter(matches) : crdItems.value.slice()
-  return list.sort((a, b) => (a.metadata?.name || '').localeCompare(b.metadata?.name || ''))
+  return list.sort((a, b) => textCollator.compare(a.metadata?.name || '', b.metadata?.name || ''))
 })
 
 const titleLabel = computed(() =>
@@ -254,7 +254,7 @@ function numericSortKey(text: string): number | null {
 
 // el-table `sortable` needs a comparator when columns render via slot (no prop).
 // 优先用列自带的 sortValue（如 cpu 原始毫核）；否则解析单位/百分比/时长做数值比较；
-// 都不行再退回 localeCompare。
+// 都不行再退回 textCollator 文本比较。
 function compareCells(col: any, a: any, b: any): number {
   if (col.sortValue) return col.sortValue(a, usageOf(a)) - col.sortValue(b, usageOf(b))
   const ta = cellText(col.value(a, usageOf(a)))
@@ -265,13 +265,23 @@ function compareCells(col: any, a: any, b: any): number {
   // 一方能解析为数字、另一方不能（如 "—"）：数字排前
   if (na !== null) return -1
   if (nb !== null) return 1
-  return ta.localeCompare(tb)
+  return textCollator.compare(ta, tb)
 }
 
-function enumFilters(col: any) {
-  const set = new Set<string>()
-  for (const row of items.value) set.add(cellText(col.value(row, usageOf(row))))
-  return Array.from(set).filter(Boolean).sort().map(v => ({ text: v, value: v }))
+// 列筛选值按 items 变化整批算一次（computed 缓存）；此前是每次渲染对每个
+// 可筛选列都全表扫一遍。
+const enumFilterCache = computed(() => {
+  const m = new Map<ColumnDef, { text: string; value: string }[]>()
+  for (const col of desc.value?.columns || []) {
+    if (!col.filterable) continue
+    const set = new Set<string>()
+    for (const row of items.value) set.add(cellText(col.value(row, usageOf(row))))
+    m.set(col, Array.from(set).filter(Boolean).sort().map(v => ({ text: v, value: v })))
+  }
+  return m
+})
+function enumFilters(col: ColumnDef) {
+  return enumFilterCache.value.get(col) || []
 }
 
 function onRowClick(row: any) {
@@ -492,6 +502,8 @@ function usageOf(row: any): Usage | null {
 
 // ── subscription lifecycle（frame 驱动）─────────────────────────
 let subs: { res: string; ns: string }[] = []
+// 卸载竞态守卫：applySubs 的 await 恢复时若组件已卸载，绝不能再启动指标轮询。
+let disposed = false
 
 function subsFor(f: NavFrame): { res: string; ns: string }[] {
   if (f.kind === 'overview' || f.kind === 'custom') return []
@@ -522,6 +534,9 @@ async function applySubs() {
   subs = next
   for (const s of old) store.unsubscribe(props.connId, s.res, s.ns)
   for (const s of next) await store.subscribe(props.connId, s.res, s.ns)
+  // 上面的 await 期间可能已卸载：此时 startMetrics 会落在 onBeforeUnmount 的
+  // stopMetrics 之后，把 15s 轮询挂到已死组件上永久泄漏。
+  if (disposed) return
   startMetrics()
   if (props.frame.kind === 'custom') { crdItems.value = []; await loadCrd() }
 }
@@ -542,6 +557,7 @@ async function onRefresh() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
   stopMetrics()
   for (const s of subs) store.unsubscribe(props.connId, s.res, s.ns)
 })

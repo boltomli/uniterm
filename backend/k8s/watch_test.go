@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,15 +77,17 @@ func TestWatchDeliversEvents(t *testing.T) {
 // — otherwise the manager would drop the watch handle on every retry
 // attempt and the UI would never see new events.
 func TestWatchReconnectDoesNotCallOnEnd(t *testing.T) {
-	var hits int
+	// Atomic: the handler runs on server goroutines while the test body
+	// reads it, so a plain int is a data race under -race.
+	var hits atomic.Int32
 	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		n := hits.Add(1)
 		flusher, _ := w.(http.Flusher)
 		w.Header().Set("Transfer-Encoding", "chunked")
 		w.WriteHeader(200)
 		// First attempt: send 1 event then drop the connection — simulates
 		// apiserver bounce mid-stream.
-		if hits == 1 {
+		if n == 1 {
 			fmt.Fprintln(w, `{"type":"ADDED","object":{"metadata":{"resourceVersion":"1"}}}`)
 			flusher.Flush()
 			// Hijack & close so the scanner sees an EOF, not a clean stream
@@ -170,8 +173,8 @@ func TestWatchReconnectDoesNotCallOnEnd(t *testing.T) {
 	if preRecon == 0 {
 		t.Errorf("onReconnect called %d times (want >= 1)", preRecon)
 	}
-	if hits < 2 {
-		t.Errorf("server saw %d requests, want >= 2 (initial + reconnect)", hits)
+	if hits.Load() < 2 {
+		t.Errorf("server saw %d requests, want >= 2 (initial + reconnect)", hits.Load())
 	}
 	_ = endName
 	_ = reconName
@@ -228,4 +231,175 @@ func TestWatchContextCancel(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("cancel did not stop watch")
 	}
+}
+
+// TestWatch4xxTerminates guards the fix: a 4xx from the apiserver (bad
+// resourceVersion, forbidden, gone) is terminal. The old loop treated every
+// HTTP error as transient and retried every 30s forever, so a watch that the
+// server will never accept again spun in the UI's "reconnecting" state
+// indefinitely.
+func TestWatch4xxTerminates(t *testing.T) {
+	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"kind":"Status","code":403,"message":"forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	kc := &Kubeconfig{
+		CurrentContext: "t",
+		Contexts:       map[string]contextEntry{"t": {Cluster: "c", User: "u"}},
+		Clusters:       map[string]clusterEntry{"c": {Server: srv.URL, CertificateAuthorityData: ca}},
+		Users:          map[string]userEntry{"u": {Token: "x"}},
+	}
+	client, base, _ := BuildClient(kc, "t")
+
+	ended := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := startWatchStream(ctx, client, base, "/api/v1/pods?watch=true",
+		func(WatchEvent) {},
+		func(err error) { ended <- err },
+		nil, make(chan struct{}))
+	if err != nil {
+		t.Fatalf("startWatchStream: %v", err)
+	}
+
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Fatal("onEnd got nil error for a 403, want the HTTP error")
+		}
+		if !strings.Contains(err.Error(), "403") {
+			t.Fatalf("onEnd error = %q, want it to mention 403", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not terminate on 403")
+	}
+}
+
+// TestWatch410Retries guards the 410-Gone exception: the resourceVersion expired
+// (watch cache too old), which IS recoverable by re-listing/re-watching. The
+// loop must retry rather than terminate.
+func TestWatch410Retries(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		n := hits
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		w.WriteHeader(200)
+		fmt.Fprintln(w, `{"type":"ADDED","object":{"metadata":{"resourceVersion":"1"}}}`)
+		flusher.Flush()
+		// Keep the stream open so only ctx cancel ends it.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	kc := &Kubeconfig{
+		CurrentContext: "t",
+		Contexts:       map[string]contextEntry{"t": {Cluster: "c", User: "u"}},
+		Clusters:       map[string]clusterEntry{"c": {Server: srv.URL, CertificateAuthorityData: ca}},
+		Users:          map[string]userEntry{"u": {Token: "x"}},
+	}
+	client, base, _ := BuildClient(kc, "t")
+
+	gotEvent := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := startWatchStream(ctx, client, base, "/api/v1/pods?watch=true",
+		func(WatchEvent) {
+			select {
+			case gotEvent <- struct{}{}:
+			default:
+			}
+		},
+		func(error) {},
+		func(error) {}, // onReconnect must fire for the 410
+		make(chan struct{}))
+	if err != nil {
+		t.Fatalf("startWatchStream: %v", err)
+	}
+
+	select {
+	case <-gotEvent: // recovered from 410 via retry
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch did not retry after 410 Gone")
+	}
+}
+
+// TestWatchReconnectTracksResourceVersion guards the fix: after a transport
+// drop the loop must resume from the last delivered resourceVersion, not from
+// the original (stale) one — otherwise the client replays the whole watch
+// history after every apiserver bounce.
+func TestWatchReconnectTracksResourceVersion(t *testing.T) {
+	var mu sync.Mutex
+	var queries []string
+	srv, ca := startTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		n := len(queries)
+		mu.Unlock()
+		if n == 1 {
+			// First request: deliver one event carrying resourceVersion 42,
+			// then drop the transport so the loop reconnects.
+			flusher, _ := w.(http.Flusher)
+			w.WriteHeader(200)
+			fmt.Fprintln(w, `{"type":"ADDED","object":{"metadata":{"resourceVersion":"42"}}}`)
+			flusher.Flush()
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		// Second request: just hold the stream open.
+		flusher, _ := w.(http.Flusher)
+		w.WriteHeader(200)
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	kc := &Kubeconfig{
+		CurrentContext: "t",
+		Contexts:       map[string]contextEntry{"t": {Cluster: "c", User: "u"}},
+		Clusters:       map[string]clusterEntry{"c": {Server: srv.URL, CertificateAuthorityData: ca}},
+		Users:          map[string]userEntry{"u": {Token: "x"}},
+	}
+	client, base, _ := BuildClient(kc, "t")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := startWatchStream(ctx, client, base, "/api/v1/pods?watch=true",
+		func(WatchEvent) {},
+		func(error) {},
+		func(error) {},
+		make(chan struct{}))
+	if err != nil {
+		t.Fatalf("startWatchStream: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(queries)
+		var last string
+		if n > 0 {
+			last = queries[n-1]
+		}
+		mu.Unlock()
+		if n >= 2 {
+			if !strings.Contains(last, "resourceVersion=42") {
+				t.Fatalf("reconnect query = %q, want resourceVersion=42", last)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("watch never reconnected")
 }

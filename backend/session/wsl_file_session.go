@@ -798,14 +798,38 @@ func dirSize(p string) (int64, error) {
 // copyPath copies a file or directory tree. task, if non-nil, receives byte
 // progress updates, honours pause, and aborts with the context error as soon
 // as the transfer is cancelled. A nil task (WSL Copy/Move use one) copies
-// without tracking.
+// without tracking. The destination-inside-source guard runs once here,
+// before any directory is created (security.md 文件会话 Low: "Local
+// recursive copy can loop forever").
 func copyPath(src, dst string, task *TransferTask) error {
 	if err := transferCtxErr(task); err != nil {
 		return err
 	}
-	fi, err := os.Stat(src)
+	if err := checkLocalCopyPaths(src, dst); err != nil {
+		return err
+	}
+	return copyTree(src, dst, task, nil)
+}
+
+// copyTree walks the children of an already-validated copy; every child pair
+// keeps the destination outside the source, so the guard is not re-run per
+// entry. seen carries copyLocalSymlink's materialisation cycle check.
+func copyTree(src, dst string, task *TransferTask, seen []string) error {
+	if err := transferCtxErr(task); err != nil {
+		return err
+	}
+	// Lstat, not Stat: a symlink must be recreated as a link, never walked
+	// into. Following it is what let a copy follow a link loop until the
+	// path limit was hit (security.md 文件会话 Low: "Local recursive copy
+	// can loop forever").
+	fi, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return copyLocalSymlink(src, dst, seen, task, func(resolved, rdst string, seen []string) error {
+			return copyTree(resolved, rdst, task, seen)
+		})
 	}
 	if fi.IsDir() {
 		if err := os.MkdirAll(dst, 0o755); err != nil {
@@ -820,7 +844,7 @@ func copyPath(src, dst string, task *TransferTask) error {
 			if err := transferCtxErr(task); err != nil {
 				return err
 			}
-			if err := copyPath(joinEntry(src, e.Name()), joinEntry(dst, e.Name()), task); err != nil {
+			if err := copyTree(joinEntry(src, e.Name()), joinEntry(dst, e.Name()), task, seen); err != nil {
 				return err
 			}
 		}

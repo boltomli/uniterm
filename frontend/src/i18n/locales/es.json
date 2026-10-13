@@ -625,6 +625,7 @@
   "settings.skillsLocked": "Bloqueado",
   "settings.skillsUnlocked": "Desbloqueado",
   "settings.skillsDeleteConfirm": "¿Eliminar el skill \"{name}\"? Esta acción no se puede deshacer.",
+  "settings.skillsOverwriteConfirm": "Ya existe un skill llamado \"{name}\". ¿Sobrescribirlo?",
   "settings.modelDeleteConfirm": "¿Eliminar el modelo \"{name}\"? Esta acción no se puede deshacer.",
   "settings.skillsDeleteLocked": "El skill \"{name}\" está bloqueado. Desbloquéalo primero.",
   "settings.skillsNoSkill": "Sin skills",

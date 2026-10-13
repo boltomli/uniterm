@@ -86,7 +86,7 @@ func TestEncryptBytes_AADBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	got, err := decryptBytes(encoded, key, "settings.json")
+	got, err := decryptBytes(encoded, key, "settings.json", 0)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -95,16 +95,17 @@ func TestEncryptBytes_AADBinding(t *testing.T) {
 	}
 
 	// The same ciphertext under a different file name must fail the AAD check.
-	if _, err := decryptBytes(encoded, key, "connections.json"); err == nil {
+	if _, err := decryptBytes(encoded, key, "connections.json", 0); err == nil {
 		t.Fatal("ciphertext decrypted under the wrong file name — AAD not enforced")
 	}
 
-	// Legacy nil-AAD ciphertexts stay readable via the fallback path.
+	// Legacy nil-AAD ciphertexts stay readable via the fallback path in a
+	// legacy (version 0) repo.
 	legacy, err := encryptBytesWithAAD(plaintext, key, nil)
 	if err != nil {
 		t.Fatalf("legacy encrypt: %v", err)
 	}
-	got, err = decryptBytes(legacy, key, "settings.json")
+	got, err = decryptBytes(legacy, key, "settings.json", 0)
 	if err != nil {
 		t.Fatalf("legacy decrypt: %v", err)
 	}

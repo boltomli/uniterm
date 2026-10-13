@@ -52,6 +52,19 @@ type Tunnel struct {
 	AutoStart bool        `json:"autoStart,omitempty"`
 	GroupID   string      `json:"groupId,omitempty"`
 	SortOrder int         `json:"sortOrder,omitempty"`
+
+	// SOCKSUser/SOCKSPass authenticate clients of a dynamic (SOCKS5)
+	// tunnel, per RFC 1929. They are required when ListenHost exposes the
+	// tunnel beyond this machine (see validateSOCKSExposure), and optional
+	// otherwise. SOCKSPass is encrypted at rest under the credentials store
+	// exactly like Upstream.Pass — plaintext never reaches tunnels.json.
+	SOCKSUser string `json:"socksUser,omitempty"`
+	SOCKSPass string `json:"socksPass,omitempty"`
+	// SOCKSAllowUnauthenticated opts a non-loopback dynamic tunnel into open
+	// proxying for everyone who can reach the port. Defaults to false; it is
+	// the explicit acknowledgement the exposure check demands when no
+	// credentials are configured.
+	SOCKSAllowUnauthenticated bool `json:"socksAllowUnauthenticated,omitempty"`
 }
 
 // TunnelGroup is a display grouping in the tunnels panel (like connection groups).

@@ -35,6 +35,11 @@ type MongoSession struct {
 	baseSession
 	client *mongo.Client
 	closed bool
+	// totalKey/totalValue/totalAt cache the page total of the most recent
+	// query (guarded by mu) so paging does not re-count on every request.
+	totalKey   string
+	totalValue int64
+	totalAt    time.Time
 }
 
 // NewMongoSession creates a new MongoSession with the given ID.
@@ -250,6 +255,7 @@ func (s *MongoSession) Find(dbName, collection, filterJSON string, skip, limit i
 			return nil, fmt.Errorf("invalid filter JSON: %w", err)
 		}
 	}
+	filterEmpty := filter == nil
 
 	coll := client.Database(dbName).Collection(collection)
 
@@ -265,8 +271,9 @@ func (s *MongoSession) Find(dbName, collection, filterJSON string, skip, limit i
 		return nil, fmt.Errorf("cursor read: %w", err)
 	}
 
-	// Count total matching documents
-	total, err := coll.CountDocuments(ctx, filter)
+	// Count total matching documents (only the pages that need one — see
+	// countPage).
+	total, err := s.countPage(ctx, coll, mongoTotalKey(dbName, collection, filterJSON), filter, filterEmpty, skip)
 	if err != nil {
 		total = int64(len(docs))
 	}
@@ -295,6 +302,71 @@ func (s *MongoSession) Find(dbName, collection, filterJSON string, skip, limit i
 	}
 
 	return result, nil
+}
+
+// mongoTotalCounter is the counting subset of *mongo.Collection, so page
+// totals can be exercised without a live server.
+type mongoTotalCounter interface {
+	CountDocuments(ctx context.Context, filter interface{}, opts ...*options.CountOptions) (int64, error)
+	EstimatedDocumentCount(ctx context.Context, opts ...*options.EstimatedDocumentCountOptions) (int64, error)
+}
+
+// mongoTotalKey identifies one query (database, collection, filter) for the
+// cached page total.
+func mongoTotalKey(dbName, collection, filterJSON string) string {
+	return dbName + "\x00" + collection + "\x00" + filterJSON
+}
+
+// mongoTotalCacheTTL bounds how long a computed total stays valid for later
+// pages of the same query.
+const mongoTotalCacheTTL = 30 * time.Second
+
+// countPage computes the Total field of one Find page:
+//   - the first page (skip == 0) counts, so paging forward always starts from
+//     a fresh total;
+//   - later pages of the same query reuse that total instead of paying for a
+//     second count per page;
+//   - an unfiltered first page uses EstimatedDocumentCount (collection
+//     metadata, O(1)) instead of a full CountDocuments scan, while a filtered
+//     one keeps the exact count.
+func (s *MongoSession) countPage(ctx context.Context, coll mongoTotalCounter, key string, filter interface{}, filterEmpty bool, skip int64) (int64, error) {
+	if skip > 0 {
+		if total, ok := s.cachedTotal(key); ok {
+			return total, nil
+		}
+	}
+
+	var total int64
+	var err error
+	if filterEmpty {
+		total, err = coll.EstimatedDocumentCount(ctx)
+	} else {
+		total, err = coll.CountDocuments(ctx, filter)
+	}
+	if err != nil {
+		return 0, err
+	}
+	s.rememberTotal(key, total)
+	return total, nil
+}
+
+// cachedTotal returns the still-fresh total recorded for key.
+func (s *MongoSession) cachedTotal(key string) (int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.totalKey == key && time.Since(s.totalAt) < mongoTotalCacheTTL {
+		return s.totalValue, true
+	}
+	return 0, false
+}
+
+// rememberTotal records the total of one query for its later pages.
+func (s *MongoSession) rememberTotal(key string, total int64) {
+	s.mu.Lock()
+	s.totalKey = key
+	s.totalValue = total
+	s.totalAt = time.Now()
+	s.mu.Unlock()
 }
 
 // GetDocument retrieves a single document by its _id.

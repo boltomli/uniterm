@@ -1,3 +1,9 @@
+//go:build autotest
+
+// The local update e2e hook. This file compiles only with -tags autotest so
+// release builds cannot reach it; autotest_stub.go provides the inert
+// counterparts for normal builds.
+
 package main
 
 import (

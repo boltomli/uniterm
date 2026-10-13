@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -52,6 +53,19 @@ func (s *SyncConfigStore) Save(config SyncConfig) error {
 	return os.WriteFile(s.filePath(), data, 0600)
 }
 
+// quarantineCorrupt renames a corrupt sync-config.json aside so the next
+// Save cannot silently overwrite the user's repo/WebDAV configuration and
+// LastSyncedHash (STORE-09 convention: <name>.corrupt-<UTC timestamp>).
+// backend/store's helper is unexported and in another package, so the same
+// behaviour is mirrored here. Returns the new path, or "" on failure.
+func quarantineCorrupt(path string) string {
+	target := path + ".corrupt-" + time.Now().UTC().Format("20060102T150405")
+	if err := os.Rename(path, target); err != nil {
+		return ""
+	}
+	return target
+}
+
 func (s *SyncConfigStore) Load() (SyncConfig, error) {
 	data, err := os.ReadFile(s.filePath())
 	if err != nil {
@@ -62,7 +76,13 @@ func (s *SyncConfigStore) Load() (SyncConfig, error) {
 	}
 	var config SyncConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return SyncConfig{Branch: "main"}, nil
+		// Preserve the corrupt bytes under a quarantine name and surface the
+		// error: silently returning defaults would let the next Save wipe
+		// the user's sync configuration without a trace.
+		if target := quarantineCorrupt(s.filePath()); target != "" {
+			return SyncConfig{}, fmt.Errorf("sync config corrupt (quarantined to %s): %w", target, err)
+		}
+		return SyncConfig{}, fmt.Errorf("sync config corrupt: %w", err)
 	}
 	if config.Branch == "" {
 		config.Branch = "main"

@@ -625,6 +625,7 @@
   "settings.skillsLocked": "Заблокирован",
   "settings.skillsUnlocked": "Разблокирован",
   "settings.skillsDeleteConfirm": "Удалить навык \"{name}\"? Это действие необратимо.",
+  "settings.skillsOverwriteConfirm": "Навык с именем \"{name}\" уже существует. Перезаписать его?",
   "settings.modelDeleteConfirm": "Удалить модель \"{name}\"? Это действие необратимо.",
   "settings.skillsDeleteLocked": "Навык \"{name}\" заблокирован. Сначала разблокируйте его.",
   "settings.skillsNoSkill": "Нет навыков",

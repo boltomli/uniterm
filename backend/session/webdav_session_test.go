@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/studio-b12/gowebdav"
 )
@@ -108,7 +110,7 @@ func TestWebdavCalcDirSizeSkipsDotEntries(t *testing.T) {
 	}
 	s, _ := newTestWebDAVSession(t, listings)
 
-	total, err := s.calcWebdavRemoteDirSize("/dir")
+	total, err := s.calcWebdavRemoteDirSize(s.client, "/dir")
 	if err != nil {
 		t.Fatalf("calcWebdavRemoteDirSize: %v", err)
 	}
@@ -131,7 +133,7 @@ func TestWebdavDownloadDirRejectsTraversalNames(t *testing.T) {
 	s, fake := newTestWebDAVSession(t, listings)
 	task := newWebdavDownloadTask(localDir)
 
-	err := s.downloadDir("/dir", localDir, task)
+	err := s.downloadDir(s.client, "/dir", localDir, task)
 	if err == nil {
 		t.Errorf("downloadDir accepted the traversal name %q", `..\win.txt`)
 	}
@@ -163,7 +165,7 @@ func TestWebdavDownloadDirSkipsDotEntries(t *testing.T) {
 	s, fake := newTestWebDAVSession(t, listings)
 	task := newWebdavDownloadTask(localDir)
 
-	if err := s.downloadDir("/dir", localDir, task); err != nil {
+	if err := s.downloadDir(s.client, "/dir", localDir, task); err != nil {
 		t.Fatalf("downloadDir: %v", err)
 	}
 	for _, p := range fake.requested() {
@@ -198,7 +200,7 @@ func TestWebdavDownloadDirNested(t *testing.T) {
 	s, _ := newTestWebDAVSession(t, listings)
 	task := newWebdavDownloadTask(localDir)
 
-	if err := s.downloadDir("/dir", localDir, task); err != nil {
+	if err := s.downloadDir(s.client, "/dir", localDir, task); err != nil {
 		t.Fatalf("downloadDir: %v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(localDir, "ok.txt")); err != nil || string(b) != "OK" {
@@ -209,5 +211,207 @@ func TestWebdavDownloadDirNested(t *testing.T) {
 	}
 	if len(task.FailedFiles) != 0 {
 		t.Errorf("FailedFiles = %v, want none", task.FailedFiles)
+	}
+}
+
+// --- Fake WebDAV client ------------------------------------------------------
+//
+// The disconnect-during-transfer and partial-file scenarios need control the
+// httptest server cannot give (blocking inside ReadStream, erroring mid-body),
+// and the session's client field is the injected seam
+// (security.md 文件会话 Medium/Low).
+
+type fakeWebdavClient struct {
+	entered chan struct{} // ReadStream entry signals, non-blocking
+	blockCh chan struct{} // when non-nil, ReadStream waits on it
+	stream  io.ReadCloser // returned by ReadStream when err is nil
+	err     error         // returned by ReadStream when non-nil
+}
+
+func (c *fakeWebdavClient) ReadStream(p string) (io.ReadCloser, error) {
+	if c.entered != nil {
+		select {
+		case c.entered <- struct{}{}:
+		default:
+		}
+	}
+	if c.blockCh != nil {
+		<-c.blockCh
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.stream, nil
+}
+
+func (c *fakeWebdavClient) Stat(string) (os.FileInfo, error) {
+	return testFileInfo{name: "f.bin", mode: 0o644}, nil
+}
+
+func (c *fakeWebdavClient) ReadDir(string) ([]os.FileInfo, error) {
+	return nil, errors.New("fake webdav client: readDir not supported")
+}
+
+func (c *fakeWebdavClient) Mkdir(string, os.FileMode) error {
+	return errors.New("fake webdav client: mkdir not supported")
+}
+
+func (c *fakeWebdavClient) MkdirAll(string, os.FileMode) error {
+	return errors.New("fake webdav client: mkdirAll not supported")
+}
+
+func (c *fakeWebdavClient) Remove(string) error {
+	return errors.New("fake webdav client: remove not supported")
+}
+
+func (c *fakeWebdavClient) RemoveAll(string) error {
+	return errors.New("fake webdav client: removeAll not supported")
+}
+
+func (c *fakeWebdavClient) Rename(string, string, bool) error {
+	return errors.New("fake webdav client: rename not supported")
+}
+
+func (c *fakeWebdavClient) Copy(string, string, bool) error {
+	return errors.New("fake webdav client: copy not supported")
+}
+
+func (c *fakeWebdavClient) Read(string) ([]byte, error) {
+	return nil, errors.New("fake webdav client: read not supported")
+}
+
+func (c *fakeWebdavClient) Write(string, []byte, os.FileMode) error {
+	return errors.New("fake webdav client: write not supported")
+}
+
+func (c *fakeWebdavClient) WriteStream(string, io.Reader, os.FileMode) error {
+	return errors.New("fake webdav client: writeStream not supported")
+}
+
+// errAfterReader serves data once, then fails with err — a mid-body stream
+// failure like a dropped link.
+type errAfterReader struct {
+	data []byte
+	err  error
+	off  int
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.off:])
+	r.off += n
+	return n, nil
+}
+
+func (r *errAfterReader) Close() error { return nil }
+
+// TestWebdavDisconnectDuringTransferCancelsTask: a download blocked inside
+// ReadStream must finish as cancelled — not keep going and not report success
+// — when the session disconnects mid-transfer, and the local download folder
+// stays clean (security.md 文件会话 Medium: WebDAV Disconnect race).
+func TestWebdavDisconnectDuringTransferCancelsTask(t *testing.T) {
+	tmp := t.TempDir()
+	localPath := filepath.Join(tmp, "f.bin")
+	client := &fakeWebdavClient{
+		entered: make(chan struct{}, 1),
+		blockCh: make(chan struct{}),
+		stream:  io.NopCloser(strings.NewReader("OK")),
+	}
+	s := NewWebDAVSession("webdav-test")
+	s.client = client
+
+	taskID, err := s.Get("/dir/f.bin", localPath, false)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	task := transferByID(t, &s.mu, s.transfers, taskID)
+
+	// Wait until the download is blocked inside the server call.
+	select {
+	case <-client.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("download never reached the ReadStream call")
+	}
+
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	close(client.blockCh)
+	waitTransferGone(t, &s.mu, s.transfers, taskID)
+
+	if task.Status != "cancelled" {
+		t.Errorf("task status = %q, want cancelled", task.Status)
+	}
+	if s.IsConnected() {
+		t.Error("session still reports connected after Disconnect")
+	}
+	if _, err := s.requireClient(); err == nil {
+		t.Error("requireClient succeeded after Disconnect")
+	}
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Errorf("cancelled download left a file under the final name (stat err: %v)", err)
+	}
+	if _, err := os.Stat(localPath + ".part"); !os.IsNotExist(err) {
+		t.Errorf("cancelled download left a .part file behind (stat err: %v)", err)
+	}
+}
+
+// TestWebdavDownloadFileFailureLeavesNoPartialFile: a download that fails
+// after real bytes were streamed must leave neither a truncated file under
+// the final name nor a .part behind, and must keep an existing target
+// byte-identical (security.md 文件会话 Low: partial files left under the
+// final name).
+func TestWebdavDownloadFileFailureLeavesNoPartialFile(t *testing.T) {
+	cases := []struct {
+		name        string
+		preexisting bool
+	}{
+		{name: "no target"},
+		{name: "preexisting target", preexisting: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			localPath := filepath.Join(tmp, "f.bin")
+			if tc.preexisting {
+				if err := os.WriteFile(localPath, []byte("OLD"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			client := &fakeWebdavClient{
+				stream: &errAfterReader{
+					data: []byte("ABCD"),
+					err:  errors.New("fake webdav stream failure"),
+				},
+			}
+			s := NewWebDAVSession("webdav-test")
+			s.client = client
+
+			task := &TransferTask{
+				ID:         "dl-fail",
+				Type:       "download",
+				LocalPath:  localPath,
+				RemotePath: "/dir/f.bin",
+				Status:     "running",
+			}
+			task.start()
+			if err := s.downloadFile(client, task, "/dir/f.bin", localPath); err == nil {
+				t.Fatal("downloadFile succeeded, want error")
+			}
+
+			if _, err := os.Stat(localPath + ".part"); !os.IsNotExist(err) {
+				t.Errorf(".part file left behind (stat err: %v)", err)
+			}
+			if tc.preexisting {
+				b, err := os.ReadFile(localPath)
+				if err != nil || string(b) != "OLD" {
+					t.Errorf("preexisting target = %q, err %v; want byte-identical OLD", b, err)
+				}
+			} else if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+				t.Errorf("truncated download left under the final name (stat err: %v)", err)
+			}
+		})
 	}
 }

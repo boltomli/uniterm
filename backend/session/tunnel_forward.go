@@ -1,11 +1,13 @@
 package session
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,31 +38,67 @@ type userTunnelEntry struct {
 // It returns the running state; on failure the returned state carries the error
 // and nothing is left running.
 func (ts *TunnelService) StartTunnel(t Tunnel, resolve ConnResolver) TunnelState {
+	// A dynamic tunnel that would expose an unauthenticated SOCKS proxy to
+	// the network is rejected before anything is reserved or dialed.
+	if err := validateSOCKSExposure(t); err != nil {
+		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
+	}
+
+	// Reserve the ID under the lock BEFORE dialing. Everything below is
+	// network I/O: without the reservation an auto-start and a manual start
+	// of the same ID both dialed, and the loser either overwrote the winner's
+	// entry — orphaning a listener and SSH chain nothing could stop — or
+	// flipped a running tunnel to error.
+	quit := make(chan struct{})
 	ts.mu.Lock()
 	if _, exists := ts.userTunnels[t.ID]; exists {
 		ts.mu.Unlock()
 		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelRunning})
 	}
+	// Placeholder entry; the finished listener/clients replace it on publish.
+	ts.userTunnels[t.ID] = &userTunnelEntry{quit: quit}
 	ts.mu.Unlock()
+
+	// release drops the reservation after a failure. StopTunnel may already
+	// have removed it (and closed quit) — never delete someone else's entry.
+	release := func() {
+		ts.mu.Lock()
+		if cur, ok := ts.userTunnels[t.ID]; ok && cur.quit == quit {
+			delete(ts.userTunnels, t.ID)
+		}
+		ts.mu.Unlock()
+	}
 
 	chain, err := buildHopChain(t.SSHConnID, resolve)
 	if err != nil {
+		release()
 		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
 	}
 
 	exit, clients, err := ts.dialChain(chain, t.Upstream)
 	if err != nil {
+		release()
 		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
 	}
 
-	quit := make(chan struct{})
 	listener, err := ts.startListener(t, exit, quit)
 	if err != nil {
 		closeClients(clients)
+		release()
 		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
 	}
 
+	// Publish over the reservation: if StopTunnel removed it while we were
+	// dialing, tear down instead of orphaning a listener that nothing can
+	// stop any more.
 	ts.mu.Lock()
+	cur, ok := ts.userTunnels[t.ID]
+	if !ok || cur.quit != quit {
+		ts.mu.Unlock()
+		listener.Close()
+		closeClients(clients)
+		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelStopped})
+	}
 	ts.userTunnels[t.ID] = &userTunnelEntry{listener: listener, clients: clients, quit: quit}
 	ts.mu.Unlock()
 
@@ -115,7 +153,9 @@ func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan str
 			return nil, fmt.Errorf("tunnel listen: %w", err)
 		}
 		go acceptLoop(ln, quit, func(c net.Conn) {
-			target, err := socks5Handshake(c)
+			// Bounded, optionally authenticated negotiation (see
+			// socks5Negotiate / validateSOCKSExposure).
+			target, err := socks5Negotiate(c, t.SOCKSUser, t.SOCKSPass)
 			if err != nil {
 				c.Close()
 				return
@@ -174,7 +214,9 @@ func (ts *TunnelService) TestTunnel(t Tunnel, resolve ConnResolver) TunnelState 
 }
 
 // StopTunnel tears down a running user tunnel (listener + whole ssh.Client
-// chain). No-op if the tunnel isn't running.
+// chain). No-op if the tunnel isn't running. Safe on a reservation entry (a
+// dial still in flight): closing quit cancels it, and the dialing StartTunnel
+// tears down whatever it produced when it finds the reservation gone.
 func (ts *TunnelService) StopTunnel(id string) {
 	ts.mu.Lock()
 	entry, ok := ts.userTunnels[id]
@@ -186,8 +228,12 @@ func (ts *TunnelService) StopTunnel(id string) {
 		return
 	}
 	close(entry.quit)
-	entry.listener.Close()
-	closeClients(entry.clients)
+	if entry.listener != nil {
+		entry.listener.Close()
+	}
+	if entry.clients != nil {
+		closeClients(entry.clients)
+	}
 	ts.setState(id, TunnelState{ID: id, Status: TunnelStopped})
 }
 
@@ -225,6 +271,10 @@ func buildHopChain(exitID string, resolve ConnResolver) ([]ConnectionConfig, err
 // directly (or through the upstream proxy); each subsequent hop is dialed
 // through the previous client — the standard ProxyJump chaining.
 func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProxy) (*ssh.Client, []*ssh.Client, error) {
+	dialHop := ts.dialHop
+	if dialHop == nil {
+		dialHop = dialFirstHop
+	}
 	var clients []*ssh.Client
 	var prev *ssh.Client
 
@@ -238,7 +288,7 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 
 		var raw net.Conn
 		if i == 0 {
-			raw, err = dialFirstHop(addr, upstream)
+			raw, err = dialHop(addr, upstream)
 		} else {
 			raw, err = prev.Dial("tcp", addr)
 		}
@@ -248,7 +298,8 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("dial %s: %w", addr, err)
 		}
 
-		cb, trust := NewHostKeyVerifier(hostKeyPinAddr(cfg, addr))
+		pinAddr := hostKeyPinAddr(cfg, addr)
+		cb, trust := NewHostKeyVerifier(pinAddr)
 		algoSet, _, err := resolveSSHAlgorithms(cfg.SSHAlgorithms)
 		if err != nil {
 			cleanup()
@@ -262,7 +313,7 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			Timeout:           sshHandshakeTimeout,
 			HostKeyCallback:   cb,
 			Config:            algoSet.config(),
-			HostKeyAlgorithms: algoSet.HostKeys,
+			HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
 		}
 		// Bound the handshake like the other SSH dial paths (ClientConfig.
 		// Timeout alone only covers ssh.Dial's TCP connect). Best-effort:
@@ -279,7 +330,7 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 		_ = raw.SetDeadline(time.Time{})
 		client := ssh.NewClient(sshConn, chans, reqs)
 		if trust != nil && trust.FirstTrust {
-			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(cfg, addr), trust.Fingerprint)
+			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 		}
 		clients = append(clients, client)
 		prev = client
@@ -446,17 +497,46 @@ func (ts *TunnelService) TunnelStates() []TunnelState {
 	return out
 }
 
-// --- minimal SOCKS5 server (CONNECT only, no auth) for dynamic tunnels ---
+// --- minimal SOCKS5 server (CONNECT, optional username/password) ---
 
 const (
 	socks5Success         = 0x00
 	socks5HostUnreachable = 0x04
+
+	// SOCKS5 authentication methods (RFC 1929).
+	socks5MethodNoAuth   = 0x00
+	socks5MethodUserPass = 0x02
+	socks5MethodNone     = 0xFF
 )
 
+// socks5HandshakeTimeout bounds the SOCKS5 negotiation. Without it an idle
+// (or hostile) client that opens a connection and never speaks pins an
+// accept-loop goroutine forever. Overridable for tests.
+var socks5HandshakeTimeout = 10 * time.Second
+
+// socks5Negotiate runs the SOCKS5 handshake under socks5HandshakeTimeout and
+// clears the deadline on success — the connection then carries long-lived
+// forwarded traffic, which a lingering deadline would kill.
+func socks5Negotiate(conn net.Conn, user, pass string) (string, error) {
+	if err := conn.SetDeadline(time.Now().Add(socks5HandshakeTimeout)); err != nil {
+		return "", err
+	}
+	target, err := socks5Handshake(conn, user, pass)
+	if err != nil {
+		return "", err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
 // socks5Handshake performs the server side of a SOCKS5 CONNECT negotiation on
-// conn and returns the requested "host:port". Only the no-auth method and the
-// CONNECT command are supported — enough for a local dynamic-forwarding proxy.
-func socks5Handshake(conn net.Conn) (string, error) {
+// conn and returns the requested "host:port". The CONNECT command is the only
+// one supported — enough for a dynamic forward. When user is non-empty the
+// RFC 1929 username/password sub-negotiation is required, which is what keeps
+// a non-loopback bind from being an open proxy (see validateSOCKSExposure).
+func socks5Handshake(conn net.Conn, user, pass string) (string, error) {
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(conn, head); err != nil {
 		return "", err
@@ -468,9 +548,28 @@ func socks5Handshake(conn net.Conn) (string, error) {
 	if _, err := io.ReadFull(conn, methods); err != nil {
 		return "", err
 	}
-	// Reply: version 5, no authentication required.
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+	// Select username/password when credentials are configured, no-auth
+	// otherwise; decline when the client did not offer the selected method.
+	selected := byte(socks5MethodNoAuth)
+	requirement := "no-authentication"
+	if user != "" {
+		selected = socks5MethodUserPass
+		requirement = "username/password"
+	}
+	if !slices.Contains(methods, selected) {
+		if _, err := conn.Write([]byte{0x05, socks5MethodNone}); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("socks: client does not offer %s authentication", requirement)
+	}
+	// Reply: version 5 plus the selected method.
+	if _, err := conn.Write([]byte{0x05, selected}); err != nil {
 		return "", err
+	}
+	if selected == socks5MethodUserPass {
+		if err := socks5Authenticate(conn, user, pass); err != nil {
+			return "", err
+		}
 	}
 
 	req := make([]byte, 4)
@@ -520,6 +619,83 @@ func socks5Handshake(conn net.Conn) (string, error) {
 	}
 	port := binary.BigEndian.Uint16(pb)
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
+}
+
+// socks5Authenticate runs the RFC 1929 username/password sub-negotiation and
+// compares both fields in constant time.
+func socks5Authenticate(conn net.Conn, user, pass string) error {
+	if len(user) > 255 || len(pass) > 255 {
+		return fmt.Errorf("socks: credentials longer than 255 bytes")
+	}
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return err
+	}
+	if head[0] != 0x01 {
+		return fmt.Errorf("socks: bad auth version %d", head[0])
+	}
+	uname := make([]byte, int(head[1]))
+	if _, err := io.ReadFull(conn, uname); err != nil {
+		return err
+	}
+	var plen [1]byte
+	if _, err := io.ReadFull(conn, plen[:]); err != nil {
+		return err
+	}
+	pword := make([]byte, int(plen[0]))
+	if _, err := io.ReadFull(conn, pword); err != nil {
+		return err
+	}
+	ok := subtle.ConstantTimeCompare(uname, []byte(user)) & subtle.ConstantTimeCompare(pword, []byte(pass))
+	if ok != 1 {
+		// Status 1 = failure; the client is expected to close.
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return fmt.Errorf("socks: authentication failed")
+	}
+	_, err := conn.Write([]byte{0x01, 0x00})
+	return err
+}
+
+// socksListenExposed reports whether a listen host reaches beyond this
+// machine. An empty host means the default bind (127.0.0.1); anything else
+// that is not provably loopback counts as exposed — a hostname may resolve
+// off-box, so it fails closed.
+func socksListenExposed(host string) bool {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return false
+	}
+	h = strings.Trim(h, "[]")
+	if strings.EqualFold(h, "localhost") || strings.EqualFold(h, "ip6-localhost") {
+		return false
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
+}
+
+// validateSOCKSExposure rejects a dynamic tunnel whose SOCKS5 listener would
+// be reachable from other machines without authentication: a non-loopback bind
+// must carry credentials, or explicitly acknowledge the open proxy. Everything
+// else (loopback binds, non-SOCKS modes) is unaffected.
+func validateSOCKSExposure(t Tunnel) error {
+	if t.Mode != TunnelDynamic || !socksListenExposed(t.ListenHost) {
+		return nil
+	}
+	if t.SOCKSUser != "" && t.SOCKSPass != "" {
+		return nil
+	}
+	if t.SOCKSAllowUnauthenticated {
+		return nil
+	}
+	bind := t.ListenHost
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	return fmt.Errorf(
+		"dynamic tunnel listening on %s would be an open SOCKS5 proxy for anyone who can reach it: set a SOCKS username AND password on the tunnel, bind it to 127.0.0.1 instead, or set socksAllowUnauthenticated to explicitly allow an unauthenticated proxy",
+		net.JoinHostPort(bind, strconv.Itoa(t.ListenPort)))
 }
 
 // socks5Reply writes a SOCKS5 reply with the given status and a zero

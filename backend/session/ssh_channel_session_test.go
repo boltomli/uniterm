@@ -9,11 +9,33 @@ import (
 	"bytes"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// syncBuffer is a bytes.Buffer guarded for use between the emit-loop
+// goroutine (data callbacks) and the test goroutine (assertions). The
+// -race detector flagged the previous unsynchronized Buffer sharing in
+// the channel-clone tests.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // testHostKeyPEM is re-exported from ssh_dial_test.go in this package.
 // startChannelTestServer accepts session channels and runs a trivial echo
@@ -199,7 +221,7 @@ func TestSSHChannelCloneEcho(t *testing.T) {
 		t.Fatalf("clone connect: %v", err)
 	}
 
-	var got bytes.Buffer
+	var got syncBuffer
 	clone.SetOnDataCallback(func(data []byte) { got.Write(data) })
 
 	if err := clone.Write([]byte("ping")); err != nil {
@@ -233,7 +255,9 @@ func TestSSHChannelCloneOutlivesParent(t *testing.T) {
 		t.Fatalf("clone status = %s after parent disconnect, want connected", clone.Status())
 	}
 
-	var got bytes.Buffer
+	// The callback runs on the emit-loop goroutine while the assertions
+	// below read from the test goroutine — share a guarded buffer.
+	var got syncBuffer
 	clone.SetOnDataCallback(func(data []byte) { got.Write(data) })
 	if err := clone.Write([]byte("still-alive")); err != nil {
 		t.Fatalf("clone write after parent disconnect: %v", err)

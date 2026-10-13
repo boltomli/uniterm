@@ -420,9 +420,33 @@ jobs:
           find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.apk' \) -exec mv {} . \;
           ls -la uniterm-*
           # checksums.txt powers the in-app updater's SHA256 verification.
-          # sync-gitee.yml mirrors it to Gitee together with the assets.
+          # scripts/sync-release-to-gitee.sh mirrors every release asset —
+          # including checksums.txt.sig — to the Gitee mirror.
           sha256sum uniterm-* > checksums.txt
           cat checksums.txt
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26'
+
+      - name: Sign checksums
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          # Fail closed: the client refuses any release whose checksums.txt
+          # has no valid ed25519 signature (backend/update/signature.go), so
+          # publishing here without the key would only ship an update that
+          # every install rejects. Never echo the key.
+          if [ -z "${UPDATE_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::UPDATE_SIGNING_PRIVATE_KEY secret is missing; refusing to publish an unsigned release"
+            exit 1
+          fi
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "${KEY_FILE}"' EXIT
+          printf '%s' "${UPDATE_SIGNING_PRIVATE_KEY}" > "${KEY_FILE}"
+          go run ./build/signcmd -key "${KEY_FILE}" -in checksums.txt -out checksums.txt.sig
+          cat checksums.txt.sig
 
       - name: Determine release mode
         run: |
@@ -491,5 +515,6 @@ jobs:
             uniterm-*.rpm
             uniterm-*.apk
             checksums.txt
+            checksums.txt.sig
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}

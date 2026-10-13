@@ -127,3 +127,67 @@ func TestExecuteQueryBelowCapNotTruncated(t *testing.T) {
 		t.Fatal("Truncated = true for a below-cap result, want false")
 	}
 }
+
+// dupColsDriver reports two columns that share the name "id" (as in
+// `SELECT a.id, b.id FROM a JOIN b …`) and serves one row with distinct
+// values. The old name-keyed []map[string]any row shape kept only the last
+// value and the grid showed it twice.
+type dupColsDriver struct{}
+
+func (dupColsDriver) Open(name string) (driver.Conn, error) { return &dupColsConn{}, nil }
+
+type dupColsConn struct{}
+
+func (c *dupColsConn) Prepare(query string) (driver.Stmt, error) { return nil, driver.ErrSkip }
+func (c *dupColsConn) Close() error                              { return nil }
+func (c *dupColsConn) Begin() (driver.Tx, error)                 { return nil, driver.ErrSkip }
+
+func (c *dupColsConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	return &dupColsRows{}, nil
+}
+
+type dupColsRows struct{ sent bool }
+
+func (r *dupColsRows) Columns() []string { return []string{"id", "id"} }
+func (r *dupColsRows) Close() error      { return nil }
+func (r *dupColsRows) Next(dest []driver.Value) error {
+	if r.sent {
+		return io.EOF
+	}
+	r.sent = true
+	dest[0] = int64(1)
+	dest[1] = int64(2)
+	return nil
+}
+
+var registerDupColsDriver sync.Once
+
+// TestExecuteQueryKeepsDuplicateColumnNames guards the positional-row fix:
+// both same-named columns must survive with their own values.
+func TestExecuteQueryKeepsDuplicateColumnNames(t *testing.T) {
+	const driverName = "dup_cols_test"
+	registerDupColsDriver.Do(func() { sql.Register(driverName, dupColsDriver{}) })
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	qr, err := ExecuteQuery(stubProvider{}, db, "test", "SELECT a.id, b.id")
+	if err != nil {
+		t.Fatalf("ExecuteQuery: %v", err)
+	}
+	if len(qr.Columns) != 2 || qr.Columns[0].Name != "id" || qr.Columns[1].Name != "id" {
+		t.Fatalf("columns = %+v, want two entries named %q", qr.Columns, "id")
+	}
+	if len(qr.Rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(qr.Rows))
+	}
+	row := qr.Rows[0]
+	if len(row) != 2 {
+		t.Fatalf("row has %d cells, want 2 (one per column)", len(row))
+	}
+	if row[0] != int64(1) || row[1] != int64(2) {
+		t.Fatalf("row = %v, want [1 2]", row)
+	}
+}

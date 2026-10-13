@@ -1,8 +1,16 @@
 package session
 
 import (
+	"bytes"
+	"net"
 	"reflect"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // --- systemctl list-units parsing ---
@@ -410,12 +418,14 @@ func TestValidUnitName(t *testing.T) {
 			t.Errorf("unit %q should be valid", n)
 		}
 	}
-	for _, n := range []string{"", "nginx;reboot", "a b", "$(reboot)", "a/b", "nginx\n", "a`id`", ".ssh/authorized_keys"} {
+	for _, n := range []string{"", "nginx;reboot", "a b", "$(reboot)", "a/b", "nginx\n", "a`id`", ".ssh/authorized_keys",
+		"-H", "-network.service", "-.service", "-"} {
 		if validUnitName(n) {
 			t.Errorf("unit %q should be invalid", n)
 		}
 	}
 }
+
 // --- df output parsing ---
 
 func TestParseDfOutputWithTypeColumn(t *testing.T) {
@@ -523,5 +533,373 @@ bad line
 	cpu := first["cpu"].(float64)
 	if cpu != 16.5 {
 		t.Errorf("unexpected cpu: %v", cpu)
+	}
+}
+
+// --- remote command deadlines ---
+
+// unwrapMonitorCmd splits `timeout N sh -c '<script>'` back into its parts so
+// a test can assert both the deadline and that the script survived the
+// quoting unchanged.
+func unwrapMonitorCmd(t *testing.T, cmd string) (timeoutSec int, script string) {
+	t.Helper()
+	const prefix = "timeout "
+	if !strings.HasPrefix(cmd, prefix) {
+		t.Fatalf("command is not wrapped in `timeout`: %.80q", cmd)
+	}
+	rest := cmd[len(prefix):]
+	sp := strings.IndexByte(rest, ' ')
+	if sp < 0 {
+		t.Fatalf("malformed timeout command: %.80q", cmd)
+	}
+	sec, err := strconv.Atoi(rest[:sp])
+	if err != nil {
+		t.Fatalf("timeout duration %q is not a number: %v", rest[:sp], err)
+	}
+	rest = rest[sp+1:]
+	const shPrefix = "sh -c '"
+	if !strings.HasPrefix(rest, shPrefix) || !strings.HasSuffix(rest, "'") {
+		t.Fatalf("command is not `sh -c`-wrapped: %.80q", cmd)
+	}
+	quoted := rest[len(shPrefix) : len(rest)-1]
+	return sec, strings.ReplaceAll(quoted, `'"'"'`, `'`)
+}
+
+// A wedged remote command (D-state process, BMC that never answers) must not
+// hang the poll loop: every monitor command runs under a deadline.
+func TestMonitorRemoteCommandsHaveTimeout(t *testing.T) {
+	hardwareProbe := "exec 2>/dev/null\nipmitool sensor list\nexit 0"
+
+	for _, tc := range []struct {
+		name string
+		cmd  string
+		want int
+		raw  string
+	}{
+		{"performance poll", monitorPerformanceCmd(), monitorPollTimeoutSec, monitorPerformanceScript},
+		{"process poll", monitorProcessCmd(), monitorPollTimeoutSec, monitorProcessScript},
+		{"hardware probe", monitorRemoteCmd(monitorHardwareTimeoutSec, hardwareProbe), monitorHardwareTimeoutSec, hardwareProbe},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, script := unwrapMonitorCmd(t, tc.cmd)
+			if got != tc.want {
+				t.Errorf("timeout = %ds, want %ds", got, tc.want)
+			}
+			if script != tc.raw {
+				t.Errorf("script changed by quoting:\n got: %q\nwant: %q", script, tc.raw)
+			}
+		})
+	}
+}
+
+// --- process list bounds ---
+
+// The process tab re-fetches every 3 s; the remote side must bound both the
+// row count and the per-row width so a host with thousands of processes (or
+// megabyte Java command lines) cannot generate megabytes per tick.
+func TestMonitorProcessCommandBounded(t *testing.T) {
+	cmd := monitorProcessCmd()
+	if !strings.Contains(cmd, "head -n 2000") {
+		t.Errorf("process command has no `head -n 2000` row limit: %.120q", cmd)
+	}
+	if !strings.Contains(cmd, "cut -c") {
+		t.Errorf("process command has no `cut -c` width limit: %.120q", cmd)
+	}
+}
+
+// startExecOutputServer serves SSH connections whose exec requests are
+// answered by onExec (the command line plus the channel). pty-req/shell are
+// accepted so a session can attach.
+func startExecOutputServer(t *testing.T, onExec func(cmd string, ch ssh.Channel)) string {
+	t.Helper()
+	signer, err := ssh.ParsePrivateKey([]byte(testHostKeyPEM))
+	if err != nil {
+		t.Fatalf("parse test host key: %v", err)
+	}
+	config := &ssh.ServerConfig{
+		PasswordCallback: func(conn ssh.ConnMetadata, got []byte) (*ssh.Permissions, error) {
+			return &ssh.Permissions{}, nil
+		},
+	}
+	config.AddHostKey(signer)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				_, chans, reqs, err := ssh.NewServerConn(conn, config)
+				if err != nil {
+					return
+				}
+				go ssh.DiscardRequests(reqs)
+				for newCh := range chans {
+					if newCh.ChannelType() != "session" {
+						newCh.Reject(ssh.UnknownChannelType, "only session channels")
+						continue
+					}
+					ch, chReqs, err := newCh.Accept()
+					if err != nil {
+						continue
+					}
+					go func() {
+						defer ch.Close()
+						for req := range chReqs {
+							if !req.WantReply {
+								continue
+							}
+							switch req.Type {
+							case "pty-req", "shell":
+								req.Reply(true, nil)
+							case "exec":
+								cmd := ""
+								if len(req.Payload) >= 4 {
+									cmd = string(req.Payload[4:])
+								}
+								req.Reply(true, nil)
+								onExec(cmd, ch)
+							default:
+								req.Reply(false, nil)
+							}
+						}
+					}()
+				}
+			}(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// writeExecOK is the default onExec body: report a successful exit and close
+// the channel (Session.Wait blocks until the channel is closed).
+func writeExecOK(_ string, ch ssh.Channel) {
+	_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
+	ch.CloseWrite()
+	ch.Close()
+}
+
+// connectMonitorSession wires a MonitorSession to a live client without
+// going through Connect (which is under test elsewhere).
+func connectMonitorSession(t *testing.T, addr string) *MonitorSession {
+	t.Helper()
+	client := dialTestSSHClient(t, addr)
+	s := NewMonitorSession("monitor-test-" + t.Name())
+	s.mu.Lock()
+	s.client = client
+	s.mu.Unlock()
+	s.setStatus(StatusConnected)
+	t.Cleanup(func() { s.Disconnect() })
+	return s
+}
+
+// A host that answers `ps` with megabytes must not push them all into the
+// parser: readSessionOutput stops at its byte cap.
+func TestReadSessionOutputTruncatesLongOutput(t *testing.T) {
+	const limit = 32 * 1024
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 64*1024) // 1 MiB
+	addr := startExecOutputServer(t, func(_ string, ch ssh.Channel) {
+		_, _ = ch.Write(payload)
+		_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
+		ch.CloseWrite()
+		ch.Close()
+	})
+
+	client := dialTestSSHClient(t, addr)
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	defer session.Close()
+
+	out, err := readSessionOutput(session, "big-output", limit)
+	if err != nil {
+		t.Fatalf("readSessionOutput: %v", err)
+	}
+	if int64(len(out)) > limit {
+		t.Errorf("read %d bytes, limit is %d — a 1 MiB response reached the parser", len(out), limit)
+	}
+	if len(out) == 0 {
+		t.Error("readSessionOutput returned no output")
+	}
+}
+
+// --- memory / swap counters ---
+
+// In LXC containers MemAvail (and SwapFree) can exceed the total; the
+// unsigned subtraction must clamp at 0 instead of wrapping to a huge value.
+func TestMemoryMetricsClampsUnderflow(t *testing.T) {
+	usedGB, freeGB, usage := memoryMetrics(1024*1024, 3*1024*1024) // avail > total
+	if usedGB != 0 {
+		t.Errorf("used = %v GiB, want 0 when avail exceeds total", usedGB)
+	}
+	if usage != 0 {
+		t.Errorf("usage = %v, want 0 when avail exceeds total", usage)
+	}
+	if freeGB <= 0 {
+		t.Errorf("free = %v, want the reported avail", freeGB)
+	}
+
+	usedGB, _, usage = memoryMetrics(1000, 400)
+	if usedGB != 600.0/1024/1024 {
+		t.Errorf("used = %v, want %v", usedGB, 600.0/1024/1024)
+	}
+	if usage < 59.9 || usage > 60.1 {
+		t.Errorf("usage = %v, want ~60", usage)
+	}
+
+	// A swap-less host reports SwapFree == SwapTotal == 0 → no underflow.
+	usedGB, _, usage = memoryMetrics(0, 0)
+	if usedGB != 0 || usage != 0 {
+		t.Errorf("empty swap: used=%v usage=%v, want 0/0", usedGB, usage)
+	}
+}
+
+// --- paused sessions ---
+
+// pushSystemInfo forks a dozen remote processes per run; a paused session
+// must not keep paying for them every 30 s.
+func TestSystemInfoTickRespectsPaused(t *testing.T) {
+	const ticksPerRefresh = 30 / performancePollSec
+	if systemInfoTick(ticksPerRefresh, false) != true {
+		t.Error("active session should refresh system info on its tick")
+	}
+	if systemInfoTick(1, false) != false {
+		t.Error("non-refresh tick must not fire")
+	}
+	if systemInfoTick(ticksPerRefresh, true) != false {
+		t.Error("paused session must skip the system info refresh")
+	}
+	if systemInfoTick(1, true) != false {
+		t.Error("paused session must not fire on a non-refresh tick either")
+	}
+}
+
+// --- KillProcess pid validation ---
+
+// `kill -9 -1` signals every process the SSH user may touch; anything below
+// pid 2 must be rejected before a session is even opened.
+func TestKillProcessRejectsSmallPids(t *testing.T) {
+	var mu sync.Mutex
+	var cmds []string
+	addr := startExecOutputServer(t, func(cmd string, ch ssh.Channel) {
+		mu.Lock()
+		cmds = append(cmds, cmd)
+		mu.Unlock()
+		writeExecOK(cmd, ch)
+	})
+	s := connectMonitorSession(t, addr)
+
+	for _, pid := range []int{-1, 0, 1} {
+		if err := s.KillProcess(pid, "KILL"); err == nil {
+			t.Errorf("KillProcess(%d, KILL) succeeded, want an error", pid)
+		}
+	}
+	mu.Lock()
+	leaked := len(cmds)
+	mu.Unlock()
+	if leaked != 0 {
+		t.Errorf("server received %d kill commands for invalid pids: %q", leaked, cmds)
+	}
+
+	if err := s.KillProcess(2, "KILL"); err != nil {
+		t.Errorf("KillProcess(2, KILL): %v", err)
+	}
+	mu.Lock()
+	ok := len(cmds) == 1 && strings.Contains(cmds[0], "kill -9 2")
+	mu.Unlock()
+	if !ok {
+		t.Errorf("expected one `kill -9 2`, got %q", cmds)
+	}
+}
+
+// --- Connect / Disconnect interleaving ---
+
+// The dial takes up to 30 s; the tab can be closed during it. Disconnect must
+// win: no stored client left open, no status flipped back to Connected.
+func TestMonitorDisconnectDuringDialDoesNotLeakClient(t *testing.T) {
+	addr := startExecOutputServer(t, writeExecOK)
+
+	dialing := make(chan struct{})
+	release := make(chan struct{})
+	rawConns := make(chan net.Conn, 1)
+
+	origDial := monitorDial
+	monitorDial = func(a string, cfg *ssh.ClientConfig, proxy *SocksProxy) (*ssh.Client, error) {
+		close(dialing)
+		<-release
+		raw, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		cc, chans, reqs, err := ssh.NewClientConn(raw, a, cfg)
+		if err != nil {
+			raw.Close()
+			return nil, err
+		}
+		rawConns <- raw
+		return ssh.NewClient(cc, chans, reqs), nil
+	}
+	t.Cleanup(func() { monitorDial = origDial })
+
+	s := NewMonitorSession("monitor-race-" + t.Name())
+	t.Cleanup(func() { s.Disconnect() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Connect(ConnectionConfig{
+			User: "tester", Host: "testhost", Port: 22,
+			AuthType: "password", Password: "pw",
+		})
+	}()
+
+	select {
+	case <-dialing:
+	case err := <-errCh:
+		t.Fatalf("Connect returned before reaching the dial: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Connect never reached the dial")
+	}
+	if err := s.Disconnect(); err != nil {
+		t.Fatalf("Disconnect during dial: %v", err)
+	}
+	close(release)
+
+	var connectErr error
+	select {
+	case connectErr = <-errCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Connect never returned after the dial was released")
+	}
+
+	if s.Status() == StatusConnected {
+		t.Error("status flipped back to Connected after Disconnect")
+	}
+	if connectErr == nil {
+		t.Error("Connect succeeded after the session was closed")
+	}
+	s.mu.RLock()
+	stored := s.client
+	s.mu.RUnlock()
+	if stored != nil {
+		t.Error("Connect stored a client for a session that was already disconnected")
+	}
+
+	var raw net.Conn
+	select {
+	case raw = <-rawConns:
+	default:
+		t.Fatal("fake dialer never produced a connection")
+	}
+	defer raw.Close()
+	_ = raw.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	if _, err := raw.Write([]byte{0}); err == nil {
+		t.Error("dialled SSH client was never closed — leaked connection")
 	}
 }

@@ -3,8 +3,11 @@ package session
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -285,5 +288,105 @@ func TestExtractTarSkipsRootSymlinkWithOutsideTarget(t *testing.T) {
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		t.Fatal("root symlink with absolute outside target /etc/passwd was created")
+	}
+}
+
+// --- Truncated stream handling ---------------------------------------------
+
+// buildTruncatedTarStream packs a regular entry whose header declares a
+// larger Size than the bytes actually written. tw.Close reports the missing
+// bytes — that error is expected; the truncated byte stream is the point:
+// tar.Reader then fails with io.ErrUnexpectedEOF partway through the body.
+func buildTruncatedTarStream(t *testing.T, name, body string, declared int64) *fakeRawStream {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: declared}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close() // "missed writing N bytes" — truncates the stream on purpose
+	return &fakeRawStream{bytes.NewReader(buf.Bytes())}
+}
+
+// TestExtractTarTruncatedEntryLeavesNoPartialFile: a stream failure mid-entry
+// must surface as an error and must not leave a truncated file under the
+// final name — nor a stale .part (security.md 文件会话 Low "Partial files are
+// left under the final name after a failure or cancel").
+func TestExtractTarTruncatedEntryLeavesNoPartialFile(t *testing.T) {
+	env := newTarTestEnv(t)
+	rs := buildTruncatedTarStream(t, "out/big.bin", strings.Repeat("x", 600), 4096)
+	err := env.s.extractTarInto(rs, "/container/out", env.lp, env.task)
+	if err == nil {
+		t.Fatal("extraction must fail when the entry stream is truncated")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Errorf("truncation must not look like a clean end of stream: %v", err)
+	}
+	final := filepath.Join(env.lp, "big.bin")
+	if _, statErr := os.Stat(final); statErr == nil {
+		t.Errorf("truncated file left under final name %s", final)
+	}
+	if _, statErr := os.Stat(final + ".part"); statErr == nil {
+		t.Errorf("partial .part file left behind: %s.part", final)
+	}
+}
+
+// TestExtractTarHealthyEntryCommits: a healthy regular entry still lands with
+// the right content and no .part after the write-through-.part change
+// (guard against over-blocking).
+func TestExtractTarHealthyEntryCommits(t *testing.T) {
+	env := newTarTestEnv(t)
+	rs := buildTarStream(t, []tarEntry{
+		{name: "out/", typeflag: tar.TypeDir},
+		{name: "out/ok.bin", typeflag: tar.TypeReg, body: "HEALTHY"},
+	})
+	if err := env.s.extractTarInto(rs, "/container/out", env.lp, env.task); err != nil {
+		t.Fatalf("extractTarInto: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(env.lp, "ok.bin"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(got) != "HEALTHY" {
+		t.Errorf("content = %q, want HEALTHY", got)
+	}
+	if _, err := os.Stat(filepath.Join(env.lp, "ok.bin.part")); err == nil {
+		t.Error(".part file left behind after a successful extraction")
+	}
+}
+
+// TestExtractTarRefusesWriteThroughPartSymlink: the entry body is written to
+// "<name>.part" first — a planted .part symlink must be refused like the
+// final name, otherwise it redirects the write to an outside file.
+func TestExtractTarRefusesWriteThroughPartSymlink(t *testing.T) {
+	requireSymlinks(t)
+	env := newTarTestEnv(t)
+	outside := filepath.Join(env.tmp, "outside.txt")
+	if err := os.WriteFile(outside, []byte("OUT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(env.lp, "x.bin.part")); err != nil {
+		t.Fatal(err)
+	}
+	rs := buildTarStream(t, []tarEntry{
+		{name: "out/", typeflag: tar.TypeDir},
+		{name: "out/x.bin", typeflag: tar.TypeReg, body: "NEW"},
+	})
+	if err := env.s.extractTarInto(rs, "/container/out", env.lp, env.task); err == nil {
+		t.Fatal("extraction must refuse to write through a planted .part symlink")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("read outside target: %v", err)
+	}
+	if string(got) != "OUT" {
+		t.Errorf("outside file clobbered through .part symlink: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(env.lp, "x.bin")); err == nil {
+		t.Error("file written despite .part symlink refusal")
 	}
 }

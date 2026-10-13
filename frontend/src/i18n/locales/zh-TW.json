@@ -625,6 +625,7 @@
   "settings.skillsLocked": "已鎖定",
   "settings.skillsUnlocked": "未鎖定",
   "settings.skillsDeleteConfirm": "確定刪除技能「{name}」嗎？",
+  "settings.skillsOverwriteConfirm": "技能「{name}」已存在，要覆蓋它嗎？",
   "settings.modelDeleteConfirm": "確定刪除模型「{name}」嗎？",
   "settings.skillsDeleteLocked": "技能「{name}」已鎖定，請先解鎖",
   "settings.skillsNoSkill": "尚無技能",

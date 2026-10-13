@@ -11,12 +11,53 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ys-ll/uniterm/backend/log"
 )
 
 const encFieldPrefix = "enc:v1:"
+
+// saltFileName is the reserved repo file holding the hex salt plus the
+// ciphertext format version.
+const saltFileName = ".sync-salt"
+
+// ciphertextFormatVersion is the format version new pushes record in
+// .sync-salt. Version >=1 means every ciphertext in the repo is bound to
+// its file name via AAD, so the legacy nil-AAD fallback must be rejected:
+// an attacker who can move ciphertexts between file slots (SYNC-P1-1) would
+// otherwise stay undetected indefinitely in upgraded repos. Legacy repos
+// carry no version line (version 0) and keep the fallback for migration.
+const ciphertextFormatVersion = 1
+
+// parseSaltFileContent parses .sync-salt content: the first line is the hex
+// salt, optionally followed by a "format=<n>" line recording the ciphertext
+// format version. A legacy file (pure hex, no version line) reports
+// version 0.
+func parseSaltFileContent(content []byte) (salt []byte, formatVersion int, err error) {
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	salt, err = hex.DecodeString(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return nil, 0, fmt.Errorf("decode salt: %w", err)
+	}
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "format="); ok {
+			n, convErr := strconv.Atoi(v)
+			if convErr != nil || n < 0 {
+				return nil, 0, fmt.Errorf("bad salt format version %q", line)
+			}
+			formatVersion = n
+			continue
+		}
+		return nil, 0, fmt.Errorf("unexpected salt file line %q", line)
+	}
+	return salt, formatVersion, nil
+}
 
 // isEncryptedField reports whether a secret field value is already in-place
 // encrypted (opaque to sync). Sync must carry it through without backfilling
@@ -295,6 +336,10 @@ func DecryptConfigFilesScoped(files []string, srcDir, destDir string, key []byte
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
+	formatVersion, err := readFormatVersion(srcDir)
+	if err != nil {
+		return err
+	}
 
 	for _, name := range files {
 		src := filepath.Join(srcDir, name)
@@ -302,17 +347,17 @@ func DecryptConfigFilesScoped(files []string, srcDir, destDir string, key []byte
 		var err error
 		switch name {
 		case "connections.json":
-			err = decryptConnectionsFile(src, dest, key, ps)
+			err = decryptConnectionsFile(src, dest, key, ps, formatVersion)
 		case "ai.json":
-			err = decryptAIConfigFile(src, dest, key, ps)
+			err = decryptAIConfigFile(src, dest, key, ps, formatVersion)
 		case "tunnels.json":
-			err = decryptTunnelsFile(src, dest, key, ps)
+			err = decryptTunnelsFile(src, dest, key, ps, formatVersion)
 		case "identities.json":
-			err = decryptIdentitiesFile(src, dest, key, ps)
+			err = decryptIdentitiesFile(src, dest, key, ps, formatVersion)
 		case "proxies.json":
-			err = decryptProxiesFile(src, dest, key, ps)
+			err = decryptProxiesFile(src, dest, key, ps, formatVersion)
 		default:
-			err = decryptGenericFile(src, dest, key)
+			err = decryptGenericFile(src, dest, key, formatVersion)
 		}
 		if err != nil {
 			return fmt.Errorf("decrypt %s: %w", name, err)
@@ -322,16 +367,16 @@ func DecryptConfigFilesScoped(files []string, srcDir, destDir string, key []byte
 	return nil
 }
 
-func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) error {
+func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt connections: %w", err)
 	}
@@ -366,19 +411,19 @@ func decryptConnectionsFile(src, dest string, key []byte, ps PasswordStore) erro
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
-func decryptAIConfigFile(src, dest string, key []byte, ps PasswordStore) error {
+func decryptAIConfigFile(src, dest string, key []byte, ps PasswordStore, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt ai config: %w", err)
 	}
@@ -402,21 +447,21 @@ func decryptAIConfigFile(src, dest string, key []byte, ps PasswordStore) error {
 		}
 	}
 
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
 // decryptIdentitiesFile decrypts identities.json, re-encrypting any plaintext
 // Password field back to enc:v1: under the local credential key.
-func decryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error {
+func decryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt identities: %w", err)
 	}
@@ -443,21 +488,21 @@ func decryptIdentitiesFile(src, dest string, key []byte, ps PasswordStore) error
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
 // decryptProxiesFile decrypts proxies.json, re-encrypting any plaintext pass
 // field back to enc:v1: under the local credential key.
-func decryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
+func decryptProxiesFile(src, dest string, key []byte, ps PasswordStore, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt proxies: %w", err)
 	}
@@ -479,21 +524,21 @@ func decryptProxiesFile(src, dest string, key []byte, ps PasswordStore) error {
 		plaintext, _ = json.MarshalIndent(wrapper, "", "  ")
 	}
 
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
 // decryptTunnelsFile decrypts tunnels.json, re-encrypting any plaintext
 // upstream pass field back to enc:v1: under the local credential key.
-func decryptTunnelsFile(src, dest string, key []byte, ps PasswordStore) error {
+func decryptTunnelsFile(src, dest string, key []byte, ps PasswordStore, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
 
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt tunnels: %w", err)
 	}
@@ -521,7 +566,7 @@ func decryptTunnelsFile(src, dest string, key []byte, ps PasswordStore) error {
 		plaintext, _ = json.MarshalIndent(obj, "", "  ")
 	}
 
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
 // encryptGenericFile encrypts a config file that has no sensitive keychain-managed fields.
@@ -538,19 +583,19 @@ func encryptGenericFile(src, dest string, key []byte) error {
 }
 
 // decryptGenericFile decrypts a config file that has no sensitive keychain-managed fields.
-func decryptGenericFile(src, dest string, key []byte) error {
+func decryptGenericFile(src, dest string, key []byte, formatVersion int) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return os.WriteFile(dest, []byte("{}"), 0600)
+			return atomicWriteFile(dest, []byte("{}"), 0600)
 		}
 		return err
 	}
-	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest))
+	plaintext, err := decryptBytes(string(data), key, filepath.Base(dest), formatVersion)
 	if err != nil {
 		return fmt.Errorf("decrypt: %w", err)
 	}
-	return os.WriteFile(dest, plaintext, 0600)
+	return atomicWriteFile(dest, plaintext, 0600)
 }
 
 // decryptFieldsInPlace decrypts any enc:v1: secret fields in a decoded config
@@ -650,12 +695,22 @@ func encryptBytesWithAAD(plaintext []byte, key []byte, aad []byte) (string, erro
 
 // decryptBytes decrypts a synced file ciphertext bound to file via AAD.
 // Ciphertexts written before SYNC-P1-1 was wired up carry a nil AAD; they
-// are accepted as a legacy fallback and upgraded to the name-bound form on
-// the next push or password rotation. A successful fallback is logged so
-// use of the weaker legacy form stays observable.
-func decryptBytes(encoded string, key []byte, file string) ([]byte, error) {
-	if pt, err := decryptBytesWithAAD(encoded, key, []byte(file)); err == nil {
+// are accepted as a legacy fallback ONLY in repos that predate the format
+// version (formatVersion 0, no version line in .sync-salt). Repos stamped
+// with ciphertextFormatVersion or higher have been re-pushed under the
+// name-bound form, so a nil-AAD blob there is a slot-moved attacker
+// ciphertext (or a pre-upgrade leftover a re-push should have replaced)
+// and must be rejected instead of silently decrypted. A successful legacy
+// fallback is logged so use of the weaker form stays observable.
+func decryptBytes(encoded string, key []byte, file string, formatVersion int) ([]byte, error) {
+	pt, aadErr := decryptBytesWithAAD(encoded, key, []byte(file))
+	if aadErr == nil {
 		return pt, nil
+	}
+	if formatVersion >= ciphertextFormatVersion {
+		// The name-bound attempt failed and the repo has declared itself
+		// fully name-bound — do not fall back to the movable nil-AAD form.
+		return nil, fmt.Errorf("decrypt %s (nil-AAD fallback disabled in format v%d repo): %w", file, formatVersion, aadErr)
 	}
 	// Migration path for pre-SYNC-P1-1 ciphertexts: retry without the AAD so
 	// existing repos keep syncing. Do not remove until those ciphertexts have
@@ -707,7 +762,7 @@ func readJSONFile(path string) ([]byte, error) {
 // ReadSaltFile reads the .sync-salt file from the repo directory.
 // Returns nil if the file doesn't exist (new repo).
 func ReadSaltFile(repoPath string) ([]byte, error) {
-	saltPath := filepath.Join(repoPath, ".sync-salt")
+	saltPath := filepath.Join(repoPath, saltFileName)
 	data, err := os.ReadFile(saltPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -715,15 +770,42 @@ func ReadSaltFile(repoPath string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("read salt file: %w", err)
 	}
-	salt, err := hex.DecodeString(string(data))
+	salt, _, err := parseSaltFileContent(data)
 	if err != nil {
-		return nil, fmt.Errorf("decode salt: %w", err)
+		return nil, err
 	}
 	return salt, nil
 }
 
-// WriteSaltFile writes the salt to .sync-salt in the repo directory.
+// readFormatVersion returns the ciphertext format version recorded in the
+// repo directory's .sync-salt. A missing salt file (fresh staging dir) or a
+// legacy pure-hex salt file reports version 0.
+func readFormatVersion(repoPath string) (int, error) {
+	data, err := os.ReadFile(filepath.Join(repoPath, saltFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read salt file: %w", err)
+	}
+	_, formatVersion, err := parseSaltFileContent(data)
+	if err != nil {
+		return 0, err
+	}
+	return formatVersion, nil
+}
+
+// ReadFormatVersion reports the ciphertext format version of the repo
+// directory, for callers outside the decrypt plumbing.
+func ReadFormatVersion(repoPath string) (int, error) {
+	return readFormatVersion(repoPath)
+}
+
+// WriteSaltFile writes the salt to .sync-salt in the repo directory,
+// stamping the current ciphertext format version so later decrypts in this
+// repo reject legacy nil-AAD ciphertext.
 func WriteSaltFile(repoPath string, salt []byte) error {
-	saltPath := filepath.Join(repoPath, ".sync-salt")
-	return os.WriteFile(saltPath, []byte(hex.EncodeToString(salt)), 0600)
+	saltPath := filepath.Join(repoPath, saltFileName)
+	content := hex.EncodeToString(salt) + "\nformat=" + strconv.Itoa(ciphertextFormatVersion) + "\n"
+	return atomicWriteFile(saltPath, []byte(content), 0600)
 }

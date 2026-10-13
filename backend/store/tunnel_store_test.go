@@ -123,3 +123,109 @@ func TestTunnelStoreEmpty(t *testing.T) {
 		t.Fatalf("expected empty v1 store, got %+v", out)
 	}
 }
+
+// TestTunnelStoreEncryptsSOCKSPass: the dynamic tunnel's SOCKS password is a
+// credential like the upstream proxy pass — it must be ciphertext on disk
+// (enc:v1, same as upstream.pass) and plaintext for the caller on Load.
+func TestTunnelStoreEncryptsSOCKSPass(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTunnelStore(dir)
+	s.SetPasswordStore(fakePasswordStore{prefix: "enc:v1:"})
+
+	in := session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{{
+		ID:        "t1",
+		Name:      "socks",
+		Mode:      session.TunnelDynamic,
+		SOCKSUser: "alice",
+		SOCKSPass: "socks-secret",
+	}}}
+	if err := s.Save(in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if in.Tunnels[0].SOCKSPass != "socks-secret" {
+		t.Fatalf("Save mutated the caller's data: socksPass = %q", in.Tunnels[0].SOCKSPass)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, tunnelsFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if contains(string(raw), `"socksPass": "socks-secret"`) {
+		t.Fatalf("socksPass was written as plaintext: %s", raw)
+	}
+	if !contains(string(raw), "enc:v1:") {
+		t.Fatalf("expected encrypted socksPass on disk: %s", raw)
+	}
+
+	out, err := s.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(out.Tunnels) != 1 || out.Tunnels[0].SOCKSPass != "socks-secret" {
+		t.Fatalf("bad round-trip: %+v", out)
+	}
+	if out.Tunnels[0].SOCKSUser != "alice" {
+		t.Fatalf("username must survive the round-trip: %+v", out.Tunnels[0])
+	}
+}
+
+// TestTunnelStoreFailClosedOnPlaintextSOCKSPass: with no cipher wired, Save
+// must refuse rather than land a plaintext SOCKS password in tunnels.json.
+func TestTunnelStoreFailClosedOnPlaintextSOCKSPass(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTunnelStore(dir)
+
+	err := s.Save(session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{{
+		ID:        "t1",
+		Mode:      session.TunnelDynamic,
+		SOCKSUser: "alice",
+		SOCKSPass: "socks-secret",
+	}}})
+	if err == nil {
+		t.Fatal("expected error saving a plaintext socksPass without passwordStore")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, tunnelsFileName)); statErr == nil {
+		t.Fatal("tunnels.json must not be written when Save fails closed")
+	}
+}
+
+// TestTunnelStoreMigratesLegacyPlaintextSOCKSPass: a plaintext socksPass (or
+// one written by hand) loads as plaintext for the caller and is rewritten as
+// ciphertext, like the upstream pass migration.
+func TestTunnelStoreMigratesLegacyPlaintextSOCKSPass(t *testing.T) {
+	dir := t.TempDir()
+	s := NewTunnelStore(dir)
+	s.SetPasswordStore(fakePasswordStore{prefix: "enc:v1:"})
+
+	seed := `{"version":1,"groups":[],"tunnels":[{"id":"t1","name":"legacy","mode":"dynamic","socksUser":"alice","socksPass":"legacy-socks-pass"}]}`
+	if err := os.WriteFile(filepath.Join(dir, tunnelsFileName), []byte(seed), 0600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	data, err := s.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(data.Tunnels) != 1 || data.Tunnels[0].SOCKSPass != "legacy-socks-pass" {
+		t.Fatalf("Load should return the legacy plaintext socksPass: %+v", data)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, tunnelsFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if contains(string(raw), `"socksPass": "legacy-socks-pass"`) {
+		t.Fatalf("legacy plaintext socksPass still on disk: %s", raw)
+	}
+	if !contains(string(raw), "enc:v1:") {
+		t.Fatalf("legacy plaintext not migrated to ciphertext: %s", raw)
+	}
+
+	again, err := s.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if again.Tunnels[0].SOCKSPass != "legacy-socks-pass" {
+		t.Fatalf("migrated socksPass did not decrypt: %q", again.Tunnels[0].SOCKSPass)
+	}
+}

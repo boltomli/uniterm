@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { watch } from 'vue'
+import { readSrc } from '../testUtils/sfc'
+import type { K8sWatchEvent } from '../types/k8s'
 
 // mock k8sClient 底层调用，避免真的走 Wails
 const requestJSON = vi.fn()
@@ -121,5 +124,115 @@ describe('k8sStore.subscribe (generic)', () => {
     await subP
     // Orphan watch handle's stop() was called.
     expect(orphanStop).toHaveBeenCalled()
+  })
+})
+
+describe('k8sStore list pagination (security.md #9)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    requestJSON.mockReset()
+    startWatch.mockReset()
+    stopWatch.mockReset()
+    startWatch.mockResolvedValue({ id: 'w1', stop: stopWatch })
+  })
+
+  it('follows metadata.continue and merges every page', async () => {
+    requestJSON
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { items: [mkPod('p1'), mkPod('p2')], metadata: { resourceVersion: '99', continue: 'tok1' } },
+        raw: '',
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { items: [mkPod('p3')], metadata: { resourceVersion: '100', continue: '' } },
+        raw: '',
+      })
+    const s = useK8sStore()
+    await s.subscribe('c1', 'pods', 'default')
+    expect(requestJSON).toHaveBeenCalledTimes(2)
+    expect(requestJSON).toHaveBeenNthCalledWith(1, 'c1', 'GET', '/api/v1/namespaces/default/pods?limit=500')
+    expect(requestJSON).toHaveBeenNthCalledWith(2, 'c1', 'GET', '/api/v1/namespaces/default/pods?limit=500&continue=tok1')
+    expect(s.getItems('c1', 'pods', 'default').map(i => i.metadata.name).sort()).toEqual(['p1', 'p2', 'p3'])
+    expect(s.getError('c1', 'pods', 'default')).toBe('')
+    // watch 从最后一页的 resourceVersion 续订
+    expect(startWatch).toHaveBeenCalledWith('c1', expect.stringContaining('resourceVersion=100'), expect.any(Function))
+  })
+
+  it('aborts after 20 pages when the server never ends the continue chain', async () => {
+    let calls = 0
+    requestJSON.mockImplementation(() => {
+      calls += 1
+      return Promise.resolve({
+        status: 200,
+        data: { items: [mkPod(`p${calls}`)], metadata: { resourceVersion: String(calls), continue: `t${calls}` } },
+        raw: '',
+      })
+    })
+    const s = useK8sStore()
+    await s.subscribe('c1', 'pods', 'default')
+    expect(calls).toBe(20)
+    expect(s.getError('c1', 'pods', 'default')).toMatch(/aborted after 20 pages/)
+    expect(startWatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('k8sStore item identity (security.md #8)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    requestJSON.mockReset()
+    startWatch.mockReset()
+    stopWatch.mockReset()
+    startWatch.mockResolvedValue({ id: 'w1', stop: stopWatch })
+  })
+
+  it('returns the raw item objects (no deep proxy per item)', async () => {
+    const pod = mkPod('p1')
+    requestJSON.mockResolvedValue({ status: 200, data: { items: [pod], metadata: { resourceVersion: '1' } }, raw: '' })
+    const s = useK8sStore()
+    await s.subscribe('c1', 'pods', 'default')
+    expect(s.getItems('c1', 'pods', 'default')[0]).toBe(pod)
+  })
+})
+
+describe('k8sStore watch event batching (security.md #8)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    requestJSON.mockReset()
+    startWatch.mockReset()
+    stopWatch.mockReset()
+  })
+
+  it('applies an event burst with a single reactive flush', async () => {
+    requestJSON.mockResolvedValue({ status: 200, data: { items: [mkPod('p0')], metadata: { resourceVersion: '1' } }, raw: '' })
+    let onEvent: (ev: K8sWatchEvent) => void = () => {}
+    startWatch.mockImplementation(async (_conn: string, _path: string, cb: (ev: K8sWatchEvent) => void) => {
+      onEvent = cb
+      return { id: 'w1', stop: stopWatch }
+    })
+    const s = useK8sStore()
+    await s.subscribe('c1', 'pods', 'default')
+
+    const lengths: number[] = []
+    watch(() => s.getItems('c1', 'pods', 'default'), v => lengths.push(v.length), { flush: 'sync' })
+
+    for (let i = 1; i <= 5; i++) onEvent({ type: 'ADDED', object: mkPod(`p${i}`) })
+    // 事件就地写入 items，微任务里统一通知一次：同步阶段不应逐事件触发
+    expect(lengths).toEqual([])
+    await Promise.resolve()
+    expect(lengths).toEqual([6])
+  })
+})
+
+describe('k8sStore source wiring (shallowRef + microtask batch)', () => {
+  const src = readSrc('stores/k8sStore.ts')
+
+  it('holds list state in a shallowRef so items stay raw', () => {
+    expect(src).toMatch(/const states = shallowRef<Map<string, ResourceListState>>/)
+  })
+
+  it('notifies watch events on a microtask instead of per event', () => {
+    expect(src).toMatch(/queueMicrotask\(/)
+    expect(src).not.toMatch(/new Map\(st\.items\)/)
   })
 })

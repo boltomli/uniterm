@@ -148,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Play, Tag, ArrowUpFromLine, ArrowDownToLine, Trash2, Square, ScrollText, BrushCleaning } from '@lucide/vue'
 import { useContainerStore } from '../stores/containerStore'
@@ -358,6 +358,12 @@ let taskSeq = 0
 const expandedTaskId = ref<number | null>(null)
 const nowTick = ref(Date.now())
 let tickTimer: number | undefined
+// 应用标签页被 KeepAlive 缓存（切走）视为隐藏，与 document.hidden 一起
+// 决定任务面板计时器是否运行。
+let deactivated = false
+// 卸载竞态标志：拉取/推送流在 await 启动期间视图卸载时，句柄还没登记到
+// 任务上，靠这个标志在句柄落地时立即中止，避免流无人停止。
+let unmounted = false
 
 // docker/podman/nerdctl 非交互输出的层级行解析：按层 ID 聚合出层级进度
 function parseLayerLine(tk: TransferTask, line: string) {
@@ -449,9 +455,15 @@ async function startTransfer(kind: 'pull' | 'push', image: string, opts: Contain
     }
   }
   try {
-    tk.handle = kind === 'pull'
+    const handle = kind === 'pull'
       ? await client.startPull(s.connId, image, opts, onLine, onEnd)
       : await client.startPush(s.connId, image, { insecure: opts.insecure }, onLine, onEnd)
+    // 卸载与启动竞态：视图已销毁时句柄无处登记，直接中止流。
+    if (unmounted) {
+      handle.stop()
+      return
+    }
+    tk.handle = handle
   } catch (e: any) {
     tk.status = 'failed'
     tk.error = String(e?.message || e)
@@ -478,14 +490,50 @@ function clearFinishedTasks() {
 }
 
 // 首次进入镜像视图时拉取列表；store.open 只加载容器列表。
+// 任务面板的已用时间刷新：页面（visibilitychange）或应用标签页
+//（KeepAlive 缓存）隐藏时暂停，回到前台恢复，卸载时彻底清除。
+function startTick() {
+  if (tickTimer !== undefined) return
+  tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
+}
+
+function pauseTick() {
+  if (tickTimer === undefined) return
+  window.clearInterval(tickTimer)
+  tickTimer = undefined
+}
+
+function syncTick() {
+  if (document.hidden || deactivated) pauseTick()
+  else startTick()
+}
+
+function onVisibilityChange() {
+  syncTick()
+}
+
 onMounted(() => {
   store.loadImages(props.tab.id)
-  // 任务面板的已用时间刷新
-  tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  syncTick()
+})
+
+onActivated(() => {
+  // KeepAlive 缓存的应用标签页重新显示：恢复计时。
+  deactivated = false
+  syncTick()
+})
+
+onDeactivated(() => {
+  // KeepAlive 缓存的应用标签页视为隐藏：暂停计时。
+  deactivated = true
+  pauseTick()
 })
 
 onBeforeUnmount(() => {
-  if (tickTimer) window.clearInterval(tickTimer)
+  unmounted = true
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  pauseTick()
   tasks.value.forEach(t => t.handle?.stop())
 })
 </script>

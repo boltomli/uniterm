@@ -58,10 +58,17 @@ export interface LineRegistryState {
   /** Absolute start row → meta. Reassigned wholesale by realignRegistry —
    * always reach it through the state object, never cache the Map. */
   entries: Map<number, LineMetaEntry>
+  /** Absolute-row high-water mark of everything a write scan has probed.
+   * The look-above window only re-probes rows above it: rescanning up to
+   * LOOK_ABOVE_ROWS blank rows on EVERY write (translateToString each) was
+   * the dominant gutter cost under sustained output. Rows at or below the
+   * watermark that gain content later via cursor-addressed repaint are the
+   * accepted trade-off — the cursor band itself is always scanned. */
+  scannedUpTo: number
 }
 
 export function createLineRegistry(): LineRegistryState {
-  return { nextNumber: 1, entries: new Map() }
+  return { nextNumber: 1, entries: new Map(), scannedUpTo: -1 }
 }
 
 /** Minimal row probe the registry needs from the live buffer. */
@@ -119,26 +126,34 @@ const KEEP_ENTRIES = 3000
  * received their first characters, and stamp completion times for lines the
  * cursor has moved past. The main scan walks the band the cursor travelled
  * (exactly the band shell output touches); a look-above window also picks up
- * content painted out-of-band by cursor-addressed redraws.
+ * content painted out-of-band — but only rows the watermark hasn't covered
+ * yet, so sustained output doesn't re-probe the same blank rows forever.
  */
 export function recordWrittenLines(state: LineRegistryState, opts: RecordWriteOptions): void {
   const { lineOffset, beforeAbs, afterAbs, source, now } = opts
   const from = Math.min(beforeAbs, afterAbs) - lineOffset
   const to = Math.max(beforeAbs, afterAbs) - lineOffset
   const cursorRow = afterAbs - lineOffset
-  const scanFrom = Math.max(0, from - LOOK_ABOVE_ROWS)
-
-  // 1. Registration: every non-wrapped row in the scanned range that now
-  //    holds visible content and has no entry yet becomes a new logical line.
-  for (let y = scanFrom; y <= to; y += 1) {
-    if (source.isWrapped(y)) continue
+  // Registration: a non-wrapped row with visible content and no entry
+  // becomes a new logical line. A newline parks the cursor on an empty row
+  // below the output — that row only joins once something writes on it.
+  const registerRow = (y: number) => {
+    if (source.isWrapped(y)) return
     const abs = lineOffset + y
-    if (state.entries.has(abs)) continue
-    // A newline parks the cursor on an empty row below the output — that row
-    // only joins the registry once something actually writes characters on it.
-    if (!source.hasContent(y)) continue
+    if (state.entries.has(abs)) return
+    if (!source.hasContent(y)) return
     state.entries.set(abs, { number: state.nextNumber++, ts: now })
   }
+
+  // 1a. Look-above: rows above the cursor band that NO earlier write probed.
+  //     Re-probing them every write cost a translateToString per blank row
+  //     (up to LOOK_ABOVE_ROWS of them) under sustained output — the
+  //     dominant gutter cost (security.md perf item).
+  const lookFrom = Math.max(0, from - LOOK_ABOVE_ROWS, state.scannedUpTo + 1 - lineOffset)
+  for (let y = lookFrom; y < from; y += 1) registerRow(y)
+  // 1b. The cursor band itself: always scanned — this write's output landed
+  //     exactly here, so its rows may have gained content just now.
+  for (let y = from; y <= to; y += 1) registerRow(y)
 
   // 2. Completion: for rows in the band belonging to lines that now end above
   //    the cursor, the output has finished — fix their timestamp.
@@ -152,7 +167,12 @@ export function recordWrittenLines(state: LineRegistryState, opts: RecordWriteOp
     if (entry && entry.ts !== now) entry.ts = now
   }
 
-  // 3. Bound memory: off-buffer entries are only ever looked up by rows
+  // 3. Advance the probe watermark (absolute rows survive trims by
+  //    construction — lineOffset grows in lockstep).
+  const scanned = lineOffset + to
+  if (scanned > state.scannedUpTo) state.scannedUpTo = scanned
+
+  // 4. Bound memory: off-buffer entries are only ever looked up by rows
   //    currently on screen, so dropping the OLDEST numbers is safe.
   if (state.entries.size > MAX_ENTRIES) {
     const byNumber = [...state.entries.values()].sort((a, b) => a.number - b.number)
@@ -200,6 +220,47 @@ export function realignRegistry(state: LineRegistryState, opts: RealignOptions):
     if (meta) next.set(lineOffset + starts[starts.length - 1 - i], meta)
   }
   state.entries = next
+  // realignRegistry itself probed every row from the buffer top to the
+  // cursor, so the write scan's watermark can advance to match.
+  const scanned = lineOffset + cursorRow
+  if (scanned > state.scannedUpTo) state.scannedUpTo = scanned
+}
+
+/** Debounce window for resize-triggered realigns: dragging a split fires
+ * onResize repeatedly, and each realign walks the whole buffer — with long
+ * scrollback that stutters. One realign 150ms after the resize settles. */
+export const REALIGN_DEBOUNCE_MS = 150
+
+// Pending debounced realign per registry — keyed by state so concurrent
+// terminals never delay each other.
+const realignTimers = new WeakMap<LineRegistryState, ReturnType<typeof setTimeout>>()
+
+/**
+ * Debounced wrapper around realignRegistry for terminal.onResize. The
+ * options are re-read at flush time so the settled buffer state (final
+ * cols/rows, cursor) is what gets re-keyed, not the mid-drag snapshot.
+ */
+export function scheduleRealign(state: LineRegistryState, opts: () => RealignOptions): void {
+  // A pending timer no-ops the previous one; clearTimeout accepts undefined.
+  clearTimeout(realignTimers.get(state))
+  realignTimers.set(state, setTimeout(() => {
+    realignTimers.delete(state)
+    // The terminal may have been released while the timer was pending —
+    // its buffer rows are no longer readable; dropping the rekey is fine
+    // because a disposed terminal's registry is discarded with it.
+    try {
+      realignRegistry(state, opts())
+    } catch { /* disposed terminal: nothing left to realign */ }
+  }, REALIGN_DEBOUNCE_MS))
+}
+
+/** Drop a pending debounced realign (terminal disposal). */
+export function cancelScheduledRealign(state: LineRegistryState): void {
+  const timer = realignTimers.get(state)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    realignTimers.delete(state)
+  }
 }
 
 // ─── Service functions (live terminal adaptation) ───────────────────────────
@@ -346,5 +407,8 @@ export function clearRegistry(sessionId: string): void {
   if (!managed) return
   managed.lineRegistry.nextNumber = 1
   managed.lineRegistry.entries.clear()
+  // The cleared buffer's rows are new territory: the look-above window must
+  // probe them again, so rewind the write-scan watermark.
+  managed.lineRegistry.scannedUpTo = -1
   notifyGutter(sessionId)
 }

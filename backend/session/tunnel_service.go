@@ -32,6 +32,9 @@ type TunnelService struct {
 	userTunnels map[string]*userTunnelEntry
 	states      map[string]TunnelState
 	onState     func(TunnelState)
+	// dialHop dials a user tunnel's first hop. nil selects dialFirstHop;
+	// tests replace it to observe or stall dialing without a network.
+	dialHop func(addr string, upstream *SocksProxy) (net.Conn, error)
 }
 
 func NewTunnelService() *TunnelService {
@@ -97,7 +100,7 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 		Timeout:           sshHandshakeTimeout,
 		HostKeyCallback:   cb,
 		Config:            algoSet.config(),
-		HostKeyAlgorithms: algoSet.HostKeys,
+		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
 	}
 
 	conn, err := dialFirstHop(addr, upstream)

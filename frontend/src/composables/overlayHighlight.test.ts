@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { logicalLineStart } from './overlayHighlight'
+import { logicalLineStart, shiftLineCache } from './overlayHighlight'
 
 // xterm marks isWrapped on the row wrapped TO: row N.isWrapped=true ⇒
 // row N continues row N-1. The walk-up must ask each row about ITSELF,
@@ -31,5 +31,51 @@ describe('logicalLineStart()', () => {
     const long = Array.from({ length: 20 }, (_, i) => i > 0)
     // Cap of 5 rows: from y=10 the walk may climb at most 4 rows.
     expect(logicalLineStart(fakeBuffer(long), 10, 5)).toBe(6)
+  })
+})
+
+describe('shiftLineCache()', () => {
+  const span = { cellStartCol: 2, cellWidth: 5, category: 'url' as const }
+
+  it('shifts cached line indexes down by the trim amount', () => {
+    const cache = new Map<number, typeof span[]>([
+      [2, [span]],
+      [5, [span]],
+      [7, []],
+    ])
+    shiftLineCache(cache, 3)
+    expect(cache.get(2)).toEqual([span]) // was line 5
+    expect(cache.get(4)).toEqual([]) // was line 7
+    expect(cache.has(0)).toBe(false) // line 2 was trimmed away
+  })
+
+  it('drops lines trimmed out of the buffer', () => {
+    const cache = new Map<number, typeof span[]>([
+      [0, [span]],
+      [1, []],
+      [9, [span]],
+    ])
+    shiftLineCache(cache, 9)
+    // Lines 0-8 are gone; line 9 becomes the new line 0.
+    expect(cache.size).toBe(1)
+    expect(cache.get(0)).toEqual([span])
+    expect(cache.has(1)).toBe(false)
+  })
+
+  it('is a no-op for a zero trim', () => {
+    const cache = new Map<number, typeof span[]>([[3, [span]]])
+    shiftLineCache(cache, 0)
+    expect(cache.get(3)).toEqual([span])
+  })
+
+  it('preserves LRU order so the oldest entry still evicts first', () => {
+    const cache = new Map<number, typeof span[]>([
+      [10, []],
+      [20, []],
+      [30, []],
+    ])
+    shiftLineCache(cache, 5)
+    // Insertion order must survive the rebuild: 5, 15, 25 (oldest first).
+    expect([...cache.keys()]).toEqual([5, 15, 25])
   })
 })

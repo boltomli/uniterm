@@ -72,7 +72,16 @@ type App struct {
 	// constructors. Resolved at startup; finalized by bootstrap in a later task.
 	dataDir         string
 	credentialStore *credentials.Store
-	storesReady     bool
+	// storesInitOnce makes the store bootstrap single-shot: ServiceStartup,
+	// a first-run SetDataDir and two racing SetDataDir calls all funnel
+	// through initStores, and the body starts background goroutines
+	// (auto-start tunnels, foreground watcher, sync) that must never run
+	// twice.
+	storesInitOnce stdsync.Once
+	// initStoresBody is the bootstrap body. Nil in production (bootstrapStores);
+	// tests swap it in to exercise the once-guard without bringing up real
+	// stores (keychain, sync config, MCP listener).
+	initStoresBody func(dataDir string, upgrade bool)
 	// lastUpdateInfo is the backend-side cache of the most recent successful
 	// CheckForUpdate. DownloadUpdate derives its asset list from here (never
 	// from a webview argument) so a compromised renderer cannot pick the URL
@@ -81,6 +90,16 @@ type App struct {
 	lastUpdateInfo *update.UpdateInfo
 	chatCancel     atomic.Pointer[context.CancelFunc] // F-308: active stream cancellation, per-call swap so overlap is safe
 	moveResizeCh   chan string                        // defer EventsEmit from WndProc
+	// The WndProc forwarder goroutine (startMoveResizePump) exits on
+	// moveResizeQuit and closes moveResizeDone. moveResizeCh itself is never
+	// closed: a late WndProc send must be dropped by the buffer, not panic
+	// on a closed channel.
+	moveResizeQuit chan struct{}
+	moveResizeDone chan struct{}
+	// autoSyncMu guards autoSyncTimer: at most one debounced auto-sync run is
+	// ever pending (see scheduleAutoSync).
+	autoSyncMu    stdsync.Mutex
+	autoSyncTimer *time.Timer
 	// F-043: foreground flag — true while the window is visible and the
 	// user is interacting; background goroutines (keepalive, output_log
 	// flush, k8s watches, auto-sync) should consult IsForeground before
@@ -106,6 +125,12 @@ type App struct {
 	// bridge. Lazily created once stores are ready (ensureMCPServer).
 	mcpServer *mcp.Server
 	mcpOnce   stdsync.Once
+	// mcpApplied is the endpoint configuration StartMCP last applied
+	// (nil = none). SaveLocalState calls StartMCP on every UI toggle, so an
+	// unchanged endpoint must not rebind the listener. Guarded by
+	// mcpAppliedMu.
+	mcpAppliedMu stdsync.Mutex
+	mcpApplied   *mcpEndpoint
 	// mcpApprovals maps pending approval request ids to their answer channels.
 	mcpApprovals   map[string]chan mcpApprovalVerdict
 	mcpApprovalsMu stdsync.Mutex
@@ -221,6 +246,64 @@ func (a *App) win() *application.WebviewWindow {
 	return a.window
 }
 
+// startMoveResizePump runs the goroutine that forwards deferred WndProc
+// move/resize events to the frontend. Extracted from ServiceStartup so
+// shutdown() can stop it without a live window (and tests can drive it).
+func (a *App) startMoveResizePump() {
+	a.moveResizeCh = make(chan string, 10)
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	a.moveResizeQuit, a.moveResizeDone = quit, done
+	go func() {
+		defer close(done)
+		forward := func(evt string) {
+			a.emit(evt)
+			if evt == "rdp:move-resize-end" {
+				// Notify the frontend that the native window stopped resizing
+				// (drag-to-restore / maximize / programmatic resize). The terminal
+				// re-fits on this signal because the browser does not always fire a
+				// final window.resize at the settled size after a native drag, which
+				// otherwise leaves the canvas at a stale small row count (issue #656).
+				// Platform-neutral name; on non-Windows it simply never fires.
+				a.emit("window:resize-end")
+				a.saveWindowStateFromRuntime()
+			}
+		}
+		for {
+			select {
+			case evt := <-a.moveResizeCh:
+				forward(evt)
+			case <-quit:
+				// Drain what is already queued, then exit. The channel stays
+				// open: a late WndProc send hits the buffer instead of panicking.
+				for {
+					select {
+					case evt := <-a.moveResizeCh:
+						forward(evt)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
+// stopMoveResizePump stops the forwarder goroutine and waits for it to exit.
+// Idempotent; safe to call when the pump was never started. moveResizeDone is
+// kept (closed) so callers/tests can still observe the exit.
+func (a *App) stopMoveResizePump() {
+	quit := a.moveResizeQuit
+	a.moveResizeQuit = nil
+	if quit == nil {
+		return
+	}
+	close(quit)
+	if done := a.moveResizeDone; done != nil {
+		<-done
+	}
+}
+
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	a.ctx = ctx
 
@@ -244,22 +327,7 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.tunnelService = session.NewTunnelService()
 
 	// Defer EventsEmit from WndProc to avoid blocking the modal resize/move loop.
-	a.moveResizeCh = make(chan string, 10)
-	go func() {
-		for evt := range a.moveResizeCh {
-			a.emit(evt)
-			if evt == "rdp:move-resize-end" {
-				// Notify the frontend that the native window stopped resizing
-				// (drag-to-restore / maximize / programmatic resize). The terminal
-				// re-fits on this signal because the browser does not always fire a
-				// final window.resize at the settled size after a native drag, which
-				// otherwise leaves the canvas at a stale small row count (issue #656).
-				// Platform-neutral name; on non-Windows it simply never fires.
-				a.emit("window:resize-end")
-				a.saveWindowStateFromRuntime()
-			}
-		}
-	}()
+	a.startMoveResizePump()
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
 	// defers all store init until the frontend calls SetDataDir.
@@ -285,8 +353,30 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 // initStores initializes every config store under dataDir and brings up the
 // credential store + sync service. Extracted from startup so first-run defers
 // it until SetDataDir picks a directory; on the normal path it runs once at
-// startup. Runs exactly once either way.
+// startup.
+//
+// The bootstrap is single-shot: a first-run SetDataDir and ServiceStartup (or
+// two racing SetDataDir calls) can reach it concurrently, and the body starts
+// background goroutines — auto-start tunnels, the foreground watcher, sync —
+// that must never run twice. Later callers return without re-running anything.
 func (a *App) initStores(dataDir string, upgrade bool) {
+	a.storesInitOnce.Do(func() {
+		a.runStoreBootstrap(dataDir, upgrade)
+	})
+}
+
+// runStoreBootstrap invokes the bootstrap body (the test override when set,
+// bootstrapStores otherwise). Callers must already hold storesInitOnce.
+func (a *App) runStoreBootstrap(dataDir string, upgrade bool) {
+	if body := a.initStoresBody; body != nil {
+		body(dataDir, upgrade)
+		return
+	}
+	a.bootstrapStores(dataDir, upgrade)
+}
+
+// bootstrapStores is the actual one-time store bootstrap (see initStores).
+func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 	// Point clink:// local shells at the app data dir (they drop a tuned
 	// clink profile next to the stores; see backend/session/local_clink.go).
 	session.SetClinkProfileDir(filepath.Join(dataDir, "clink"))
@@ -417,8 +507,6 @@ func (a *App) initStores(dataDir string, upgrade bool) {
 			}()
 		}
 	}
-
-	a.storesReady = true
 
 	// External-agent MCP server: auto-start when enabled in settings.
 	a.mcpApprovals = make(map[string]chan mcpApprovalVerdict)
@@ -698,8 +786,10 @@ type connDelta struct {
 	All  *session.ConnectionStoreData `json:"all,omitempty"` // for replace (first emit)
 }
 
-// F-205: typed event shapes + pooled buffer so session:data emits
-// stop allocating a fresh map[string]interface{} per chunk.
+// F-205: typed event shapes for the session data hot path. Every chunk used
+// to build a map[string]interface{} (a map allocation plus two interface
+// boxes per read); the typed payload serialises to the exact {id, data}
+// object the frontend listeners expect.
 type sessionDataEvent struct {
 	ID   string `json:"id"`
 	Data string `json:"data"`
@@ -710,12 +800,17 @@ type sessionBinaryEvent struct {
 	Data string `json:"data"`
 }
 
-var sessionDataPool = stdsync.Pool{
-	New: func() any {
-		b := &bytes.Buffer{}
-		b.Grow(8 * 1024) // typical SSH chunk size, avoids re-grow on small inputs
-		return b
-	},
+// emitSessionData pushes one terminal-output chunk.
+func (a *App) emitSessionData(id, data string) {
+	a.emit("session:data", sessionDataEvent{ID: id, Data: data})
+}
+
+// emitSessionBinary pushes one binary (zmodem) chunk, base64-encoded.
+func (a *App) emitSessionBinary(id string, data []byte) {
+	a.emit("session:binary", sessionBinaryEvent{
+		ID:   id,
+		Data: base64.StdEncoding.EncodeToString(data),
+	})
 }
 
 // computeConnDelta returns the set of upsert/remove deltas between
@@ -789,8 +884,23 @@ func (a *App) watchForeground(ctx context.Context) {
 	}
 }
 
+// shutdown tears the app down in dependency order.
+//
+// The per-panel session logs go first: OutputLogger buffers up to 64 KiB / 1s,
+// so Disable — which flushes the buffer and writes the footer — has to run
+// before the sessions behind them are closed. Then the in-flight AI stream,
+// the MCP endpoint, the tunnel/session managers and finally the WndProc
+// move/resize forwarder are stopped, and the (periodically flushed) app log
+// is pushed to disk.
+//
+// The k8s/container managers expose no Stop/Close and their watch/log streams
+// are bound to context.Background(); nothing in the root package can reach
+// them without an exported shutdown API, and the process exits immediately
+// after this returns, which reaps those goroutines anyway.
 func (a *App) shutdown() {
 	a.unsubclassMainWindow()
+	a.disableAllPanelLogs()
+	a.CancelChatStream()
 	if a.mcpServer != nil {
 		a.mcpServer.Stop()
 	}
@@ -800,6 +910,9 @@ func (a *App) shutdown() {
 	if a.sessionManager != nil {
 		a.sessionManager.CloseAll()
 	}
+	a.stopMoveResizePump()
+	// backend/log buffers for up to a second; flush so no line is lost.
+	log.Flush()
 	cleanupExtEditsOnExit()
 	session.CleanupSSHX11Server()
 	if a.terminalHistoryStore != nil {
@@ -1047,32 +1160,213 @@ func (a *App) ResolveConnectionSecret(connectionID string) (ConnectionSecret, er
 	}, nil
 }
 
-func (a *App) LoadIdentities() (session.IdentityStoreData, error) {
-	if a.identityStore == nil {
-		return session.IdentityStoreData{Identities: []session.Identity{}}, nil
-	}
-	return a.identityStore.Load()
+// The webview is an untrusted boundary, exactly like for connections (see
+// RedactedConnection): LoadIdentities/LoadProxies must not hand it the
+// decrypted identity vault / proxy passwords. RedactedIdentity blanks the
+// password (login password or key passphrase, one field per authType) and the
+// inline key text, replacing them with presence flags so the edit dialog can
+// still show "saved, leave blank to keep". Secrets resolve Go-side per ID
+// through ResolveIdentitySecret; MaterializeIdentity resolves them at connect
+// time. A save round-trip keeps stored secrets: SaveIdentities restores
+// blanked-but-flagged fields from the store before persisting.
+type RedactedIdentity struct {
+	session.Identity
+	HasPassword   bool `json:"hasPassword"`
+	HasKeyContent bool `json:"hasKeyContent"`
 }
 
-func (a *App) SaveIdentities(data session.IdentityStoreData) error {
+// RedactedIdentityStoreData is the store shape LoadIdentities returns and
+// SaveIdentities accepts.
+type RedactedIdentityStoreData struct {
+	Identities []RedactedIdentity `json:"identities"`
+}
+
+// IdentitySecret carries the decrypted secret fields of one stored identity
+// (see ResolveIdentitySecret).
+type IdentitySecret struct {
+	Password   string `json:"password"`
+	KeyContent string `json:"keyContent"`
+}
+
+// RedactedProxy is a Proxy whose password is blanked and replaced by a
+// presence flag (see RedactedIdentity for the trust-boundary rationale).
+type RedactedProxy struct {
+	session.Proxy
+	HasPass bool `json:"hasPass"`
+}
+
+// RedactedProxyStoreData is the store shape LoadProxies returns and
+// SaveProxies accepts.
+type RedactedProxyStoreData struct {
+	Proxies []RedactedProxy `json:"proxies"`
+}
+
+// ProxySecret carries the decrypted password of one stored proxy (see
+// ResolveProxySecret).
+type ProxySecret struct {
+	Pass string `json:"pass"`
+}
+
+// redactIdentities blanks every secret field and records its presence flag.
+// The input is left untouched so Go-side callers keep the plaintext copy.
+func redactIdentities(data session.IdentityStoreData) RedactedIdentityStoreData {
+	out := RedactedIdentityStoreData{
+		Identities: make([]RedactedIdentity, 0, len(data.Identities)),
+	}
+	for _, id := range data.Identities {
+		ri := RedactedIdentity{Identity: id}
+		ri.HasPassword = id.Password != ""
+		ri.HasKeyContent = id.KeyContent != ""
+		ri.Password = ""
+		ri.KeyContent = ""
+		out.Identities = append(out.Identities, ri)
+	}
+	return out
+}
+
+// restoreRedactedIdentitySecrets converts a redacted payload coming back from
+// the frontend (a load→edit→save round-trip) into the store shape, filling
+// each blanked secret from the currently stored identity when its presence
+// flag is set — "leave blank to keep". A non-blank field wins (the user typed
+// a new secret); a missing flag or missing stored value keeps the blank.
+func (a *App) restoreRedactedIdentitySecrets(data RedactedIdentityStoreData) session.IdentityStoreData {
+	out := session.IdentityStoreData{
+		Identities: make([]session.Identity, 0, len(data.Identities)),
+	}
+	stored := map[string]session.Identity{}
+	if a.identityStore != nil {
+		if cur, err := a.identityStore.Load(); err == nil {
+			for _, id := range cur.Identities {
+				stored[id.ID] = id
+			}
+		}
+	}
+	for _, ri := range data.Identities {
+		id := ri.Identity
+		if prev, ok := stored[id.ID]; ok {
+			if ri.HasPassword && id.Password == "" {
+				id.Password = prev.Password
+			}
+			if ri.HasKeyContent && id.KeyContent == "" {
+				id.KeyContent = prev.KeyContent
+			}
+		}
+		out.Identities = append(out.Identities, id)
+	}
+	return out
+}
+
+// ResolveIdentitySecret returns the decrypted secret fields of ONE stored
+// identity. LoadIdentities never ships secrets to the webview; the identity
+// edit dialog fetches them per ID when the user explicitly asks to view or
+// replace the stored key material.
+func (a *App) ResolveIdentitySecret(identityID string) (IdentitySecret, error) {
+	if a.identityStore == nil {
+		return IdentitySecret{}, fmt.Errorf("identity store not initialized")
+	}
+	data, err := a.identityStore.Load()
+	if err != nil {
+		return IdentitySecret{}, err
+	}
+	for _, id := range data.Identities {
+		if id.ID == identityID {
+			return IdentitySecret{Password: id.Password, KeyContent: id.KeyContent}, nil
+		}
+	}
+	return IdentitySecret{}, fmt.Errorf("identity not found: %s", identityID)
+}
+
+// redactProxies blanks the proxy password and records its presence flag.
+func redactProxies(data session.ProxyStoreData) RedactedProxyStoreData {
+	out := RedactedProxyStoreData{
+		Proxies: make([]RedactedProxy, 0, len(data.Proxies)),
+	}
+	for _, p := range data.Proxies {
+		rp := RedactedProxy{Proxy: p}
+		rp.HasPass = p.Pass != ""
+		rp.Pass = ""
+		out.Proxies = append(out.Proxies, rp)
+	}
+	return out
+}
+
+// restoreRedactedProxySecrets mirrors restoreRedactedIdentitySecrets for
+// proxy passwords: a blanked-but-flagged pass keeps the stored value.
+func (a *App) restoreRedactedProxySecrets(data RedactedProxyStoreData) session.ProxyStoreData {
+	out := session.ProxyStoreData{
+		Proxies: make([]session.Proxy, 0, len(data.Proxies)),
+	}
+	stored := map[string]session.Proxy{}
+	if a.proxyStore != nil {
+		if cur, err := a.proxyStore.Load(); err == nil {
+			for _, p := range cur.Proxies {
+				stored[p.ID] = p
+			}
+		}
+	}
+	for _, rp := range data.Proxies {
+		p := rp.Proxy
+		if prev, ok := stored[p.ID]; ok && rp.HasPass && p.Pass == "" {
+			p.Pass = prev.Pass
+		}
+		out.Proxies = append(out.Proxies, p)
+	}
+	return out
+}
+
+// ResolveProxySecret returns the decrypted password of ONE stored proxy.
+// LoadProxies never ships secrets to the webview; the proxy edit dialog
+// fetches the password per ID only when the user explicitly asks to view it.
+func (a *App) ResolveProxySecret(proxyID string) (ProxySecret, error) {
+	if a.proxyStore == nil {
+		return ProxySecret{}, fmt.Errorf("proxy store not initialized")
+	}
+	data, err := a.proxyStore.Load()
+	if err != nil {
+		return ProxySecret{}, err
+	}
+	for _, p := range data.Proxies {
+		if p.ID == proxyID {
+			return ProxySecret{Pass: p.Pass}, nil
+		}
+	}
+	return ProxySecret{}, fmt.Errorf("proxy not found: %s", proxyID)
+}
+
+func (a *App) LoadIdentities() (RedactedIdentityStoreData, error) {
+	if a.identityStore == nil {
+		return RedactedIdentityStoreData{Identities: []RedactedIdentity{}}, nil
+	}
+	data, err := a.identityStore.Load()
+	if err != nil {
+		return RedactedIdentityStoreData{}, err
+	}
+	return redactIdentities(data), nil
+}
+
+func (a *App) SaveIdentities(data RedactedIdentityStoreData) error {
 	if a.identityStore == nil {
 		return fmt.Errorf("identity store not initialized")
 	}
-	return a.identityStore.Save(data)
+	return a.identityStore.Save(a.restoreRedactedIdentitySecrets(data))
 }
 
-func (a *App) LoadProxies() (session.ProxyStoreData, error) {
+func (a *App) LoadProxies() (RedactedProxyStoreData, error) {
 	if a.proxyStore == nil {
-		return session.ProxyStoreData{Proxies: []session.Proxy{}}, nil
+		return RedactedProxyStoreData{Proxies: []RedactedProxy{}}, nil
 	}
-	return a.proxyStore.Load()
+	data, err := a.proxyStore.Load()
+	if err != nil {
+		return RedactedProxyStoreData{}, err
+	}
+	return redactProxies(data), nil
 }
 
-func (a *App) SaveProxies(data session.ProxyStoreData) error {
+func (a *App) SaveProxies(data RedactedProxyStoreData) error {
 	if a.proxyStore == nil {
 		return fmt.Errorf("proxy store not initialized")
 	}
-	return a.proxyStore.Save(data)
+	return a.proxyStore.Save(a.restoreRedactedProxySecrets(data))
 }
 
 // ExportConnections writes the full store to destPath as a .utm file. When
@@ -1588,18 +1882,51 @@ func (a *App) reloadStoresAfterSync() {
 	}
 	if a.identityStore != nil {
 		if data, err := a.identityStore.Load(); err == nil {
-			a.emit("store:identities:changed", data)
+			a.emit("store:identities:changed", redactIdentities(data))
 		}
 	}
 	if a.proxyStore != nil {
 		if data, err := a.proxyStore.Load(); err == nil {
-			a.emit("store:proxies:changed", data)
+			a.emit("store:proxies:changed", redactProxies(data))
 		}
 	}
 }
 
+// autoSyncDebounce is how long a trigger waits before the coalesced run
+// starts. Saves arrive in bursts (every SaveLocalState, connection edit and
+// settings change), so one trailing sync per burst is enough.
+const autoSyncDebounce = 2 * time.Second
+
+// triggerAutoSync schedules one auto-sync run for the current burst of saves.
 func (a *App) triggerAutoSync() {
 	if a.syncService == nil || !a.syncService.IsAutoSyncEnabled() {
+		return
+	}
+	a.scheduleAutoSync(autoSyncDebounce, a.runAutoSync)
+}
+
+// scheduleAutoSync coalesces triggers into at most one pending run: the first
+// call arms a trailing timer, every call inside that window is dropped, and
+// the pending slot is released before the run starts so a later burst arms
+// again. N saves therefore produce exactly one sync instead of N goroutines
+// queuing behind SyncService.mu.
+func (a *App) scheduleAutoSync(delay time.Duration, run func()) {
+	a.autoSyncMu.Lock()
+	defer a.autoSyncMu.Unlock()
+	if a.autoSyncTimer != nil {
+		return
+	}
+	a.autoSyncTimer = time.AfterFunc(delay, func() {
+		a.autoSyncMu.Lock()
+		a.autoSyncTimer = nil
+		a.autoSyncMu.Unlock()
+		run()
+	})
+}
+
+// runAutoSync performs one debounced sync run.
+func (a *App) runAutoSync() {
+	if a.syncService == nil {
 		return
 	}
 	go func() {
@@ -2308,12 +2635,31 @@ func (a *App) ApplyUpdate() error {
 	return nil
 }
 
+// maxFrontendLogMessage bounds one frontend log message: the renderer can
+// call FrontendLog without limit, and a single multi-megabyte line would
+// stall every logger and inflate the rotated app-log files.
+const maxFrontendLogMessage = 8 << 10 // 8 KiB
+
+// frontendLogTruncationMarker marks a capped message so readers know text is
+// missing.
+const frontendLogTruncationMarker = "…[truncated]"
+
+// truncateFrontendLogMessage caps a message at maxFrontendLogMessage bytes
+// (byte-wise, so a multi-byte rune split at the cut is the only cosmetic
+// casualty) and marks the cut.
+func truncateFrontendLogMessage(msg string) string {
+	if len(msg) <= maxFrontendLogMessage {
+		return msg
+	}
+	return msg[:maxFrontendLogMessage] + frontendLogTruncationMarker
+}
+
 // FrontendLog writes a frontend log message to the application log file.
 // This is the canonical interface for the frontend to persist debug/audit
 // messages alongside backend logs.
 func (a *App) FrontendLog(tag string, message string) {
 	_ = log.Init()
-	log.Writef("[%s] %s", tag, message)
+	log.Writef("[%s] %s", tag, truncateFrontendLogMessage(message))
 }
 
 // OpenPathInExplorer reveals the given file in the platform file
@@ -2408,14 +2754,26 @@ func (a *App) SetDataDir(kind, customDir string, migrate bool) error {
 		return err
 	}
 
-	// On first run: init stores at the target and return.
+	// On first run: init stores at the target and return. The publication of
+	// dataDir, the bootstrap pointer and the store bootstrap all run inside
+	// the stores once-guard, so two concurrent first-run SetDataDir calls
+	// (or one racing ServiceStartup) can neither bootstrap twice nor start
+	// the background goroutines twice. The loser simply reports the winner's
+	// directory.
 	if a.dataDir == "" {
-		a.dataDir = target
-		if err := store.WriteBootstrap(kind, customDir); err != nil {
-			log.Writef("bootstrap write failed (data dir pointer): %v", err)
+		won := false
+		a.storesInitOnce.Do(func() {
+			won = true
+			a.dataDir = target
+			if err := store.WriteBootstrap(kind, customDir); err != nil {
+				log.Writef("bootstrap write failed (data dir pointer): %v", err)
+			}
+			a.runStoreBootstrap(target, false)
+			a.emit("app:dataDirReady", target)
+		})
+		if !won {
+			log.Writef("data dir already initialized (%q); ignoring racing SetDataDir(%q)", a.dataDir, target)
 		}
-		a.initStores(target, false)
-		a.emit("app:dataDirReady", target)
 		return nil
 	}
 

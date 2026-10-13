@@ -131,6 +131,14 @@ func TestS3PartSizeFor(t *testing.T) {
 // driven over HTTP (path-style URLs, like AWS/MinIO).
 func newFakeS3Session(t *testing.T, keys map[string]string) *S3Session {
 	t.Helper()
+	return newFakeS3SessionGET(t, keys, nil)
+}
+
+// newFakeS3SessionGET is newFakeS3Session with a scriptable object GET:
+// getObject (when non-nil) answers the object request itself, e.g. with a
+// body that fails mid-stream.
+func newFakeS3SessionGET(t *testing.T, keys map[string]string, getObject func(http.ResponseWriter, *http.Request)) *S3Session {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("list-type") == "2" {
 			var b strings.Builder
@@ -142,6 +150,10 @@ func newFakeS3Session(t *testing.T, keys map[string]string) *S3Session {
 			b.WriteString("</ListBucketResult>")
 			w.Header().Set("Content-Type", "application/xml")
 			io.WriteString(w, b.String())
+			return
+		}
+		if getObject != nil {
+			getObject(w, r)
 			return
 		}
 		// Object GET: path-style URL is /<bucket>/<key...>.
@@ -224,5 +236,84 @@ func TestS3DownloadDirNestedKeys(t *testing.T) {
 	}
 	if string(flat) != "FLAT" {
 		t.Fatalf("flat key content = %q, want FLAT", flat)
+	}
+}
+
+// --- downloadObject: no partial file under the final name -------------------
+
+// truncatedS3Body answers the object GET with fewer bytes than Content-Length
+// declares, so the response body fails mid-stream.
+func truncatedS3Body(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Length", "4096")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, "short body")
+}
+
+// TestS3DownloadObjectFailureLeavesNoPartialFile: a stream failure
+// mid-download must not leave a truncated file under the final name, must
+// not destroy the bytes already there, and must not leave a .part behind
+// (security.md 文件会话 Low "Partial files are left under the final name
+// after a failure or cancel").
+func TestS3DownloadObjectFailureLeavesNoPartialFile(t *testing.T) {
+	tmp := t.TempDir()
+	s := newFakeS3SessionGET(t, map[string]string{"obj": "unused"}, truncatedS3Body)
+	task := &TransferTask{ID: "s3-dl", Type: "download", RemotePath: "/buck/obj", LocalPath: tmp, Status: "running"}
+	task.start()
+
+	t.Run("no final file after failure", func(t *testing.T) {
+		local := filepath.Join(tmp, "fresh.bin")
+		if err := s.downloadObject(task, "obj", local); err == nil {
+			t.Fatal("downloadObject must report the truncated body")
+		}
+		if _, err := os.Stat(local); err == nil {
+			t.Errorf("truncated file left under final name %s", local)
+		}
+		if _, err := os.Stat(local + ".part"); err == nil {
+			t.Errorf("stale .part file left behind: %s.part", local)
+		}
+	})
+
+	t.Run("existing target keeps old bytes", func(t *testing.T) {
+		local := filepath.Join(tmp, "existing.bin")
+		if err := os.WriteFile(local, []byte("OLD"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.downloadObject(task, "obj", local); err == nil {
+			t.Fatal("downloadObject must report the truncated body")
+		}
+		got, err := os.ReadFile(local)
+		if err != nil {
+			t.Fatalf("read existing target: %v", err)
+		}
+		if string(got) != "OLD" {
+			t.Errorf("existing target content = %q, want OLD (original bytes must survive)", got)
+		}
+		if _, err := os.Stat(local + ".part"); err == nil {
+			t.Errorf("stale .part file left behind: %s.part", local)
+		}
+	})
+}
+
+// TestS3DownloadObjectSuccessCommitsContent: a healthy download lands the
+// full body under the final name with no .part (guard against over-blocking).
+func TestS3DownloadObjectSuccessCommitsContent(t *testing.T) {
+	tmp := t.TempDir()
+	s := newFakeS3Session(t, map[string]string{"obj": "FULL BODY"})
+	task := &TransferTask{ID: "s3-dlok", Type: "download", RemotePath: "/buck/obj", LocalPath: tmp, Status: "running"}
+	task.start()
+
+	local := filepath.Join(tmp, "ok.bin")
+	if err := s.downloadObject(task, "obj", local); err != nil {
+		t.Fatalf("downloadObject: %v", err)
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(got) != "FULL BODY" {
+		t.Errorf("content = %q, want FULL BODY", got)
+	}
+	if _, err := os.Stat(local + ".part"); err == nil {
+		t.Errorf(".part file left behind: %s.part", local)
 	}
 }

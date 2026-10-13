@@ -39,6 +39,6 @@ export function countFinishedTasks(tasks: TransferTaskUI[]): number {
  * Relative paths of files already completed — the retry skip list. Passed to
  * SftpRetryTransfer so the backend only re-transfers what failed or never ran.
  */
-export function buildSkipList(task: TransferTaskUI): string[] {
-  return task.files.filter(f => f.status === 'done').map(f => f.path)
+export function buildSkipList(task: Pick<TransferTaskUI, 'files'>): string[] {
+  return Array.from(task.files.values()).filter(f => f.status === 'done').map(f => f.path)
 }

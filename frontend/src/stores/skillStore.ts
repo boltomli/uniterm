@@ -1,7 +1,36 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { ListSkills, GetSkillBody, SetSkillEnabled, SetSkillLocked, DeleteSkill, CreateSkill, SaveSkill, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { SkillMeta } from '../types/skill'
+import { t } from '../i18n'
+
+/** Result of an AI-initiated skill save: declined means the user refused the
+ * overwrite prompt, so nothing was written. */
+export type SaveByAgentResult = 'saved' | 'declined'
+
+/** Asks the user before an existing skill is overwritten. Injectable so tests
+ * (and alternative UIs) can supply their own dialog. */
+type OverwriteConfirm = (name: string) => boolean | Promise<boolean>
+
+// Default production dialog. Dismissing it (cancel/Esc) resolves to false so
+// an existing skill is never overwritten silently.
+async function defaultOverwriteConfirm(name: string): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(
+      t('settings.skillsOverwriteConfirm', { name }),
+      t('settings.skills'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
 
 export const useSkillStore = defineStore('skills', () => {
   const skills = ref<SkillMeta[]>([])
@@ -81,16 +110,29 @@ export const useSkillStore = defineStore('skills', () => {
     }
   }
 
-  // AI 侧保存：已存在则覆写（后端拒绝 locked），不存在则新建。
-  async function saveByAgent(name: string, description: string, body: string) {
+  // AI 侧保存：新名直接新建；同名且未锁定的既有 skill 必须先经用户确认
+  // 才覆写（prompt injection 不再能静默种下一个用户以后会执行的 skill），
+  // 用户拒绝时一个字节都不落盘。同名已锁定的 skill 由后端拒绝，无需打扰用户。
+  const confirmOverwrite = ref<OverwriteConfirm>(defaultOverwriteConfirm)
+
+  async function saveByAgent(
+    name: string,
+    description: string,
+    body: string,
+  ): Promise<SaveByAgentResult> {
     await load()
-    const exists = skills.value.some(s => s.name === name)
-    if (exists) {
+    const existing = skills.value.find(s => s.name === name)
+    if (existing && !existing.locked) {
+      const approved = await confirmOverwrite.value(name)
+      if (!approved) return 'declined'
+    }
+    if (existing) {
       await SaveSkill(name, description, body)
     } else {
       await CreateSkill(name, description, body)
     }
     await reload()
+    return 'saved'
   }
 
   async function getBody(name: string): Promise<string> {
@@ -112,7 +154,7 @@ export const useSkillStore = defineStore('skills', () => {
   }
 
   return {
-    skills, loaded, enabledSkills,
+    skills, loaded, enabledSkills, confirmOverwrite,
     load, reload,
     toggleEnabled, toggleLocked, remove, create, save, saveByAgent, getBody, openFolder,
   }

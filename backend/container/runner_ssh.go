@@ -19,22 +19,44 @@ type SSHRunner struct {
 func NewSSHRunner(client *ssh.Client) *SSHRunner { return &SSHRunner{client: client} }
 func (r *SSHRunner) Client() *ssh.Client         { return r.client }
 
-func (r *SSHRunner) Run(_ context.Context, argv []string) ([]byte, error) {
-	return r.run(argv, nil)
+// closeSessionOnDone 在 ctx 取消时关闭 sess，让阻塞中的 Wait / 读写立即返回，
+// 调用方的超时（例如 PutContent 的 30s）才能真正生效。返回的停止函数必须在
+// 操作结束后调用以回收 goroutine；对可重复调用的 Wait/Close 是幂等的。
+func closeSessionOnDone(ctx context.Context, sess *ssh.Session) (stop func()) {
+	if ctx.Done() == nil {
+		// Background/TODO: nothing to watch, don't leak a goroutine.
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
-func (r *SSHRunner) RunStdin(_ context.Context, argv []string, stdin []byte) ([]byte, error) {
-	return r.run(argv, stdin)
+func (r *SSHRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
+	return r.run(ctx, argv, nil)
+}
+
+func (r *SSHRunner) RunStdin(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	return r.run(ctx, argv, stdin)
 }
 
 // RunStdinStream 带流式标准输入执行：本机 tar 流经 SSH stdin 直达远端容器。
 // 写完 stdin 并关闭后等退出，stdout 全量收集（导入类命令 stdout 近似为空）。
-func (r *SSHRunner) RunStdinStream(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+func (r *SSHRunner) RunStdinStream(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
 	}
 	defer sess.Close()
+	stop := closeSessionOnDone(ctx, sess)
+	defer stop()
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
@@ -71,10 +93,13 @@ type sshRawStream struct {
 	// stderrDone 在 stderr 排干 goroutine 结束后关闭；Wait 读缓冲前必须等它，
 	// 否则与 io.Copy 并发读写 bytes.Buffer 是数据竞争，还会漏掉尾部内容。
 	stderrDone chan struct{}
-	once       sync.Once
+	// stopWatch 释放 ctx 取消监听 goroutine；幂等，Wait/Close 都会调用。
+	stopWatch func()
+	once      sync.Once
 }
 
 func (s *sshRawStream) Wait() error {
+	defer s.stopWatch()
 	err := s.sess.Wait()
 	if s.stderrDone != nil {
 		// 等 stderr 排干 goroutine 收尾再读缓冲；远端发完 exit-status 但迟迟
@@ -99,10 +124,11 @@ func (s *sshRawStream) Close() error {
 	s.once.Do(func() {
 		_ = s.sess.Close()
 	})
+	s.stopWatch()
 	return nil
 }
 
-func (r *SSHRunner) RunRaw(_ context.Context, argv []string) (RawStream, error) {
+func (r *SSHRunner) RunRaw(ctx context.Context, argv []string) (RawStream, error) {
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
@@ -123,19 +149,23 @@ func (r *SSHRunner) RunRaw(_ context.Context, argv []string) (RawStream, error) 
 		defer close(stderrDone)
 		_, _ = io.Copy(stderrBuf, stderr)
 	}()
+	stopWatch := closeSessionOnDone(ctx, sess)
 	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+		stopWatch()
 		sess.Close()
 		return nil, err
 	}
-	return &sshRawStream{Reader: stdout, sess: sess, stderr: stderrBuf, stderrDone: stderrDone}, nil
+	return &sshRawStream{Reader: stdout, sess: sess, stderr: stderrBuf, stderrDone: stderrDone, stopWatch: stopWatch}, nil
 }
 
-func (r *SSHRunner) run(argv []string, stdin []byte) ([]byte, error) {
+func (r *SSHRunner) run(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
 	}
 	defer sess.Close()
+	stop := closeSessionOnDone(ctx, sess)
+	defer stop()
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
@@ -178,12 +208,13 @@ func (r *SSHRunner) run(argv []string, stdin []byte) ([]byte, error) {
 }
 
 type sshLineStream struct {
-	lines    chan string
-	done     chan error
-	sess     *ssh.Session
-	once     sync.Once
-	waitOnce sync.Once
-	waitErr  error
+	lines     chan string
+	done      chan error
+	sess      *ssh.Session
+	stopWatch func()
+	once      sync.Once
+	waitOnce  sync.Once
+	waitErr   error
 }
 
 func (s *sshLineStream) Lines() <-chan string { return s.lines }
@@ -191,6 +222,7 @@ func (s *sshLineStream) Lines() <-chan string { return s.lines }
 // Wait 缓存结果：Close 与消费者可并发/重复调用，均拿到同一真实退出状态。
 func (s *sshLineStream) Wait() error {
 	s.waitOnce.Do(func() { s.waitErr = <-s.done })
+	s.stopWatch()
 	return s.waitErr
 }
 
@@ -203,7 +235,7 @@ func (s *sshLineStream) Close() error {
 	return nil
 }
 
-func (r *SSHRunner) RunStream(_ context.Context, argv []string) (LineStream, error) {
+func (r *SSHRunner) RunStream(ctx context.Context, argv []string) (LineStream, error) {
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
@@ -213,11 +245,13 @@ func (r *SSHRunner) RunStream(_ context.Context, argv []string) (LineStream, err
 		sess.Close()
 		return nil, err
 	}
+	stopWatch := closeSessionOnDone(ctx, sess)
 	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+		stopWatch()
 		sess.Close()
 		return nil, err
 	}
-	s := &sshLineStream{lines: make(chan string, 64), done: make(chan error, 1), sess: sess}
+	s := &sshLineStream{lines: make(chan string, 64), done: make(chan error, 1), sess: sess, stopWatch: stopWatch}
 	go func() {
 		sc := bufio.NewScanner(stdout)
 		sc.Buffer(make([]byte, 0, 256*1024), 256*1024)
@@ -234,14 +268,15 @@ func (r *SSHRunner) RunStream(_ context.Context, argv []string) (LineStream, err
 }
 
 type sshPTY struct {
-	sess  *ssh.Session
-	stdin io.Writer
-	data  chan []byte
-	mu    sync.Mutex
-	once  sync.Once
+	sess      *ssh.Session
+	stdin     io.Writer
+	data      chan []byte
+	stopWatch func()
+	mu        sync.Mutex
+	once      sync.Once
 }
 
-func (r *SSHRunner) RunPTY(_ context.Context, argv []string, cols, rows int) (PTYStream, error) {
+func (r *SSHRunner) RunPTY(ctx context.Context, argv []string, cols, rows int) (PTYStream, error) {
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
@@ -261,12 +296,17 @@ func (r *SSHRunner) RunPTY(_ context.Context, argv []string, cols, rows int) (PT
 		sess.Close()
 		return nil, err
 	}
+	stopWatch := closeSessionOnDone(ctx, sess)
 	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+		stopWatch()
 		sess.Close()
 		return nil, err
 	}
-	p := &sshPTY{sess: sess, stdin: stdin, data: make(chan []byte, 32)}
+	p := &sshPTY{sess: sess, stdin: stdin, data: make(chan []byte, 32), stopWatch: stopWatch}
 	go func() {
+		// ctx 取消时 closeSessionOnDone 关会话 → 下面的 Read 返回错误 →
+		// data 通道关闭，终端界面据此得知连接断开。
+		defer stopWatch()
 		buf := make([]byte, 4096)
 		for {
 			n, err := stdout.Read(buf)

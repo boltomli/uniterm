@@ -35,8 +35,8 @@
           <span class="task-type"><ArrowUp v-if="task.type === 'upload'" :size="lucideSize('0.75rem')" /><ArrowDown v-else :size="lucideSize('0.75rem')" /></span>
           <span
             class="task-name"
-            :class="{ clickable: task.files.length > 0 }"
-            :title="task.files.length > 0 ? (expanded[task.id] ? t('sftp.hideFiles') : t('sftp.showFiles')) : undefined"
+            :class="{ clickable: task.files.size > 0 }"
+            :title="task.files.size > 0 ? (expanded[task.id] ? t('sftp.hideFiles') : t('sftp.showFiles')) : undefined"
             @click="toggleExpand(task)"
           >{{ task.name }}<span v-if="task.fileCount > 0" class="task-dir-detail">{{ task.completedFiles }}/{{ task.fileCount }}</span></span>
           <span class="task-eta" v-if="task.eta">{{ task.eta }}</span>
@@ -78,12 +78,12 @@
           </div>
         </div>
         <div
-          v-if="expanded[task.id] && task.files.length > 0"
+          v-if="expanded[task.id] && task.files.size > 0"
           class="task-files"
           :title="t('sftp.fileProgress')"
         >
           <div
-            v-for="f in task.files.slice(-200)"
+            v-for="f in fileRows(task)"
             :key="f.path"
             class="task-file"
             :class="'f-' + f.status"
@@ -91,7 +91,7 @@
             <span class="task-file-name">{{ f.path }}</span>
             <span class="task-file-status">{{ t('sftp.fileStatus.' + f.status) }}</span>
           </div>
-          <div v-if="task.files.length > 200" class="task-file-more">…</div>
+          <div v-if="task.files.size > 200" class="task-file-more">…</div>
         </div>
       </div>
     </div>
@@ -103,6 +103,7 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, computed } from 'vue'
 import { X, Pause, Play, ArrowUp, ArrowDown, Check, RotateCcw, BrushCleaning, ChevronUp, ChevronDown } from '@lucide/vue'
 import { useI18n } from '../i18n'
+import { fileEntriesRevision } from '../services/transferTaskCenter'
 import type { TransferTaskUI } from '../stores/panelStore'
 
 const props = defineProps<{
@@ -131,8 +132,17 @@ const panelRef = ref<HTMLElement | null>(null)
 const expanded = reactive<Record<string, boolean>>({})
 
 function toggleExpand(task: TransferTaskUI) {
-  if (task.files.length === 0) return
+  if (task.files.size === 0) return
   expanded[task.id] = !expanded[task.id]
+}
+
+// Rows to render for one task. Map insertion order is event order, so the
+// last 200 entries behave like the old array slice. Reading the revision
+// subscribes the render to status flips on markRaw'd (raw) entries, which
+// cannot trigger Vue on their own.
+function fileRows(task: TransferTaskUI) {
+  void fileEntriesRevision.value
+  return Array.from(task.files.values()).slice(-200)
 }
 
 const hasFinished = computed(() =>

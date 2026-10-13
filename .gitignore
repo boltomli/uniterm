@@ -22,6 +22,10 @@ build/darwin/*
 !build/darwin/Info.dev.plist
 # icns ships prebuilt so `wails dev`/`run` show the real icon before generate:icns ever runs
 !build/darwin/icons.icns
+# Update release signing: the tool is tracked, the private key never is
+# (backend/update/signature.go embeds only the public half)
+!build/signcmd/
+build/release-signing.key
 uniTerm.exe
 __debug*
 

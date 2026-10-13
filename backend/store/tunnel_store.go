@@ -45,27 +45,38 @@ func (s *TunnelStore) Save(data session.TunnelStoreData) error {
 	return s.saveLocked(data)
 }
 
-// saveLocked encrypts upstream Pass fields and writes tunnels.json atomically.
-// Caller must hold s.mu.
+// saveLocked encrypts the upstream Pass and SOCKS password fields and writes
+// tunnels.json atomically. Caller must hold s.mu.
 func (s *TunnelStore) saveLocked(data session.TunnelStoreData) error {
 	out := data
 	out.Tunnels = make([]session.Tunnel, len(data.Tunnels))
 	copy(out.Tunnels, data.Tunnels)
 	for i := range out.Tunnels {
 		up := out.Tunnels[i].Upstream
-		if up == nil || up.Pass == "" || credentials.IsEncrypted(up.Pass) {
-			continue
+		if up != nil && up.Pass != "" && !credentials.IsEncrypted(up.Pass) {
+			if s.passwordStore == nil {
+				return errors.New("passwordStore not initialized; refusing to save plaintext password")
+			}
+			enc, err := s.passwordStore.Encrypt(up.Pass)
+			if err != nil {
+				return err
+			}
+			upCopy := *up
+			upCopy.Pass = enc
+			out.Tunnels[i].Upstream = &upCopy
 		}
-		if s.passwordStore == nil {
-			return errors.New("passwordStore not initialized; refusing to save plaintext password")
+		// The dynamic tunnel's SOCKS password is a credential of the same
+		// kind: ciphertext at rest, never plaintext.
+		if p := out.Tunnels[i].SOCKSPass; p != "" && !credentials.IsEncrypted(p) {
+			if s.passwordStore == nil {
+				return errors.New("passwordStore not initialized; refusing to save plaintext password")
+			}
+			enc, err := s.passwordStore.Encrypt(p)
+			if err != nil {
+				return err
+			}
+			out.Tunnels[i].SOCKSPass = enc
 		}
-		enc, err := s.passwordStore.Encrypt(up.Pass)
-		if err != nil {
-			return err
-		}
-		upCopy := *up
-		upCopy.Pass = enc
-		out.Tunnels[i].Upstream = &upCopy
 	}
 	bytes, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -100,25 +111,39 @@ func (s *TunnelStore) Load() (session.TunnelStoreData, error) {
 	needsSave := false
 	for i := range data.Tunnels {
 		up := data.Tunnels[i].Upstream
-		if up == nil || up.Pass == "" {
-			continue
-		}
-		if credentials.IsEncrypted(up.Pass) {
-			if s.passwordStore == nil {
-				continue // no cipher wired — leave as-is (backward compat)
+		if up != nil && up.Pass != "" {
+			if credentials.IsEncrypted(up.Pass) {
+				if s.passwordStore == nil {
+					// no cipher wired — leave as-is (backward compat)
+				} else {
+					pw, err := s.passwordStore.Decrypt(up.Pass)
+					if err != nil {
+						return session.TunnelStoreData{}, err
+					}
+					up.Pass = pw
+				}
+			} else if s.passwordStore != nil {
+				// Legacy plaintext on disk (tunnels.json predating in-place
+				// encryption). Keep the plaintext for the caller but re-save
+				// so it lands encrypted.
+				needsSave = true
 			}
-			pw, err := s.passwordStore.Decrypt(up.Pass)
-			if err != nil {
-				return session.TunnelStoreData{}, err
-			}
-			up.Pass = pw
-			continue
 		}
-		// Legacy plaintext on disk (tunnels.json predating in-place
-		// encryption). Keep the plaintext for the caller but re-save so it
-		// lands encrypted.
-		if s.passwordStore != nil {
-			needsSave = true
+		// Same treatment for the dynamic tunnel's SOCKS password.
+		if p := data.Tunnels[i].SOCKSPass; p != "" {
+			if credentials.IsEncrypted(p) {
+				if s.passwordStore == nil {
+					// no cipher wired — leave as-is (backward compat)
+				} else {
+					pw, err := s.passwordStore.Decrypt(p)
+					if err != nil {
+						return session.TunnelStoreData{}, err
+					}
+					data.Tunnels[i].SOCKSPass = pw
+				}
+			} else if s.passwordStore != nil {
+				needsSave = true
+			}
 		}
 	}
 	if needsSave {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { computed, watch } from 'vue'
 
 // EventsOn is called at module load; stub it so importing the store is safe.
 // The session:data handler is captured so cancel-window tests can drive the
@@ -198,5 +199,69 @@ describe('sessionStore zmodem cancel window', () => {
     emitData('s-expire', 'prompt')
     expect(sessions.getChunkCount('s-expire')).toBe(1)
     expect(sessions.getDataFromChunk('s-expire', 0)).toBe('prompt')
+  })
+})
+
+describe('sessionStore reactivity boundary (F-019 buffer)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('status stays reactive so hasLiveSessions-style consumers update', () => {
+    const store = useSessionStore()
+    const id = 'react-status'
+    store.initSession(id)
+    // App.vue:327 pattern — iterate the map and read s.status.
+    const live = computed(() => {
+      const s = store.sessions.get(id)
+      return !!s && (s.status === 'connected' || s.status === 'connecting')
+    })
+    expect(live.value).toBe(true)
+    store.updateStatus(id, 'disconnected')
+    expect(live.value).toBe(false)
+    store.updateStatus(id, 'connected')
+    expect(live.value).toBe(true)
+  })
+
+  it('chunk pushes are invisible to a deep watcher over the session map', () => {
+    const store = useSessionStore()
+    const id = 'raw-buffer'
+    store.initSession(id)
+
+    const fired = vi.fn()
+    watch(() => store.sessions, fired, { deep: true, flush: 'sync' })
+
+    // The watcher must genuinely be live on the reactive parts: status
+    // changes (tab connection dot) still wake it.
+    store.updateStatus(id, 'connected')
+    expect(fired).toHaveBeenCalled()
+    const afterStatus = fired.mock.calls.length
+
+    // appendData writes must NOT wake the deep watcher: the chunk buffer
+    // (~256 KB per session) lives outside the reactive proxy (markRaw), so
+    // per-chunk proxy tracking and deep-watcher storms stay off the hot path.
+    store.appendData(id, 'hello\n')
+    store.appendData(id, 'world\n')
+    expect(fired.mock.calls.length).toBe(afterStatus)
+
+    // The data must still be stored and readable through the store API.
+    // getData would strip everything before the first \n (restart-boundary
+    // logic), so assert the raw join via getDataFromChunk.
+    expect(store.getDataFromChunk(id, 0)).toBe('hello\nworld\n')
+    expect(store.getChunkCount(id)).toBe(2)
+  })
+
+  it('removeSession drops the closed tab session from the map', () => {
+    const store = useSessionStore()
+    const id = 'close-tab'
+    store.initSession(id)
+    store.appendData(id, 'buffered output')
+    expect(store.sessions.has(id)).toBe(true)
+
+    store.removeSession(id)
+
+    expect(store.sessions.has(id)).toBe(false)
+    expect(store.getChunkCount(id)).toBe(0)
+    expect(store.getData(id)).toBe('')
   })
 })

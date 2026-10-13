@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-)
 
+	"github.com/ys-ll/uniterm/backend/session"
+)
 
 // TestApp_StartupError_CapturesSingleError verifies that a single error
 // sent during startup() surfaces through StartupError() after
@@ -253,5 +256,65 @@ func TestApp_ConcurrentCancelSurvives(t *testing.T) {
 	}
 	if c != &myB {
 		t.Errorf("chatCancel points at %p, want B's cancel at %p", c, &myB)
+	}
+}
+
+// ── shutdown ──────────────────────────────────────────────────────────────
+
+// Regression (security.md medium): shutdown() never disabled the per-panel
+// session logs. OutputLogger buffers 64 KiB / 1s, so the last second of
+// terminal output — and the footer banner — was lost on every quit.
+func TestShutdownFlushesPanelLogs(t *testing.T) {
+	a := &App{
+		webviewDataPath:    t.TempDir(),
+		panelLogs:          make(map[string]*session.OutputLogger),
+		sessionToPanel:     make(map[string]string),
+		panelAutoTriggered: make(map[string]bool),
+	}
+	logger := &session.OutputLogger{}
+	path, err := logger.Enable(t.TempDir(), "", "panel", "", "session")
+	if err != nil {
+		t.Fatalf("enable panel log: %v", err)
+	}
+	a.panelLogs["panel-1"] = logger
+	logger.WriteOutput([]byte("buffered line\r\n"))
+
+	a.shutdown()
+
+	if logger.Enabled() {
+		t.Fatal("panel log still enabled after shutdown")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	if !strings.Contains(string(got), "buffered line") {
+		t.Fatalf("shutdown dropped buffered session output; log holds %q", got)
+	}
+}
+
+// ── session event payload shape ───────────────────────────────────────────
+
+// The frontend listeners (sessionStore, BaseTerminal, terminalAgent,
+// zmodemService) read {id, data} off ev.data. The typed payloads that
+// replaced the per-chunk map[string]interface{} must serialise to exactly
+// that object — same keys, no extras — so the wire format stays compatible.
+func TestSessionDataEventWireShapeMatchesFrontend(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload any
+		want    string
+	}{
+		{"data", sessionDataEvent{ID: "s1", Data: "hello"}, `{"id":"s1","data":"hello"}`},
+		{"binary", sessionBinaryEvent{ID: "s1", Data: "aGVsbG8="}, `{"id":"s1","data":"aGVsbG8="}`},
+	}
+	for _, tc := range cases {
+		got, err := json.Marshal(tc.payload)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tc.name, err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s payload = %s, want %s", tc.name, got, tc.want)
+		}
 	}
 }

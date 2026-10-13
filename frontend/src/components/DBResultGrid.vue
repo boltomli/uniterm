@@ -14,9 +14,9 @@
       @cell-dblclick="onCellDblClick"
     >
       <el-table-column
-        v-for="col in columns"
-        :key="col.name"
-        :prop="col.name"
+        v-for="(col, idx) in columns"
+        :key="idx"
+        :prop="String(idx)"
         :label="colTitle(col)"
         :min-width="uiPx(110)"
         sortable="custom"
@@ -24,7 +24,7 @@
       >
         <template #default="{ row }">
           <div
-            v-if="canEdit && editingRow === row && editingField === col.name"
+            v-if="canEdit && editingRow === row && editingField === idx"
             class="cell-edit-wrap"
             @mousedown.stop
           >
@@ -50,15 +50,15 @@
             </button>
           </div>
           <span
-            v-else-if="row[col.name] === null"
+            v-else-if="row[idx] === null"
             class="cell-null"
-            :class="{ 'cell-pending': isPending(row, col.name) }"
+            :class="{ 'cell-pending': isPending(row, idx) }"
           >{{ t('db.null') }}</span>
           <span
             v-else
             class="cell-value"
-            :class="{ 'cell-pending': isPending(row, col.name) }"
-          >{{ formatCell(row[col.name]) }}</span>
+            :class="{ 'cell-pending': isPending(row, idx) }"
+          >{{ formatCell(row[idx]) }}</span>
         </template>
       </el-table-column>
 
@@ -97,16 +97,18 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowReactive, shallowRef, watch } from 'vue'
 import { Pencil, Trash2 } from '@lucide/vue'
-import type { QueryResultColumn, ColumnInfo } from '../types/database'
+import type { QueryResultColumn, ColumnInfo, DbRow, DbCellValue } from '../types/database'
 import { useI18n } from '../i18n'
 import { uiPx } from '../utils/uiScale'
 
 const { t } = useI18n()
 
 const props = defineProps<{
-  rows: Record<string, any>[]
+  /** Positional rows; cell (row r, column c) is rows[r][c]. Duplicate
+   *  column names are legal, so cells are addressed by column index. */
+  rows: DbRow[]
   columns: QueryResultColumn[]
   canEdit: boolean
   primaryKeys?: string[]
@@ -120,28 +122,34 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** A staged, unsaved cell edit changed; payload = number of pending edits. */
   'pending-change': [count: number]
-  'edit-row': [row: Record<string, any>]
-  'delete-row': [row: Record<string, any>]
-  'sort-change': [payload: { field: string; order: 'asc' | 'desc' | null }]
+  'edit-row': [row: DbRow]
+  'delete-row': [row: DbRow]
+  'sort-change': [payload: { index: number; order: 'asc' | 'desc' | null }]
 }>()
 
-const tableRef = ref<any>(null)
+// Write-only template ref target; never read in script.
+const tableRef = ref<unknown>(null)
 const cellInputEl = ref<HTMLInputElement | null>(null)
 
 const tableKey = computed(() => `edit-${props.canEdit ? 1 : 0}-cols-${props.columns.map(c => c.name).join('|')}`)
 
-/** Currently edited cell (row + column name). */
-const editingRow = ref<Record<string, any> | null>(null)
-const editingField = ref<string | null>(null)
+/** Currently edited cell (row + column index). shallowRef: a deep ref would
+ *  try to unwrap the recursive DbCellValue row type (TS2589); the row object
+ *  identity is all this needs. */
+const editingRow = shallowRef<DbRow | null>(null)
+const editingField = ref<number | null>(null)
 const draftValue = ref('')
 const draftIsNull = ref(false)
-let snapOldValue: any = undefined
+let snapOldValue: DbCellValue | undefined = undefined
 
-interface StagedCell { old: any; newVal: any }
-interface StagedRow { pk: Record<string, any>; fields: Map<string, StagedCell> }
+interface StagedCell { old: DbCellValue; newVal: DbCellValue }
+interface StagedRow { pk: Record<string, DbCellValue>; fields: Map<number, StagedCell> }
 
-/** Unsaved edits, keyed by the row object they belong to. Reactive for cell highlight. */
-const pending = reactive(new Map<Record<string, any>, StagedRow>())
+/** Unsaved edits, keyed by the row object they belong to. Reactive for cell
+ *  highlight. shallowReactive: the Map operations (get/set/delete) must be
+ *  tracked, but deep-unwrapping the recursive DbCellValue rows through
+ *  Vue's reactive types blows the instantiation budget (TS2589). */
+const pending = shallowReactive(new Map<DbRow, StagedRow>())
 
 function changedCellCount() {
   let n = 0
@@ -164,35 +172,38 @@ function colTitle(col: QueryResultColumn) {
 function isNullable(colName: string) {
   return findMeta(colName)?.nullable ?? true
 }
-function formatCell(v: any) {
+function formatCell(v: DbCellValue | undefined) {
   if (v === null || v === undefined) return ''
   if (typeof v === 'object') {
     try { return JSON.stringify(v) } catch { return String(v) }
   }
   return String(v)
 }
-function valuesEqual(a: any, b: any) {
+function valuesEqual(a: DbCellValue | undefined, b: DbCellValue | undefined) {
   if (a === b) return true
   if (a === null || b === null || a === undefined || b === undefined) return false
   return String(a) === String(b)
 }
-function snapshotPk(row: Record<string, any>) {
-  const pk: Record<string, any> = {}
-  for (const k of props.primaryKeys || []) pk[k] = row[k] ?? null
+function snapshotPk(row: DbRow) {
+  const pk: Record<string, DbCellValue> = {}
+  for (const k of props.primaryKeys || []) {
+    const idx = props.columns.findIndex(c => c.name === k)
+    pk[k] = idx >= 0 ? row[idx] ?? null : null
+  }
   return pk
 }
-function isPending(row: Record<string, any>, field: string) {
-  return pending.get(row)?.fields.has(field) ?? false
+function isPending(row: DbRow, fieldIdx: number) {
+  return pending.get(row)?.fields.has(fieldIdx) ?? false
 }
 
-function startEdit(row: Record<string, any>, field: string) {
-  if (editingRow.value === row && editingField.value === field) return
+function startEdit(row: DbRow, fieldIdx: number) {
+  if (editingRow.value === row && editingField.value === fieldIdx) return
   if (editingRow.value) onCellEditConfirm() // stage pending edit first
   editingRow.value = row
-  editingField.value = field
-  draftIsNull.value = row[field] === null
-  draftValue.value = row[field] === null || row[field] === undefined ? '' : String(row[field])
-  snapOldValue = row[field]
+  editingField.value = fieldIdx
+  draftIsNull.value = row[fieldIdx] === null
+  draftValue.value = row[fieldIdx] === null || row[fieldIdx] === undefined ? '' : String(row[fieldIdx])
+  snapOldValue = row[fieldIdx]
   document.addEventListener('mousedown', onEditOutsideMousedown)
   document.addEventListener('keydown', onEditKeydown)
   nextTick(() => {
@@ -216,13 +227,16 @@ function onEditDismissCleanup() {
   document.removeEventListener('keydown', onEditKeydown)
 }
 
-// el-table's @cell-dblclick passes positional args (row, column, cell, event)
-function onCellDblClick(row: Record<string, any>, column?: { property?: string }) {
+// el-table's @cell-dblclick passes positional args (row, column, cell, event).
+// The column property is the ordinal index (String(idx)), so duplicate
+// column names still map to the right cell.
+function onCellDblClick(row: DbRow, column?: { property?: string }) {
   if (!props.canEdit) return
-  const field = column?.property
-  if (!field) return
-  if (!props.columns.some(c => c.name === field)) return
-  startEdit(row, field)
+  const prop = column?.property
+  if (prop === undefined || prop === null || prop === '') return
+  const idx = Number(prop)
+  if (!Number.isInteger(idx) || idx < 0 || idx >= props.columns.length) return
+  startEdit(row, idx)
 }
 
 function onDraftInput() {
@@ -236,16 +250,16 @@ function setDraftNull() {
 function onCellEditConfirm() {
   const row = editingRow.value
   const field = editingField.value
-  if (!row || !field) return
+  if (!row || field === null) return
   editingRow.value = null
   editingField.value = null
   onEditDismissCleanup()
-  const newVal: any = draftIsNull.value ? null : draftValue.value
+  const newVal: DbCellValue = draftIsNull.value ? null : draftValue.value
   const oldVal = snapOldValue
   snapOldValue = undefined
   draftIsNull.value = false
   if (valuesEqual(oldVal, newVal)) {
-    row[field] = oldVal
+    row[field] = oldVal ?? null
     return
   }
   // Stage instead of saving: reflect the change live, mark dirty, wait for explicit save.
@@ -256,7 +270,7 @@ function onCellEditConfirm() {
     pending.set(row, rec)
   }
   const existing = rec.fields.get(field)
-  const original = existing ? existing.old : oldVal
+  const original = existing ? existing.old : (oldVal ?? null)
   if (valuesEqual(original, newVal)) {
     // Edited back to the committed value — drop the staged edit for this field.
     rec.fields.delete(field)
@@ -271,10 +285,10 @@ function onCellEditConfirm() {
 function onCellEditCancel() {
   const row = editingRow.value
   const field = editingField.value
-  if (row && field) {
+  if (row && field !== null) {
     const rec = pending.get(row)
     const staged = rec?.fields.get(field)
-    row[field] = staged ? staged.newVal : snapOldValue
+    row[field] = staged ? staged.newVal : (snapOldValue ?? null)
   }
   editingRow.value = null
   editingField.value = null
@@ -284,51 +298,61 @@ function onCellEditCancel() {
 }
 
 function onSortChange({ prop, order }: { prop?: string; order?: string | null }) {
-  const field = prop || ''
+  const idx = prop === undefined || prop === null || prop === '' ? -1 : Number(prop)
   const ord: 'asc' | 'desc' | null =
     order === 'ascending' || order === 'asc' ? 'asc'
       : order === 'descending' || order === 'desc' ? 'desc'
         : null
-  emit('sort-change', { field, order: ord })
+  emit('sort-change', { index: idx, order: ord })
 }
 
 /** Discard all staged edits for a row and restore its committed values. */
-function revertRow(row: Record<string, any>) {
+function revertRow(row: DbRow) {
   const rec = pending.get(row)
   if (!rec) return
-  for (const [field, cell] of rec.fields) row[field] = cell.old
+  for (const [fieldIdx, cell] of rec.fields) row[fieldIdx] = cell.old
   pending.delete(row)
   bumpPending()
 }
 /** Discard every staged edit. */
 function revertAll() {
   for (const [row, rec] of pending) {
-    for (const [field, cell] of rec.fields) row[field] = cell.old
+    for (const [fieldIdx, cell] of rec.fields) row[fieldIdx] = cell.old
   }
   pending.clear()
   bumpPending()
 }
 /** Mark a staged edit as persisted (after a successful save). */
-function markCommitted(row: Record<string, any>, field: string) {
+function markCommitted(row: DbRow, fieldIdx: number) {
   const rec = pending.get(row)
   if (!rec) return
-  rec.fields.delete(field)
+  rec.fields.delete(fieldIdx)
   if (rec.fields.size === 0) pending.delete(row)
   bumpPending()
 }
 
-/** Snapshot of all currently staged edits, ready for DBUpdateRow calls. */
+/** Snapshot of all currently staged edits, ready for DBUpdateRow calls. `field`
+ *  carries the column name (unique in editable browse results); fieldIndex is
+ *  the positional handle used by markCommitted. */
 function getPendingEdits(): Array<{
-  row: Record<string, any>
+  row: DbRow
   field: string
-  newValue: any
-  oldValue: any
-  where: Record<string, any>
+  fieldIndex: number
+  newValue: DbCellValue
+  oldValue: DbCellValue
+  where: Record<string, DbCellValue>
 }> {
   const out: ReturnType<typeof getPendingEdits> = []
   for (const [row, rec] of pending) {
-    for (const [field, cell] of rec.fields) {
-      out.push({ row, field, newValue: cell.newVal, oldValue: cell.old, where: { ...rec.pk } })
+    for (const [fieldIdx, cell] of rec.fields) {
+      out.push({
+        row,
+        field: props.columns[fieldIdx]?.name ?? '',
+        fieldIndex: fieldIdx,
+        newValue: cell.newVal,
+        oldValue: cell.old,
+        where: { ...rec.pk },
+      })
     }
   }
   return out

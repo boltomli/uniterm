@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -158,10 +157,7 @@ func (a *App) K8sExecSession(connID, namespace, pod, container string) (*session
 	// k8s exec 的 WS 通道适配为通用 PTYStream，与容器 exec 会话统一
 	sess := session.NewContainerExecSession(id, session.NewK8sExecStream(wsConn))
 	sess.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   sess.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(sess.ID(), string(data))
 	})
 	sess.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		a.emit("session:status", map[string]interface{}{
@@ -261,6 +257,14 @@ func (a *App) ContainerConnect(connectionID, sshUser, sshPassword, tunnelUser, t
 		return fmt.Errorf("referenced SSH connection missing: %s", cfg.ContainerSSHConnID)
 	}
 
+	// Resolve the secrets the redacted frontend/stored config carries by
+	// connection ID through the SHARED guarded helper (mirrors
+	// CreateSession): same-auth-type transfer only, and the legacy-keychain
+	// fallback is password-auth-only — an unguarded fallback here used to
+	// stuff a stored login password into a key/keyText passphrase slot,
+	// which breaks unencrypted keys.
+	a.fillStoredSecrets(sshCfg)
+
 	// Resolve an identity reference into a concrete password/key config
 	// before handing the SSH runner its connection config.
 	if sshCfg.AuthType == "identity" {
@@ -282,14 +286,13 @@ func (a *App) ContainerConnect(connectionID, sshUser, sshPassword, tunnelUser, t
 		}
 	}
 
-	// 防御性钥匙串兜底，与 CreateSession/SessionStart 一致：Load 的
-	// populatePasswords 理论上已同步填好密码，但若密码只存在系统钥匙串
-	// 中仍未取回，这里补一次，否则非交互拨号会直接认证失败。
-	if sshCfg.Password == "" && sshCfg.ID != "" {
-		if pw, err := a.connectionStore.EnsurePassword(sshCfg.ID); err == nil && pw != "" {
-			sshCfg.Password = pw
-		}
+	// Resolve a proxy reference into a concrete proxy config so the SSH
+	// runner's first-hop dial (DialSSHClient → dialFirstHop) honors it.
+	mc, err := a.materializeProxy(*sshCfg)
+	if err != nil {
+		return err
 	}
+	sshCfg = &mc
 
 	// 跳板机的临时账密随 sshCfg 传入，由 setupJumpHostTunnel 内部消费。
 	if tunnelUser != "" {
@@ -479,10 +482,7 @@ func (a *App) ContainerExecSession(connectionID, containerID, shell string) (*se
 	id := uuid.New().String()
 	sess := session.NewContainerExecSession(id, pty)
 	sess.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   sess.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(sess.ID(), string(data))
 	})
 	sess.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		a.emit("session:status", map[string]interface{}{
@@ -516,16 +516,10 @@ func (a *App) createContainerFileSession(config session.ConnectionConfig) (*sess
 	// 与标准 CreateSession 尾部一致：接上数据/状态回调，前端的"已连接"
 	// 状态靠 session:status 事件驱动。
 	sess.SetOnDataCallback(func(data []byte) {
-		a.emit("session:data", map[string]interface{}{
-			"id":   sess.ID(),
-			"data": string(data),
-		})
+		a.emitSessionData(sess.ID(), string(data))
 	})
 	sess.SetOnBinaryCallback(func(data []byte) {
-		a.emit("session:binary", map[string]interface{}{
-			"id":   sess.ID(),
-			"data": base64.StdEncoding.EncodeToString(data),
-		})
+		a.emitSessionBinary(sess.ID(), data)
 	})
 	sess.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		a.emit("session:status", map[string]interface{}{

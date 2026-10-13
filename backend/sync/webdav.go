@@ -89,14 +89,15 @@ func (b *WebDAVBackend) FetchAll(dir string) error {
 		return err
 	}
 	if salt, err := b.client.Get(saltName); err == nil {
-		// The remote (like the git-mode repo dir) stores the salt
-		// hex-encoded; decode and rewrite via WriteSaltFile so the
-		// mirrored dir matches the layout ReadSaltFile expects.
-		raw, err := hex.DecodeString(string(salt))
-		if err != nil {
-			return fmt.Errorf("decode %s: %w", saltName, err)
+		// The remote salt resource is written verbatim by new pushes (hex
+		// salt plus an optional format= version line) and as pure hex by
+		// legacy ones. Validate it parses, then mirror it byte-for-byte so
+		// the format version declared by the remote survives the fetch —
+		// re-stamping it locally would lie about the remote's ciphertext.
+		if _, _, perr := parseSaltFileContent(salt); perr != nil {
+			return fmt.Errorf("decode %s: %w", saltName, perr)
 		}
-		if err := WriteSaltFile(dir, raw); err != nil {
+		if err := atomicWriteFile(filepath.Join(dir, saltName), salt, 0600); err != nil {
 			return err
 		}
 	} else if err != ErrWebDAVNotFound {
@@ -134,9 +135,15 @@ func (b *WebDAVBackend) StoreAll(stagingDir string, salt []byte, manifest Snapsh
 			return err
 		}
 	}
-	// The salt is stored hex-encoded on the remote, matching
-	// WriteSaltFile/ReadSaltFile in git mode.
-	if err := b.client.Put(saltName, []byte(hex.EncodeToString(salt))); err != nil {
+	// The salt resource mirrors the staged .sync-salt byte-for-byte: new
+	// pushes stage it via WriteSaltFile, so the file carries the ciphertext
+	// format version the remote must declare. Fall back to plain hex for
+	// callers that stage no salt file (tests seeding a remote directly).
+	saltData := []byte(hex.EncodeToString(salt))
+	if staged, err := os.ReadFile(filepath.Join(stagingDir, saltName)); err == nil {
+		saltData = staged
+	}
+	if err := b.client.Put(saltName, saltData); err != nil {
 		return err
 	}
 	return b.client.Put(manifestName, mustJSON(manifest))

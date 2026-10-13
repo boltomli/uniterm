@@ -169,6 +169,25 @@ export function logicalLineStart(
   return startY
 }
 
+/** Re-key a scrollback line cache after `trimmed` lines were trimmed from
+ * the top of the buffer: every surviving absolute line index drops by the
+ * trim count, and entries whose line was itself trimmed away are dropped.
+ * Mutates in place and preserves Map insertion order so the LRU eviction
+ * in setCachedSpans keeps working unchanged. */
+export function shiftLineCache(
+  cache: Map<number, HighlightSpan[]>,
+  trimmed: number,
+): void {
+  if (trimmed <= 0) return
+  const shifted = new Map<number, HighlightSpan[]>()
+  for (const [key, spans] of cache) {
+    const next = key - trimmed
+    if (next >= 0) shifted.set(next, spans)
+  }
+  cache.clear()
+  for (const [key, spans] of shifted) cache.set(key, spans)
+}
+
 export class OverlayHighlighter {
   private term: XTerm
   /** Immutable (scrollback) absolute line index → resolved spans, including []. */
@@ -182,6 +201,15 @@ export class OverlayHighlighter {
   private dead = false
   private lastViewportY = -1
 
+  /** Lines trimmed from the top of scrollback since the last refresh. The
+   * public API has no trim event, so the count comes from the fork's
+   * internal buffer line list (the same hook terminalManager uses for
+   * lineOffset); when the hook is unavailable the sentinel-marker fallback
+   * below wipes the cache wholesale instead of shifting it. */
+  private pendingTrim = 0
+  private hasTrimHook = false
+  private trimDisposable: IDisposable | null = null
+
   /** Marker anchored at buffer line 0; disposed by xterm when that line is
    * trimmed from scrollback, letting us detect cache-wide index shifts. */
   private sentinelMarker: unknown = null
@@ -193,6 +221,30 @@ export class OverlayHighlighter {
 
   constructor(term: XTerm) {
     this.term = term
+
+    // Internal API (guarded, same hook terminalManager uses for lineOffset):
+    // the trim event carries the exact line count, which lets a refresh
+    // SHIFT the cache instead of wiping it. Without the hook the sentinel
+    // marker below still detects trims, just without a count.
+    // Structural cast: the fork's internals are not in the public typings.
+    const internals = term as unknown as {
+      _core?: {
+        _bufferService?: {
+          buffers?: {
+            normal?: {
+              lines?: { onTrim?: (cb: (amount: number) => void) => IDisposable }
+            }
+          }
+        }
+      }
+    }
+    const lines = internals._core?._bufferService?.buffers?.normal?.lines
+    if (typeof lines?.onTrim === 'function') {
+      this.hasTrimHook = true
+      this.trimDisposable = lines.onTrim((amount) => {
+        this.pendingTrim += amount
+      })
+    }
 
     this.disposables.push(
       this.term.onWriteParsed(() => this.triggerWriteRefresh()),
@@ -221,6 +273,8 @@ export class OverlayHighlighter {
   public dispose(): void {
     this.dead = true
     this.invalidateAll()
+    this.trimDisposable?.dispose()
+    this.trimDisposable = null
     for (const d of this.disposables) d.dispose()
     this.disposables = []
   }
@@ -251,6 +305,7 @@ export class OverlayHighlighter {
     this.clearTimers()
     this.term.clearCellColorOverrides()
     this.lineMatchCache.clear()
+    this.pendingTrim = 0 // cache is gone; a pending shift has nothing to move
     this.disposeSentinel()
     this.bufferTrimmed = false
   }
@@ -472,18 +527,36 @@ export class OverlayHighlighter {
     if (bufferType !== this.lastBufferType) {
       this.term.clearCellColorOverrides()
       this.lineMatchCache.clear()
+      this.pendingTrim = 0 // other buffer's indexes; nothing left to shift
       this.disposeSentinel()
       this.bufferTrimmed = false
       this.lastBufferType = bufferType
     }
 
+    if (this.pendingTrim > 0) {
+      // Scrollback was trimmed by a known count: every surviving absolute
+      // line index drops by that count. SHIFT the span cache to follow
+      // instead of wiping it — a wipe forced a full scrollback rescan on
+      // the next scroll-back, and with scrollback full every new line
+      // trimmed another, so the cache never survived. The override store
+      // has no shift API, so its entries are cleared and re-applied for
+      // the visible viewport by the scan below; rows above the viewport
+      // re-apply from the shifted cache when scrolled to, without a rescan.
+      shiftLineCache(this.lineMatchCache, this.pendingTrim)
+      this.pendingTrim = 0
+      this.term.clearCellColorOverrides()
+      this.disposeSentinel()
+      this.bufferTrimmed = false
+    }
     if (this.bufferTrimmed) {
-      // Scrollback was trimmed: all absolute indices shifted.
+      // Trim detected by the sentinel fallback (no onTrim hook): the count
+      // is unknown, so the cache cannot be shifted — wipe it wholesale.
       this.invalidateAll()
     }
     // Sentinel only makes sense on the normal buffer: the alternate buffer
     // has no scrollback trimming, and a marker created there dies on switch.
-    if (!this.sentinelMarker && bufferType === 'normal') this.installSentinel()
+    // Redundant when the onTrim hook provides exact counts.
+    if (!this.hasTrimHook && !this.sentinelMarker && bufferType === 'normal') this.installSentinel()
 
     const viewportY = buffer.viewportY
     const rows = this.term.rows

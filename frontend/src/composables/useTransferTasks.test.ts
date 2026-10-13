@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { nextTick, reactive } from 'vue'
 
 import { buildSkipList, watchNewTransferTasks } from './useTransferTasks'
+import type { TransferFileState, TransferTaskUI } from '../stores/panelStore'
 
 describe('watchNewTransferTasks', () => {
   // Regression: watching the tasks array by reference (a computed that only
@@ -43,20 +44,24 @@ describe('watchNewTransferTasks', () => {
 })
 
 describe('buildSkipList', () => {
+  // TransferTaskUI.files is a Map<path, entry> (security.md finding 17), so
+  // the skip list is the done entries' paths in insertion order.
   it('returns the relative paths of files already completed', () => {
-    const task: any = {
-      files: [
-        { path: 'a.txt', status: 'done' },
-        { path: 'b.txt', status: 'failed' },
-        { path: 'c.txt', status: 'running' },
-        { path: 'd.txt', status: 'done' },
-      ],
+    const task: Pick<TransferTaskUI, 'files'> = {
+      files: new Map<string, TransferFileState>([
+        ['a.txt', { path: 'a.txt', status: 'done' }],
+        ['b.txt', { path: 'b.txt', status: 'failed' }],
+        ['c.txt', { path: 'c.txt', status: 'running' }],
+        ['d.txt', { path: 'd.txt', status: 'done' }],
+      ]),
     }
     expect(buildSkipList(task)).toEqual(['a.txt', 'd.txt'])
   })
 
   it('returns an empty skip list for a task with no completed files', () => {
-    const task: any = { files: [{ path: 'b.txt', status: 'failed' }] }
+    const task: Pick<TransferTaskUI, 'files'> = {
+      files: new Map<string, TransferFileState>([['b.txt', { path: 'b.txt', status: 'failed' }]]),
+    }
     expect(buildSkipList(task)).toEqual([])
   })
 })
