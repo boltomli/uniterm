@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "Redimensionnement auto",
   "conn.rdpRedirectClipboard": "Rediriger le presse-papiers",
   "conn.rdpRedirectDrives": "Rediriger les disques locaux",
-  "conn.rdpRedirectHint": "Désactivé par défaut. Une fois activé, la machine distante peut accéder aux disques locaux et au presse-papiers partagés via \\\\tsclient.",
+  "conn.rdpRedirectHint": "La redirection du presse-papiers est activée par défaut, celle des disques locaux non. Une fois activée, la machine distante peut accéder aux disques locaux partagés via \\\\tsclient.",
   "conn.rdpEnableNLA": "Authentification réseau",
   "conn.rdpDomain": "Domaine",
   "conn.smbDomain": "Domaine",

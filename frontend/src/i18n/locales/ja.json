@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "自動スケーリング",
   "conn.rdpRedirectClipboard": "クリップボードをリダイレクト",
   "conn.rdpRedirectDrives": "ローカルドライブをリダイレクト",
-  "conn.rdpRedirectHint": "既定はオフです。有効にすると、リモート側は \\\\tsclient 経由で共有したローカルドライブとクリップボードにアクセスできます。",
+  "conn.rdpRedirectHint": "クリップボードのリダイレクトは既定でオン、ローカルドライブは既定でオフです。ドライブを有効にすると、リモート側は \\\\tsclient 経由で共有したローカルドライブにアクセスできます。",
   "conn.rdpEnableNLA": "ネットワーク認証",
   "conn.rdpDomain": "ドメイン",
   "conn.smbDomain": "ドメイン",

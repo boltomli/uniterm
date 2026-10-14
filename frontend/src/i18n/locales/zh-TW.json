@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "自動縮放",
   "conn.rdpRedirectClipboard": "重導向剪貼簿",
   "conn.rdpRedirectDrives": "重導向本機磁碟",
-  "conn.rdpRedirectHint": "預設關閉。啟用後，遠端電腦可透過 \\\\tsclient 存取你分享的本機磁碟與剪貼簿。",
+  "conn.rdpRedirectHint": "剪貼簿重導向預設開啟，本機磁碟重導向預設關閉。啟用磁碟重導向後，遠端電腦可透過 \\\\tsclient 存取你分享的本機磁碟。",
   "conn.rdpEnableNLA": "網路身份認證",
   "conn.rdpDomain": "網域",
   "conn.smbDomain": "網域",

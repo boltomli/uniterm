@@ -282,10 +282,13 @@ type rdpSettings struct {
 	// ClearTextPassword, so a network impersonator must be caught by the
 	// certificate warning instead of silently receiving the password.
 	AuthLevel int
-	// RedirectClipboard / RedirectDrives are per-connection opt-ins that
-	// default to off, so the remote side cannot reach the local clipboard or
-	// disks through \\tsclient unless the user enabled them for this
-	// connection.
+	// RedirectClipboard / RedirectDrives are per-connection tri-state flags
+	// (nil = not specified on the connection). Absent resolves to the
+	// defaults in buildRdpSettings: clipboard ON — pasting local text into
+	// the remote session is the long-standing behavior a connection saved
+	// before the fields existed must keep — and drives OFF, so the remote
+	// side cannot reach local disks through \\tsclient without an explicit
+	// opt-in. An explicit value, including an opt-out, always wins.
 	RedirectClipboard bool
 	RedirectDrives    bool
 }
@@ -298,9 +301,19 @@ func buildRdpSettings(config ConnectionConfig) rdpSettings {
 	return rdpSettings{
 		EnableCredSSP:     config.RdpEnableNLA,
 		AuthLevel:         2,
-		RedirectClipboard: config.RdpRedirectClipboard,
-		RedirectDrives:    config.RdpRedirectDrives,
+		RedirectClipboard: boolOr(config.RdpRedirectClipboard, true),
+		RedirectDrives:    boolOr(config.RdpRedirectDrives, false),
 	}
+}
+
+// boolOr resolves a tri-state connection flag: an explicit value (set or
+// cleared by the user in the connection form) wins; an absent field falls
+// back to def. The frontend's resolveRdpRedirection mirrors these defaults.
+func boolOr(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
 }
 
 func (s *RDPSession) Connect(config ConnectionConfig) error {

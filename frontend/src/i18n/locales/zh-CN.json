@@ -757,7 +757,7 @@
   "conn.rdpSmartSizing": "自动缩放",
   "conn.rdpRedirectClipboard": "重定向剪贴板",
   "conn.rdpRedirectDrives": "重定向本地磁盘",
-  "conn.rdpRedirectHint": "默认关闭。开启后，远程计算机可通过 \\\\tsclient 访问你共享的本地磁盘与剪贴板。",
+  "conn.rdpRedirectHint": "剪贴板重定向默认开启，本地磁盘重定向默认关闭。开启磁盘重定向后，远程计算机可通过 \\\\tsclient 访问你共享的本地磁盘。",
   "conn.rdpEnableNLA": "网络身份认证",
   "conn.rdpDomain": "域",
   "conn.smbDomain": "域",

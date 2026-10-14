@@ -1329,7 +1329,8 @@ watch(() => props.editConfig, (config) => {
     // Existing connections without the field default to NLA off (old behavior).
     form.rdpEnableNLA = config.rdpEnableNLA ?? false
     form.rdpAdminSession = config.rdpAdminSession ?? false
-    // Redirection flags: connections saved before the fields existed stay OFF.
+    // Redirection flags: fields absent from a connection saved before they
+    // existed resolve to the shared defaults (clipboard on, drives off).
     const rdpRedirect = resolveRdpRedirection(config)
     form.rdpRedirectClipboard = rdpRedirect.rdpRedirectClipboard
     form.rdpRedirectDrives = rdpRedirect.rdpRedirectDrives

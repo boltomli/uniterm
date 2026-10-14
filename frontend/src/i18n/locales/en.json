@@ -757,7 +757,7 @@
   "conn.rdpSmartSizing": "Auto Scaling",
   "conn.rdpRedirectClipboard": "Redirect Clipboard",
   "conn.rdpRedirectDrives": "Redirect Local Drives",
-  "conn.rdpRedirectHint": "Off by default. When enabled, the remote computer can access the local drives and clipboard you share through \\\\tsclient.",
+  "conn.rdpRedirectHint": "Clipboard redirection is on by default; local drive redirection is off. When drive redirection is enabled, the remote computer can access the local drives you share through \\\\tsclient.",
   "conn.rdpEnableNLA": "Network Level Authentication",
   "conn.rdpDomain": "Domain",
   "conn.smbDomain": "Domain",

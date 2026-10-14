@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "자동 크기 조정",
   "conn.rdpRedirectClipboard": "클립보드 리디렉션",
   "conn.rdpRedirectDrives": "로컬 드라이브 리디렉션",
-  "conn.rdpRedirectHint": "기본값은 꺼짐입니다. 켜면 원격 컴퓨터가 \\\\tsclient를 통해 공유한 로컬 드라이브와 클립보드에 액세스할 수 있습니다.",
+  "conn.rdpRedirectHint": "클립보드 리디렉션은 기본값이 켜져 있고 로컬 드라이브는 꺼져 있습니다. 드라이브를 켜면 원격 컴퓨터가 \\\\tsclient를 통해 공유한 로컬 드라이브에 액세스할 수 있습니다.",
   "conn.rdpEnableNLA": "네트워크 인증",
   "conn.rdpDomain": "도메인",
   "conn.smbDomain": "도메인",

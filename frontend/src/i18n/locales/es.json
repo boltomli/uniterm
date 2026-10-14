@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "Ajuste automático",
   "conn.rdpRedirectClipboard": "Redirigir el portapapeles",
   "conn.rdpRedirectDrives": "Redirigir las unidades locales",
-  "conn.rdpRedirectHint": "Desactivado de forma predeterminada. Si se activa, el equipo remoto puede acceder a las unidades locales y al portapapeles que comparta mediante \\\\tsclient.",
+  "conn.rdpRedirectHint": "La redirección del portapapeles está activada por defecto; la de las unidades locales, no. Si se activa, el equipo remoto puede acceder a las unidades locales que comparta mediante \\\\tsclient.",
   "conn.rdpEnableNLA": "Autenticación de red",
   "conn.rdpDomain": "Dominio",
   "conn.smbDomain": "Dominio",

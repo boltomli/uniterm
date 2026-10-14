@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### What's Changed
+
+- Remote desktop: RDP clipboard redirection is on by default again. A connection saved before the redirection fields existed now shares the clipboard — pasting local text into the remote desktop works as it did before the security hardening — while local drive redirection stays off unless explicitly enabled per connection; an explicit opt-out of either flag still wins. The connection form and its hint text describe the new split default.
+
 ## v1.10.0
 
 ### What's Changed

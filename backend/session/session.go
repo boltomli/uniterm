@@ -117,13 +117,18 @@ type ConnectionConfig struct {
 	// equivalent of "mstsc /admin". Mapped to the ActiveX
 	// IMsRdpClientAdvancedSettings8::ConnectToAdministerServer property.
 	RdpAdminSession bool `json:"rdpAdminSession"`
-	// RdpRedirectClipboard / RdpRedirectDrives opt in to local resource
-	// redirection for THIS connection. Both default to off: a connection
-	// saved before the fields existed (or synced from an older version) has
-	// them false, so the remote side cannot reach the clipboard or local
-	// disks via \\tsclient unless the user explicitly enabled it.
-	RdpRedirectClipboard bool `json:"rdpRedirectClipboard"`
-	RdpRedirectDrives    bool `json:"rdpRedirectDrives"`
+	// RdpRedirectClipboard / RdpRedirectDrives select local resource
+	// redirection for THIS connection. Both are tri-state: nil (the field is
+	// absent from a connection saved before it existed, or synced from an
+	// older version) falls back to the documented defaults in
+	// buildRdpSettings — clipboard ON (pasting local text into the remote
+	// desktop keeps working), local drives OFF (the remote side must not
+	// reach the disks via \\tsclient without an explicit opt-in). An
+	// explicit value, including an opt-out, always wins. omitempty keeps
+	// absent fields absent on the JSON wire so the frontend's
+	// resolveRdpRedirection resolves them the same way.
+	RdpRedirectClipboard *bool `json:"rdpRedirectClipboard,omitempty"`
+	RdpRedirectDrives    *bool `json:"rdpRedirectDrives,omitempty"`
 	// Local terminal shell path
 	ShellPath string `json:"shellPath,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)

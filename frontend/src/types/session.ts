@@ -68,9 +68,9 @@ export interface ConnectionConfig {
   // "DOMAIN\user" prefix in user is used as a fallback.
   rdpDomain?: string
   rdpAdminSession?: boolean
-  // RDP resource redirection: per-connection opt-ins that default to OFF.
-  // Connections saved before the fields existed carry them undefined and
-  // must behave as off (see utils/rdpRedirection.ts).
+  // RDP resource redirection: per-connection, tri-state. An absent field
+  // (connections saved before the fields existed) must resolve to the shared
+  // defaults — clipboard ON, local drives OFF (see utils/rdpRedirection.ts).
   rdpRedirectClipboard?: boolean
   rdpRedirectDrives?: boolean
   // Local terminal shell path (for WSL, `wsl://<distro>` carries the distro)

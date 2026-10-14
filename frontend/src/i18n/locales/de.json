@@ -751,7 +751,7 @@
   "conn.rdpSmartSizing": "Automatische Skalierung",
   "conn.rdpRedirectClipboard": "Zwischenablage weiterleiten",
   "conn.rdpRedirectDrives": "Lokale Laufwerke weiterleiten",
-  "conn.rdpRedirectHint": "Standardmäßig aus. Aktiviert kann der Remotecomputer auf die freigegebenen lokalen Laufwerke und die Zwischenablage über \\\\tsclient zugreifen.",
+  "conn.rdpRedirectHint": "Die Zwischenablage-Weiterleitung ist standardmäßig aktiv, die der lokalen Laufwerke nicht. Aktiviert kann der Remotecomputer auf die freigegebenen lokalen Laufwerke über \\\\tsclient zugreifen.",
   "conn.rdpEnableNLA": "Netzwerkauthentifizierung",
   "conn.rdpDomain": "Domäne",
   "conn.smbDomain": "Domäne",

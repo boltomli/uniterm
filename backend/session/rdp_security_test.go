@@ -40,7 +40,7 @@ func TestRdpConnectPathHasNoGlobalSecurityOverrides(t *testing.T) {
 		"registry.SET_VALUE",
 		"registry.LOCAL_MACHINE",
 		`"AuthenticationLevel", 0`,  // never turn server certificate verification off
-		`"RedirectClipboard", true`, // redirection is per-connection, default off
+		`"RedirectClipboard", true`, // must come from buildRdpSettings, never hardcoded
 		`"RedirectDrives", true`,
 	}
 	for _, s := range forbidden {
@@ -61,9 +61,11 @@ func TestRdpConnectPathHasNoGlobalSecurityOverrides(t *testing.T) {
 // TestBuildRdpSettings pins the security-relevant settings the ActiveX
 // control receives: server certificate verification is never switched off
 // (NLA on or off — the stored password goes through ClearTextPassword on the
-// NLA-off path, so an impersonator must still be rejected), and local drive /
-// clipboard redirection is an explicit per-connection opt-in that defaults to
-// off for connections saved before the fields existed.
+// NLA-off path, so an impersonator must still be rejected), and local drive
+// / clipboard redirection is a per-connection tri-state flag: an absent
+// field (connections saved before the fields existed) means clipboard ON —
+// pasting local text into the remote desktop keeps working — and drives
+// OFF; an explicit value, including an opt-out, always wins.
 func TestBuildRdpSettings(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -73,38 +75,55 @@ func TestBuildRdpSettings(t *testing.T) {
 		wantDrives bool
 	}{
 		{
-			name:   "NLA off keeps server authentication enabled (auth level >= 1)",
-			config: ConnectionConfig{RdpEnableNLA: false},
+			name:     "NLA off keeps server authentication enabled (auth level >= 1)",
+			config:   ConnectionConfig{RdpEnableNLA: false},
+			wantClip: true,
 		},
 		{
-			name:   "legacy connection with no redirect fields defaults to no redirection",
-			config: ConnectionConfig{},
+			name:     "legacy connection with no redirect fields defaults to clipboard on, drives off",
+			config:   ConnectionConfig{},
+			wantClip: true,
 		},
 		{
-			name:    "NLA on verifies the server and still redirects nothing by default",
-			config:  ConnectionConfig{RdpEnableNLA: true},
-			wantNLA: true,
+			name:     "NLA on verifies the server and shares only the clipboard by default",
+			config:   ConnectionConfig{RdpEnableNLA: true},
+			wantNLA:  true,
+			wantClip: true,
+		},
+		{
+			name: "explicit opt-out keeps the clipboard local",
+			config: ConnectionConfig{
+				RdpRedirectClipboard: boolPtr(false),
+			},
 		},
 		{
 			name: "explicit opt-in enables clipboard only",
 			config: ConnectionConfig{
-				RdpRedirectClipboard: true,
+				RdpRedirectClipboard: boolPtr(true),
 			},
 			wantClip: true,
 		},
 		{
-			name: "explicit opt-in enables drives only",
+			name: "explicit opt-in enables drives only, clipboard stays at its default on",
 			config: ConnectionConfig{
-				RdpRedirectDrives: true,
+				RdpRedirectDrives: boolPtr(true),
 			},
+			wantClip:   true,
 			wantDrives: true,
+		},
+		{
+			name: "explicit opt-out of drives while clipboard stays default on",
+			config: ConnectionConfig{
+				RdpRedirectDrives: boolPtr(false),
+			},
+			wantClip: true,
 		},
 		{
 			name: "explicit opt-in with NLA off still never disables server auth",
 			config: ConnectionConfig{
 				RdpEnableNLA:         false,
-				RdpRedirectClipboard: true,
-				RdpRedirectDrives:    true,
+				RdpRedirectClipboard: boolPtr(true),
+				RdpRedirectDrives:    boolPtr(true),
 			},
 			wantClip:   true,
 			wantDrives: true,
@@ -113,8 +132,8 @@ func TestBuildRdpSettings(t *testing.T) {
 			name: "explicit values win: everything on",
 			config: ConnectionConfig{
 				RdpEnableNLA:         true,
-				RdpRedirectClipboard: true,
-				RdpRedirectDrives:    true,
+				RdpRedirectClipboard: boolPtr(true),
+				RdpRedirectDrives:    boolPtr(true),
 			},
 			wantNLA:    true,
 			wantClip:   true,
@@ -139,6 +158,9 @@ func TestBuildRdpSettings(t *testing.T) {
 		})
 	}
 }
+
+// boolPtr is a test helper for the tri-state redirect flags.
+func boolPtr(v bool) *bool { return &v }
 
 // TestRdpSnapshotUsesFastPNG pins the Low perf fix: Snapshot encodes on the
 // Wails/UI thread, so it must use png.BestSpeed rather than the default
