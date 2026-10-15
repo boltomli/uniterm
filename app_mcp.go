@@ -494,10 +494,11 @@ func (a *App) mcpCreateFileSession(sshSID string, config session.ConnectionConfi
 		proto = "scp"
 	}
 	// Same credential resolution as CreateSession/SessionStart
-	// (app_terminal.go): identity and proxy materialization. The SSH
-	// session's stored config is already materialized, so these are no-ops
-	// except for channel clones, whose frontend-passed config skipped
-	// resolution.
+	// (app_terminal.go): the SHARED guarded helper resolves stored secrets by
+	// connection ID (no-op when the SSH session's config is already
+	// materialized; channel clones pass a redacted frontend config that needs
+	// it), then identity and proxy references are materialized.
+	a.fillStoredSecrets(&config)
 	if config.AuthType == "identity" {
 		mc, err := a.materializeIdentity(config)
 		if err != nil {

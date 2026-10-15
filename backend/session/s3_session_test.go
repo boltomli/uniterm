@@ -479,3 +479,72 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+// --- Ranged download staging: no partial file under the final name --------
+
+// TestS3DownloadRangedFailureLeavesNoPartialFile: the parallel path
+// preallocates the whole object, so a failed ranged download used to leave a
+// full-size stub under the final name. It must stage through .part like the
+// single-stream path — failure keeps the pre-existing target's bytes and
+// removes the .part (security.md 文件会话 Low).
+func TestS3DownloadRangedFailureLeavesNoPartialFile(t *testing.T) {
+	const size = 17 << 20 // above s3MultipartThreshold: ranged path
+	// Claim a full 206 slice but deliver only half of the requested range
+	// every time, so the chunk can never complete within its retries.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var start, end int64
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			t.Errorf("bad Range header %q: %v", r.Header.Get("Range"), err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+		w.Header().Set("Content-Length", strconv.FormatInt((end-start+1)/2, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(make([]byte, (end-start+1)/2))
+	}))
+	defer ts.Close()
+
+	s, task := newS3RangeTestSession(t, ts)
+	local := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(local, []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.downloadObject(task, "obj", local, size); err == nil {
+		t.Fatal("truncated ranged download must report an error")
+	}
+	if _, err := os.Stat(local + ".part"); err == nil {
+		t.Fatal(".part left behind after a failed ranged download")
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatalf("pre-existing target must survive: %v", err)
+	}
+	if string(got) != "OLD" {
+		t.Fatalf("target overwritten by a failed ranged download: %q", got)
+	}
+}
+
+// TestS3DownloadRangedCreatesParentDirs: the ranged path must create nested
+// key directories itself, like downloadObjectSingle does.
+func TestS3DownloadRangedCreatesParentDirs(t *testing.T) {
+	const size = 17 << 20
+	data := make([]byte, size)
+	var ranges atomic.Int64
+	ts := httptest.NewServer(serve206(t, data, &ranges))
+	defer ts.Close()
+
+	s, task := newS3RangeTestSession(t, ts)
+	out := filepath.Join(t.TempDir(), "lvl0", "lvl1", "big.bin")
+	if err := s.downloadObject(task, "obj", out, size); err != nil {
+		t.Fatalf("downloadObject: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("nested ranged download: %v", err)
+	}
+	if !bytesEqual(got, data) {
+		t.Fatalf("file mismatch: got %d bytes", len(got))
+	}
+}

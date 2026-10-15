@@ -1196,59 +1196,61 @@ func (e *s3RangeStatusError) Error() string {
 // is preallocated and each worker streams its chunks straight to their own
 // byte offsets via WriteAt, so memory stays flat and workers never contend.
 // A chunk that comes back short is retried for just its missing remainder.
+// The download stages through .part (writePartFile) exactly like the
+// single-stream path: a failed, cancelled or range-unsupported attempt never
+// leaves a preallocated stub under the final name, and a pre-existing target
+// keeps its bytes until the new content is complete.
 func (s *S3Session) s3DownloadRanged(task *TransferTask, key, localPath string, size int64) error {
-	f, err := os.Create(localPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := f.Truncate(size); err != nil {
+	// Nested keys need their parent directories, same as the single-stream
+	// path (security.md 文件会话 Medium).
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
 
 	chunkSize := s3DownloadChunkSizeFor(size)
 	totalChunks := int((size + chunkSize - 1) / chunkSize)
 
-	err = runPool(task.ctx, totalChunks, s3TransferConcurrency, func(i int) error {
-		start := int64(i) * chunkSize
-		end := start + chunkSize
-		if end > size {
-			end = size
+	return writePartFile(localPath, func(f *os.File) error {
+		if err := f.Truncate(size); err != nil {
+			return err
 		}
-		written := int64(0)
-		for attempt := 0; attempt <= s3PartRetries; attempt++ {
-			if attempt > 0 {
-				select {
-				case <-time.After(time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond):
-				case <-task.ctx.Done():
-					return task.ctx.Err()
+		return runPool(task.ctx, totalChunks, s3TransferConcurrency, func(i int) error {
+			start := int64(i) * chunkSize
+			end := start + chunkSize
+			if end > size {
+				end = size
+			}
+			written := int64(0)
+			for attempt := 0; attempt <= s3PartRetries; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-time.After(time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond):
+					case <-task.ctx.Done():
+						return task.ctx.Err()
+					}
 				}
-			}
-			task.waitIfPaused()
-			rc, err := s.rangeGet(key, start+written, end)
-			if err != nil {
-				var se *s3RangeStatusError
-				if errors.As(err, &se) && (se.code == http.StatusOK || (se.code >= 400 && se.code < 500)) {
-					return errS3RangeUnsupported
+				task.waitIfPaused()
+				rc, err := s.rangeGet(key, start+written, end)
+				if err != nil {
+					var se *s3RangeStatusError
+					if errors.As(err, &se) && (se.code == http.StatusOK || (se.code >= 400 && se.code < 500)) {
+						return errS3RangeUnsupported
+					}
+					continue // transient: retry the remaining range
 				}
-				continue // transient: retry the remaining range
+				got, readErr := s.readRangeInto(task, rc, f, start+written)
+				written += got
+				if readErr == nil && written == end-start {
+					return nil
+				}
+				if readErr != nil && errors.Is(readErr, task.ctx.Err()) {
+					return readErr
+				}
+				// Short read or mid-chunk failure: retry the missing remainder.
 			}
-			got, readErr := s.readRangeInto(task, rc, f, start+written)
-			written += got
-			if readErr == nil && written == end-start {
-				return nil
-			}
-			if errors.Is(readErr, task.ctx.Err()) {
-				return readErr
-			}
-			// Short read or mid-chunk failure: retry the missing remainder.
-		}
-		return fmt.Errorf("chunk %d: download failed after %d retries", i+1, s3PartRetries)
+			return fmt.Errorf("chunk %d: download failed after %d retries", i+1, s3PartRetries)
+		})
 	})
-	if err != nil {
-		return err
-	}
-	return f.Close()
 }
 
 // readRangeInto streams one ranged-GET body to f at the given offset until

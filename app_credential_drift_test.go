@@ -82,6 +82,18 @@ func TestConnectPathsUseSharedSecretResolver(t *testing.T) {
 	if !strings.Contains(mcp, "setupJumpHostTunnel(") {
 		t.Errorf("mcpConnect must set up the jump-host tunnel before dialing (bastion-only hosts otherwise dial around the bastion)")
 	}
+
+	// The companion file-transfer session (SFTP/SCP for MCP file tools) used
+	// to rely on the caller's config being materialized; channel clones pass
+	// a redacted frontend config, so it must resolve through the same guarded
+	// helper — never a raw password fill.
+	fileSession := funcBody(t, "app_mcp.go", "(a *App) mcpCreateFileSession")
+	if strings.Contains(fileSession, "EnsurePassword(") {
+		t.Errorf("mcpCreateFileSession must resolve secrets via fillStoredSecrets, not an unguarded EnsurePassword fallback")
+	}
+	if !strings.Contains(fileSession, "fillStoredSecrets(") {
+		t.Errorf("mcpCreateFileSession must call fillStoredSecrets (guarded secret resolution)")
+	}
 }
 
 // TestX11DesktopConnectResolvesProxyAndTunnel: X11DesktopConnect dials through

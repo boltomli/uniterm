@@ -47,6 +47,13 @@ func (p *sqliteProvider) DBType() string {
 // becomes a "_pragma=name%3Dvalue" (the driver sends the value verbatim as a
 // PRAGMA statement) unless it already starts with "_" (driver-level options
 // like _txlock/_timefmt pass through verbatim).
+//
+// Path and parameter tokens are percent-encoded for the characters that
+// would otherwise change the URI's structure — a path (or an imported /
+// synced connection config carrying one) containing "?", "#", "%" or "&"
+// must not break out of the path segment into the query, or inject an extra
+// driver option / pragma; a raw "%" would additionally be decoded by the
+// driver and open a different file than the config names.
 func (p *sqliteProvider) DSN(host string, port int, user, password, dbName string, extraParams map[string]string) string {
 	if len(extraParams) == 0 {
 		return host
@@ -57,12 +64,25 @@ func (p *sqliteProvider) DSN(host string, port int, user, password, dbName strin
 	}
 	for _, k := range sortedStringKeys(extraParams) {
 		if strings.HasPrefix(k, "_") {
-			pragmas = append(pragmas, k+"="+extraParams[k])
+			pragmas = append(pragmas, escapeSQLiteToken(k)+"="+escapeSQLiteToken(extraParams[k]))
 			continue
 		}
-		pragmas = append(pragmas, "_pragma="+k+"%3D"+extraParams[k])
+		pragmas = append(pragmas, "_pragma="+escapeSQLiteToken(k)+"%3D"+escapeSQLiteToken(extraParams[k]))
 	}
-	return "file:" + filepath.ToSlash(host) + "?" + strings.Join(pragmas, "&")
+	return "file:" + escapeSQLitePath(filepath.ToSlash(host)) + "?" + strings.Join(pragmas, "&")
+}
+
+// escapeSQLitePath percent-encodes the file: URI path segment's structural
+// characters. "/" and ":" stay literal (they mean nothing to the query
+// parser); everything before the first "?" remains the path.
+func escapeSQLitePath(s string) string {
+	return strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23", "&", "%26").Replace(s)
+}
+
+// escapeSQLiteToken percent-encodes a query key/value's structural
+// characters so a token cannot split into (or extend) other parameters.
+func escapeSQLiteToken(s string) string {
+	return strings.NewReplacer("%", "%25", "&", "%26", "=", "%3D", "?", "%3F", "#", "%23").Replace(s)
 }
 
 func (p *sqliteProvider) Quote(name string) string {
