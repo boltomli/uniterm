@@ -599,7 +599,7 @@ func pngWithDimensions(width, height int) (string, error) {
 	buf.Write([]byte{0, 0, 0, 13})
 	buf.WriteString("IHDR")
 	buf.Write(ihdr)
-	crc := crc32.ChecksumIEEE(append(append([]byte("IHDR"), ihdr...)))
+	crc := crc32.ChecksumIEEE(append([]byte("IHDR"), ihdr...))
 	buf.Write([]byte{byte(crc >> 24), byte(crc >> 16), byte(crc >> 8), byte(crc)})
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }
