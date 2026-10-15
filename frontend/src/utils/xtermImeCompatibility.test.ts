@@ -364,6 +364,54 @@ describe('installImeCompatibilityPatch', () => {
     expect(core.textarea.value).toBe('ABC')
   })
 
+  // Event-tap Vietnamese IMEs (XKey) post Backspace key events, then one
+  // keydown whose `key` carries the whole replacement run. Captured trace for
+  // "tieengs": Backspace x3 then key="iếng" code=KeyA keyCode=73 charCode=105.
+  // Without this, xterm's keypress leaks only "i" and _keyPressHandled makes
+  // _inputEvent discard the rest, leaving "ti" on the line.
+  it('delivers a multi-character key rewrite from an event-tap IME', () => {
+    const { core, calls } = makeFakeCore()
+    const input = vi.fn()
+    installImeCompatibilityPatch(fakeTerminal(core, input))
+
+    const event = keydown(73, { key: 'iếng' })
+    core.textarea.listeners.get('keydown')!(event)
+
+    expect(input).toHaveBeenCalledWith('iếng')
+    // Must cancel, or keypress sends "i" and the input event sends "iếng" too.
+    expect(event.preventDefault).toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+
+  it('leaves named keys and single characters to xterm', () => {
+    const { core } = makeFakeCore()
+    const input = vi.fn()
+    installImeCompatibilityPatch(fakeTerminal(core, input))
+
+    for (const [keyCode, key] of [
+      [8, 'Backspace'], [13, 'Enter'], [37, 'ArrowLeft'], [122, 'F11'],
+      [20, 'CapsLock'], [0, 'Dead'], [229, 'Process'],
+      // xterm's own keydown path handles single characters (keyCode >= 48).
+      [65, 'ê'], [84, 't'],
+    ] as [number, string][]) {
+      core.textarea.listeners.get('keydown')!(keydown(keyCode, { key }))
+    }
+
+    expect(input).not.toHaveBeenCalled()
+  })
+
+  it('does not hijack multi-character keys under a modifier', () => {
+    const { core } = makeFakeCore()
+    const input = vi.fn()
+    installImeCompatibilityPatch(fakeTerminal(core, input))
+
+    const event = keydown(73, { key: 'iếng' })
+    ;(event as { metaKey: boolean }).metaKey = true
+    core.textarea.listeners.get('keydown')!(event)
+
+    expect(input).not.toHaveBeenCalled()
+  })
+
   it('does not force composed input while composition is active', () => {
     const { core, calls } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))

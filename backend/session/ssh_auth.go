@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 
+	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/utils"
 	"golang.org/x/crypto/ssh"
 )
@@ -18,7 +19,13 @@ func makeSSHAuthMethodsForAttempt(config ConnectionConfig, kbCallback ssh.Keyboa
 
 	switch config.AuthType {
 	case "password":
-		methods = append(methods, ssh.Password(config.Password))
+		// A still-encrypted (enc:v1) password means the vault is locked or the
+		// load path didn't decrypt this field — never send ciphertext to the
+		// server as a password. The keyboard-interactive fallback below still
+		// gives the user a real prompt.
+		if !credentials.IsEncrypted(config.Password) {
+			methods = append(methods, ssh.Password(config.Password))
+		}
 	case "key", "keyText":
 		if signer, ok := parseAuthKeySigner(config); ok {
 			methods = append(methods, ssh.PublicKeys(signer))
@@ -82,6 +89,12 @@ func buildAuthMethodsWithCleanup(config ConnectionConfig) ([]ssh.AuthMethod, fun
 		}
 		return []ssh.AuthMethod{method}, release, nil
 	default: // "", "password" and any unknown type fall back to password
+		// Unattended dial: a still-encrypted (enc:v1) password means the vault
+		// is locked — there is no interactive prompt to fall back on, so fail
+		// with the vault error instead of sending ciphertext as a password.
+		if credentials.IsEncrypted(config.Password) {
+			return nil, cleanup, utils.UserErr("vault_locked")
+		}
 		return []ssh.AuthMethod{ssh.Password(config.Password)}, cleanup, nil
 	}
 }

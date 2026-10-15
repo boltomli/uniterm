@@ -2,25 +2,26 @@ package store
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
+	"fmt"
 	"path/filepath"
 	"sync"
 
-	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/session"
 )
 
 const tunnelsFileName = "tunnels.json"
 
 // TunnelStore persists the user's SSH tunnel definitions to tunnels.json in the
-// app config dir. The upstream proxy Pass field is handled like ProxyStore:
-// encrypted at rest under the PasswordStore, prefix-gated decryption on load,
-// and Save fails closed rather than persisting plaintext.
+// app config dir. The upstream proxy Pass and the dynamic tunnel's SOCKS
+// password are handled like ProxyStore: encrypted at rest under the
+// PasswordStore via the secret-field manifest (fail-closed when no cipher is
+// wired), prefix-gated decryption on load, and Save refuses to persist
+// plaintext.
 type TunnelStore struct {
 	configDir     string
-	passwordStore PasswordStore // nil = refuse to write plaintext passwords
-	mu            sync.Mutex    // serializes Save + Load migration rewrite
+	passwordStore PasswordStore // nil = refuse to write plaintext passwords (manifest fails closed)
+	mu            sync.Mutex    // serializes Save + Load
+	lastSavedHash string        // F-105 skip state (pre-encryption content hash)
 }
 
 func NewTunnelStore(configDir string) *TunnelStore {
@@ -33,123 +34,108 @@ func (s *TunnelStore) filePath() string {
 	return filepath.Join(s.configDir, tunnelsFileName)
 }
 
-// Save writes data to tunnels.json, encrypting each upstream proxy Pass. It
-// fails closed rather than persisting a plaintext password when no
-// passwordStore is wired. Values already prefixed (credentials.IsEncrypted)
-// are skipped so a save doesn't double-encrypt previously encrypted data.
-// The caller's data is left untouched (tunnels are deep-copied before the
-// upstream structs are replaced).
+// Save writes data to tunnels.json through the shared envelope
+// (filestore.go): hash-skip, manifest encryption, atomic write. The caller's
+// data is left untouched (the envelope deep-copies through JSON); the
+// manifest walk fails closed when a plaintext secret would land without a
+// wired cipher.
 func (s *TunnelStore) Save(data session.TunnelStoreData) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveLocked(data)
+	return s.save(data, false)
 }
 
-// saveLocked encrypts the upstream Pass and SOCKS password fields and writes
-// tunnels.json atomically. Caller must hold s.mu.
-func (s *TunnelStore) saveLocked(data session.TunnelStoreData) error {
-	out := data
-	out.Tunnels = make([]session.Tunnel, len(data.Tunnels))
-	copy(out.Tunnels, data.Tunnels)
-	for i := range out.Tunnels {
-		up := out.Tunnels[i].Upstream
-		if up != nil && up.Pass != "" && !credentials.IsEncrypted(up.Pass) {
-			if s.passwordStore == nil {
-				return errors.New("passwordStore not initialized; refusing to save plaintext password")
-			}
-			enc, err := s.passwordStore.Encrypt(up.Pass)
-			if err != nil {
-				return err
-			}
-			upCopy := *up
-			upCopy.Pass = enc
-			out.Tunnels[i].Upstream = &upCopy
-		}
-		// The dynamic tunnel's SOCKS password is a credential of the same
-		// kind: ciphertext at rest, never plaintext.
-		if p := out.Tunnels[i].SOCKSPass; p != "" && !credentials.IsEncrypted(p) {
-			if s.passwordStore == nil {
-				return errors.New("passwordStore not initialized; refusing to save plaintext password")
-			}
-			enc, err := s.passwordStore.Encrypt(p)
-			if err != nil {
-				return err
-			}
-			out.Tunnels[i].SOCKSPass = enc
-		}
-	}
-	bytes, err := json.MarshalIndent(out, "", "  ")
+// ForceSave rewrites tunnels.json even when the content hash matches the
+// seeded state (re-keying: the plaintext is unchanged, so the F-105
+// hash-skip would otherwise swallow the re-encryption).
+func (s *TunnelStore) ForceSave(data session.TunnelStoreData) error {
+	return s.save(data, true)
+}
+
+func (s *TunnelStore) save(data session.TunnelStoreData, force bool) error {
+	// Deep-copy through JSON first: the envelope's manifest walk unmarshals
+	// back into the value it was given, which would otherwise reach the
+	// caller's tunnel slice (and its shared upstream structs) and land the
+	// encrypted pass in the caller's data.
+	clone, err := cloneTunnelData(data)
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(s.filePath(), bytes, 0600)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	skip := s.lastSavedHash
+	if force {
+		skip = forceWrite
+	}
+	h, err := saveEncryptedFile(tunnelsFileName, s.filePath(), &clone, s.passwordStore, skip)
+	s.lastSavedHash = h
+	return err
 }
 
 // Load reads tunnels.json, returning an empty store when the file does not
-// exist and decrypting each upstream proxy Pass. A legacy plaintext Pass (from
-// before in-place encryption) is returned as plaintext for the caller and the
-// file is re-written with it encrypted, so existing tunnels.json files migrate
-// on first load.
+// exist and decrypting the upstream proxy pass and SOCKS password via the
+// manifest. A legacy plaintext secret (from before in-place encryption) is
+// returned as plaintext for the caller and the file is re-written with it
+// encrypted, so existing tunnels.json files migrate on first load.
 func (s *TunnelStore) Load() (session.TunnelStoreData, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	bytes, err := os.ReadFile(s.filePath())
+	out, res, hash, existed, err := loadEncryptedFile[session.TunnelStoreData](tunnelsFileName, s.filePath(), s.passwordStore)
+	if !existed {
+		return session.TunnelStoreData{Version: 1, Groups: []session.TunnelGroup{}, Tunnels: []session.Tunnel{}}, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return session.TunnelStoreData{Version: 1, Groups: []session.TunnelGroup{}, Tunnels: []session.Tunnel{}}, nil
-		}
 		return session.TunnelStoreData{}, err
 	}
+	if out.Version == 0 {
+		out.Version = 1
+	}
+	s.lastSavedHash = hash
+	if res.Plaintext > 0 && s.passwordStore != nil {
+		// Lazy re-encrypt of legacy plaintext: forceWrite bypasses the
+		// hash-skip (the on-disk content is unchanged, so the seeded hash
+		// would match and the migration would never run). The write goes
+		// through a clone so the caller still receives plaintext — the
+		// envelope encrypts the value in place. Best-effort: without a
+		// usable cipher the file stays as-is and retries on the next save.
+		if clone, cErr := cloneTunnelData(out); cErr == nil {
+			if h, err := saveEncryptedFile(tunnelsFileName, s.filePath(), &clone, s.passwordStore, forceWrite); err == nil {
+				s.lastSavedHash = h
+			}
+		}
+	}
+	return out, nil
+}
+
+// cloneTunnelData round-trips data through JSON so the copy shares no
+// backing arrays or pointees with the original.
+func cloneTunnelData(data session.TunnelStoreData) (session.TunnelStoreData, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return data, err
+	}
+	var out session.TunnelStoreData
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return data, err
+	}
+	return out, nil
+}
+
+// BlobName, ExportPlain and ImportPlain implement the sync exchange contract
+// (SyncableStore, declared in backend/sync/backend.go).
+
+func (s *TunnelStore) BlobName() string { return tunnelsFileName }
+
+func (s *TunnelStore) ExportPlain() ([]byte, error) {
+	return exportPlainStore(tunnelsFileName, s.filePath(), s.Load)
+}
+
+// ImportPlain backfills Version before saving, mirroring Load.
+func (s *TunnelStore) ImportPlain(raw []byte) error {
 	var data session.TunnelStoreData
-	if err := json.Unmarshal(bytes, &data); err != nil {
-		return session.TunnelStoreData{}, err
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("parse sync blob: %w", err)
 	}
 	if data.Version == 0 {
 		data.Version = 1
 	}
-	needsSave := false
-	for i := range data.Tunnels {
-		up := data.Tunnels[i].Upstream
-		if up != nil && up.Pass != "" {
-			if credentials.IsEncrypted(up.Pass) {
-				if s.passwordStore == nil {
-					// no cipher wired — leave as-is (backward compat)
-				} else {
-					pw, err := s.passwordStore.Decrypt(up.Pass)
-					if err != nil {
-						return session.TunnelStoreData{}, err
-					}
-					up.Pass = pw
-				}
-			} else if s.passwordStore != nil {
-				// Legacy plaintext on disk (tunnels.json predating in-place
-				// encryption). Keep the plaintext for the caller but re-save
-				// so it lands encrypted.
-				needsSave = true
-			}
-		}
-		// Same treatment for the dynamic tunnel's SOCKS password.
-		if p := data.Tunnels[i].SOCKSPass; p != "" {
-			if credentials.IsEncrypted(p) {
-				if s.passwordStore == nil {
-					// no cipher wired — leave as-is (backward compat)
-				} else {
-					pw, err := s.passwordStore.Decrypt(p)
-					if err != nil {
-						return session.TunnelStoreData{}, err
-					}
-					data.Tunnels[i].SOCKSPass = pw
-				}
-			} else if s.passwordStore != nil {
-				needsSave = true
-			}
-		}
-	}
-	if needsSave {
-		if err := s.saveLocked(data); err != nil {
-			return session.TunnelStoreData{}, err
-		}
-	}
-	return data, nil
+	return s.Save(data)
 }

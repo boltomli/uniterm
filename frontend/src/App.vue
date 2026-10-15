@@ -10,6 +10,7 @@
       @close-tab-batch="closeTabBatch"
       @toggle-ai-lock="onToggleAiLock"
       @tab-dragstart="onTabDragStart"
+      @new-local-terminal="createNewTab"
     />
     <div class="main-content">
       <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)" @connect-only="onConnectOnly" />
@@ -150,10 +151,10 @@
 
     <SyncConflictDialog />
     <UpdateDialog />
+    <WorkspaceSaveDialog />
     <DataDirDialog v-model:visible="dataDirVisible" :first-run="credStore.firstRun || credStore.dataDirInfo.firstRun" @done="onDataDirDone" />
     <EncryptionModeDialog v-model:visible="encryptVisible" :existing-secrets="credStore.status.existingSecrets" @done="onEncryptDone" />
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
-    <KeychainLostDialog v-model:visible="keychainLostVisible" @done="onKeychainLostDone" />
     <MobileKeyBar v-if="keyBarSessionId" :session-id="keyBarSessionId" />
   </div>
   </el-config-provider>
@@ -195,11 +196,11 @@ import StartTabContent from './components/StartTabContent.vue'
 import ConnectionForm from './components/ConnectionForm.vue'
 import AISidebar from './components/AISidebar.vue'
 import SyncConflictDialog from './components/SyncConflictDialog.vue'
+import WorkspaceSaveDialog from './components/WorkspaceSaveDialog.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import DataDirDialog from './components/DataDirDialog.vue'
 import EncryptionModeDialog from './components/EncryptionModeDialog.vue'
 import CredentialUnlockDialog from './components/CredentialUnlockDialog.vue'
-import KeychainLostDialog from './components/KeychainLostDialog.vue'
 import CredentialPrompt from './components/CredentialPrompt.vue'
 import type { CredentialResult } from './components/CredentialPrompt.vue'
 import MCPApprovalDialog from './components/MCPApprovalDialog.vue'
@@ -388,18 +389,22 @@ const credStore = useCredentialStore()
 const dataDirVisible = ref(false)
 const encryptVisible = ref(false)
 const unlockVisible = ref(false)
-const keychainLostVisible = ref(false)
 
-// Determine which credential dialog (keychain-lost / setup / unlock) to show
-// based on the current store status. Shared by startup and by the first-run
+// Determine which credential dialog (recovery-unlock / setup) to show based
+// on the current store status. Shared by startup and by the first-run
 // data-dir selection path so that pointing at a directory that already holds
 // master-password config correctly prompts for the password.
+//
+// Mode selection is a first-run (and post-reset) decision only: any state
+// with existing local data — a lost keychain key on a copied dir, a failed
+// decrypt, missing meta over surviving ciphertext — lands in the unlock
+// dialog, whose reset button is the only path that may clear credentials
+// before a new mode is chosen. resolveCredentialDialog must never route
+// straight to EncryptionModeDialog over existing secrets.
 function resolveCredentialDialog() {
-  if (credStore.status.keychainLost) { keychainLostVisible.value = true; return }
-  if (credStore.status.needsSetup) { encryptVisible.value = true; return }
-  if (!credStore.status.unlocked && credStore.status.mode === 'master-password') {
-    unlockVisible.value = true
-  }
+  const st = credStore.status
+  if (st.needsSetup && !st.existingSecrets) { encryptVisible.value = true; return }
+  if (!st.unlocked) { unlockVisible.value = true }
 }
 
 function onDataDirDone(restart: boolean) {
@@ -426,7 +431,6 @@ function onUnlockDone() {
   connectionStore.load()
   settingsStore.reload()
 }
-function onKeychainLostDone() { credStore.reset().then(() => { encryptVisible.value = true }) }
 async function onReset() {
   try {
     await ElMessageBox.confirm(t('unlock.resetConfirm'), t('unlock.reset'), { type: 'warning' })
@@ -1119,11 +1123,28 @@ function navigatePanel(dir: number) {
   tabStore.setActivePanel(t.id, next)
 }
 
+// What the tab bar "+" button (relayed from TabsList) and the newConnection
+// shortcut open (issue #1043): the start page by default, or a local terminal
+// with the default shell when newTabAction says so. No shell available ->
+// fall back to the start page.
+function createNewTab() {
+  if (settingsStore.settings.newTabAction === 'localTerminal') {
+    const shells = settingsStore.availableShells
+    const preferred = settingsStore.settings.defaultLocalShell
+    const shell = preferred && shells.includes(preferred) ? preferred : shells[0]
+    if (shell) {
+      createLocalTerminalWithShell(shell)
+      return
+    }
+  }
+  tabStore.createStartTab()
+}
+
 // ── Keyboard shortcut handlers (module-level so watch can access them) ──
 const actionHandlers: Record<ShortcutAction, () => void> = {
   nextTab: () => tabStore.nextTab(),
   prevTab: () => tabStore.prevTab(),
-  newConnection: () => { tabStore.createStartTab() },
+  newConnection: () => { createNewTab() },
   toggleSidebar: () => {
     if (sidebarVisible.value) {
       sidebarVisible.value = false

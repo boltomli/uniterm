@@ -108,3 +108,27 @@ func TestFavoriteStore_Persistence_EmptyList(t *testing.T) {
 		t.Errorf("expected empty list after clearing, got %v", ids)
 	}
 }
+
+// TestFavoriteStoreSyncRoundTrip pins the sync exchange contract for
+// favorites.json, a top-level array whose order is meaningful.
+func TestFavoriteStoreSyncRoundTrip(t *testing.T) {
+	a := NewFavoriteStore(t.TempDir())
+	if err := a.Save([]string{"c2", "c1", "c2"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	plain, err := a.ExportPlain()
+	if err != nil {
+		t.Fatalf("ExportPlain: %v", err)
+	}
+	b := NewFavoriteStore(t.TempDir())
+	if err := b.ImportPlain(plain); err != nil {
+		t.Fatalf("ImportPlain: %v", err)
+	}
+	got, err := b.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 2 || got[0] != "c2" || got[1] != "c1" {
+		t.Fatalf("favorites lost: %v", got)
+	}
+}

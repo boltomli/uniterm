@@ -42,16 +42,12 @@ func bootstrapPath() (string, error) {
 	return filepath.Join(dir, "data", bootstrapFileName), nil
 }
 
-// userConfigBootstrapPath returns the bootstrap path in the user config dir
-// (<UserConfigDir>/uniTerm/bootstrap.json). Unlike the exe/data location it is
-// writable for installs under a read-only Program Files / Applications, which
-// is where default and custom data dirs (and their bootstrap pointer) belong.
-func userConfigBootstrapPath() (string, error) {
-	def, err := DefaultDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(def, bootstrapFileName), nil
+// userConfigDir returns the user config dir (<UserConfigDir>/uniTerm) that
+// holds the bootstrap pointer for non-portable setups. Unlike the exe/data
+// location it is writable for installs under a read-only Program Files /
+// Applications.
+func userConfigDir() (string, error) {
+	return DefaultDataDir()
 }
 
 // bootstrapTargetPaths decides where a bootstrap of the given kind is written
@@ -63,9 +59,9 @@ func userConfigBootstrapPath() (string, error) {
 //
 // To keep only one valid pointer on disk (a mode switch must not silently
 // shadow one another at read time) the stale location is the other one.
-func bootstrapTargetPaths(kind, exe, userCfg string) (primary, stale string) {
+func bootstrapTargetPaths(kind, exe, userCfgDir string) (primary, stale string) {
 	exePath := filepath.Join(exe, "data", bootstrapFileName)
-	userPath := filepath.Join(userCfg, bootstrapFileName)
+	userPath := filepath.Join(userCfgDir, bootstrapFileName)
 	if kind == "portable" {
 		return exePath, userPath
 	}
@@ -75,13 +71,14 @@ func bootstrapTargetPaths(kind, exe, userCfg string) (primary, stale string) {
 // bootstrapSearchOrder returns the candidate paths read at startup, newest
 // preference first: the user-config bootstrap (authoritative for installs),
 // then the exe/data one (portable fallback). Each is validated as it is read.
-func bootstrapSearchOrder(exe, userCfg string) []string {
+func bootstrapSearchOrder(exe, userCfgDir string) []string {
 	exePath := filepath.Join(exe, "data", bootstrapFileName)
-	userPath := filepath.Join(userCfg, bootstrapFileName)
+	userPath := filepath.Join(userCfgDir, bootstrapFileName)
+	legacy := filepath.Join(userPath, bootstrapFileName)
 	if exePath == userPath {
 		return []string{exePath}
 	}
-	return []string{userPath, exePath}
+	return []string{exePath, userPath, legacy}
 }
 
 // ResolveDataDir determines where config files live.
@@ -93,28 +90,68 @@ func ResolveDataDir() (DataDir, error) {
 	if err != nil {
 		return DataDir{}, err
 	}
-	userCfg, err := userConfigBootstrapPath()
+	defDir, err := userConfigDir()
 	if err != nil {
 		return DataDir{}, err
 	}
-	for _, bp := range bootstrapSearchOrder(exe, userCfg) {
-		if b, err := readBootstrap(bp); err == nil && b != nil {
-			if dir, err := resolvePath(b); err == nil && dir != "" && pathExists(dir) {
-				return DataDir{Path: dir, Type: b.Type}, nil
-			}
-			// Invalid or missing path → try next location.
+	return resolveDataDirAt(exe, defDir)
+}
+
+// resolveDataDirAt is ResolveDataDir with injectable locations (tests).
+// defDir is the OS default data dir, which also hosts the user-config
+// bootstrap pointer.
+func resolveDataDirAt(exe, defDir string) (DataDir, error) {
+	for _, bp := range bootstrapSearchOrder(exe, defDir) {
+		b, err := readBootstrap(bp)
+		if err != nil || b == nil {
+			continue
+		}
+		dir, err := resolvePath(b, exe, defDir)
+		if err != nil || dir == "" || !pathExists(dir) {
+			continue // invalid or missing path -> try next location
+		}
+		migrateLegacyBootstrap(defDir, bp, b)
+		return DataDir{Path: dir, Type: b.Type}, nil
+	}
+	if hasConfigFiles(defDir) {
+		log.Writef("no valid bootstrap; default dir has config -> upgrade dataDir=%s", defDir)
+		return DataDir{Path: defDir, Type: "default", Upgrade: true}, nil
+	}
+	log.Writef("no valid bootstrap and no config in default dir -> first run")
+	return DataDir{FirstRun: true}, nil
+}
+
+// migrateLegacyBootstrap rewrites a pointer found at the old double-joined
+// path (<UserConfigDir>/uniTerm/bootstrap.json/bootstrap.json) to the correct
+// location. Best-effort: on failure the pointer stays where it is and the
+// legacy path remains in the search order, so resolution keeps working.
+func migrateLegacyBootstrap(defDir, found string, b *bootstrap) {
+	userPath := filepath.Join(defDir, bootstrapFileName)
+	legacyPath := filepath.Join(userPath, bootstrapFileName)
+	if found != legacyPath {
+		return
+	}
+	clearLegacyNestedLayout(defDir)
+	if err := writeJSONFile(userPath, *b); err != nil {
+		log.Writef("bootstrap migrate: write %s: %v", userPath, err)
+		return
+	}
+	log.Writef("bootstrap migrated %s -> %s", legacyPath, userPath)
+}
+
+// clearLegacyNestedLayout removes the directory a pre-fix build left at
+// <UserConfigDir>/uniTerm/bootstrap.json (the double-joined pointer path).
+// Renaming a fresh pointer file over that directory would fail, so it must
+// go before any write.
+func clearLegacyNestedLayout(defDir string) {
+	userPath := filepath.Join(defDir, bootstrapFileName)
+	if fi, err := os.Stat(userPath); err == nil && fi.IsDir() {
+		if err := os.RemoveAll(userPath); err != nil {
+			log.Writef("bootstrap: remove legacy nested pointer %s: %v", userPath, err)
+		} else {
+			log.Writef("bootstrap: removed legacy nested pointer dir %s", userPath)
 		}
 	}
-	def, err := DefaultDataDir()
-	if err != nil {
-		return DataDir{}, err
-	}
-	if hasConfigFiles(def) {
-		log.Writef("no valid bootstrap; default dir has config → upgrade dataDir=%s", def)
-		return DataDir{Path: def, Type: "default", Upgrade: true}, nil
-	}
-	log.Writef("no valid bootstrap and no config in default dir → first run")
-	return DataDir{FirstRun: true}, nil
 }
 
 func readBootstrap(path string) (*bootstrap, error) {
@@ -129,16 +166,12 @@ func readBootstrap(path string) (*bootstrap, error) {
 	return &b, nil
 }
 
-func resolvePath(b *bootstrap) (string, error) {
+func resolvePath(b *bootstrap, exe, defDir string) (string, error) {
 	switch b.Type {
 	case "default":
-		return DefaultDataDir()
+		return defDir, nil
 	case "portable":
-		dir, err := exeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(dir, "data"), nil
+		return filepath.Join(exe, "data"), nil
 	case "custom":
 		if b.DataDir == "" {
 			return "", nil
@@ -157,29 +190,36 @@ func WriteBootstrap(kind, customDir string) error {
 	if err != nil {
 		return err
 	}
-	userCfg, err := userConfigBootstrapPath()
+	defDir, err := userConfigDir()
 	if err != nil {
 		return err
 	}
-	primary, stale := bootstrapTargetPaths(kind, exe, userCfg)
+	return writeBootstrapAt(exe, defDir, kind, customDir)
+}
+
+func writeBootstrapAt(exe, defDir, kind, customDir string) error {
+	// A pre-fix build may have left bootstrap.json as a directory (the
+	// double-joined pointer path); renaming over that would fail.
+	clearLegacyNestedLayout(defDir)
+	primary, stale := bootstrapTargetPaths(kind, exe, defDir)
 
 	b := bootstrap{Type: kind}
 	if kind == "custom" {
 		b.DataDir = customDir
 	}
-	data, err := json.Marshal(b)
-	if err != nil {
-		return err
-	}
 	if err := os.MkdirAll(filepath.Dir(primary), 0755); err != nil {
 		return err
 	}
-	if err := atomicWriteFile(primary, data, 0600); err != nil {
+	if err := writeJSONFile(primary, b); err != nil {
 		return err
 	}
-	// A mode switch must not leave a second, shadowing pointer behind.
+	// A mode switch must not leave a second, shadowing pointer behind. A
+	// failed removal is logged, not swallowed: a surviving stale pointer
+	// shadows whichever location lost the race.
 	if stale != primary {
-		_ = os.Remove(stale)
+		if err := os.Remove(stale); err != nil && !os.IsNotExist(err) {
+			log.Writef("bootstrap: remove stale pointer %s: %v", stale, err)
+		}
 	}
 	return nil
 }

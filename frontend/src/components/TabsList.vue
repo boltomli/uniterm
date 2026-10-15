@@ -37,7 +37,7 @@
     <button
       v-if="!showMore"
       class="tab-add-btn"
-      :title="t('startTab.defaultName') + shortcutSuffix('newConnection')"
+      :title="addBtnTitle + shortcutSuffix('newConnection')"
       @click="onAddStartTab"
     >
       <Plus :size="lucideSize('0.875rem')" />
@@ -59,7 +59,7 @@
     </Menu>
     <button
       class="tab-add-btn"
-      :title="t('startTab.defaultName') + shortcutSuffix('newConnection')"
+      :title="addBtnTitle + shortcutSuffix('newConnection')"
       @click="onAddStartTab"
     >
       <Plus :size="lucideSize('0.875rem')" />
@@ -136,16 +136,29 @@ onUnmounted(() => {
   window.removeEventListener('dragend', clearDragState)
 })
 
-defineEmits<{
+const emit = defineEmits<{
   'close-tab': [id: string]
   'close-tab-batch': [ids: string[]]
   'toggle-ai-lock': [panelId: string]
   'tab-dragstart': [e: DragEvent, tabId: string]
+  'new-local-terminal': []
 }>()
 
+// "+" opens the start page by default; the newTabAction setting (issue #1043)
+// switches it (and the newConnection shortcut) to a local terminal instead.
 function onAddStartTab() {
-  tabStore.createStartTab()
+  if (settingsStore.settings.newTabAction === 'localTerminal') {
+    emit('new-local-terminal')
+  } else {
+    tabStore.createStartTab()
+  }
 }
+
+const addBtnTitle = computed(() =>
+  settingsStore.settings.newTabAction === 'localTerminal'
+    ? t('conn.localTerminal')
+    : t('startTab.defaultName')
+)
 
 function onWheel(e: WheelEvent) {
   if (!tabsListRef.value) return

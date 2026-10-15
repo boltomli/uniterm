@@ -44,7 +44,7 @@ Remote terminal, local & serial terminal, file transfer, remote desktop, databas
 - **Local & Serial Terminal** — PowerShell / CMD / Git Bash / WSL plus serial connections with configurable baud rate, data bits, stop bits, parity, and local echo.
 - **File Transfer** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem with dual-pane browsing and `rz`/`sz` support in SSH terminals.
 - **Remote Desktop** — RDP (Windows Remote Desktop), VNC (Linux remote control), SPICE (KVM/QEMU VMs), X11 (X Window forwarding)
-- **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch, with AI-powered natural-language queries and data-row editing.
+- **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, with AI-powered natural-language queries and data-row editing.
 - **Kubernetes & Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, with cluster resource & image management, Pod logs and exec terminals, and CPU/memory metrics.
 - **Server Monitor** — Real-time CPU, memory, disk, network, processes, ports, and network interfaces.
 
@@ -67,7 +67,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 - **Workspace** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
 - **Cloud Sync** — Dual-mode cloud sync via private Git repository or WebDAV — no worry about data loss or leaks, and pick up your work seamlessly across devices.
 - **Custom Keybindings** — Freely bind keyboard shortcuts for every action for full keyboard-driven operation, hands never leaving the keyboard.
-- **Themes & Internationalization** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image; 9-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian.
+- **Themes & Internationalization** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image; 11-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian, Portuguese, Vietnamese.
 
 ## Supported Protocols
 
@@ -95,6 +95,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 | Database | PostgreSQL | PostgreSQL protocol: PostgreSQL, CockroachDB, and more |
 | Database | Oracle Database | Oracle Database connections through a pure Go driver |
 | Database | SQL Server | SQL Server connections through a pure Go driver |
+| Database | SQLite (1.10.1-alpha) | Embedded local database, connect by opening the database file |
 | Database | rqlite | Lightweight distributed DB built on SQLite with Raft consensus |
 | Database | Redis | In-memory key-value store with visual key browsing and editing |
 | Database | MongoDB | Document database with tree browsing, query editor, and inline editing |
@@ -300,6 +301,7 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@IBRAHIMELAMRABET](https://github.com/IBRAHIMELAMRABET)
 - [@chris-edstrom](https://github.com/chris-edstrom)
 - [@andreafunicelli](https://github.com/andreafunicelli)
+- [@dungvv](https://github.com/dungvv)
 
 ## License
 

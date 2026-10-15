@@ -1,13 +1,10 @@
 package store
 
 import (
-	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 
-	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/session"
 )
 
@@ -17,6 +14,7 @@ type IdentityStore struct {
 	configDir     string
 	passwordStore PasswordStore // nil = refuse to write plaintext passwords
 	mu            sync.Mutex    // serializes Save + Load password rewrites
+	lastSavedHash string        // F-105 skip state (pre-encryption content hash)
 }
 
 func NewIdentityStore(configDir string) (*IdentityStore, error) {
@@ -41,6 +39,18 @@ func (s *IdentityStore) filePath() string {
 // passwordStore is wired. Values already prefixed (credentials.IsEncrypted)
 // are skipped so a save doesn't double-encrypt previously encrypted data.
 func (s *IdentityStore) Save(data session.IdentityStoreData) error {
+	return s.save(data, false)
+}
+
+// ForceSave rewrites the file even when the content hash matches the
+// seeded state. Used by re-keying: the plaintext is unchanged, so the
+// F-105 hash-skip would otherwise swallow the re-encryption and leave
+// the file under the old key.
+func (s *IdentityStore) ForceSave(data session.IdentityStoreData) error {
+	return s.save(data, true)
+}
+
+func (s *IdentityStore) save(data session.IdentityStoreData, force bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -48,73 +58,46 @@ func (s *IdentityStore) Save(data session.IdentityStoreData) error {
 	identities := make([]session.Identity, len(data.Identities))
 	copy(identities, data.Identities)
 
-	for i := range identities {
-		id := &identities[i]
-		// Both the password/passphrase and the inline key text (keyText) are
-		// secrets; encrypt whichever is present, leaving empty values alone.
-		for _, field := range []*string{&id.Password, &id.KeyContent} {
-			if err := encryptSecretField(field, s.passwordStore); err != nil {
-				return err
-			}
-		}
+	out := session.IdentityStoreData{Identities: identities}
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	skip := s.lastSavedHash
+	if force {
+		// Re-keying saves unchanged plaintext under a new key — the
+		// F-105 hash-skip would otherwise swallow the rewrite.
+		skip = forceWrite
 	}
-
-	jsonData, err := json.MarshalIndent(session.IdentityStoreData{Identities: identities}, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(s.filePath(), jsonData, 0600)
+	h, err := saveEncryptedFile(identityStoreFileName, s.filePath(), &out, s.passwordStore, skip)
+	s.lastSavedHash = h
+	return err
 }
 
-// Load reads identities.json, returning an empty store when the file does not
-// exist, quarantining+erroring on corrupt JSON, and decrypting the Password
-// field of each identity.
+// Load reads identities.json: empty store when the file does not exist,
+// quarantine+error on corrupt JSON, decrypting the manifest secret fields
+// (filestore.go envelope).
 func (s *IdentityStore) Load() (session.IdentityStoreData, error) {
-	data, err := os.ReadFile(s.filePath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return session.IdentityStoreData{Identities: []session.Identity{}}, nil
-		}
-		return session.IdentityStoreData{}, err
+	out, _, hash, existed, err := loadEncryptedFile[session.IdentityStoreData](identityStoreFileName, s.filePath(), s.passwordStore)
+	if !existed {
+		return session.IdentityStoreData{Identities: []session.Identity{}}, nil
 	}
-	var out session.IdentityStoreData
-	if err := json.Unmarshal(data, &out); err != nil {
-		quarantineCorrupt(s.filePath())
+	if err != nil {
 		return session.IdentityStoreData{}, err
 	}
 	if out.Identities == nil {
 		out.Identities = []session.Identity{}
 	}
-	for i := range out.Identities {
-		id := &out.Identities[i]
-		for _, field := range []*string{&id.Password, &id.KeyContent} {
-			if *field == "" || !credentials.IsEncrypted(*field) || s.passwordStore == nil {
-				continue
-			}
-			dec, err := s.passwordStore.Decrypt(*field)
-			if err != nil {
-				return session.IdentityStoreData{}, err
-			}
-			*field = dec
-		}
-	}
+	s.lastSavedHash = hash
 	return out, nil
 }
 
-// encryptSecretField encrypts a secret field in place using the password store,
-// skipping empty and already-encrypted values. Returns an error (failing
-// closed) when a plaintext secret would be persisted with no cipher wired.
-func encryptSecretField(field *string, ps PasswordStore) error {
-	if *field == "" || credentials.IsEncrypted(*field) {
-		return nil
-	}
-	if ps == nil {
-		return errors.New("passwordStore not initialized; refusing to save plaintext secret")
-	}
-	enc, err := ps.Encrypt(*field)
-	if err != nil {
-		return err
-	}
-	*field = enc
-	return nil
+// BlobName, ExportPlain and ImportPlain implement the sync exchange contract
+// (SyncableStore, declared in backend/sync/backend.go).
+
+func (s *IdentityStore) BlobName() string { return identityStoreFileName }
+
+func (s *IdentityStore) ExportPlain() ([]byte, error) {
+	return exportPlainStore(identityStoreFileName, s.filePath(), s.Load)
+}
+
+func (s *IdentityStore) ImportPlain(raw []byte) error {
+	return importPlainStore(raw, s.Save)
 }

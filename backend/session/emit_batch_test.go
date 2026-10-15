@@ -11,6 +11,11 @@ import (
 // output must never block the session's readLoop against the synchronous
 // Wails event emit, and high-frequency chunks should be coalesced before they
 // cross the IPC boundary.
+//
+// Overflow policy is two-tier: while the consumer is merely slow the producer
+// blocks (flow control — a full-screen TUI only sends diffs, so dropped bytes
+// would desync the screen), and only after a watchdog expires does it degrade
+// to drop-oldest so a wedged frontend cannot freeze the readLoop.
 
 func TestEmitDataSyncWhenLoopNotStarted(t *testing.T) {
 	s := &baseSession{}
@@ -72,6 +77,9 @@ func TestEmitDataDropsOldestWhenQueueFull(t *testing.T) {
 	oldInterval := emitFlushInterval
 	emitFlushInterval = 5 * time.Second
 	t.Cleanup(func() { emitFlushInterval = oldInterval })
+	oldWatchdog := emitBlockWatchdog
+	emitBlockWatchdog = 100 * time.Millisecond
+	t.Cleanup(func() { emitBlockWatchdog = oldWatchdog })
 
 	s := &baseSession{}
 	var mu sync.Mutex
@@ -198,4 +206,120 @@ func TestEmitDataDoesNotBlockOnSlowConsumer(t *testing.T) {
 		t.Fatal("emitData blocked on a stuck consumer; readLoop would freeze")
 	}
 	close(release)
+}
+
+// Flow control: while the consumer is merely slow (but still draining), the
+// producer must block instead of dropping bytes. A full-screen TUI such as
+// menuconfig only sends diffs after its initial paint, so losing a chunk
+// desyncs the screen permanently.
+func TestEmitDataNoLossWhenConsumerSlow(t *testing.T) {
+	oldInterval := emitFlushInterval
+	emitFlushInterval = 5 * time.Millisecond
+	t.Cleanup(func() { emitFlushInterval = oldInterval })
+
+	s := &baseSession{}
+	var mu sync.Mutex
+	var got []byte
+	s.SetOnDataCallback(func(data []byte) {
+		time.Sleep(10 * time.Millisecond) // simulate a busy frontend
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, data...)
+	})
+	s.startEmitLoop()
+	t.Cleanup(s.stopEmitLoop)
+
+	const n = emitQueueCapacity + 16
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < n; i++ {
+			s.emitData([]byte{byte(i)})
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("producer never finished; flow control wedged the readLoop")
+	}
+	// Let the emit loop drain the tail of the queue.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != n {
+		t.Fatalf("delivered %d bytes, want %d (transient consumer lag must not lose bytes)", len(got), n)
+	}
+	for i := 0; i < n; i++ {
+		if got[i] != byte(i) {
+			t.Fatalf("byte %d corrupted: got %d", i, got[i])
+		}
+	}
+	s.emitMu.Lock()
+	dropped := s.emitDropped
+	s.emitMu.Unlock()
+	if dropped != 0 {
+		t.Fatalf("dropped %d chunk(s); transient consumer lag must not lose bytes", dropped)
+	}
+}
+
+// Watchdog: when the consumer is wedged (not draining at all), the producer
+// must degrade to drop-oldest instead of blocking forever — the freeze
+// protection for a wedged frontend stays intact.
+func TestEmitDataWedgeFallsBackToDropOldest(t *testing.T) {
+	oldWatchdog := emitBlockWatchdog
+	emitBlockWatchdog = 100 * time.Millisecond
+	t.Cleanup(func() { emitBlockWatchdog = oldWatchdog })
+	oldInterval := emitFlushInterval
+	emitFlushInterval = 5 * time.Second
+	t.Cleanup(func() { emitFlushInterval = oldInterval })
+
+	s := &baseSession{}
+	var mu sync.Mutex
+	var got []byte
+	release := make(chan struct{})
+	s.SetOnDataCallback(func(data []byte) {
+		<-release
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, data...)
+	})
+	s.startEmitLoop()
+	t.Cleanup(s.stopEmitLoop)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < emitQueueCapacity+10; i++ {
+			s.emitData([]byte{byte(i)})
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("producer never degraded to drop-oldest; readLoop would freeze")
+	}
+
+	// Read the drop counter before stopEmitLoop: its force-flush drains the
+	// queue and resets the counter (after logging the overflow).
+	s.emitMu.Lock()
+	dropped := s.emitDropped
+	s.emitMu.Unlock()
+	if dropped != 10 {
+		t.Fatalf("dropped %d chunks, want 10", dropped)
+	}
+	close(release)
+
+	s.stopEmitLoop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := make([]byte, 0, emitQueueCapacity)
+	for i := 10; i < emitQueueCapacity+10; i++ {
+		want = append(want, byte(i))
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("delivered %v, want chunks %d..%d (drop-oldest after watchdog)", got, 10, emitQueueCapacity+9)
+	}
 }

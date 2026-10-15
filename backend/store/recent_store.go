@@ -1,8 +1,6 @@
 package store
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -22,6 +20,8 @@ type RecentStore struct {
 	timer *time.Timer
 	stop  chan struct{}
 	done  chan struct{}
+
+	lastSavedHash string // F-105 skip state (pre-encryption content hash)
 }
 
 func NewRecentStore(configDir string) *RecentStore {
@@ -40,26 +40,16 @@ func (s *RecentStore) Load() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.ids = make([]string, 0)
-			result := make([]string, len(s.ids))
-			copy(result, s.ids)
-			return result, nil
-		}
-		return nil, err
-	}
-
-	var ids []string
-	if err := json.Unmarshal(data, &ids); err != nil {
-		// Corrupted file — reset
+	ids, _, hash, existed, err := loadEncryptedFile[[]string](recentFileName, s.filePath, nil)
+	if !existed || err != nil {
 		s.ids = make([]string, 0)
-		result := make([]string, len(s.ids))
-		copy(result, s.ids)
-		return result, nil
+		s.lastSavedHash = ""
+		return make([]string, 0), nil
 	}
 	s.ids = ids
+	// Seed the skip-state with the just-read content so an unchanged first
+	// flush after startup doesn't rewrite the file.
+	s.lastSavedHash = hash
 	result := make([]string, len(s.ids))
 	copy(result, s.ids)
 	return result, nil
@@ -145,13 +135,15 @@ func (s *RecentStore) flush(syncWrite bool) error {
 	s.pending = make(map[string]struct{})
 	ids := make([]string, len(s.ids))
 	copy(ids, s.ids)
+	last := s.lastSavedHash
 	s.mu.Unlock()
 
-	data, err := json.Marshal(ids)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(s.filePath, data, 0644)
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	h, err := saveEncryptedFile(recentFileName, s.filePath, &ids, nil, last)
+	s.mu.Lock()
+	s.lastSavedHash = h
+	s.mu.Unlock()
+	return err
 }
 
 func (s *RecentStore) isClosed() bool {

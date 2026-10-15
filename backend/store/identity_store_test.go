@@ -102,3 +102,44 @@ func TestIdentityStoreEmpty(t *testing.T) {
 		t.Fatalf("expected empty, got %+v", out)
 	}
 }
+
+func mustIdentityStore(t *testing.T) *IdentityStore {
+	t.Helper()
+	s, err := NewIdentityStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewIdentityStore: %v", err)
+	}
+	s.SetPasswordStore(fakeCipherStore{})
+	return s
+}
+
+// TestIdentityStoreSyncRoundTrip pins the sync exchange contract for
+// identities.json: the blob must carry plaintext secrets and survive a
+// round-trip through a store on another directory.
+func TestIdentityStoreSyncRoundTrip(t *testing.T) {
+	a := mustIdentityStore(t)
+	seed := session.IdentityStoreData{Identities: []session.Identity{{
+		ID: "i1", Name: "id", Username: "deploy", AuthType: "password", Password: "idp",
+	}}}
+	if err := a.Save(seed); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	plain, err := a.ExportPlain()
+	if err != nil {
+		t.Fatalf("ExportPlain: %v", err)
+	}
+	if !contains(string(plain), "idp") || contains(string(plain), "enc:v1:") {
+		t.Fatalf("blob must carry plaintext secrets: %s", plain)
+	}
+	b := mustIdentityStore(t)
+	if err := b.ImportPlain(plain); err != nil {
+		t.Fatalf("ImportPlain: %v", err)
+	}
+	got, err := b.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Identities) != 1 || got.Identities[0].ID != "i1" || got.Identities[0].Password != "idp" {
+		t.Fatalf("identities lost: %+v", got.Identities)
+	}
+}

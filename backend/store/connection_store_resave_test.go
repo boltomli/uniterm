@@ -130,21 +130,24 @@ func TestResaveKeepsIdentityUsername(t *testing.T) {
 	}
 }
 
-// TestEncryptForSaveLockedKeepsIdentityUser pins the function itself: an
-// identity connection's User survives while its (unused) credentials stay
-// cleared, matching Save's semantics.
-func TestEncryptForSaveLockedKeepsIdentityUser(t *testing.T) {
+// TestSaveKeepsIdentityUser pins the save semantics themselves: an
+// identity connection's User survives on disk while its (unused)
+// credentials stay cleared, and the caller's copy is untouched.
+func TestSaveKeepsIdentityUser(t *testing.T) {
 	s := &ConnectionStore{configDir: t.TempDir(), passwordStore: fakeCipherStore{}}
 	in := session.ConnectionStoreData{
 		Connections: []session.ConnectionConfig{
 			{ID: "c-ident", AuthType: "identity", IdentityId: "id1", User: "override-user", Password: "stale-pw"},
 		},
 	}
-	out, err := s.encryptForSaveLocked(in)
-	if err != nil {
-		t.Fatalf("encryptForSaveLocked: %v", err)
+	if err := s.Save(in); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
-	c := out.Connections[0]
+	onDisk, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c := onDisk.Connections[0]
 	if c.User != "override-user" {
 		t.Fatalf("User cleared: %q", c.User)
 	}

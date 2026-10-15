@@ -407,16 +407,6 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 		tunnelSSHConfig = &m
 	}
 
-	// Defensive credential fallback for the jump host: the freshly loaded
-	// config already has passwords filled synchronously (populatePasswords),
-	// but resolve from the keychain anyway if it is somehow still empty.
-	// Password-auth connections only — see the connect-path fallback above.
-	if tunnelSSHConfig.AuthType == "password" && tunnelSSHConfig.Password == "" && tunnelSSHConfig.ID != "" {
-		if pw, err := a.connectionStore.EnsurePassword(tunnelSSHConfig.ID); err == nil && pw != "" {
-			tunnelSSHConfig.Password = pw
-		}
-	}
-
 	// Inline tunnel credentials (ephemeral prompt "connect" without saving)
 	// only fill gaps — they never override already-resolved values, and
 	// never touch an identity-resolved config.
@@ -554,16 +544,7 @@ func (a *App) SessionStart(sessionID string, config session.ConnectionConfig) er
 		return nil
 	}
 	// Terminal session types defer Connect() until SessionStart, and the
-	// frontend passes a fresh config here. If that fresh config still has
-	// an empty password (e.g. the Pinia store holds a snapshot from before
-	// keychain passwords were filled), resolve it from the OS keychain now
-	// so the user is not prompted for a password that is already stored.
-	// Password-auth connections only — see the connect-path fallback above.
-	if config.AuthType == "password" && config.Password == "" && config.ID != "" && a.connectionStore != nil {
-		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
-			config.Password = pw
-		}
-	}
+	// frontend passes a fresh config here.
 	// Resolve an identity reference into a concrete password/key config
 	// before launching the connect goroutine.
 	if config.AuthType == "identity" {

@@ -431,6 +431,10 @@ type baseSession struct {
 	emitQueue   [][]byte
 	emitDropped int
 	emitClosing bool
+	// emitOverflow marks degraded drop-oldest mode: set when the producer
+	// blocked on a full queue past emitBlockWatchdog, cleared once the
+	// queue fully drains. Guarded by emitMu.
+	emitOverflow bool
 	// emitQuit is closed (and emitCond broadcast) once by stopEmitLoop;
 	// emitDone is closed by emitLoop when it has fully exited. nil until
 	// startEmitLoop runs.
@@ -441,10 +445,12 @@ type baseSession struct {
 
 const (
 	// emitQueueCapacity bounds the pending chunk queue. When the consumer
-	// (frontend) falls behind, the OLDEST chunks are dropped — mirroring
-	// Alacritty/WezTerm, where fresher output matters more than stale
-	// bytes. Losing stale `cat` output is cosmetic; blocking the readLoop
-	// freezes the whole app.
+	// (frontend) falls behind, the producer blocks first (flow control —
+	// see queueEmit); the OLDEST chunks are dropped only after the
+	// emitBlockWatchdog expires, mirroring Alacritty/WezTerm where fresher
+	// output matters more than stale bytes. Losing stale `cat` output is
+	// cosmetic, but losing bytes from a full-screen TUI (menuconfig, vim,
+	// ...) desyncs the screen — so dropping is a last resort, not the norm.
 	emitQueueCapacity = 64
 )
 
@@ -453,6 +459,14 @@ var (
 	// event per window, cutting Wails emit count 10-100x under load.
 	// Package-level var so tests can shorten it.
 	emitFlushInterval = 16 * time.Millisecond
+	// emitBlockWatchdog bounds how long queueEmit blocks the producer while
+	// the queue is full. Blocking backpressures the PTY/SSH channel and
+	// pauses the remote writer — the way a physical terminal applies flow
+	// control — keeping the byte stream lossless for full-screen TUIs. If
+	// the consumer stays wedged past the watchdog, the producer degrades
+	// to drop-oldest so the readLoop and terminal input stay alive.
+	// Package-level var so tests can shorten it.
+	emitBlockWatchdog = 3 * time.Second
 )
 
 const (
@@ -566,6 +580,14 @@ func (s *baseSession) emitData(data []byte) {
 // queueEmit hands data to the emit loop. Returns false when the caller must
 // emit synchronously instead. Copies the bytes: readLoops reuse their read
 // buffer across iterations.
+//
+// When the queue is full the producer blocks first (flow control): the PTY/
+// SSH channel backpressures and the remote writer pauses, so no bytes are
+// lost and full-screen TUIs stay in sync. Only when the block outlives
+// emitBlockWatchdog — the consumer is wedged, not merely slow — does it
+// degrade to drop-oldest, keeping the readLoop and terminal input alive.
+// Degradation is sticky until the queue fully drains, so a long wedged
+// period drops steadily instead of re-waiting the watchdog on every chunk.
 func (s *baseSession) queueEmit(data []byte) bool {
 	if s.IsZmodemMode() {
 		return false
@@ -575,11 +597,30 @@ func (s *baseSession) queueEmit(data []byte) bool {
 	if s.emitQuit == nil || s.emitClosing {
 		return false
 	}
-	if len(s.emitQueue) >= emitQueueCapacity {
+	if len(s.emitQueue) >= emitQueueCapacity && !s.emitOverflow {
+		watchdog := time.AfterFunc(emitBlockWatchdog, s.emitCond.Broadcast)
+		defer watchdog.Stop()
+		deadline := time.Now().Add(emitBlockWatchdog)
+		for len(s.emitQueue) >= emitQueueCapacity && !s.emitClosing {
+			if !time.Now().Before(deadline) {
+				// Consumer wedged past the watchdog: degrade to
+				// drop-oldest until the queue drains again.
+				s.emitOverflow = true
+				break
+			}
+			s.emitCond.Wait()
+		}
+	}
+	for len(s.emitQueue) >= emitQueueCapacity {
 		// Drop-oldest keeps the readLoop unblocked and the terminal
-		// showing the freshest output.
+		// showing the freshest output. Reached only in degraded mode.
 		s.emitQueue = s.emitQueue[1:]
 		s.emitDropped++
+	}
+	if s.emitClosing {
+		// stopEmitLoop broadcast while we waited: the queue has been
+		// force-flushed, so hand this chunk to the synchronous path.
+		return false
 	}
 	s.emitQueue = append(s.emitQueue, append([]byte(nil), data...))
 	s.emitCond.Signal()
@@ -591,6 +632,9 @@ func (s *baseSession) drainEmitQueue() [][]byte {
 	s.emitMu.Lock()
 	chunks := s.emitQueue
 	s.emitQueue = nil
+	// Queue fully drained: the consumer caught up, so return to lossless
+	// flow-control mode on the next full queue.
+	s.emitOverflow = false
 	dropped := s.emitDropped
 	s.emitDropped = 0
 	s.emitMu.Unlock()

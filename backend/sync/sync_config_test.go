@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -61,5 +62,49 @@ func TestSyncConfigLoadQuarantinesCorruptFile(t *testing.T) {
 	}
 	if loaded.RepoURL != "https://example.com/repo.git" {
 		t.Fatalf("config = %+v", loaded)
+	}
+}
+
+func TestEffectiveSyncFilesNilScopeKeepsLegacy(t *testing.T) {
+	got := EffectiveSyncFiles(nil)
+	if !reflect.DeepEqual(got, defaultSyncedFiles) {
+		t.Fatalf("nil scope = %v, want legacy %v", got, defaultSyncedFiles)
+	}
+	// DeepEqual cannot detect aliasing; mutating the result must not
+	// touch the shared defaultSyncedFiles slice.
+	got[0] = "x"
+	if defaultSyncedFiles[0] == "x" {
+		t.Fatal("nil scope result aliases defaultSyncedFiles; want a copy")
+	}
+}
+
+func TestEffectiveSyncFilesFiltersToSyncable(t *testing.T) {
+	got := EffectiveSyncFiles([]string{"settings.json", "connections.json", "not-a-file.json"})
+	want := []string{"settings.json", "connections.json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestEffectiveSyncFilesDedupesScope(t *testing.T) {
+	got := EffectiveSyncFiles([]string{"settings.json", "settings.json"})
+	want := []string{"settings.json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestSyncableFilesIncludesSettings(t *testing.T) {
+	found := false
+	for _, n := range syncableFiles {
+		if n == "settings.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("syncableFiles must contain settings.json")
+	}
+	if len(syncableFiles) != len(defaultSyncedFiles)+1 {
+		t.Fatalf("syncableFiles len %d, want defaultSyncedFiles len %d + 1", len(syncableFiles), len(defaultSyncedFiles))
 	}
 }

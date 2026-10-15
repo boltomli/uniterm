@@ -29,7 +29,15 @@ export function bracketPaste(text: string, enabled: boolean): string {
 // behave like keyboard input — Enter/arrows already auto-scroll via xterm's
 // scrollOnUserInput, but paste bypasses the keydown path (issue 629).
 export function pasteWithScroll(target: PasteTarget, text: string): void {
-  const payload = bracketPaste(normalizePastedText(text), target.bracketedPasteMode)
+  const normalized = normalizePastedText(text)
+  // With the bracketed-paste protocol the shell asked for literal data, so
+  // \n passes through untouched. Without it the payload must mimic keyboard
+  // input: ConPTY only maps \r to Enter, so a bare \n makes cmd/PowerShell
+  // merge every pasted line into one (issue 1125) — convert like the native
+  // Windows console does.
+  const payload = target.bracketedPasteMode
+    ? bracketPaste(normalized, true)
+    : normalized.replace(/\n/g, '\r')
   target.write(payload)
   target.scrollToBottom()
 }

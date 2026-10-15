@@ -11,7 +11,7 @@ let unsubFirstRun: (() => void) | null = null
 
 export const useCredentialStore = defineStore('credential', () => {
   const dataDirInfo = ref<DataDirInfo>({ dataDir: '', type: 'default', firstRun: false })
-  const status = ref<CredentialStatus>({ mode: '', unlocked: false, needsSetup: true, keychainLost: false, existingSecrets: 0 })
+  const status = ref<CredentialStatus>({ mode: '', unlocked: false, needsSetup: true, keychainLost: false, decryptFailed: false, existingSecrets: 0 })
   const firstRun = ref(false)
   // False when backend calls reject — i.e. the frontend is served to a plain
   // browser (wails3 dev browser preview). The status placeholder above must

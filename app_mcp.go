@@ -494,15 +494,10 @@ func (a *App) mcpCreateFileSession(sshSID string, config session.ConnectionConfi
 		proto = "scp"
 	}
 	// Same credential resolution as CreateSession/SessionStart
-	// (app_terminal.go): keychain fallback, identity and proxy
-	// materialization. The SSH session's stored config is already
-	// materialized, so these are no-ops except for channel clones, whose
-	// frontend-passed config skipped resolution.
-	if config.AuthType == "password" && config.Password == "" && config.ID != "" && a.connectionStore != nil {
-		if pw, err := a.connectionStore.EnsurePassword(config.ID); err == nil && pw != "" {
-			config.Password = pw
-		}
-	}
+	// (app_terminal.go): identity and proxy materialization. The SSH
+	// session's stored config is already materialized, so these are no-ops
+	// except for channel clones, whose frontend-passed config skipped
+	// resolution.
 	if config.AuthType == "identity" {
 		mc, err := a.materializeIdentity(config)
 		if err != nil {
@@ -952,6 +947,8 @@ var mcpNotifyLabels = map[string]mcpNotifyStrings{
 	"es":    {"uniTerm · Solicitud de aprobación MCP", "%s solicita ejecutar un comando; confírmalo en uniTerm", "%s solicita una nueva conexión; confírmalo en uniTerm"},
 	"fr":    {"uniTerm · Demande d'approbation MCP", "%s demande à exécuter une commande — à confirmer dans uniTerm", "%s demande une nouvelle connexion — à confirmer dans uniTerm"},
 	"ru":    {"uniTerm · запрос на одобрение MCP", "%s запрашивает выполнение команды — подтвердите в uniTerm", "%s запрашивает новое подключение — подтвердите в uniTerm"},
+	"pt":    {"uniTerm · Solicitação de aprovação MCP", "%s solicita executar um comando — confirme no uniTerm", "%s solicita uma nova conexão — confirme no uniTerm"},
+	"vi":    {"uniTerm · Yêu cầu phê duyệt MCP", "%s yêu cầu chạy lệnh — xác nhận trong uniTerm", "%s yêu cầu kết nối mới — xác nhận trong uniTerm"},
 }
 
 // mcpNotifyStringsFor returns the string set for lang, English fallback.

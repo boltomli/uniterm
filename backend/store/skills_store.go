@@ -2,7 +2,6 @@ package store
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +80,9 @@ type SkillsStore struct {
 	listMu      sync.Mutex
 	listCache   []SkillMeta
 	listCachedAt time.Time
+
+	saveMu        sync.Mutex // serializes savePrefs (incl. lastSavedHash)
+	lastSavedHash string     // F-105 skip state (pre-encryption content hash)
 }
 
 func NewSkillsStore(configDir string) *SkillsStore {
@@ -173,35 +175,32 @@ func parseFrontmatter(content string) (fm skillFrontmatter, body string) {
 // ---- 偏好读写（prefs.json，源于用户偏好）----
 
 func (s *SkillsStore) loadPrefs() (skillPrefsData, error) {
-	bytes, err := os.ReadFile(s.prefsPath())
+	out, _, hash, existed, err := loadEncryptedFile[skillPrefsData](skillPrefsFile, s.prefsPath(), nil)
+	if !existed {
+		return skillPrefsData{Version: 1, Prefs: []skillPref{}}, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return skillPrefsData{Version: 1, Prefs: []skillPref{}}, nil
-		}
 		return skillPrefsData{}, err
 	}
-	var data skillPrefsData
-	if err := json.Unmarshal(bytes, &data); err != nil {
-		return skillPrefsData{}, err
+	if out.Version == 0 {
+		out.Version = 1
 	}
-	if data.Version == 0 {
-		data.Version = 1
-	}
-	return data, nil
+	s.saveMu.Lock()
+	s.lastSavedHash = hash
+	s.saveMu.Unlock()
+	return out, nil
 }
 
 func (s *SkillsStore) savePrefs(data skillPrefsData) error {
 	if err := os.MkdirAll(s.skillsRoot(), 0755); err != nil {
 		return err
 	}
-	bytes, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Atomic write (tmp + rename): concurrent List callers all scan the
-	// same dir and converge on identical prefs, so racing saves are safe
-	// — readers must not see a half-written file though.
-	return atomicWriteFile(s.prefsPath(), bytes, 0600)
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	h, err := saveEncryptedFile(skillPrefsFile, s.prefsPath(), &data, nil, s.lastSavedHash)
+	s.lastSavedHash = h
+	return err
 }
 
 // ---- 目录扫描（B1，内容/存在性以目录为真相源）----

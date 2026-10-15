@@ -2,6 +2,8 @@ package sync
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -56,25 +58,6 @@ func TestEncryptBytesWithAAD_AADMismatchRejected(t *testing.T) {
 	}
 }
 
-func TestIsEncryptedField(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", false},
-		{"plaintext", false},
-		{"enc:v1:AAAA:BBBB", true},
-		{"enc:v1:", true},        // malformed prefix — still treated as opaque by design
-		{"ENC:v1:AAAA", false},   // case-sensitive
-		{"xenc:v1:AAAA", false},  // prefix must be at the start
-	}
-	for _, c := range cases {
-		if got := isEncryptedField(c.in); got != c.want {
-			t.Errorf("isEncryptedField(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
 // TestEncryptBytes_AADBinding ensures sync ciphertexts are bound to their
 // file name: a swap across files must fail, while legacy nil-AAD ciphertexts
 // (written before SYNC-P1-1 was wired up) still decrypt as a fallback.
@@ -111,5 +94,96 @@ func TestEncryptBytes_AADBinding(t *testing.T) {
 	}
 	if !bytes.Equal(got, plaintext) {
 		t.Fatalf("legacy round-trip mismatch:\n got %q\nwant %q", got, plaintext)
+	}
+}
+
+// unlockedPS is a PasswordStore that reports a usable key.
+type unlockedPS struct{}
+
+func (unlockedPS) Encrypt(plaintext string) (string, error) { return plaintext, nil }
+func (unlockedPS) Decrypt(encoded string) (string, error)   { return encoded, nil }
+func (unlockedPS) Unlocked() bool                           { return true }
+
+// lockedPS is a PasswordStore that reports itself locked; used to assert that
+// sync refuses to run when the credential store holds no usable key.
+type lockedPS struct{}
+
+func (lockedPS) Encrypt(plaintext string) (string, error) { return "", nil }
+func (lockedPS) Decrypt(encoded string) (string, error)   { return "", nil }
+func (lockedPS) Unlocked() bool                           { return false }
+
+// TestRequireUnlocked verifies sync refuses to run when the credential store is
+// locked, but still allows a nil (unwired) or unlocked store.
+func TestRequireUnlocked(t *testing.T) {
+	s := &SyncService{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.requireUnlocked(); err != nil {
+		t.Fatalf("nil store should be allowed, got %v", err)
+	}
+
+	s.passwordStore = unlockedPS{}
+	if err := s.requireUnlocked(); err != nil {
+		t.Fatalf("unlocked store should be allowed, got %v", err)
+	}
+
+	s.passwordStore = lockedPS{}
+	if err := s.requireUnlocked(); err == nil {
+		t.Fatal("locked store should be refused")
+	}
+}
+
+func TestEncryptDecryptScopedOnlyTouchesScope(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	key := []byte("0123456789abcdef0123456789abcdef")
+
+	for _, name := range []string{"connections.json", "settings.json"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(`{"a":1}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files := []string{"connections.json"}
+	if err := EncryptConfigFilesScoped(files, src, dest, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "settings.json")); !os.IsNotExist(err) {
+		t.Fatal("out-of-scope settings.json must not be encrypted into dest")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "connections.json")); err != nil {
+		t.Fatal("scoped connections.json missing")
+	}
+
+	// Round-trip.
+	roundTripDest := t.TempDir()
+	if err := DecryptConfigFilesScoped(files, dest, roundTripDest, key); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(roundTripDest, "connections.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"a":1}` {
+		t.Fatalf("decrypted connections.json = %q, want %q", got, `{"a":1}`)
+	}
+	if _, err := os.Stat(filepath.Join(roundTripDest, "settings.json")); !os.IsNotExist(err) {
+		t.Fatal("out-of-scope settings.json must not be decrypted into round-trip dest")
+	}
+}
+
+func TestLegacyWrappersStillWork(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	key := []byte("0123456789abcdef0123456789abcdef")
+	if err := os.WriteFile(filepath.Join(src, "connections.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncryptConfigFiles(src, dest, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := DecryptConfigFiles(dest, t.TempDir(), key); err != nil {
+		t.Fatal(err)
 	}
 }

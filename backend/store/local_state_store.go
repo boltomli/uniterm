@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 )
 
@@ -54,7 +53,8 @@ type LocalState struct {
 }
 
 type LocalStateStore struct {
-	configDir string
+	configDir     string
+	lastSavedHash string // F-105 skip state (pre-encryption content hash)
 }
 
 func NewLocalStateStore(configDir string) *LocalStateStore {
@@ -65,12 +65,11 @@ func (s *LocalStateStore) filePath() string {
 	return filepath.Join(s.configDir, localStateFileName)
 }
 
+// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
 func (s *LocalStateStore) Save(state LocalState) error {
-	bytes, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.filePath(), bytes, 0600)
+	h, err := saveEncryptedFile(localStateFileName, s.filePath(), &state, nil, s.lastSavedHash)
+	s.lastSavedHash = h
+	return err
 }
 
 func defaultLocalState() LocalState {
@@ -87,18 +86,10 @@ func defaultLocalState() LocalState {
 }
 
 func (s *LocalStateStore) Load() (LocalState, error) {
-	bytes, err := os.ReadFile(s.filePath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return defaultLocalState(), nil
-		}
-		return LocalState{}, err
-	}
-	// Start from defaults so fields missing in older configs keep their
-	// intended values instead of Go zero values (e.g. opacity/blur = 0).
-	state := defaultLocalState()
-	if err := json.Unmarshal(bytes, &state); err != nil {
+	out, _, hash, existed, err := loadEncryptedFileBase[LocalState](localStateFileName, s.filePath(), defaultLocalState(), nil)
+	if !existed || err != nil {
 		return defaultLocalState(), nil
 	}
-	return state, nil
+	s.lastSavedHash = hash
+	return out, nil
 }

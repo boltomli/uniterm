@@ -14,11 +14,18 @@ import (
 type LegacyPasswordSource interface {
 	GetPassword(connID string) (string, error)
 	GetModelAPIKey(modelID string) (string, error)
+	// DeletePassword removes one legacy conn/<id> entry. Move semantics: the
+	// backfill deletes the entry once its re-encrypted copy is on disk, so a
+	// user-cleared password can't resurrect from a kept-forever copy.
+	DeletePassword(connID string) error
 }
 
 // MigrateLegacyKeychainToInPlace reads plaintext secrets from legacy keychain
 // entries and writes them encrypted into connections.json / settings.json.
-// Legacy keychain entries are NOT deleted (rollback safety).
+// Migrated conn/<id> entries are deleted once their encrypted copy is on disk
+// (move semantics — a kept-forever copy would let a user-cleared password
+// resurrect on the next load); ai-model/<id> entries are kept (rollback
+// safety, and the model API key has no load-time resurrection path).
 func MigrateLegacyKeychainToInPlace(configDir string, legacy LegacyPasswordSource, cred PasswordStore) (int, error) {
 	count := 0
 
@@ -32,6 +39,7 @@ func MigrateLegacyKeychainToInPlace(configDir string, legacy LegacyPasswordSourc
 			return count, fmt.Errorf("parse connections for migration: %w", err)
 		}
 		changed := false
+		var migrated []string
 		for i := range d.Connections {
 			conn := &d.Connections[i]
 			if conn.AuthType != "password" || conn.Password != "" {
@@ -45,12 +53,20 @@ func MigrateLegacyKeychainToInPlace(configDir string, legacy LegacyPasswordSourc
 				conn.Password = enc
 				count++
 				changed = true
+				migrated = append(migrated, conn.ID)
 			}
 		}
 		if changed {
-			out, _ := json.MarshalIndent(d, "", "  ")
-			if err := atomicWriteFile(connPath, out, 0600); err != nil {
+			if err := writeJSONFile(connPath, d); err != nil {
 				return count, err
+			}
+			// Move semantics: the encrypted copies are on disk, so the legacy
+			// entries can go. Best-effort — a failed delete leaves a stale
+			// entry that only resurfaces if that password is cleared later
+			// (same accepted edge as the load-time backfill in
+			// connection_store.go).
+			for _, id := range migrated {
+				_ = legacy.DeletePassword(id)
 			}
 		}
 	}
@@ -79,8 +95,7 @@ func MigrateLegacyKeychainToInPlace(configDir string, legacy LegacyPasswordSourc
 			}
 		}
 		if changed {
-			out, _ := json.Marshal(s)
-			if err := atomicWriteFile(setPath, out, 0600); err != nil {
+			if err := writeJSONFile(setPath, s); err != nil {
 				return count, err
 			}
 		}

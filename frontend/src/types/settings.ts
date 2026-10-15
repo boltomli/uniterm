@@ -1,6 +1,6 @@
 
 export const SUPPORTED_LOCALES = [
-  'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'de', 'es', 'fr', 'ru'
+  'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'de', 'es', 'fr', 'ru', 'pt', 'vi'
 ] as const
 
 export type Locale = typeof SUPPORTED_LOCALES[number]
@@ -260,6 +260,29 @@ export interface SFTPBookmarks {
   remotePaths: string[]
 }
 
+// Start-page blocks: the content sections of the new-tab start
+// page the user can show/hide and reorder. The search box is a fixed header
+// row and is not configurable.
+export type StartPageBlock = 'favorites' | 'recent' | 'groups'
+
+export interface StartPageSettings {
+  // Missing keys fall back to START_PAGE_DEFAULTS (per-key merge on load).
+  visible: Record<StartPageBlock, boolean>
+  // Render order of the content sections.
+  order: StartPageBlock[]
+}
+
+export const START_PAGE_BLOCK_LABEL_KEYS: Record<StartPageBlock, string> = {
+  favorites: 'startTab.favorites',
+  recent: 'startTab.recentConnections',
+  groups: 'startTab.groups',
+}
+
+export const START_PAGE_DEFAULTS: StartPageSettings = {
+  visible: { favorites: true, recent: true, groups: true },
+  order: ['favorites', 'recent', 'groups'],
+}
+
 export interface AppSettings {
   theme: Theme
   language: Language
@@ -295,9 +318,17 @@ export interface AppSettings {
   // ("button") or right-click only, with the hover buttons hidden
   // ("rightclick"). The right-click menu works in both modes.
   hostListMenuStyle: 'button' | 'rightclick'
+  // What the tab bar's "+" button (and the newConnection shortcut) opens:
+  // the start page ("startPage", default) or a local terminal with the
+  // default shell ("localTerminal").
+  newTabAction: 'startPage' | 'localTerminal'
   // Which connection-sidebar tab icons are visible, keyed by view id.
   // Missing keys fall back to SIDEBAR_TAB_DEFAULTS.
   sidebarTabs: Record<string, boolean>
+  // Which blocks the new-tab start page shows and in what order. See the
+  // persistence-contract note on TerminalSettings: this field MUST also
+  // exist in the Go AppSettings (backend/store/settings_store.go).
+  startPage: StartPageSettings
 }
 
 // Default visibility per sidebar view. "connections" is the primary view and
@@ -389,7 +420,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tabCloseButton: 'left',
   showTabShortcutHints: true,
   hostListMenuStyle: 'button',
-  sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS }
+  newTabAction: 'startPage',
+  sidebarTabs: { ...SIDEBAR_TAB_DEFAULTS },
+  startPage: {
+    visible: { ...START_PAGE_DEFAULTS.visible },
+    order: [...START_PAGE_DEFAULTS.order]
+  }
 }
 
 export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light' }
@@ -487,6 +523,8 @@ export const LANGUAGE_OPTIONS: { value: Locale; label: string; native: string }[
   { value: 'es', label: 'Español', native: 'Español' },
   { value: 'fr', label: 'Français', native: 'Français' },
   { value: 'ru', label: 'Русский', native: 'Русский' },
+  { value: 'pt', label: 'Português', native: 'Português' },
+  { value: 'vi', label: 'Tiếng Việt', native: 'Tiếng Việt' },
 ]
 
 export interface UpdateAsset {

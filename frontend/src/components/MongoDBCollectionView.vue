@@ -118,7 +118,7 @@
               :total="totalDocs"
               :current-page="currentPage"
               :pager-count="5"
-              small
+              size="small"
               @size-change="onPageSizeChange"
               @current-change="onPageChange"
             />

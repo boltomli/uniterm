@@ -76,6 +76,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   { type: 'database', dbType: 'postgres', label: 'PostgreSQL', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
   { type: 'database', dbType: 'oracle', label: 'Oracle', icon: Database, category: 'sql', defaultPort: 1521, connectMenuKey: 'db.connectDB' },
   { type: 'database', dbType: 'sqlserver', label: 'SQL Server', icon: Database, category: 'sql', defaultPort: 1433, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'sqlite', label: 'SQLite', icon: Database, category: 'sql', connectMenuKey: 'db.connectDB' },
   { type: 'database', dbType: 'rqlite', label: 'rqlite', icon: Database, category: 'sql', defaultPort: 4001, connectMenuKey: 'db.connectDB' },
   // NoSQL: standalone connection types
   { type: 'redis', label: 'Redis', icon: DatabaseZap, category: 'nosql', defaultPort: 6379, connectMenuKey: 'sidebar.connectRedis' },
@@ -91,7 +92,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   // not created in the form, and carry no default port.
   { type: 'monitor', label: 'Monitor', icon: Activity, category: 'other', connectMenuKey: 'sidebar.connectMonitor', formHidden: true },
   // Pure UI tab kinds — no connection session behind them, icon/label only.
-  { type: 'workspace', label: 'Workspace', icon: LayoutDashboard, category: 'other', formHidden: true },
+  { type: 'workspace', label: 'Workspace', icon: LayoutDashboard, category: 'other', formHidden: true, connectMenuKey: 'workspace.openSaved' },
   { type: 'settings', label: 'Settings', icon: Settings, category: 'other', formHidden: true },
   { type: 'start', label: 'Start', icon: SquarePlus, category: 'other', formHidden: true },
 ]

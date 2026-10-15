@@ -2,6 +2,7 @@
   <Menu ref="menuRef" v-model:visible="visible">
     <MenuItem @click="close(); emit('newGroup')">{{ t('conn.newGroupTitle') }}</MenuItem>
     <MenuItem @click="close(); emit('newConnection')">{{ t('sidebar.newConnection') }}</MenuItem>
+    <MenuItem @click="onNewWorkspace">{{ t('workspace.newWorkspace') }}</MenuItem>
     <!-- The virtual (No Group) / ungrouped pseudo-group is not a real group:
          rename / move / delete make no sense for it. -->
     <template v-if="!isVirtual">
@@ -22,6 +23,8 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import { useI18n } from '../i18n'
+import { createEmptyWorkspaceRecord } from '../composables/savedWorkspace'
+import { openWorkspaceNameDialog } from '../composables/workspaceNameDialog'
 
 const props = defineProps<{
   group: { id: string; name: string } | null
@@ -51,5 +54,19 @@ const isVirtual = computed(() => !props.group || props.group.id === '__ungrouped
 
 function close() {
   emit('update:visible', false)
+}
+
+// 新建工作区 in this group: shared name + group dialog, then create an empty
+// saved-workspace record (opened later as an empty workspace tab). Handled
+// internally so every host of this menu (sidebar / start page) gets it.
+async function onNewWorkspace() {
+  close()
+  const groupId = (!props.group || props.group.id === '__ungrouped__') ? undefined : props.group.id
+  const result = await openWorkspaceNameDialog({
+    title: t('workspace.newWorkspace'),
+    initialGroupId: groupId
+  })
+  if (!result) return
+  await createEmptyWorkspaceRecord(result.name, result.groupId)
 }
 </script>

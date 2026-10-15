@@ -3,8 +3,10 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,7 +37,26 @@ const (
 	s3MinPartSize = simples3.MinPartSize
 	s3MaxPartSize = 5 * 1024 * 1024 * 1024
 	s3MaxParts    = 9000
+	// Single-file downloads at or above s3MultipartThreshold are fetched as
+	// concurrent ranged GETs, mirroring multipart upload. Chunks are at least
+	// 16 MB so per-request overhead stays sane, growing only so a huge object
+	// stays under 1000 range requests.
+	s3DownloadChunkFloor = 16 * 1024 * 1024
+	s3DownloadMaxChunks  = 1000
+	// Read buffer per download worker.
+	s3DownloadBufSize = 128 * 1024
 )
+
+// s3DownloadChunkSizeFor picks the range chunk size for a parallel download:
+// 16 MB wherever possible, growing only for objects whose chunk count would
+// otherwise exceed the request budget.
+func s3DownloadChunkSizeFor(size int64) int64 {
+	chunk := (size + s3DownloadMaxChunks - 1) / s3DownloadMaxChunks
+	if chunk < s3DownloadChunkFloor {
+		chunk = s3DownloadChunkFloor
+	}
+	return chunk
+}
 
 // s3PartSizeFor picks the multipart part size for an upload: 5 MB wherever
 // possible so progress advances per 5 MB, growing only for uploads whose
@@ -55,6 +76,7 @@ type S3Session struct {
 	baseSession
 	localFSOps
 	s3        *simples3.S3
+	client    *http.Client
 	bucket    string
 	cwd       string
 	mu        sync.RWMutex
@@ -85,6 +107,15 @@ func (s *S3Session) Connect(config ConnectionConfig) error {
 
 	s3Client := simples3.New(config.S3Region, config.User, config.Password)
 	s3Client.Endpoint = strings.TrimSuffix(config.Host, "/")
+
+	// One shared HTTP client for all S3 traffic: the default transport only
+	// keeps 2 idle connections per host, which with concurrent workers meant
+	// a TCP+TLS handshake per request. 16 idle slots cover the transfer
+	// concurrency with headroom.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 16
+	s.client = &http.Client{Transport: transport}
+	s3Client.SetClient(s.client)
 	// S3URLStyle="" or "virtual" uses virtual-hosted URLs
 	// (https://bucket.endpoint/key) — required by Alibaba Cloud OSS, Tencent
 	// COS and Huawei OBS, which reject path-style requests with
@@ -106,6 +137,10 @@ func (s *S3Session) Resize(cols, rows int) error { return nil }
 
 func (s *S3Session) Disconnect() error {
 	s.s3 = nil
+	if s.client != nil {
+		s.client.CloseIdleConnections()
+		s.client = nil
+	}
 	s.bucket = ""
 	s.setStatus(StatusDisconnected)
 	return nil
@@ -1058,7 +1093,7 @@ func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) 
 		}
 		task.beginFile(item.rel)
 		s.emitFileStart(task, item.rel, filepath.Base(lp))
-		if err := s.downloadObject(task, item.key, lp); err != nil {
+		if err := s.downloadObject(task, item.key, lp, item.size); err != nil {
 			if task.ctx.Err() != nil {
 				return err // cancelled: stop the whole transfer
 			}
@@ -1074,23 +1109,41 @@ func (s *S3Session) downloadDir(remoteDir, localDir string, task *TransferTask) 
 
 func (s *S3Session) downloadFile(task *TransferTask, remotePath, localPath string) error {
 	key := s.s3Key(remotePath)
-	// Get file size first for progress tracking
+	// Get file size first: progress total, and the switch between parallel
+	// ranged download and single-stream for small objects.
+	var size int64 = -1
 	if task.loadTotal() <= 0 {
 		details, err := s.s3.FileDetails(simples3.DetailsInput{
 			Bucket:    s.bucket,
 			ObjectKey: key,
 		})
 		if err == nil && details.ContentLength != "" {
-			if size, parseErr := strconv.ParseInt(details.ContentLength, 10, 64); parseErr == nil {
+			if v, parseErr := strconv.ParseInt(details.ContentLength, 10, 64); parseErr == nil {
+				size = v
 				task.setTotal(size)
 			}
 		}
 	}
-	return s.downloadObject(task, key, localPath)
+	return s.downloadObject(task, key, localPath, size)
 }
 
-// downloadObject streams one object to disk by its raw S3 key.
-func (s *S3Session) downloadObject(task *TransferTask, key, localPath string) error {
+// downloadObject streams one object to disk by its raw S3 key. Objects at or
+// above s3MultipartThreshold go through concurrent ranged GETs; anything
+// smaller (or an endpoint without range support) uses a single stream.
+func (s *S3Session) downloadObject(task *TransferTask, key, localPath string, size int64) error {
+	if size >= s3MultipartThreshold {
+		err := s.s3DownloadRanged(task, key, localPath, size)
+		if !errors.Is(err, errS3RangeUnsupported) {
+			return err
+		}
+		// Endpoint ignored the Range (answered 200) or rejected the request:
+		// fall back to a single-stream download.
+	}
+	return s.downloadObjectSingle(task, key, localPath)
+}
+
+// downloadObjectSingle streams one object with a single GET, one connection.
+func (s *S3Session) downloadObjectSingle(task *TransferTask, key, localPath string) error {
 	rc, err := s.s3.FileDownload(simples3.DownloadInput{
 		Bucket:    s.bucket,
 		ObjectKey: key,
@@ -1115,6 +1168,148 @@ func (s *S3Session) downloadObject(task *TransferTask, key, localPath string) er
 	return writePartFile(localPath, func(f *os.File) error {
 		return copyDownloadStream(f, rc, task, func() { s.emitTransferProgress(task) })
 	})
+}
+
+// errS3RangeUnsupported marks an endpoint where ranged GET is unavailable —
+// the Range header ignored (200 instead of 206) or the request rejected with
+// a 4xx (e.g. a provider that won't take path-style presigned URLs). The
+// caller falls back to a single-stream download for the whole object.
+var errS3RangeUnsupported = errors.New("s3: ranged download unsupported")
+
+// s3RangeStatusError reports a ranged GET answered with an unexpected status.
+// Kept typed so the chunk worker can tell a hard "no range support" (200/4xx)
+// from a transient 5xx worth retrying.
+type s3RangeStatusError struct {
+	code   int
+	status string
+	body   string
+}
+
+func (e *s3RangeStatusError) Error() string {
+	if e.body != "" {
+		return fmt.Sprintf("status code: %s: %s", e.status, e.body)
+	}
+	return fmt.Sprintf("status code: %s", e.status)
+}
+
+// s3DownloadRanged fetches a large object as concurrent ranged GETs. The file
+// is preallocated and each worker streams its chunks straight to their own
+// byte offsets via WriteAt, so memory stays flat and workers never contend.
+// A chunk that comes back short is retried for just its missing remainder.
+func (s *S3Session) s3DownloadRanged(task *TransferTask, key, localPath string, size int64) error {
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Truncate(size); err != nil {
+		return err
+	}
+
+	chunkSize := s3DownloadChunkSizeFor(size)
+	totalChunks := int((size + chunkSize - 1) / chunkSize)
+
+	err = runPool(task.ctx, totalChunks, s3TransferConcurrency, func(i int) error {
+		start := int64(i) * chunkSize
+		end := start + chunkSize
+		if end > size {
+			end = size
+		}
+		written := int64(0)
+		for attempt := 0; attempt <= s3PartRetries; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-time.After(time.Duration(1<<uint(attempt-1)) * 100 * time.Millisecond):
+				case <-task.ctx.Done():
+					return task.ctx.Err()
+				}
+			}
+			task.waitIfPaused()
+			rc, err := s.rangeGet(key, start+written, end)
+			if err != nil {
+				var se *s3RangeStatusError
+				if errors.As(err, &se) && (se.code == http.StatusOK || (se.code >= 400 && se.code < 500)) {
+					return errS3RangeUnsupported
+				}
+				continue // transient: retry the remaining range
+			}
+			got, readErr := s.readRangeInto(task, rc, f, start+written)
+			written += got
+			if readErr == nil && written == end-start {
+				return nil
+			}
+			if errors.Is(readErr, task.ctx.Err()) {
+				return readErr
+			}
+			// Short read or mid-chunk failure: retry the missing remainder.
+		}
+		return fmt.Errorf("chunk %d: download failed after %d retries", i+1, s3PartRetries)
+	})
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// readRangeInto streams one ranged-GET body to f at the given offset until
+// EOF, updating progress. Returns bytes written and the terminal read error.
+func (s *S3Session) readRangeInto(task *TransferTask, rc io.ReadCloser, f *os.File, offset int64) (int64, error) {
+	defer rc.Close()
+	buf := make([]byte, s3DownloadBufSize)
+	var got int64
+	for {
+		select {
+		case <-task.ctx.Done():
+			return got, task.ctx.Err()
+		default:
+		}
+		task.waitIfPaused()
+		n, e := rc.Read(buf)
+		if n > 0 {
+			if _, err := f.WriteAt(buf[:n], offset+got); err != nil {
+				return got, err
+			}
+			got += int64(n)
+			task.addProgress(int64(n))
+			s.emitTransferProgress(task)
+		}
+		if e != nil {
+			if e == io.EOF {
+				return got, nil
+			}
+			return got, e
+		}
+	}
+}
+
+// rangeGet issues one ranged GET by its raw S3 key. The request goes out as a
+// presigned URL (simples3's FileDownload cannot set a Range header); the
+// Range header itself is unsigned, which S3 and MinIO accept.
+func (s *S3Session) rangeGet(key string, start, end int64) (io.ReadCloser, error) {
+	urlStr := s.s3.GeneratePresignedURL(simples3.PresignedInput{
+		Bucket:        s.bucket,
+		ObjectKey:     key,
+		Method:        http.MethodGet,
+		ExpirySeconds: 3600,
+	})
+	if urlStr == "" {
+		return nil, fmt.Errorf("failed to generate presigned URL")
+	}
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end-1))
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusPartialContent {
+		return resp.Body, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	resp.Body.Close()
+	return nil, &s3RangeStatusError{code: resp.StatusCode, status: resp.Status, body: string(body)}
 }
 
 func (s *S3Session) uploadDir(localDir, remoteDir string, task *TransferTask) error {

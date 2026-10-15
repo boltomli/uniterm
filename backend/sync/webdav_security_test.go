@@ -9,162 +9,10 @@ import (
 	"time"
 )
 
-func TestWebDAVBackendHeadEmpty(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-	info, err := b.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info != nil {
-		t.Fatal("empty remote must return nil snapshot")
-	}
-}
-
-func TestWebDAVBackendStoreAllFetchAllRoundTrip(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-
-	staging := t.TempDir()
-	salt := []byte("0123456789abcdef")
-	manifest := SnapshotInfo{
-		Version:   "v1",
-		UpdatedAt: time.Now().UTC(),
-		FileHashes: map[string]string{
-			"connections.json": "aaa",
-			"favorites.json":   "bbb",
-		},
-	}
-	for name := range manifest.FileHashes {
-		if err := os.WriteFile(filepath.Join(staging, name), []byte("cipher-"+name), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := b.StoreAll(staging, salt, manifest); err != nil {
-		t.Fatal(err)
-	}
-
-	info, err := b.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info == nil || info.Version != "v1" || len(info.FileHashes) != 2 {
-		t.Fatalf("head = %+v", info)
-	}
-
-	mirror := t.TempDir()
-	if err := b.FetchAll(mirror); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(mirror, "connections.json"))
-	if err != nil || string(data) != "cipher-connections.json" {
-		t.Fatalf("mirror file wrong: %q err=%v", data, err)
-	}
-	gotSalt, err := ReadSaltFile(mirror)
-	if err != nil || string(gotSalt) != string(salt) {
-		t.Fatalf("salt wrong: %x err=%v", gotSalt, err)
-	}
-}
-
-func TestWebDAVBackendFetchAllOnEmptyRemote(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.FetchAll(t.TempDir()); err != nil {
-		t.Fatalf("fetch on empty remote must be a no-op, got %v", err)
-	}
-}
-
-// storeSnapshot uploads one valid snapshot ("v1") with two files to b.
-func storeSnapshot(t *testing.T, b *WebDAVBackend) {
-	t.Helper()
-	staging := t.TempDir()
-	for _, name := range []string{"connections.json", "favorites.json"} {
-		if err := os.WriteFile(filepath.Join(staging, name), []byte("cipher-"+name), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manifest := SnapshotInfo{
-		Version:   "v1",
-		UpdatedAt: time.Now().UTC(),
-		FileHashes: map[string]string{
-			"connections.json": "aaa",
-			"favorites.json":   "bbb",
-		},
-	}
-	if err := b.StoreAll(staging, []byte("0123456789abcdef"), manifest); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The manifest is the commit point: a failed StoreAll must never clobber
-// the previous snapshot.
-func TestWebDAVBackendStoreAllFailureKeepsOldManifest(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-	storeSnapshot(t, b)
-
-	// Manifest references a file that is absent from stagingDir.
-	staging := t.TempDir()
-	bad := SnapshotInfo{
-		Version:   "v2",
-		UpdatedAt: time.Now().UTC(),
-		FileHashes: map[string]string{
-			"connections.json": "ccc",
-			"favorites.json":   "ddd",
-		},
-	}
-	if err := b.StoreAll(staging, []byte("0123456789abcdef"), bad); err == nil {
-		t.Fatal("StoreAll with missing staging file must fail")
-	}
-	info, err := b.Head()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info == nil || info.Version != "v1" {
-		t.Fatalf("old manifest must survive failed StoreAll, head = %+v", info)
-	}
-}
-
-func TestWebDAVBackendFetchAllToleratesMissingSalt(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-	storeSnapshot(t, b)
-	f.delete(saltName)
-	if err := b.FetchAll(t.TempDir()); err != nil {
-		t.Fatalf("FetchAll must tolerate a missing salt, got %v", err)
-	}
-}
-
-func TestWebDAVBackendHeadCorruptManifest(t *testing.T) {
-	f := newFakeDAV(t)
-	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
-	if err := b.Probe(); err != nil {
-		t.Fatal(err)
-	}
-	c := NewWebDAVClient(f.server.URL, "sync", "u", "p")
-	if err := c.Put(manifestName, []byte("not json")); err != nil {
-		t.Fatal(err)
-	}
-	info, err := b.Head()
-	if err == nil {
-		t.Fatalf("corrupt manifest must error, head = %+v", info)
-	}
-}
+// The tests in this file are the WebDAV hardening regressions: an untrusted
+// sync server must never be able to (a) make the client speak a cleartext
+// transport that leaks the sync password, or (b) escape the mirror
+// directory through a hostile manifest.json file name.
 
 // testFilesUnder collects every file path beneath root (test helper for the
 // escape checks below).
@@ -181,6 +29,54 @@ func testFilesUnder(t *testing.T, root string) map[string]bool {
 		return nil
 	})
 	return files
+}
+
+// TestWebDAVClientRejectsCleartextServerURL: the sync password rides on
+// every WebDAV request, so a non-loopback cleartext (or non-HTTP) server
+// URL must be rejected before any request is sent.
+func TestWebDAVClientRejectsCleartextServerURL(t *testing.T) {
+	cases := []struct{ name, serverURL string }{
+		{"plain http", "http://dav.example.com/dav"},
+		{"http by ip", "http://203.0.113.10/dav"},
+		{"ftp scheme", "ftp://dav.example.com/dav"},
+		{"file scheme", "file:///etc/dav"},
+		{"no scheme", "dav.example.com/dav"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewWebDAVClient(tc.serverURL, "sync", "u", "p")
+			// rootURL resolves the base for every request; the scheme
+			// rejection must surface here, before any request is sent.
+			if _, err := c.rootURL(); err == nil || !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("rootURL err = %v, want https:// rejection", err)
+			}
+			if err := c.MkdirAll(); err == nil || !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("MkdirAll err = %v, want https:// rejection", err)
+			}
+		})
+	}
+}
+
+// TestWebDAVClientAllowsLoopbackHTTP: plain http:// stays tolerated for
+// loopback hosts (local servers, tests) — guard against over-blocking.
+func TestWebDAVClientAllowsLoopbackHTTP(t *testing.T) {
+	f := newFakeDAV(t)
+	for _, host := range []string{"127.0.0.1", "localhost"} {
+		t.Run(host, func(t *testing.T) {
+			serverURL := strings.Replace(f.server.URL, "127.0.0.1", host, 1)
+			c := NewWebDAVClient(serverURL, "sync", "u", "p")
+			if err := c.MkdirAll(); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Put("connections.json", []byte("cipher")); err != nil {
+				t.Fatal(err)
+			}
+			got, err := c.Get("connections.json")
+			if err != nil || string(got) != "cipher" {
+				t.Fatalf("get = %q err=%v", got, err)
+			}
+		})
+	}
 }
 
 // TestWebDAVBackendFetchAllRejectsTraversalNames is the security.md P0
@@ -293,8 +189,9 @@ func TestWebDAVBackendFetchAllRejectsBeforeWritingAnything(t *testing.T) {
 	}
 }
 
-// Whitelisted manifest names — including the opt-in settings.json — still
-// mirror normally.
+// TestWebDAVBackendFetchAllLandsWhitelistedFiles: whitelisted manifest
+// names — including the opt-in settings.json — still mirror normally
+// (guard against over-blocking).
 func TestWebDAVBackendFetchAllLandsWhitelistedFiles(t *testing.T) {
 	f := newFakeDAV(t)
 	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
@@ -302,7 +199,7 @@ func TestWebDAVBackendFetchAllLandsWhitelistedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	staging := t.TempDir()
-	for _, name := range []string{"connections.json", settingsJSON} {
+	for _, name := range []string{"connections.json", "settings.json"} {
 		if err := os.WriteFile(filepath.Join(staging, name), []byte("cipher-"+name), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -312,7 +209,7 @@ func TestWebDAVBackendFetchAllLandsWhitelistedFiles(t *testing.T) {
 		UpdatedAt: time.Now().UTC(),
 		FileHashes: map[string]string{
 			"connections.json": "aaa",
-			settingsJSON:       "bbb",
+			"settings.json":    "bbb",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -322,7 +219,7 @@ func TestWebDAVBackendFetchAllLandsWhitelistedFiles(t *testing.T) {
 	if err := b.FetchAll(mirror); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"connections.json", settingsJSON} {
+	for _, name := range []string{"connections.json", "settings.json"} {
 		data, err := os.ReadFile(filepath.Join(mirror, name))
 		if err != nil || string(data) != "cipher-"+name {
 			t.Fatalf("mirror %s = %q err=%v", name, data, err)

@@ -3,12 +3,12 @@
 // docs/superpowers/specs/2026-09-21-workspace-overhaul-design.md):
 // members hold only connectionId references — host credentials re-resolve at
 // connect time, so no secret is ever persisted here.
-import { ElMessageBox } from 'element-plus'
 import { t } from '../i18n'
 import { msg } from '../services/message'
 import { useConnectionStore } from '../stores/connectionStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTabStore } from '../stores/tabStore'
+import { openWorkspaceNameDialog } from './workspaceNameDialog'
 import type { ConnectionConfig, MemberConnectStatus, SavedWorkspaceLayoutNode, SavedWorkspaceMember } from '../types/session'
 import type { LayoutNode, PanelLayout, WorkspaceTab } from '../types/workspace'
 
@@ -93,7 +93,7 @@ export function serializeWorkspaceState(tab: WorkspaceTab): { members: SavedWork
 }
 
 // Save a live workspace tab as / into a `type: "workspace"` connection.
-// Always prompts for the name (pre-filled): same name → overwrite in place,
+// Prompts for name + group (pre-filled): same name → overwrite in place,
 // new name → 另存为 a new record and re-link the tab to it.
 // Returns the connection id of the record, or null when cancelled/empty.
 export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<string | null> {
@@ -111,26 +111,19 @@ export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<str
     ? connectionStore.connections.find(c => c.id === tab.savedWorkspaceId)
     : undefined
 
-  let name = tab.name
-  try {
-    const { value } = await ElMessageBox.prompt(
-      t('workspace.savePromptTitle'),
-      t('workspace.save'),
-      {
-        inputValue: existing?.name || tab.name,
-        confirmButtonText: t('common.confirm'),
-        cancelButtonText: t('common.cancel')
-      }
-    )
-    name = value?.trim() || tab.name
-  } catch {
-    return null
-  }
+  const result = await openWorkspaceNameDialog({
+    title: t('workspace.save'),
+    initialName: existing?.name || tab.name,
+    initialGroupId: existing?.groupId
+  })
+  if (!result) return null
+  const name = result.name
 
   if (existing && name === existing.name) {
-    // Overwrite in place (members + layout).
+    // Overwrite in place (members + layout + group).
     await connectionStore.update(existing.id, {
       name,
+      groupId: result.groupId,
       workspaceMembers: members,
       workspaceLayout: layout
     })
@@ -147,6 +140,7 @@ export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<str
     port: 0,
     user: '',
     authType: 'password',
+    groupId: result.groupId,
     workspaceMembers: members,
     workspaceLayout: layout
   }
@@ -156,6 +150,27 @@ export async function saveWorkspaceToConnections(tab: WorkspaceTab): Promise<str
   if (name !== tab.name) tabStore.renameTab(tab.id, name)
   msg.success(t('workspace.saved'))
   return record.id
+}
+
+// Create an empty saved-workspace record (no members yet) — issue #1124 3a:
+// opening it later yields an empty workspace tab that members can be added
+// to, then re-saved. Used by the group context menu's 新建工作区 entry.
+export async function createEmptyWorkspaceRecord(name: string, groupId?: string): Promise<ConnectionConfig> {
+  const connectionStore = useConnectionStore()
+  const record: ConnectionConfig = {
+    id: '',
+    name,
+    type: 'workspace',
+    host: '',
+    port: 0,
+    user: '',
+    authType: 'password',
+    groupId,
+    workspaceMembers: [],
+    workspaceLayout: { type: 'leaf', memberId: '' }
+  }
+  await connectionStore.add(record)
+  return record
 }
 
 // ── Open ──
@@ -191,8 +206,11 @@ export async function openSavedWorkspace(conn: ConnectionConfig, deps: OpenWorks
 
   const members = conn.workspaceMembers || []
   if (members.length === 0) {
-    msg.warning(t('workspace.openEmpty'))
-    return null
+    // Empty saved workspace (created from the group context menu): open an
+    // empty tab linked to the record so members can be added and re-saved.
+    const ws = tabStore.createWorkspaceTab(conn.name, [], { root: { type: 'leaf', panelId: '' } })
+    tabStore.setWorkspaceSavedId(ws.id, conn.id)
+    return ws.id
   }
 
   const ws = tabStore.createWorkspaceTab(conn.name, [], { root: { type: 'leaf', panelId: '' } })

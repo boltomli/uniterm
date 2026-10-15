@@ -31,6 +31,13 @@ func (f *failSetKeychain) Set(k, v string) error {
 	return nil
 }
 func (f *failSetKeychain) Delete(k string) error { delete(f.store, k); return nil }
+func (f *failSetKeychain) List() ([]string, error) {
+	keys := make([]string, 0, len(f.store))
+	for k := range f.store {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
 
 // keyringNotFoundKeychain returns the REAL error the OS keychain returns for
 // a missing entry (keyring.ErrNotFound), never the package sentinel — the
@@ -41,6 +48,7 @@ type keyringNotFoundKeychain struct{}
 func (keyringNotFoundKeychain) Get(string) (string, error) { return "", keyring.ErrNotFound }
 func (keyringNotFoundKeychain) Set(string, string) error   { return nil }
 func (keyringNotFoundKeychain) Delete(string) error        { return nil }
+func (keyringNotFoundKeychain) List() ([]string, error)    { return nil, nil }
 
 // TestUnlockRejectsWrongMasterPassword locks in the verifier check: a typo'd
 // master password must be rejected BEFORE anything is cached in the keychain
@@ -149,6 +157,10 @@ func TestStoreHasSecretsCoversAIAndTunnels(t *testing.T) {
 				t.Fatalf("seed: %v", err)
 			}
 			s := New(dir, newFakeKeychain())
+			// Production wires the manifest in app.go (SetSecretFiles);
+			// the store deliberately starts unwired so a bare store can
+			// never claim to see (or miss) ciphertext.
+			s.SetSecretFiles([]string{"connections.json", "settings.json", "identities.json", "proxies.json", "ai.json", "tunnels.json"})
 			if !s.storeHasSecrets() {
 				t.Fatalf("%s ciphertext not detected by storeHasSecrets", tc.file)
 			}

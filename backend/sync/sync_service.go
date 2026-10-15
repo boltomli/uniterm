@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -36,7 +37,11 @@ type SyncService struct {
 	// wired in after startup. nil until set; sync degrades to carrying fields
 	// through opaque (best-effort) when it is absent.
 	passwordStore PasswordStore
-	mu            sync.Mutex
+	// stores holds the config-exchange registry (SyncableStore), wired in
+	// at startup. nil until set; sync then moves each store's blob through
+	// ExportPlain/ImportPlain instead of touching per-file enc/dec itself.
+	stores []SyncableStore
+	mu     sync.Mutex
 
 	// ready is closed by NewSyncService() once the disk-touching
 	// init (UserConfigDir → MkdirAll → NewKeychain → NewSyncConfigStore)
@@ -110,12 +115,21 @@ func (s *SyncService) Ready() <-chan struct{} {
 	return s.ready
 }
 
-// SetPasswordStore wires the credential store so sync can normalize enc:v1:
-// fields to plaintext on upload and back on download.
+// SetPasswordStore wires the credential store so sync can refuse to run on a
+// locked vault. Field-level encryption is the stores' job now.
 func (s *SyncService) SetPasswordStore(ps PasswordStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.passwordStore = ps
+}
+
+// SetStores wires the config-exchange registry (SyncableStore). Assembled
+// in app.go — the only place that imports both sync and store. nil until
+// set; sync then skips config exchange instead of touching files itself.
+func (s *SyncService) SetStores(stores []SyncableStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stores = stores
 }
 
 // requireUnlocked refuses sync when the credential store is wired but locked.
@@ -254,7 +268,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
 			return nil, fmt.Errorf("reset: %w", err)
 		}
-		if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+		if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
 			return nil, fmt.Errorf("decrypt files: %w", err)
 		}
@@ -302,7 +316,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 			return nil, err
 		}
 		defer cleanupRemote()
-		same, err := compareConfigDirs(files, s.dataDir, remoteDir, s.keychain, s.passwordStore)
+		same, err := storesMatchDir(s.stores, files, remoteDir)
 		if err != nil {
 			s.updateLastSyncResult("failed", err.Error())
 			return nil, err
@@ -345,12 +359,15 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 	}
 	defer cleanupRemote()
 
-	localChanged, err := dirsDiffer(files, s.dataDir, baseDir, s.keychain, s.passwordStore)
+	// The local side is the store's canonical export; base/remote are
+	// decrypted commit copies, so both sides are plaintext here.
+	localSame, err := storesMatchDir(s.stores, files, baseDir)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
 	}
-	remoteChanged, err := dirsDiffer(files, remoteDir, baseDir, nil, nil)
+	localChanged := !localSame
+	remoteChanged, err := dirsDiffer(files, remoteDir, baseDir)
 	if err != nil {
 		s.updateLastSyncResult("failed", err.Error())
 		return nil, err
@@ -385,7 +402,7 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 			s.updateLastSyncResult("failed", fmt.Sprintf("reset: %v", err))
 			return nil, fmt.Errorf("reset: %w", err)
 		}
-		if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+		if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 			s.updateLastSyncResult("failed", fmt.Sprintf("decrypt files: %v", err))
 			return nil, fmt.Errorf("decrypt files: %w", err)
 		}
@@ -510,7 +527,7 @@ func (s *SyncService) maybeCompactHistory() {
 // top of the current HEAD and pushes.
 func (s *SyncService) pushLocalConfig(repo *GitRepo, encKey []byte, username, token string) (*SyncResult, error) {
 	files := s.effectiveFiles()
-	if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+	if err := encryptStoresScoped(s.stores, files, s.repoPath, encKey, nil); err != nil {
 		s.updateLastSyncResult("failed", fmt.Sprintf("encrypt files: %v", err))
 		return nil, fmt.Errorf("encrypt files: %w", err)
 	}
@@ -547,7 +564,7 @@ func (s *SyncService) dataMatchesCommit(files []string, repo *GitRepo, encKey []
 		return false, err
 	}
 	defer cleanup()
-	same, err := compareConfigDirs(files, s.dataDir, dir, s.keychain, s.passwordStore)
+	same, err := storesMatchDir(s.stores, files, dir)
 	if err != nil {
 		return false, err
 	}
@@ -577,7 +594,7 @@ func (s *SyncService) decryptCommitToDir(files []string, repo *GitRepo, encKey [
 			cleanup()
 			return "", nil, err
 		}
-		if err := DecryptConfigFilesScoped(files, cipherDir, plainDir, encKey, nil); err != nil {
+		if err := DecryptConfigFilesScoped(files, cipherDir, plainDir, encKey); err != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("decrypt commit: %w", err)
 		}
@@ -587,8 +604,8 @@ func (s *SyncService) decryptCommitToDir(files []string, repo *GitRepo, encKey [
 
 // dirsDiffer reports whether the two decrypted config directories differ
 // over the given files.
-func dirsDiffer(files []string, a, b string, kc *Keychain, ps PasswordStore) (bool, error) {
-	same, err := compareConfigDirs(files, a, b, kc, ps)
+func dirsDiffer(files []string, a, b string) (bool, error) {
+	same, err := compareConfigDirs(files, a, b)
 	if err != nil {
 		return false, err
 	}
@@ -661,7 +678,7 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 				return nil, fmt.Errorf("reset: %w", err)
 			}
 		}
-		if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+		if err := encryptStoresScoped(s.stores, files, s.repoPath, encKey, nil); err != nil {
 			return nil, fmt.Errorf("encrypt files: %w", err)
 		}
 		if _, err := repo.StageAndCommitFiles(commitMsg("uniTerm config sync (resolve conflict)"), files); err != nil {
@@ -680,7 +697,7 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 			return nil, fmt.Errorf("reset: %w", err)
 		}
 	}
-	if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+	if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 		return nil, fmt.Errorf("decrypt files: %w", err)
 	}
 
@@ -775,7 +792,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		}
 		defer os.RemoveAll(tmpDir)
 
-		if err := DecryptConfigFilesScoped(files, s.repoPath, tmpDir, encKey, nil); err != nil {
+		if err := DecryptConfigFilesScoped(files, s.repoPath, tmpDir, encKey); err != nil {
 			return nil, fmt.Errorf("decrypt remote for comparison: %w", err)
 		}
 
@@ -784,7 +801,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 
 		if localEmpty {
 			// Local has no config — pull remote to local
-			if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+			if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 				return nil, fmt.Errorf("decrypt files: %w", err)
 			}
 			// Carry over device-local fields: re-configuring the repo must
@@ -806,7 +823,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 		}
 		if !remoteEmpty {
 			// Both have data — compare
-			same, err := compareConfigDirs(files, s.dataDir, tmpDir, s.keychain, s.passwordStore)
+			same, err := storesMatchDir(s.stores, files, tmpDir)
 			if err != nil {
 				return nil, fmt.Errorf("compare configs: %w", err)
 			}
@@ -852,7 +869,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 				_ = s.keychain.SetGitToken(token)
 			}
 			_ = s.configStore.Save(cfg)
-			if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+			if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 				return nil, fmt.Errorf("decrypt files: %w", err)
 			}
 			s.updateLastSyncResult("success", "")
@@ -876,7 +893,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 	}
 
 	// Encrypt and push local config
-	if err := EncryptConfigFilesScoped(files, s.dataDir, s.repoPath, encKey, s.keychain, s.passwordStore); err != nil {
+	if err := encryptStoresScoped(s.stores, files, s.repoPath, encKey, nil); err != nil {
 		return nil, fmt.Errorf("encrypt files: %w", err)
 	}
 
@@ -915,7 +932,7 @@ func (s *SyncService) ConfigureRepo(repoURL, username, token, masterPassword str
 	}
 
 	// Decrypt remote files to local
-	if err := DecryptConfigFilesScoped(files, s.repoPath, s.dataDir, encKey, s.passwordStore); err != nil {
+	if err := decryptStoresScoped(s.stores, files, s.repoPath, encKey); err != nil {
 		return nil, fmt.Errorf("decrypt files: %w", err)
 	}
 
@@ -966,14 +983,13 @@ func isConfigDirEmpty(files []string, dir string) bool {
 	return true
 }
 
-// compareConfigDirs compares two decrypted config directories over the given files.
-// localDir is the local config directory; remoteDir is the decrypted remote copy.
-// Legacy empty passwords are backfilled from keychain and enc:v1: fields are
-// normalized to plaintext on the local side before comparison so both sides
-// are comparable.
-func compareConfigDirs(files []string, localDir, remoteDir string, kc *Keychain, ps PasswordStore) (bool, error) {
+// compareConfigDirs compares two decrypted config directories over the given
+// files. Both sides are already plaintext (a decrypted remote copy against
+// another), so no field-level normalization applies; the local store's
+// plaintext is compared through storesMatchDir instead.
+func compareConfigDirs(files []string, a, b string) (bool, error) {
 	for _, name := range files {
-		same, err := compareConfigFiles(filepath.Join(localDir, name), filepath.Join(remoteDir, name), kc, ps)
+		same, err := compareConfigFiles(filepath.Join(a, name), filepath.Join(b, name))
 		if err != nil {
 			return false, err
 		}
@@ -997,11 +1013,18 @@ func readJSONValue(path string) (interface{}, error) {
 		}
 		return nil, err
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
+	return jsonValue(data)
+}
+
+// jsonValue normalizes a JSON document to a comparable value: blank input
+// and the explicitly empty wrappers ({}, [], null) all mean "no data" and
+// must compare equal to each other.
+func jsonValue(raw []byte) (interface{}, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, nil
 	}
 	var v interface{}
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, err
 	}
 	switch t := v.(type) {
@@ -1017,81 +1040,97 @@ func readJSONValue(path string) (interface{}, error) {
 	return v, nil
 }
 
-// compareConfigFiles compares two config files after normalizing the local side
-// (backfill legacy keychain passwords, decrypt enc:v1: fields) so both sides
-// are plaintext. JSON is re-marshaled via json.MarshalIndent so Go's
-// encoding/json sorts map keys deterministically before byte comparison —
-// prevents spurious diffs from non-deterministic key ordering. Array files
-// (favorites.json) keep their order, which is meaningful, and carry no
-// encrypted fields, so normalization applies to objects only.
-func compareConfigFiles(localPath, remotePath string, kc *Keychain, ps PasswordStore) (bool, error) {
-	localVal, err := readJSONValue(localPath)
+// canonicalJSON renders raw JSON in the canonical comparable form: empty
+// wrappers collapse to null and encoding/json sorts map keys, so a store's
+// struct-order marshal and a remote blob's map-order marshal produce
+// identical bytes for equal content.
+func canonicalJSON(raw []byte) (string, error) {
+	v, err := jsonValue(raw)
 	if err != nil {
-		return false, fmt.Errorf("parse local %s: %w", localPath, err)
+		return "", err
 	}
-	remoteVal, err := readJSONValue(remotePath)
+	out, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return false, fmt.Errorf("parse remote %s: %w", remotePath, err)
+		return "", err
 	}
-
-	if obj, ok := localVal.(map[string]interface{}); ok {
-		// Backfill legacy empty passwords from keychain, then decrypt any
-		// enc:v1: fields to plaintext, so the local side is comparable to
-		// the remote copy.
-		backfillFromKeychain(obj, kc)
-		decryptFieldsInPlace(obj, ps)
-	}
-
-	localNorm, err := json.MarshalIndent(localVal, "", "  ")
-	if err != nil {
-		return false, fmt.Errorf("marshal local: %w", err)
-	}
-	remoteNorm, err := json.MarshalIndent(remoteVal, "", "  ")
-	if err != nil {
-		return false, fmt.Errorf("marshal remote: %w", err)
-	}
-	return string(localNorm) == string(remoteNorm), nil
+	return string(out), nil
 }
 
-func backfillFromKeychain(obj map[string]interface{}, kc *Keychain) {
-	if kc == nil {
-		return
+// compareConfigFiles compares two config files as canonical JSON. Array
+// files (favorites.json) keep their order, which is meaningful. Both sides
+// are decrypted plaintext by the time they get here — the local store's
+// plaintext never enters this path; storesMatchDir covers the
+// local-store-vs-remote direction.
+func compareConfigFiles(aPath, bPath string) (bool, error) {
+	aVal, err := readJSONValue(aPath)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", aPath, err)
 	}
-	// Backfill connection passwords
-	if conns, ok := obj["connections"].([]interface{}); ok {
-		for _, c := range conns {
-			if cm, ok := c.(map[string]interface{}); ok {
-				if cm["authType"] != "password" {
-					continue
-				}
-				pw, _ := cm["password"].(string)
-				if pw == "" {
-					if id, ok := cm["id"].(string); ok {
-						if kcPw, err := kc.GetPassword(id); err == nil && kcPw != "" {
-							cm["password"] = kcPw
-						}
-					}
-				}
-			}
+	bVal, err := readJSONValue(bPath)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", bPath, err)
+	}
+	aNorm, err := json.MarshalIndent(aVal, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal %s: %w", aPath, err)
+	}
+	bNorm, err := json.MarshalIndent(bVal, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal %s: %w", bPath, err)
+	}
+	return string(aNorm) == string(bNorm), nil
+}
+
+// storesMatchDir reports whether every registry store (restricted to files)
+// exports content equal to the decrypted remote blob in dir. This is the
+// local-vs-remote comparison: the store is the single source of truth for
+// the local side, so no keychain backfill or enc:v1: normalization happens
+// here — ExportPlain already applied the store's full semantics. A store
+// whose backing file was never written and a blob the remote never carried
+// both read as absent, and absent matches absent.
+func storesMatchDir(stores []SyncableStore, files []string, dir string) (bool, error) {
+	if err := requireStores(stores, files); err != nil {
+		return false, err
+	}
+	wanted := make(map[string]bool, len(files))
+	for _, name := range files {
+		wanted[name] = true
+	}
+	for _, st := range stores {
+		name := st.BlobName()
+		if !wanted[name] {
+			continue
+		}
+		var local []byte
+		plain, err := st.ExportPlain()
+		switch {
+		case err == nil:
+			local = plain
+		case errors.Is(err, fs.ErrNotExist):
+			// Never persisted: compares as absent.
+		default:
+			return false, fmt.Errorf("export %s: %w", name, err)
+		}
+		remote, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil && !os.IsNotExist(err) {
+			return false, fmt.Errorf("read %s: %w", name, err)
+		}
+		if os.IsNotExist(err) {
+			remote = nil
+		}
+		localNorm, err := canonicalJSON(local)
+		if err != nil {
+			return false, fmt.Errorf("parse local %s: %w", name, err)
+		}
+		remoteNorm, err := canonicalJSON(remote)
+		if err != nil {
+			return false, fmt.Errorf("parse remote %s: %w", name, err)
+		}
+		if localNorm != remoteNorm {
+			return false, nil
 		}
 	}
-	// Backfill model apiKeys from keychain (settings.json: ai.models[].apiKey)
-	if ai, ok := obj["ai"].(map[string]interface{}); ok {
-		if models, ok := ai["models"].([]interface{}); ok {
-			for _, m := range models {
-				if mm, ok := m.(map[string]interface{}); ok {
-					ak, _ := mm["apiKey"].(string)
-					if ak == "" {
-						if id, ok := mm["id"].(string); ok {
-							if kcAk, err := kc.GetModelAPIKey(id); err == nil && kcAk != "" {
-								mm["apiKey"] = kcAk
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	return true, nil
 }
 
 // VerifySyncPassword validates credentials against the remote and verifies the
@@ -1327,20 +1366,25 @@ func commitMsg(action string) string {
 	return fmt.Sprintf("%s | %s", action, time.Now().Format(time.RFC3339))
 }
 
-// repoHasFiles returns true if the repo directory contains encrypted config files.
+// repoHasFiles reports whether the repo carries any encrypted config blob.
+// It is the "is there a remote copy to protect" heuristic, so ANY blob
+// counts: sync skips a store whose backing file was never written, so a real
+// repo routinely carries a subset of the synced files. Requiring all of them
+// would silently disable the wrong-key guard below on most repos.
 func repoHasFiles(repoPath string) bool {
-	for _, name := range syncedFiles {
-		if _, err := os.Stat(filepath.Join(repoPath, name)); os.IsNotExist(err) {
-			return false
+	for _, name := range defaultSyncedFiles {
+		if _, err := os.Stat(filepath.Join(repoPath, name)); err == nil {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// verifyDecryption checks that the given key can decrypt the remote config files.
+// verifyDecryption checks that the given key can decrypt every config blob
+// the repo carries — not just connections.json, which a scoped repo may
+// legitimately lack. DecryptConfigFiles skips blobs that are absent.
 func verifyDecryption(repoPath string, key []byte) error {
-	connPath := filepath.Join(repoPath, "connections.json")
-	if _, err := os.Stat(connPath); os.IsNotExist(err) {
+	if !repoHasFiles(repoPath) {
 		return nil
 	}
 	tmpDir, err := os.MkdirTemp("", "sync-verify")
@@ -1348,5 +1392,5 @@ func verifyDecryption(repoPath string, key []byte) error {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
-	return DecryptConfigFiles(repoPath, tmpDir, key, nil)
+	return DecryptConfigFiles(repoPath, tmpDir, key)
 }

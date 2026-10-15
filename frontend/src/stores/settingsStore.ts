@@ -96,9 +96,16 @@ export const useSettingsStore = defineStore('settings', () => {
     let theme = settings.value.theme
     if (theme === 'system') {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
-    } else {
-      document.documentElement.dataset.theme = theme
+      theme = prefersDark ? 'dark' : 'light'
+    }
+    document.documentElement.dataset.theme = theme
+    // Cache the resolved theme for the pre-paint script in index.html (issue
+    // #1135): it applies this before the first paint so the window doesn't
+    // flash the dark no-[data-theme] default while settings load.
+    try {
+      localStorage.setItem('appTheme', theme)
+    } catch {
+      // private mode etc. — the pre-paint script falls back to matchMedia
     }
   }
 
@@ -116,6 +123,10 @@ export const useSettingsStore = defineStore('settings', () => {
     } finally {
       loaded.value = true
     }
+    // Apply the theme before anything slow: the AI store load and the shell
+    // probe (which spawns wsl.exe) below must not delay data-theme past the
+    // first paint. applyTheme() only depends on the loaded settings.
+    applyTheme()
     await useAIConfigStore().load()
     recomposeAi()
     lastSavedAiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
@@ -129,7 +140,6 @@ export const useSettingsStore = defineStore('settings', () => {
     // logs enabled before the user opens the settings tab already
     // respect it. Fire-and-forget; the backend has a safe empty fallback.
     SetDefaultSessionLogDir(settings.value.terminal.sessionLogDir || '').catch(() => {})
-    applyTheme()
     setLocale(settings.value.language)
   }
 
@@ -406,11 +416,27 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     tabCloseButton: loaded.tabCloseButton || DEFAULT_SETTINGS.tabCloseButton,
     showTabShortcutHints: loaded.showTabShortcutHints ?? DEFAULT_SETTINGS.showTabShortcutHints,
     hostListMenuStyle: loaded.hostListMenuStyle || DEFAULT_SETTINGS.hostListMenuStyle,
+    newTabAction: loaded.newTabAction || DEFAULT_SETTINGS.newTabAction,
     // Per-key merge so a settings.json written before a view existed (or
     // with a key dropped) still gets the default for that view.
     sidebarTabs: {
       ...DEFAULT_SETTINGS.sidebarTabs,
       ...(loaded.sidebarTabs || {})
-    }
+    },
+    // Per-key visible merge; the order is validated against the known block
+    // ids and backfilled with any missing blocks (older settings.json files
+    // or hand-edited ones).
+    startPage: mergeStartPage(loaded.startPage)
   }
+}
+
+function mergeStartPage(loaded: AppSettings['startPage']): AppSettings['startPage'] {
+  const visible = {
+    ...DEFAULT_SETTINGS.startPage.visible,
+    ...(loaded?.visible || {})
+  }
+  const known = DEFAULT_SETTINGS.startPage.order
+  const persisted = (loaded?.order || []).filter(b => known.includes(b))
+  const order = [...persisted, ...known.filter(b => !persisted.includes(b))]
+  return { visible, order }
 }

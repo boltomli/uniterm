@@ -39,7 +39,7 @@ func TestDecryptAtomicWriteRenameFailureKeepsOriginal(t *testing.T) {
 	}
 	t.Cleanup(func() { renameFile = origRename })
 
-	if err := DecryptConfigFilesScoped([]string{"connections.json"}, srcDir, dstDir, key, nil); err == nil {
+	if err := DecryptConfigFilesScoped([]string{"connections.json"}, srcDir, dstDir, key); err == nil {
 		t.Fatal("expected error when rename fails")
 	}
 
@@ -163,7 +163,7 @@ func TestDecryptNilAADVersionedRepo(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(srcDir, "connections.json"), []byte(c.cipher), 0600); err != nil {
 				t.Fatal(err)
 			}
-			err := DecryptConfigFilesScoped([]string{"connections.json"}, srcDir, dstDir, key, nil)
+			err := DecryptConfigFilesScoped([]string{"connections.json"}, srcDir, dstDir, key)
 			if c.wantErr {
 				if err == nil {
 					t.Fatal("nil-AAD ciphertext accepted in versioned repo")

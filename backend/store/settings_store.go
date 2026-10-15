@@ -1,14 +1,11 @@
 package store
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
-
-	"github.com/ys-ll/uniterm/backend/credentials"
 )
 
 const settingsFileName = "settings.json"
@@ -183,9 +180,9 @@ type AppSettings struct {
 	// "auto" (default, picks by UI language with fallback), "github" or
 	// "gitee" (domestic mirror). Pointer + omitempty so settings.json written
 	// by older builds still load; nil means "auto".
-	UpdateSource   *string       `json:"updateSource,omitempty"`
-	CloseTabPrompt *bool `json:"closeTabPrompt"`
-	CloseAppPrompt *bool `json:"closeAppPrompt"`
+	UpdateSource   *string `json:"updateSource,omitempty"`
+	CloseTabPrompt *bool   `json:"closeTabPrompt"`
+	CloseAppPrompt *bool   `json:"closeAppPrompt"`
 	// RestoreTabsPrompt gates the "reopen last session's tabs" prompt at
 	// startup (issue #937). Pointer + omitempty so settings.json written by
 	// older builds still loads; nil means "on" (frontend default).
@@ -201,8 +198,8 @@ type AppSettings struct {
 	// GitBashPath is an optional user-supplied Git for Windows location (the
 	// install directory or bash.exe itself, e.g. a scoop install). Resolved on
 	// Windows when listing the available local shells.
-	GitBashPath string `json:"gitBashPath,omitempty"`
-	TabCloseButton           string                `json:"tabCloseButton"`
+	GitBashPath    string `json:"gitBashPath,omitempty"`
+	TabCloseButton string `json:"tabCloseButton"`
 	// ShowTabShortcutHints toggles the per-tab numeric shortcut hint
 	// (e.g. Ctrl+1) on the tab itself. Pointer + omitempty so settings.json
 	// written by older builds (which lack this field) still loads; the
@@ -212,6 +209,10 @@ type AppSettings struct {
 	// menu: "button" (hover buttons) or "rightclick". Empty means the
 	// frontend falls back to `button`.
 	HostListMenuStyle string `json:"hostListMenuStyle,omitempty"`
+	// NewTabAction selects what the tab bar's "+" button (and the
+	// newConnection shortcut) opens: "startPage" or "localTerminal".
+	// Empty means the frontend falls back to "startPage".
+	NewTabAction string `json:"newTabAction,omitempty"`
 	// SidebarTabs toggles which connection-sidebar tab icons are visible,
 	// keyed by view id (connections/files/monitor/tunnels/quickCommands/
 	// history/personalization). "connections" is always shown in the UI and
@@ -219,6 +220,12 @@ type AppSettings struct {
 	// builds (which lack this field) still load; a nil map means "use the
 	// frontend defaults" (everything visible).
 	SidebarTabs map[string]bool `json:"sidebarTabs,omitempty"`
+	// StartPage controls which blocks (search/favorites/recent/groups) the
+	// start page shows and in what order. Pointer + omitempty so
+	// settings.json written by older builds (which lack this field) still
+	// loads; a nil value means "use the frontend defaults" (everything
+	// visible, search → favorites → recent → groups).
+	StartPage *StartPageSettings `json:"startPage,omitempty"`
 }
 
 type SFTPBookmarks struct {
@@ -226,10 +233,21 @@ type SFTPBookmarks struct {
 	RemotePaths []string `json:"remotePaths"`
 }
 
+// StartPageSettings controls the layout of the new-tab start page: which
+// blocks (search/favorites/recent/groups) are visible and in what order.
+// Block ids are strings rather than a typed enum so hand-edited or
+// cross-version settings.json files degrade gracefully (unknown ids are
+// ignored by the frontend).
+type StartPageSettings struct {
+	Visible map[string]bool `json:"visible,omitempty"`
+	Order   []string        `json:"order,omitempty"`
+}
+
 type SettingsStore struct {
 	configDir     string
 	passwordStore PasswordStore
 	mu            sync.Mutex // serializes Save + Load migration writes (STORE-05/06).
+	lastSavedHash string     // F-105 skip state (pre-encryption content hash)
 }
 
 func NewSettingsStore(configDir string) (*SettingsStore, error) {
@@ -248,6 +266,18 @@ func (s *SettingsStore) filePath() string {
 }
 
 func (s *SettingsStore) Save(settings AppSettings) error {
+	return s.save(settings, false)
+}
+
+// ForceSave rewrites the file even when the content hash matches the
+// seeded state. Used by re-keying: the plaintext is unchanged, so the
+// F-105 hash-skip would otherwise swallow the re-encryption and leave
+// the file under the old key.
+func (s *SettingsStore) ForceSave(settings AppSettings) error {
+	return s.save(settings, true)
+}
+
+func (s *SettingsStore) save(settings AppSettings, force bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -255,30 +285,17 @@ func (s *SettingsStore) Save(settings AppSettings) error {
 	models := make([]AIModelConfig, len(settings.AI.Models))
 	copy(models, settings.AI.Models)
 
-	// Encrypt model apiKeys in place before writing JSON.
-	for i := range models {
-		m := &models[i]
-		if m.APIKey == "" || credentials.IsEncrypted(m.APIKey) {
-			continue
-		}
-		if s.passwordStore == nil {
-			continue // no cipher — keep as-is (best effort; never leak is N/A for settings)
-		}
-		enc, err := s.passwordStore.Encrypt(m.APIKey)
-		if err != nil {
-			return err
-		}
-		m.APIKey = enc
-	}
-
 	settings.AI.Models = models
-	// Settings file is internal — no indent. Encoder streams into the buf
-	// so we skip the intermediate allocation of json.Marshal.
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(settings); err != nil {
-		return err
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	skip := s.lastSavedHash
+	if force {
+		// Re-keying saves unchanged plaintext under a new key — the
+		// F-105 hash-skip would otherwise swallow the rewrite.
+		skip = forceWrite
 	}
-	return atomicWriteFile(s.filePath(), buf.Bytes(), 0600)
+	h, err := saveEncryptedFile(settingsFileName, s.filePath(), &settings, s.passwordStore, skip)
+	s.lastSavedHash = h
+	return err
 }
 
 func (s *SettingsStore) Load() (AppSettings, error) {
@@ -286,46 +303,20 @@ func (s *SettingsStore) Load() (AppSettings, error) {
 	// Disk I/O on the settings file can be slow (cold cache, encrypted FS);
 	// holding the mutex across os.ReadFile would block every concurrent Save.
 	path := s.filePath()
-	data, err := os.ReadFile(path)
+	settings, res, hash, existed, err := loadEncryptedFile[AppSettings](settingsFileName, path, s.passwordStore)
+	if !existed {
+		return defaultSettings(), nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, errUnparseableConfig) {
+			// STORE-09: the corrupt file was quarantined before falling back
+			// to defaults so the next Save doesn't silently overwrite the
+			// user's prior data.
 			return defaultSettings(), nil
 		}
 		return AppSettings{}, err
 	}
-	var settings AppSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		// STORE-09: preserve corrupt file before falling back to defaults so
-		// the next Save doesn't silently overwrite the user's prior data.
-		s.mu.Lock()
-		quarantineCorrupt(path)
-		s.mu.Unlock()
-		return defaultSettings(), nil
-	}
-
-	// Snapshot passwordStore under the lock; everything below mutates only
-	// the local `settings` value, so the rest of Load runs lock-free.
-	s.mu.Lock()
-	ps := s.passwordStore
-	s.mu.Unlock()
-
-	// Decrypt model apiKeys; migrate legacy plaintext to encrypted on save.
-	needsSave := false
-	for i := range settings.AI.Models {
-		m := &settings.AI.Models[i]
-		if m.APIKey == "" || ps == nil {
-			continue
-		}
-		if credentials.IsEncrypted(m.APIKey) {
-			ak, err := ps.Decrypt(m.APIKey)
-			if err != nil {
-				return AppSettings{}, err
-			}
-			m.APIKey = ak
-		} else {
-			needsSave = true // legacy plaintext — re-save will encrypt
-		}
-	}
+	needsSave := res.Plaintext > 0 // legacy plaintext — re-save will encrypt
 	// Default autoCheckUpdate to true if not present
 	if settings.AutoCheckUpdate == nil {
 		settings.AutoCheckUpdate = boolPtr(true)
@@ -357,8 +348,11 @@ func (s *SettingsStore) Load() (AppSettings, error) {
 		needsSave = true
 	}
 	if needsSave {
-		// Re-save through Save() which takes the lock itself.
-		_ = s.Save(settings)
+		// Force: the legacy-plaintext case changes nothing in the plaintext
+		// content, so the hash-skip would swallow the lazy encryption.
+		_ = s.ForceSave(settings)
+	} else {
+		s.lastSavedHash = hash
 	}
 
 	return settings, nil
@@ -444,4 +438,17 @@ func defaultKeyboard() map[string]KeyBinding {
 		"navigateNext":     {Ctrl: false, Shift: false, Alt: true, Key: "arrowright"},
 		"openSettings":     {Ctrl: true, Shift: false, Alt: false, Key: ","},
 	}
+}
+
+// BlobName, ExportPlain and ImportPlain implement the sync exchange contract
+// (SyncableStore, declared in backend/sync/backend.go).
+
+func (s *SettingsStore) BlobName() string { return settingsFileName }
+
+func (s *SettingsStore) ExportPlain() ([]byte, error) {
+	return exportPlainStore(settingsFileName, s.filePath(), s.Load)
+}
+
+func (s *SettingsStore) ImportPlain(raw []byte) error {
+	return importPlainStore(raw, s.Save)
 }

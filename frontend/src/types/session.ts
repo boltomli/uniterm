@@ -83,7 +83,7 @@ export interface ConnectionConfig {
   serialDataBits?: number
   serialStopBits?: number
   serialParity?: string
-  dbType?: string   // database type key — SQL family only (mysql/postgres/oracle/sqlserver/rqlite); Redis/MongoDB/Elasticsearch are standalone types
+  dbType?: string   // database type key — SQL family only (mysql/postgres/oracle/sqlserver/rqlite/sqlite, sqlite keeps the file path in host); Redis/MongoDB/Elasticsearch are standalone types
   dbName?: string   // default database name
   dbParams?: string // extra DSN query parameters, e.g. "sslmode=require&connect_timeout=30"
   // Elasticsearch / OpenSearch. The auth type reuses the shared `authType`

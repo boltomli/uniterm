@@ -457,5 +457,9 @@ func probeDatabase(config ConnectionConfig) (string, error) {
 	if err := db.PingContext(ctx); err != nil {
 		return "", fmt.Errorf("ping %s: %w", config.DBType, err)
 	}
+	if config.DBType == "sqlite" {
+		// A file-backed database has no host:port; report the path.
+		return fmt.Sprintf("sqlite: connected to %s", config.Host), nil
+	}
 	return fmt.Sprintf("%s: connected to %s:%d", config.DBType, config.Host, config.Port), nil
 }

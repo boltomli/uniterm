@@ -18,23 +18,6 @@ func sampleStore() session.ConnectionStoreData {
 	}
 }
 
-func TestExportUnitermWithoutPasswordClearsPassword(t *testing.T) {
-	b, err := ExportUniterm(sampleStore(), "")
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
-	var f utmFile
-	if err := json.Unmarshal(b, &f); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if f.Encrypted {
-		t.Fatal("expected encrypted=false")
-	}
-	if f.Connections[0].Password != "" {
-		t.Fatalf("password not cleared: %q", f.Connections[0].Password)
-	}
-}
-
 func TestUnitermRoundTripWithPassword(t *testing.T) {
 	b, err := ExportUniterm(sampleStore(), "pass123")
 	if err != nil {
@@ -99,46 +82,79 @@ func TestUnitermWrongPasswordFails(t *testing.T) {
 	}
 }
 
-// TestExportUnitermWithoutPasswordClearsK8sAndPostLoginScript: an unencrypted
-// export must not carry the inline kubeconfig (cluster credentials) or the
-// post-login script — both are cleared alongside the passwords.
-func TestExportUnitermWithoutPasswordClearsK8sAndPostLoginScript(t *testing.T) {
+// TestMaterializeForExport pins the export materialization: every
+// identity-referencing connection is resolved into a plain credential
+// connection, so the exported file is self-contained — no authType
+// "identity" survives and nothing references the source machine's identity
+// store. A dangling reference degrades to a connection without credentials.
+func TestMaterializeForExport(t *testing.T) {
 	data := session.ConnectionStoreData{
-		Connections: []session.ConnectionConfig{{
-			ID: "c1", Name: "cluster", Type: "k8s", Host: "10.0.0.5", Port: 6443,
-			AuthType: "password", Password: "hunter2",
-			K8sConfigInline: "apiVersion: v1\nusers: [{name: admin, user: {token: kube-token-xyz}}]",
-			PostLoginScript: "kubectl config use-context prod",
-		}},
+		Connections: []session.ConnectionConfig{
+			{ID: "c1", AuthType: "identity", IdentityId: "id1", Host: "h", Port: 22},
+			{ID: "c2", AuthType: "identity", IdentityId: "gone", Host: "h2", Port: 22, User: "override"},
+			{ID: "c3", AuthType: "keyText", Host: "h3", Port: 22, KeyContent: "PEM"},
+		},
 	}
-	b, err := ExportUniterm(data, "")
+	idents := map[string]session.Identity{
+		"id1": {ID: "id1", Name: "prod", Username: "deploy", AuthType: "password", Password: "secret"},
+	}
+	out, err := MaterializeForExport(data, func(id string) (session.Identity, bool) {
+		i, ok := idents[id]
+		return i, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := out.Connections
+	if cs[0].AuthType != "password" || cs[0].User != "deploy" || cs[0].Password != "secret" || cs[0].IdentityId != "" {
+		t.Fatalf("c1 not materialized: %+v", cs[0])
+	}
+	// A dangling reference degrades to no credentials; the connection's own
+	// username override is kept (it never came from the identity).
+	if cs[1].AuthType != "password" || cs[1].User != "override" || cs[1].Password != "" || cs[1].IdentityId != "" {
+		t.Fatalf("c2 dangling reference not degraded: %+v", cs[1])
+	}
+	if cs[2].AuthType != "keyText" || cs[2].KeyContent != "PEM" {
+		t.Fatalf("non-identity connection must pass through: %+v", cs[2])
+	}
+}
+
+// TestExportUnitermEncryptsAllSecretFields: the export encrypts every field
+// the save path treats as secret — the manifest list — so a private key never
+// rides along in cleartext inside an "encrypted" export.
+func TestExportUnitermEncryptsAllSecretFields(t *testing.T) {
+	data := session.ConnectionStoreData{
+		Connections: []session.ConnectionConfig{
+			{ID: "c1", Type: "ssh", AuthType: "keyText", Host: "h", Port: 22,
+				KeyContent: "-----BEGIN OPENSSH PRIVATE KEY-----", Password: "keypass"},
+		},
+	}
+	b, err := ExportUniterm(data, "pass123")
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
 	var f utmFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatal(err)
 	}
-	if f.Encrypted {
-		t.Fatal("expected encrypted=false")
+	if p := f.Connections[0].KeyContent; !strings.HasPrefix(p, "enc:v1:") {
+		t.Fatalf("key content exported in cleartext: %q", p)
 	}
-	c := f.Connections[0]
-	if c.Password != "" {
-		t.Fatalf("password not cleared: %q", c.Password)
+	res, err := parseUniterm(b, ParseOptions{Password: "pass123"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	if c.K8sConfigInline != "" {
-		t.Fatalf("K8sConfigInline not cleared: %q", c.K8sConfigInline)
-	}
-	if c.PostLoginScript != "" {
-		t.Fatalf("PostLoginScript not cleared: %q", c.PostLoginScript)
-	}
-	if strings.Contains(string(b), "kube-token-xyz") || strings.Contains(string(b), "kubectl config use-context") {
-		t.Fatalf("cleared secret still present in export:\n%s", b)
+	if res.Connections[0].KeyContent != "-----BEGIN OPENSSH PRIVATE KEY-----" || res.Connections[0].Password != "keypass" {
+		t.Fatalf("round-trip lost secrets: %+v", res.Connections[0])
 	}
 }
 
-// TestExportUnitermEncryptsK8sAndPostLoginScript: with a password both fields
-// are encrypted in the export and restored by the import round trip.
+// TestExportUnitermEncryptsK8sAndPostLoginScript: the fields our hardening
+// added to the secret manifest — the inline kubeconfig (cluster credentials)
+// and the post-login script (often carries commands with embedded
+// credentials), plus sentinel / jump-host secrets — must be ciphertext in
+// the "encrypted" export and restored by the round trip. Plaintext in any of
+// them would leak inside an otherwise-encrypted .utm file.
 func TestExportUnitermEncryptsK8sAndPostLoginScript(t *testing.T) {
 	const kubeconfig = "apiVersion: v1\nusers: [{name: admin, user: {token: kube-token-xyz}}]"
 	const script = "kubectl config use-context prod"
@@ -146,37 +162,72 @@ func TestExportUnitermEncryptsK8sAndPostLoginScript(t *testing.T) {
 		Connections: []session.ConnectionConfig{{
 			ID: "c1", Name: "cluster", Type: "k8s", Host: "10.0.0.5", Port: 6443,
 			AuthType: "password", Password: "hunter2",
-			K8sConfigInline: kubeconfig,
-			PostLoginScript: script,
+			K8sConfigInline:   kubeconfig,
+			PostLoginScript:   script,
+			SentinelPassword:  "sentinel-secret",
+			TunnelSSHPassword: "jump-secret",
 		}},
 	}
 	b, err := ExportUniterm(data, "pass123")
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	if strings.Contains(string(b), "kube-token-xyz") || strings.Contains(string(b), script) {
-		t.Fatalf("plaintext secret in encrypted export:\n%s", b)
+	haystack := string(b)
+	for _, secret := range []string{"kube-token-xyz", script, "sentinel-secret", "jump-secret"} {
+		if strings.Contains(haystack, secret) {
+			t.Fatalf("plaintext secret %q in encrypted export:\n%s", secret, haystack)
+		}
 	}
 	var f utmFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	c := f.Connections[0]
-	if !strings.HasPrefix(c.K8sConfigInline, "enc:v1:") || c.K8sConfigInline == kubeconfig {
-		t.Fatalf("K8sConfigInline not encrypted: %q", c.K8sConfigInline)
-	}
-	if !strings.HasPrefix(c.PostLoginScript, "enc:v1:") || c.PostLoginScript == script {
-		t.Fatalf("PostLoginScript not encrypted: %q", c.PostLoginScript)
+	for _, field := range []struct{ name, val string }{
+		{"K8sConfigInline", c.K8sConfigInline},
+		{"PostLoginScript", c.PostLoginScript},
+		{"SentinelPassword", c.SentinelPassword},
+		{"TunnelSSHPassword", c.TunnelSSHPassword},
+	} {
+		if !strings.HasPrefix(field.val, "enc:v1:") {
+			t.Fatalf("%s not encrypted in export: %q", field.name, field.val)
+		}
 	}
 
 	res, err := parseUniterm(b, ParseOptions{Password: "pass123"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if res.Connections[0].K8sConfigInline != kubeconfig {
-		t.Fatalf("K8sConfigInline not restored: %q", res.Connections[0].K8sConfigInline)
+	got := res.Connections[0]
+	if got.K8sConfigInline != kubeconfig {
+		t.Fatalf("K8sConfigInline not restored: %q", got.K8sConfigInline)
 	}
-	if res.Connections[0].PostLoginScript != script {
-		t.Fatalf("PostLoginScript not restored: %q", res.Connections[0].PostLoginScript)
+	if got.PostLoginScript != script {
+		t.Fatalf("PostLoginScript not restored: %q", got.PostLoginScript)
+	}
+	if got.SentinelPassword != "sentinel-secret" || got.TunnelSSHPassword != "jump-secret" {
+		t.Fatalf("sentinel/jump secrets not restored: %+v", got)
+	}
+}
+
+// TestExportUnitermRejectsInPlaceCiphertext: a value still encrypted under
+// the source machine's credential store would make the export depend on that
+// machine — the export refuses instead of silently carrying it.
+func TestExportUnitermRejectsInPlaceCiphertext(t *testing.T) {
+	data := session.ConnectionStoreData{
+		Connections: []session.ConnectionConfig{
+			{ID: "c1", Type: "ssh", AuthType: "password", Host: "h", Port: 22, Password: "enc:v1:residue"},
+		},
+	}
+	if _, err := ExportUniterm(data, "pass123"); err == nil {
+		t.Fatal("in-place ciphertext must abort the export")
+	}
+}
+
+// TestExportUnitermRequiresPassword: the UI always provides one; the
+// password-less branch (which cleared every credential) is gone.
+func TestExportUnitermRequiresPassword(t *testing.T) {
+	if _, err := ExportUniterm(sampleStore(), ""); err == nil {
+		t.Fatal("an export without a password must be refused")
 	}
 }

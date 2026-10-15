@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,6 +64,9 @@ type CommandsStore struct {
 	listCache []CommandMeta
 	listAt    time.Time
 
+	saveMu        sync.Mutex // 串行化 savePrefs（含 lastSavedHash）
+	lastSavedHash string     // F-105 skip state (pre-encryption content hash)
+
 	configDir string
 }
 
@@ -90,32 +92,32 @@ func (s *CommandsStore) invalidateListCache() {
 // ---- 偏好读写（commands.json）----
 
 func (s *CommandsStore) loadPrefs() (commandPrefsData, error) {
-	bytes, err := os.ReadFile(s.prefsPath())
+	out, _, hash, existed, err := loadEncryptedFile[commandPrefsData](commandPrefsFile, s.prefsPath(), nil)
+	if !existed {
+		return commandPrefsData{Version: 1, Prefs: []commandPref{}}, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return commandPrefsData{Version: 1, Prefs: []commandPref{}}, nil
-		}
 		return commandPrefsData{}, err
 	}
-	var data commandPrefsData
-	if err := json.Unmarshal(bytes, &data); err != nil {
-		return commandPrefsData{}, err
+	if out.Version == 0 {
+		out.Version = 1
 	}
-	if data.Version == 0 {
-		data.Version = 1
-	}
-	return data, nil
+	s.saveMu.Lock()
+	s.lastSavedHash = hash
+	s.saveMu.Unlock()
+	return out, nil
 }
 
 func (s *CommandsStore) savePrefs(data commandPrefsData) error {
 	if err := os.MkdirAll(s.commandsRoot(), 0755); err != nil {
 		return err
 	}
-	bytes, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(s.prefsPath(), bytes, 0600)
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	h, err := saveEncryptedFile(commandPrefsFile, s.prefsPath(), &data, nil, s.lastSavedHash)
+	s.lastSavedHash = h
+	return err
 }
 
 // ---- 文件扫描（内容/存在性以 commands/*.md 为真相源）----

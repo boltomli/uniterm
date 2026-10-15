@@ -11,6 +11,8 @@ import de from './locales/de.json'
 import es from './locales/es.json'
 import fr from './locales/fr.json'
 import ru from './locales/ru.json'
+import pt from './locales/pt.json'
+import vi from './locales/vi.json'
 
 const messages: Record<Locale, Record<string, string>> = {
   'zh-CN': zhCN,
@@ -22,6 +24,8 @@ const messages: Record<Locale, Record<string, string>> = {
   es,
   fr,
   ru,
+  pt,
+  vi,
 }
 
 const currentLocale = ref<Locale>('en')

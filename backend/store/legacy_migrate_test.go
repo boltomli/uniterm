@@ -15,12 +15,16 @@ type fakeLegacy struct {
 
 func (f fakeLegacy) GetPassword(id string) (string, error)    { return f.pw[id], nil }
 func (f fakeLegacy) GetModelAPIKey(id string) (string, error) { return f.ak[id], nil }
+func (f fakeLegacy) DeletePassword(id string) error {
+	delete(f.pw, id)
+	return nil
+}
 
 func TestMigrateLegacyKeychainToInPlace(t *testing.T) {
 	dir := t.TempDir()
 	// Seed connections.json with an empty password (legacy: password in keychain).
 	cs := &ConnectionStore{configDir: dir}
-	_ = cs.writeJSONLocked(session.ConnectionStoreData{
+	_ = writeJSONFile(cs.filePath(), session.ConnectionStoreData{
 		Groups:      []session.ConnectionGroup{},
 		Connections: []session.ConnectionConfig{{ID: "c1", Type: "ssh", AuthType: "password", Password: ""}},
 	})
@@ -46,5 +50,13 @@ func TestMigrateLegacyKeychainToInPlace(t *testing.T) {
 	wantAK, _ := fakeCipherStore{}.Encrypt("ak1")
 	if !contains(string(rawS), wantAK) {
 		t.Fatalf("apiKey not migrated: %s", rawS)
+	}
+	// Move semantics: the migrated conn/<id> entry is deleted (its encrypted
+	// copy is on disk), while the ai-model/<id> entry is kept.
+	if _, ok := legacy.pw["c1"]; ok {
+		t.Fatal("migrated conn entry not deleted from legacy keychain")
+	}
+	if _, ok := legacy.ak["m1"]; !ok {
+		t.Fatal("ai-model entry should be kept (no delete path)")
 	}
 }

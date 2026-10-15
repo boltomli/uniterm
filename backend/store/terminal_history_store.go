@@ -1,8 +1,6 @@
 package store
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -22,6 +20,7 @@ type TerminalHistoryStore struct {
 	done    chan struct{}
 	closed  bool
 	closeOnce sync.Once
+	lastSavedHash string // F-105 skip state (pre-encryption content hash)
 }
 
 type HistoryEntry struct {
@@ -97,12 +96,18 @@ func (s *TerminalHistoryStore) flush(sync bool) error {
 	}
 	entries := s.pending
 	s.pending = nil
+	last := s.lastSavedHash
 	s.mu.Unlock()
-	return s.writeAtomic(entries)
+	h, err := s.writeAtomic(entries, last)
+	s.mu.Lock()
+	s.lastSavedHash = h
+	s.mu.Unlock()
+	return err
 }
 
-// writeAtomic dedups, trims, marshals, and writes via tmp+rename.
-func (s *TerminalHistoryStore) writeAtomic(entries []HistoryEntry) error {
+// writeAtomic dedups and trims, then writes through the shared Save envelope
+// (filestore.go): hash-skip, encrypt, atomic write.
+func (s *TerminalHistoryStore) writeAtomic(entries []HistoryEntry, lastSavedHash string) (string, error) {
 	seen := make(map[string]bool)
 	result := make([]HistoryEntry, 0, len(entries))
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -117,11 +122,7 @@ func (s *TerminalHistoryStore) writeAtomic(entries []HistoryEntry) error {
 		result = result[len(result)-maxHistorySize:]
 	}
 	data := TerminalHistoryData{Entries: result}
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(s.filePath(), jsonData, 0600)
+	return saveEncryptedFile(terminalHistoryFileName, s.filePath(), &data, nil, lastSavedHash)
 }
 
 // flushLoop waits for Close.
@@ -166,28 +167,14 @@ func (s *TerminalHistoryStore) Close() error {
 }
 
 func (s *TerminalHistoryStore) Load() ([]HistoryEntry, error) {
-	fileData, err := os.ReadFile(s.filePath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []HistoryEntry{}, nil
-		}
-		return nil, err
-	}
-	var data TerminalHistoryData
-	if err := json.Unmarshal(fileData, &data); err != nil {
-		_ = os.Remove(s.filePath())
+	out, _, hash, existed, err := loadEncryptedFile[TerminalHistoryData](terminalHistoryFileName, s.filePath(), nil)
+	if !existed || err != nil {
 		return []HistoryEntry{}, nil
 	}
-	if len(data.Entries) == 0 && len(fileData) > 10 {
-		var oldFormat struct {
-			Commands []string `json:"commands"`
-		}
-		if err := json.Unmarshal(fileData, &oldFormat); err == nil && len(oldFormat.Commands) > 0 {
-			_ = os.Remove(s.filePath())
-			return []HistoryEntry{}, nil
-		}
-	}
-	return data.Entries, nil
+	s.mu.Lock()
+	s.lastSavedHash = hash
+	s.mu.Unlock()
+	return out.Entries, nil
 }
 
 func (s *TerminalHistoryStore) DeleteByIDs(ids []string) error {
@@ -208,14 +195,18 @@ func (s *TerminalHistoryStore) DeleteByIDs(ids []string) error {
 			filtered = append(filtered, entry)
 		}
 	}
-	if err := s.writeAtomic(filtered); err != nil {
-		return err
-	}
 	s.mu.Lock()
-	s.pending = nil
-	if s.timer != nil {
-		s.timer.Stop()
+	last := s.lastSavedHash
+	s.mu.Unlock()
+	h, err := s.writeAtomic(filtered, last)
+	s.mu.Lock()
+	s.lastSavedHash = h
+	if err == nil {
+		s.pending = nil
+		if s.timer != nil {
+			s.timer.Stop()
+		}
 	}
 	s.mu.Unlock()
-	return nil
+	return err
 }

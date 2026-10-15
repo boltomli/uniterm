@@ -158,3 +158,4 @@ type fakeTestLegacyKC struct{ pw map[string]string }
 
 func (f fakeTestLegacyKC) GetPassword(id string) (string, error) { return f.pw[id], nil }
 func (f fakeTestLegacyKC) GetModelAPIKey(string) (string, error) { return "", nil }
+func (f fakeTestLegacyKC) DeletePassword(id string) error        { delete(f.pw, id); return nil }

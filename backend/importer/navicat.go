@@ -34,6 +34,7 @@ var navicatConnType = map[string]connTarget{
 	"POSTGRESQL": {Type: "database", DBType: "postgres", Port: 5432},
 	"MSSQL":      {Type: "database", DBType: "sqlserver", Port: 1433},
 	"ORACLE":     {Type: "database", DBType: "oracle", Port: 1521},
+	"SQLITE":     {Type: "database", DBType: "sqlite"},
 	"MONGODB":    {Type: "mongodb", Port: 27017},
 	"REDIS":      {Type: "redis", Port: 6379},
 }

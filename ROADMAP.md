@@ -28,7 +28,7 @@ Legend: ✅ Shipped, 🚧 Planned
 | SMB | ✅ | v1.2.2 | Windows shared folders and NAS |  |
 | WebDAV | ✅ | v1.2.2 | WebDAV file management |  |
 | S3 | ✅ | v1.2.2 | Amazon S3 compatible object storage |  |
-| SCP | 🚧 | v1.9.3 | Fallback for legacy SSH servers without SFTP support |  |
+| SCP | ✅ | v1.9.3 | Fallback for legacy SSH servers without SFTP support |  |
 
 ### Remote Desktop
 
@@ -52,6 +52,7 @@ Legend: ✅ Shipped, 🚧 Planned
 | Redis | ✅ | v1.2.1 | Key-value store with visual browser |  |
 | MongoDB | ✅ | v1.4.1 | Document database |  |
 | Elasticsearch | ✅ | v1.9.0 | Distributed search and analytics engine | [@iCarrear](https://github.com/iCarrear) |
+| SQLite | ✅ | v1.10.1 | Embedded local database (open by file path) |  |
 
 ### Container
 
@@ -79,7 +80,7 @@ Legend: ✅ Shipped, 🚧 Planned
 | Interaction Modes | 🚧 | — | Chat / read-only / agent modes to constrain AI actions |  |
 | MCP Server | ✅ | v1.10.0 | Expose uniTerm as an MCP server for external AI agents | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
 | MCP Client | 🚧 | — | Connect external MCP servers to extend uniTerm's AI |  |
-| File Attachments | 🚧 | — | Attach files to AI prompts for the agent to read |  |
+| File Attachments | ✅ | v1.10.1 | Attach files to AI prompts for the agent to read | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
 
 ### Personalization
 

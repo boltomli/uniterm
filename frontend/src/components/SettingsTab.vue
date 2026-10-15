@@ -231,6 +231,21 @@
             </div>
           </div>
 
+          <!-- Tab bar "+" default action (issue #1043): start page or local
+               terminal. Also applies to the new-tab keyboard shortcut. -->
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.newTabAction') }}</div>
+              <div class="setting-desc">{{ t('settings.newTabActionDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.newTabAction" @change="settingsStore.save()">
+                <el-option :label="t('settings.newTabActionStartPage')" value="startPage" />
+                <el-option :label="t('settings.newTabActionLocalTerminal')" value="localTerminal" />
+              </el-select>
+            </div>
+          </div>
+
           </div>
 
         <h2 class="section-title">{{ t('settings.interaction') }}</h2>

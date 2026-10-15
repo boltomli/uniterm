@@ -15,14 +15,16 @@ func TestAIConfigStore_MigrateFromSettings(t *testing.T) {
 		t.Fatalf("NewAIConfigStore: %v", err)
 	}
 
-	// Seed settings.json with a user model (plaintext key: no password store
-	// wired, matching the pre-unlock state).
+	// Seed settings.json with a user model. The cipher is wired (as it always
+	// is in production startup) so the plaintext key lands encrypted on disk.
+	ss.SetPasswordStore(fakeCipherStore{})
 	settings := defaultSettings()
 	settings.AI.Models[0].APIKey = "sk-user-key"
 	if err := ss.Save(settings); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
 
+	acs.SetPasswordStore(fakeCipherStore{})
 	if err := acs.MigrateFromSettingsIfNeeded(settings); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -100,3 +102,46 @@ func TestAIConfigStore_RoundTripEncryption(t *testing.T) {
 	}
 }
 
+
+func mustAIStore(t *testing.T) *AIConfigStore {
+	t.Helper()
+	s, err := NewAIConfigStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAIConfigStore: %v", err)
+	}
+	s.SetPasswordStore(fakeCipherStore{})
+	return s
+}
+
+// TestAIConfigStoreSyncRoundTrip pins the sync exchange contract for ai.json:
+// the blob must carry plaintext apiKeys and survive a round-trip through a
+// store on another directory.
+func TestAIConfigStoreSyncRoundTrip(t *testing.T) {
+	a := mustAIStore(t)
+	maxTurns := 12
+	seed := AIStoreData{MaxTurns: &maxTurns, Models: []AIModelConfig{{
+		ID: "m1", Name: "model", APIKey: "sk-test", BaseURL: "https://x", Model: "gpt",
+	}}}
+	if err := a.Save(seed); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	plain, err := a.ExportPlain()
+	if err != nil {
+		t.Fatalf("ExportPlain: %v", err)
+	}
+	if !contains(string(plain), "sk-test") || contains(string(plain), "enc:v1:") {
+		t.Fatalf("blob must carry plaintext secrets: %s", plain)
+	}
+	b := mustAIStore(t)
+	if err := b.ImportPlain(plain); err != nil {
+		t.Fatalf("ImportPlain: %v", err)
+	}
+	got, err := b.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.MaxTurns == nil || *got.MaxTurns != 12 || len(got.Models) != 1 ||
+		got.Models[0].ID != "m1" || got.Models[0].APIKey != "sk-test" {
+		t.Fatalf("ai config lost: %+v", got)
+	}
+}

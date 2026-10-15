@@ -5,9 +5,22 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	goruntime "runtime"
+	"strconv"
+	"strings"
+	stdsync "sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/ys-ll/uniterm/backend/container"
@@ -23,19 +36,6 @@ import (
 	"github.com/ys-ll/uniterm/backend/update"
 	"github.com/ys-ll/uniterm/backend/utils"
 	"golang.org/x/crypto/ssh"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	goruntime "runtime"
-	"strconv"
-	"strings"
-	stdsync "sync"
-	"sync/atomic"
-	"time"
 )
 
 type App struct {
@@ -486,6 +486,11 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 		// Normalize enc:v1: fields at the sync boundary using the credential
 		// store (set by initCredentials above).
 		syncSvc.SetPasswordStore(a.credentialStore)
+		// Config-exchange registry: the sync layer holds only SyncableStore
+		// interface values (sync → store would cycle through credentials),
+		// so the concrete stores are assembled here — the only place that
+		// imports both packages.
+		syncSvc.SetStores(a.syncableStores())
 		// Auto-sync on startup if enabled
 		if syncSvc.IsAutoSyncEnabled() {
 			go func() {
@@ -541,6 +546,13 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 // normal path.
 func (a *App) initCredentials(dataDir string, upgrade bool) {
 	cred := credentials.New(dataDir, sync.NewKeychain())
+	// The reset/setup ciphertext guards scan the data dir; the declaring
+	// manifest lives in the store package.
+	secretFiles := make([]string, 0, len(store.SecretFiles))
+	for _, sf := range store.SecretFiles {
+		secretFiles = append(secretFiles, sf.File)
+	}
+	cred.SetSecretFiles(secretFiles)
 
 	if upgrade {
 		// Only this once (the upgrade migration) is worth logging; ordinary
@@ -1374,8 +1386,11 @@ func (a *App) SaveProxies(data RedactedProxyStoreData) error {
 	return a.proxyStore.Save(a.restoreRedactedProxySecrets(data))
 }
 
-// ExportConnections writes the full store to destPath as a .utm file. When
-// password is non-empty, password fields are encrypted; otherwise cleared.
+// ExportConnections writes the full store to destPath as a .utm file. Every
+// identity-referencing connection is materialized first — the identity store
+// itself is not exported, so the credentials travel inside the connections
+// and the file never depends on this machine's identity store — and all
+// manifest-declared secret fields are encrypted with password.
 func (a *App) ExportConnections(destPath, password string) error {
 	if err := requireFileGrant(destPath); err != nil {
 		return err
@@ -1384,6 +1399,14 @@ func (a *App) ExportConnections(destPath, password string) error {
 		return fmt.Errorf("connection store not initialized")
 	}
 	data, err := a.connectionStore.Load()
+	if err != nil {
+		return err
+	}
+	resolve, err := a.identityResolver()
+	if err != nil {
+		return err
+	}
+	data, err = importer.MaterializeForExport(data, resolve)
 	if err != nil {
 		return err
 	}
@@ -1862,8 +1885,44 @@ func (a *App) ClearBackgroundImage() error {
 	return nil
 }
 
-// reloadStoresAfterSync reloads connections and settings from disk and emits
-// events so the frontend refreshes after a sync pull.
+// syncableStores assembles the config-exchange registry handed to the sync
+// service. It lives in app.go because this is the only package that imports
+// both backend/sync and backend/store — the concrete stores satisfy
+// sync.SyncableStore structurally, so neither package needs to import the
+// other (sync → store would cycle through credentials). A store that failed
+// to init is skipped: sync then never exchanges that blob, instead of
+// panicking on a nil receiver.
+func (a *App) syncableStores() []sync.SyncableStore {
+	stores := make([]sync.SyncableStore, 0, 8)
+	if a.connectionStore != nil {
+		stores = append(stores, a.connectionStore)
+	}
+	if a.identityStore != nil {
+		stores = append(stores, a.identityStore)
+	}
+	if a.proxyStore != nil {
+		stores = append(stores, a.proxyStore)
+	}
+	if a.aiConfigStore != nil {
+		stores = append(stores, a.aiConfigStore)
+	}
+	if a.favoriteStore != nil {
+		stores = append(stores, a.favoriteStore)
+	}
+	if a.quickCommandsStore != nil {
+		stores = append(stores, a.quickCommandsStore)
+	}
+	if a.tunnelStore != nil {
+		stores = append(stores, a.tunnelStore)
+	}
+	if a.settingsStore != nil {
+		stores = append(stores, a.settingsStore)
+	}
+	return stores
+}
+
+// reloadStoresAfterSync reloads every store a sync pull may have rewritten
+// and emits events so the frontend refreshes without a restart.
 func (a *App) reloadStoresAfterSync() {
 	if a.connectionStore != nil {
 		if data, err := a.connectionStore.Load(); err == nil {
@@ -1893,6 +1952,16 @@ func (a *App) reloadStoresAfterSync() {
 	if a.proxyStore != nil {
 		if data, err := a.proxyStore.Load(); err == nil {
 			a.emit("store:proxies:changed", redactProxies(data))
+		}
+	}
+	if a.favoriteStore != nil {
+		if data, err := a.favoriteStore.Load(); err == nil {
+			a.emit("store:favorites:changed", data)
+		}
+	}
+	if a.tunnelStore != nil {
+		if data, err := a.tunnelStore.Load(); err == nil {
+			a.emit("store:tunnels:changed", data)
 		}
 	}
 }
@@ -2576,6 +2645,13 @@ func (a *App) RelaunchApp() {
 	a.app.Quit()
 }
 
+// QuitApp exits the application. The unlock dialog offers it so a user who
+// wants neither to unlock nor to clear credentials is never forced into
+// either choice.
+func (a *App) QuitApp() {
+	a.app.Quit()
+}
+
 func (a *App) CheckForUpdate(source string) (*update.UpdateInfo, error) {
 	info, err := update.Check(Version, source)
 	if err != nil {
@@ -2723,6 +2799,7 @@ type CredentialStatus struct {
 	Unlocked        bool   `json:"unlocked"`
 	NeedsSetup      bool   `json:"needsSetup"`
 	KeychainLost    bool   `json:"keychainLost"`
+	DecryptFailed   bool   `json:"decryptFailed"`
 	ExistingSecrets int    `json:"existingSecrets"`
 }
 
@@ -2824,10 +2901,12 @@ func (a *App) GetCredentialStatus() (CredentialStatus, error) {
 	}
 	st := a.credentialStore.Status()
 	return CredentialStatus{
-		Mode:         st.Mode,
-		Unlocked:     st.Unlocked,
-		NeedsSetup:   st.NeedsSetup,
-		KeychainLost: st.KeychainLost,
+		Mode:            st.Mode,
+		Unlocked:        st.Unlocked,
+		NeedsSetup:      st.NeedsSetup,
+		KeychainLost:    st.KeychainLost,
+		DecryptFailed:   st.DecryptFailed,
+		ExistingSecrets: st.ExistingSecrets,
 	}, nil
 }
 
@@ -2941,13 +3020,24 @@ func (a *App) ResetCredentials() error {
 }
 
 // reencryptAll decrypts all secret fields under oldKey and re-encrypts them
-// under newKey by loading (decrypt) then saving (encrypt) every store that
-// holds ciphertext — connections, settings, identities, proxies, ai.json and
-// tunnels.json. Files already saved under newKey are rolled back under
-// oldKey when a later save fails, so the vault never mixes two keys.
+// under newKey by loading (decrypt) then force-saving (encrypt) every store
+// with wired secrets. The force flag bypasses the F-105 hash-skip: a rekey
+// saves unchanged plaintext under a new key, which the skip would otherwise
+// swallow — meta/keychain would then point at the new key while every file
+// stays under the old one (an unrecoverable lockout).
+//
+// All loads run before any write, so a load failure leaves the files
+// untouched. Saves all run to completion before errors are checked; on any
+// failure the key goes back to oldKey and every store is force-saved again,
+// which re-encrypts it under the old key — all files end up under a single
+// consistent key, exactly as before the rekey.
+//
+// Every manifest secret file (connections, settings, identities, proxies,
+// ai.json and tunnels.json) has a wired store below; the nil guard fails
+// loudly when one is missing, so a rekey can never leave a file stranded
+// under oldKey (the ai.json gap that once stayed under the old key).
 func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
-	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil ||
-		a.proxyStore == nil || a.aiConfigStore == nil || a.tunnelStore == nil {
+	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil || a.proxyStore == nil || a.aiConfigStore == nil || a.tunnelStore == nil {
 		return errors.New("stores not initialized")
 	}
 	conns, err := a.connectionStore.Load()
@@ -2966,172 +3056,54 @@ func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
 	if err != nil {
 		return err
 	}
-	// ai.json and tunnels.json encrypt with the same credential key; skipping
-	// them would strand their ciphertext under oldKey forever (Load() fails
-	// with a decrypt error, including tunnel auto-start).
-	aiCfg, err := a.aiConfigStore.Load()
+	ai, err := a.aiConfigStore.Load()
 	if err != nil {
 		return err
 	}
+	// tunnels.json encrypts with the same credential key; skipping it would
+	// strand its ciphertext under oldKey forever (Load fails with a decrypt
+	// error, including tunnel auto-start).
 	tunnels, err := a.tunnelStore.Load()
 	if err != nil {
 		return err
 	}
-
-	saves := []struct {
-		name string
-		save func() error
-	}{
-		{"connections.json", func() error { return a.connectionStore.Save(conns) }},
-		{"settings.json", func() error { return a.settingsStore.Save(settings) }},
-		{"identities.json", func() error { return a.identityStore.Save(idents) }},
-		{"proxies.json", func() error { return a.proxyStore.Save(proxies) }},
-		{"ai.json", func() error { return a.aiConfigStore.Save(aiCfg) }},
-		{"tunnels.json", func() error { return a.tunnelStore.Save(tunnels) }},
+	saves := []func() error{
+		func() error { return a.connectionStore.ForceSave(conns) },
+		func() error { return a.settingsStore.ForceSave(settings) },
+		func() error { return a.identityStore.ForceSave(idents) },
+		func() error { return a.proxyStore.ForceSave(proxies) },
+		func() error { return a.aiConfigStore.ForceSave(ai) },
+		func() error { return a.tunnelStore.ForceSave(tunnels) },
 	}
-
-	// Swap key, re-encrypt on save.
 	cs.SetKey(newKey)
-	for i := range saves {
-		if err := saves[i].save(); err != nil {
-			// Revert every store (including the one that failed, in case it
-			// half-wrote) under oldKey so all files stay on a single key.
-			cs.SetKey(oldKey)
-			for j := range i + 1 {
-				_ = saves[j].save()
-			}
-			return fmt.Errorf("re-encrypt %s: %w", saves[i].name, err)
+	var saveErrs []error
+	for _, save := range saves {
+		if err := save(); err != nil {
+			saveErrs = append(saveErrs, err)
 		}
 	}
-	return nil
+	if len(saveErrs) == 0 {
+		return nil
+	}
+	// Roll everything back under oldKey. The failed store's file is still
+	// under the old key, so re-saving it is a no-op rewrite of the same
+	// ciphertext; the rest are switched back.
+	cs.SetKey(oldKey)
+	for _, save := range saves {
+		_ = save()
+	}
+	return errors.Join(saveErrs...)
 }
 
-// clearEncryptedFields rewrites every file the stores can encrypt with empty
-// secret fields WITHOUT decrypting. It must work while the credential store is
-// locked (keychain-lost / reset), when Load()/Save() would fail because they
-// require the master key to decrypt the very fields we are clearing.
-// The file list is credentials.SecretFiles() — the same list
-// storeHasSecrets() guards Setup with — so a reset can never leave a file
-// behind that keeps blocking Setup.
+// clearEncryptedFields blanks every manifest-declared secret field WITHOUT
+// decrypting. It must work while the credential store is gone (reset), when
+// Load()/Save() would fail because they require the master key to decrypt the
+// very fields being cleared. The field list is the store's secret-field
+// manifest — the same one encryption and the setup guard derive from; the
+// hand-written list this used to be missed key content and ai.json, leaving
+// ciphertext behind that wedged the next Setup.
 func (a *App) clearEncryptedFields() {
-	for _, name := range credentials.SecretFiles() {
-		clearSecretsInFile(filepath.Join(a.dataDir, name), strings.TrimSuffix(name, ".json"))
-	}
-}
-
-// clearSecretsInFile blanks the secret fields in a raw JSON config file,
-// preserving every other field. Known plaintext-secret fields are cleared by
-// name (they may predate in-place encryption), then every remaining enc:v1:
-// value anywhere in the document is blanked so no field type can be missed.
-// Missing/corrupt files are left untouched.
-func clearSecretsInFile(path, kind string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return
-	}
-	blankInList(obj, kind, "connections", "password", "keyContent", "sentinelPassword", "tunnelSSHPassword", "k8sConfigInline")
-	blankInList(obj, kind, "identities", "password", "keyContent")
-	blankInList(obj, kind, "proxies", "pass")
-	blankNestedList(obj, kind, "tunnels", "upstream", "pass")
-	blankModelsAPIKey(obj, "ai")
-	blankModelsAPIKey(obj, "settings")
-	scrubEncryptedValues(obj)
-	out, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, out, 0600)
-}
-
-// blankInList sets each named field to "" on every element of obj[key] when
-// this file kind matches.
-func blankInList(obj map[string]interface{}, kind, listKey string, fields ...string) {
-	if kind != listKey {
-		return
-	}
-	items, ok := obj[listKey].([]interface{})
-	if !ok {
-		return
-	}
-	for _, item := range items {
-		el, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		for _, field := range fields {
-			el[field] = ""
-		}
-	}
-}
-
-// blankNestedList clears a field on a sub-object of each list element
-// (tunnels[].upstream.pass).
-func blankNestedList(obj map[string]interface{}, kind, listKey, subKey, field string) {
-	if kind != listKey {
-		return
-	}
-	items, ok := obj[listKey].([]interface{})
-	if !ok {
-		return
-	}
-	for _, item := range items {
-		el, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if sub, ok := el[subKey].(map[string]interface{}); ok {
-			sub[field] = ""
-		}
-	}
-}
-
-// blankModelsAPIKey clears model API keys under either settings (ai.models)
-// or ai.json (models).
-func blankModelsAPIKey(obj map[string]interface{}, kind string) {
-	var models []interface{}
-	switch kind {
-	case "settings":
-		if ai, ok := obj["ai"].(map[string]interface{}); ok {
-			models, _ = ai["models"].([]interface{})
-		}
-	case "ai":
-		models, _ = obj["models"].([]interface{})
-	default:
-		return
-	}
-	for _, m := range models {
-		if mm, ok := m.(map[string]interface{}); ok {
-			mm["apiKey"] = ""
-		}
-	}
-}
-
-// scrubEncryptedValues blanks every enc:v1: string value in the document,
-// wherever it appears — the catch-all that keeps Reset complete when a store
-// grows a new encrypted field.
-func scrubEncryptedValues(v interface{}) {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		for key, val := range t {
-			if s, ok := val.(string); ok && credentials.IsEncrypted(s) {
-				t[key] = ""
-				continue
-			}
-			scrubEncryptedValues(val)
-		}
-	case []interface{}:
-		for i, val := range t {
-			if s, ok := val.(string); ok && credentials.IsEncrypted(s) {
-				t[i] = ""
-				continue
-			}
-			scrubEncryptedValues(val)
-		}
-	}
+	store.ClearAllSecretFields(a.dataDir)
 }
 
 func (a *App) dataDirType() string {

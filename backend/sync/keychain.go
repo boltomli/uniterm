@@ -21,6 +21,14 @@ type Keychain struct{}
 
 func NewKeychain() *Keychain { return &Keychain{} }
 
+// List returns the entry names stored under the app's keychain service.
+// Used by credential recovery to find keys written under another data-dir
+// hash (copied/moved data directory). Platforms without enumeration return
+// an error — recovery is simply skipped there.
+func (k *Keychain) List() ([]string, error) {
+	return keychainList(keychainService)
+}
+
 func (k *Keychain) Get(key string) (string, error) {
 	return keychainGet(keychainService, key)
 }

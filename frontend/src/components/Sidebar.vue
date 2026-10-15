@@ -39,6 +39,7 @@
         <!-- New-connection menu — Menu.vue, teleported + anchored right-edge (align=end). -->
         <Menu ref="newConnMenuRef" align="end" v-model:visible="showNewConnMenu">
           <MenuItem @click="onNewConnSelect('new-connection')">{{ t('header.newConnection') }}</MenuItem>
+          <MenuItem @click="onNewConnSelect('new-workspace')">{{ t('workspace.newWorkspace') }}</MenuItem>
           <MenuItem @click="onNewConnSelect('new-group')">{{ t('conn.newGroupTitle') }}</MenuItem>
           <MenuDivider />
           <MenuItem @click="onNewConnSelect('import')">{{ t('importExport.import') }}</MenuItem>
@@ -412,6 +413,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useFavoriteStore } from '../stores/favoriteStore'
 import type { GroupTreeNode } from '../stores/connectionStore'
 import { usePanelStore } from '../stores/panelStore'
+import { useTabStore } from '../stores/tabStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
 import ConnectionForm from './ConnectionForm.vue'
@@ -433,6 +435,8 @@ import { parseQuickConnect, formatConnSubtitle, matchTypeFilter } from '../utils
 import ConnectionContextMenu from './ConnectionContextMenu.vue'
 import { connectionTypeIcon } from '../utils/connectionTypes'
 import { isWorkspaceHostType } from '../composables/createWorkspace'
+import { createEmptyWorkspaceRecord } from '../composables/savedWorkspace'
+import { openWorkspaceNameDialog } from '../composables/workspaceNameDialog'
 import GroupContextMenu from './GroupContextMenu.vue'
 import TypeFilterMenu from './TypeFilterMenu.vue'
 import RenameGroupDialog from './RenameGroupDialog.vue'
@@ -457,6 +461,7 @@ const settingsStore = useSettingsStore()
 // the same connection menu stays reachable via right-click (issue #934).
 const showHostRowButtons = computed(() => settingsStore.settings.hostListMenuStyle !== 'rightclick')
 const panelStore = usePanelStore()
+const tabStore = useTabStore()
 const companionStore = useCompanionStore()
 const { t } = useI18n()
 const isMacPlatform = /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -468,12 +473,16 @@ const quickCommandsTitle = computed(() => {
   const shortcut = binding ? formatKeyBinding(binding, isMacPlatform) : ''
   return shortcut ? `${label} (${shortcut})` : label
 })
-// Connection ids that currently have an open panel/session (panel.config.id).
-// Reactive over the panelStore map, so it updates as panels open/close.
+// Connection ids that currently have an open panel/session (panel.config.id),
+// plus saved-workspace records whose live workspace tab is open. Reactive
+// over the panel/tab stores, so it updates as panels and tabs open/close.
 const openPanelConnIds = computed<Set<string>>(() => {
   const s = new Set<string>()
   for (const p of panelStore.panels.values()) {
     if (p.config?.id) s.add(p.config.id)
+  }
+  for (const tb of tabStore.tabs) {
+    if (tb.type === 'workspace' && tb.savedWorkspaceId) s.add(tb.savedWorkspaceId)
   }
   return s
 })
@@ -1563,6 +1572,12 @@ function onNewConnCommand(cmd: string) {
   } else if (cmd === 'new-group') {
     newGroupParentId.value = undefined
     showNewGroupDialog.value = true
+  } else if (cmd === 'new-workspace') {
+    // Empty saved-workspace record via the shared name + group dialog.
+    openWorkspaceNameDialog({ title: t('workspace.newWorkspace') }).then(async result => {
+      if (!result) return
+      await createEmptyWorkspaceRecord(result.name, result.groupId)
+    })
   } else if (cmd === 'import') {
     showImportDialog.value = true
   } else if (cmd === 'export') {

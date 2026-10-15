@@ -34,6 +34,7 @@ var dbeaverConnType = map[string]connTarget{
 	"mssql":         {Type: "database", DBType: "sqlserver", Port: 1433},
 	"sqlserver":     {Type: "database", DBType: "sqlserver", Port: 1433},
 	"oracle":        {Type: "database", DBType: "oracle", Port: 1521},
+	"sqlite":        {Type: "database", DBType: "sqlite"},
 	"redis":         {Type: "redis", Port: 6379},
 	"mongodb":       {Type: "mongodb", Port: 27017},
 	"elasticsearch": {Type: "elasticsearch", Port: 9200},
@@ -111,6 +112,11 @@ func parseDBeaver(srcPath string, opts ParseOptions) (*ImportResult, error) {
 			AuthType: "password",
 		}
 		conn.Port = dbeaverPortOf(src.Configuration.Port, tgt.Port)
+		if tgt.DBType == "sqlite" && conn.Host == "" && src.Configuration.Database != "" {
+			// SQLite has no host; DBeaver stores the file path as the database.
+			conn.Host = src.Configuration.Database
+			conn.DBName = ""
+		}
 		if creds != nil {
 			if c, ok := creds[id]; ok {
 				if conn.User == "" {

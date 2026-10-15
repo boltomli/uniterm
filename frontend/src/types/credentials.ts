@@ -9,5 +9,6 @@ export interface CredentialStatus {
   unlocked: boolean
   needsSetup: boolean
   keychainLost: boolean
+  decryptFailed: boolean
   existingSecrets: number
 }

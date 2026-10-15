@@ -1,8 +1,6 @@
 package store
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"sync"
 )
@@ -14,8 +12,9 @@ const favoriteFileName = "favorites.json"
 type FavoriteStore struct {
 	filePath string
 
-	mu  sync.Mutex
-	ids []string
+	mu            sync.Mutex
+	ids           []string
+	lastSavedHash string // F-105 skip state (pre-encryption content hash)
 }
 
 func NewFavoriteStore(configDir string) *FavoriteStore {
@@ -25,29 +24,22 @@ func NewFavoriteStore(configDir string) *FavoriteStore {
 	}
 }
 
-// Load reads favorites.json into memory and returns a copy. A missing or
-// corrupted file resets to an empty list (same tolerate-missing policy as
-// RecentStore).
+// Load reads favorites.json into memory and returns a copy. A missing file
+// resets to an empty list; a corrupt one is quarantined (filestore.go
+// envelope) and also resets.
 func (s *FavoriteStore) Load() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.ids = make([]string, 0)
-			return make([]string, 0), nil
-		}
-		return nil, err
-	}
-
-	var ids []string
-	if err := json.Unmarshal(data, &ids); err != nil {
-		// Corrupted file — reset
+	ids, _, hash, existed, err := loadEncryptedFile[[]string](favoriteFileName, s.filePath, nil)
+	if !existed || err != nil {
 		s.ids = make([]string, 0)
 		return make([]string, 0), nil
 	}
 	s.ids = ids
+	// Seed the skip-state with the just-read content so an unchanged first
+	// Save after startup doesn't rewrite the file.
+	s.lastSavedHash = hash
 	result := make([]string, len(s.ids))
 	copy(result, s.ids)
 	return result, nil
@@ -75,11 +67,10 @@ func (s *FavoriteStore) Save(ids []string) error {
 	copy(current, s.ids)
 	s.mu.Unlock()
 
-	data, err := json.Marshal(current)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(s.filePath, data, 0644)
+	// Shared Save envelope (filestore.go): hash-skip, encrypt, atomic write.
+	h, err := saveEncryptedFile(favoriteFileName, s.filePath, &current, nil, s.lastSavedHash)
+	s.lastSavedHash = h
+	return err
 }
 
 func (s *FavoriteStore) GetAll() []string {
@@ -89,4 +80,17 @@ func (s *FavoriteStore) GetAll() []string {
 	result := make([]string, len(s.ids))
 	copy(result, s.ids)
 	return result
+}
+
+// BlobName, ExportPlain and ImportPlain implement the sync exchange contract
+// (SyncableStore, declared in backend/sync/backend.go).
+
+func (s *FavoriteStore) BlobName() string { return favoriteFileName }
+
+func (s *FavoriteStore) ExportPlain() ([]byte, error) {
+	return exportPlainStore(favoriteFileName, s.filePath, s.Load)
+}
+
+func (s *FavoriteStore) ImportPlain(raw []byte) error {
+	return importPlainStore(raw, s.Save)
 }

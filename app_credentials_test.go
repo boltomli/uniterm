@@ -26,6 +26,13 @@ func (k *credTestKeychain) Get(key string) (string, error) {
 }
 func (k *credTestKeychain) Set(key, value string) error { k.entries[key] = value; return nil }
 func (k *credTestKeychain) Delete(key string) error     { delete(k.entries, key); return nil }
+func (k *credTestKeychain) List() ([]string, error) {
+	keys := make([]string, 0, len(k.entries))
+	for name := range k.entries {
+		keys = append(keys, name)
+	}
+	return keys, nil
+}
 
 // newCredentialTestApp wires every store the credential lifecycle touches to
 // one credentials.Store holding keyA.

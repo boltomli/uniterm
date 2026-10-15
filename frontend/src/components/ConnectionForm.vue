@@ -65,13 +65,19 @@
                 <el-input v-model="form.redisMasterName" placeholder="mymaster" />
               </el-form-item>
             </template>
-            <el-form-item :label="form.type === 's3' ? 'Endpoint' : form.type === 'webdav' ? 'URL' : t('conn.host')" required v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'k8s' && form.type !== 'container' && !isRedisSentinel">
+            <el-form-item :label="form.type === 's3' ? 'Endpoint' : form.type === 'webdav' ? 'URL' : t('conn.host')" required v-if="!isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'k8s' && form.type !== 'container' && !isRedisSentinel">
               <div class="host-port-row">
                 <el-input ref="hostInputRef" v-model="form.host" class="host-input" :placeholder="form.type === 's3' ? 'e.g. https://s3.amazonaws.com' : form.type === 'webdav' ? 'https://dav.example.com/dav/' : t('conn.hostPlaceholder')" />
                 <template v-if="form.type !== 's3' && form.type !== 'webdav'">
                   <span class="host-port-sep">:</span>
                   <el-input-number v-model="form.port" :min="0" :max="65535" class="port-input" />
                 </template>
+              </div>
+            </el-form-item>
+            <el-form-item v-if="isSqliteDb" :label="t('db.sqlitePath')" required>
+              <div class="host-port-row">
+                <el-input v-model="form.host" style="flex: 1; min-width: 0" :placeholder="t('db.sqlitePathPlaceholder')" />
+                <el-button @click="selectSqliteFile">{{ t('db.sqliteBrowse') }}</el-button>
               </div>
             </el-form-item>
             <el-form-item v-if="form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop' || isElasticsearch" :label="t('conn.authType')">
@@ -98,7 +104,7 @@
                 </el-button>
               </div>
             </el-form-item>
-            <el-form-item v-if="(form.authType !== 'identity' || isSSHAlgoType) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
+            <el-form-item v-if="(form.authType !== 'identity' || isSSHAlgoType) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
               <el-input v-model="form.user" :placeholder="form.authType === 'identity' ? t('conn.identityUserOverrideHint') : (form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder'))" />
             </el-form-item>
             <el-form-item v-if="form.type === 'rdp' && isWindows && form.authType !== 'identity'" :label="t('conn.rdpDomain')">
@@ -112,7 +118,7 @@
                 </el-select>
               </el-form-item>
             </template>
-            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite')" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
+            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : savedSecretPlaceholder)" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
@@ -191,7 +197,7 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
-            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
+            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
               <el-input v-model="form.dbName" :placeholder="t('db.databases')" />
             </el-form-item>
             <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.shell')">
@@ -724,7 +730,7 @@ import { useIdentityStore } from '../stores/identityStore'
 import { useProxyStore } from '../stores/proxyStore'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig, PostLoginExpectStep, SSHAlgoConfig } from '../types/session'
-import { OpenFileDialog, OpenPrivateKeyFile, OpenKubeconfigFile, GetPlatform, ListSerialPorts, TestConnection, GetDefaultSSHKeyPaths } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { OpenFileDialog, OpenFileDialogFiltered, OpenPrivateKeyFile, OpenKubeconfigFile, GetPlatform, ListSerialPorts, TestConnection, GetDefaultSSHKeyPaths } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
 import { Plus, Trash2, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, CircleCheck, CircleX, KeyRound } from '@lucide/vue'
@@ -1020,9 +1026,15 @@ const sshConnections = computed(() =>
     .sort((a, b) => a.name.localeCompare(b.name))
 )
 
+const isSqliteDb = computed(() =>
+  form.type === 'database' && form.dbType === 'sqlite'
+)
+
 const TUNNEL_UNSUPPORTED = ['spice', 'mosh', 'local', 'wsl', 'serial', 'container']
+// SQLite is an embedded file database — an SSH tunnel forwards TCP streams,
+// which cannot reach it.
 const showTunnel = computed(() =>
-  !TUNNEL_UNSUPPORTED.includes(form.type)
+  !TUNNEL_UNSUPPORTED.includes(form.type) && !isSqliteDb.value
 )
 const showProxy = computed(() => ['ssh', 'sftp', 'scp', 'monitor'].includes(form.type))
 const showAdvancedToggle = computed(() =>
@@ -1057,6 +1069,7 @@ const defaultParamsHint = computed(() => {
     case 'mysql': return '默认: charset=utf8mb4'
     case 'postgres': return '默认: sslmode=disable'
     case 'sqlserver': return '默认: encrypt=disable'
+    case 'sqlite': return '例如: journal_mode=WAL'
     default: return ''
   }
 })
@@ -1429,6 +1442,11 @@ watch(() => form.dbType, (newType) => {
   if (isEdit.value) return
   const port = defaultPortFor('database', newType)
   if (port !== undefined) form.port = port
+  // SQLite is file-backed and carries no port or tunnel.
+  if (newType === 'sqlite') {
+    form.port = 0
+    form.tunnelSSHConnId = undefined
+  }
 })
 
 // Clear the identity reference when switching away from the identity auth
@@ -1590,6 +1608,17 @@ async function selectKeyFile() {
   }
 }
 
+// Pick the local SQLite database file for a sqlite connection; the path is
+// stored in the Host field.
+async function selectSqliteFile() {
+  try {
+    const selected = await OpenFileDialogFiltered(t('db.sqlitePickTitle'), 'SQLite Database', '*.sqlite;*.sqlite3;*.db;*.db3')
+    if (selected) form.host = selected
+  } catch (e) {
+    console.error('select sqlite file:', e)
+  }
+}
+
 // Fill the key path with a local default private key (~/.ssh/id_ed25519,
 // ~/.ssh/id_rsa, etc.). The backend resolves the home directory and returns
 // only the standard keys that exist, in preference order. Repeated clicks
@@ -1735,8 +1764,11 @@ function normalizeForm(): ConnectionConfig {
   if (redisSentinel) {
     if (!normalized.redisSentinels?.trim()) throw new Error(t('conn.redisSentinelsRequired'))
     if (!normalized.redisMasterName?.trim()) throw new Error(t('conn.redisMasterNameRequired'))
-  } else if (normalized.type !== 'local' && normalized.type !== 'wsl' && normalized.type !== 'serial' && normalized.type !== 'k8s' && normalized.type !== 'container' && !normalized.host.trim()) {
+  } else if (normalized.type !== 'local' && normalized.type !== 'wsl' && normalized.type !== 'serial' && normalized.type !== 'k8s' && normalized.type !== 'container' && !isSqliteDb.value && !normalized.host.trim()) {
     throw new Error(t('conn.hostRequired'))
+  }
+  if (isSqliteDb.value && !normalized.host.trim()) {
+    throw new Error(t('db.sqlitePathRequired'))
   }
   if (normalized.type === 's3') {
     if (!normalized.user?.trim()) throw new Error('S3: Access Key is required')

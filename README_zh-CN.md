@@ -44,7 +44,7 @@
 - **本地 & 串口终端** — PowerShell / CMD / Git Bash / WSL，以及串口连接（波特率等参数、本地回显）
 - **文件传输** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem，双栏浏览、鼠标拖拽上传下载，SSH 内 `rz`/`sz`
 - **远程桌面** — RDP（Windows 远程桌面）、VNC（Linux 远程控制）、SPICE（KVM/QEMU 虚拟机）、X11（X Window 图形界面转发）
-- **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch，支持 AI 自然语言生成查询与数据行编辑
+- **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch，支持 AI 自然语言生成查询与数据行编辑
 - **Kubernetes & 容器** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC，集群资源与容器镜像管理、Pod 日志与 exec 终端、CPU/内存指标
 - **服务器监控** — CPU/内存/磁盘/网络、进程、端口、网卡实时监控
 
@@ -67,7 +67,7 @@
 - **工作区** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
 - **云端同步** — 支持私有 Git 仓库/WebDAV 双模式云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
 - **自定义快捷键** — 自由绑定各项操作的键盘快捷键，实现全键盘操作，双手不离键盘。
-- **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄等 9 种语言界面。
+- **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄、葡、越等 11 种语言界面。
 
 ## 支持的协议
 
@@ -95,6 +95,7 @@
 | 数据库 | PostgreSQL | 兼容 PostgreSQL 协议：PostgreSQL、CockroachDB 等 |
 | 数据库 | Oracle Database | 通过纯 Go 驱动连接 Oracle Database |
 | 数据库 | SQL Server | 通过纯 Go 驱动连接 SQL Server |
+| 数据库 | SQLite（1.10.1-alpha） | 本地嵌入式数据库，直接打开数据库文件 |
 | 数据库 | rqlite | 基于 SQLite、Raft 共识的轻量分布式数据库 |
 | 数据库 | Redis | 内存键值数据库，可视化键值浏览与编辑 |
 | 数据库 | MongoDB | 文档数据库，树形浏览、查询编辑与行内编辑 |
@@ -300,6 +301,7 @@ uniTerm/
 - [@IBRAHIMELAMRABET](https://github.com/IBRAHIMELAMRABET)
 - [@chris-edstrom](https://github.com/chris-edstrom)
 - [@andreafunicelli](https://github.com/andreafunicelli)
+- [@dungvv](https://github.com/dungvv)
 
 ## 开源协议
 

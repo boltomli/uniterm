@@ -39,6 +39,15 @@ describe('pasteWithScroll', () => {
     expect(t.write).toHaveBeenCalledWith('\x1b[200~a\nb\x1b[201~')
   })
 
+  // When the target has no bracketed-paste protocol the payload must mimic
+  // keyboard input: ConPTY only maps \r to the Enter key, so pasted newlines
+  // must become \r or cmd/PowerShell merge every line into one (issue 1125).
+  it('sends \r for newlines when bracketed-paste mode is off', () => {
+    const t = mkTarget({ bracketedPasteMode: false })
+    pasteWithScroll(t, 'a\r\nb\nc')
+    expect(t.write).toHaveBeenCalledWith('a\rb\rc')
+  })
+
   // The regression under test (issue 629): pasting while scrolled up must
   // yank the viewport back to the bottom, mirroring how Enter/arrow keys
   // auto-scroll via xterm's scrollOnUserInput.

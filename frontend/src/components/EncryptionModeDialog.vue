@@ -37,6 +37,7 @@
     </el-form>
     <div v-if="errorMsg" class="form-error">{{ errorMsg }}</div>
     <template #footer>
+      <el-button @click="onQuit">{{ t('unlock.quit') }}</el-button>
       <el-button type="primary" :loading="submitting" @click="onConfirm">{{ t('common.confirm') }}</el-button>
     </template>
   </el-dialog>
@@ -45,6 +46,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from '../i18n'
+import { QuitApp } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useCredentialStore } from '../stores/credentialStore'
 import { isMobilePlatform } from '../utils/platform'
 
@@ -107,6 +109,14 @@ async function onConfirm() {
   }
 }
 function onCancel() { emit('update:visible', false) }
+async function onQuit() {
+  submitting.value = true
+  try {
+    await QuitApp()
+  } finally {
+    submitting.value = false
+  }
+}
 </script>
 
 <style scoped>

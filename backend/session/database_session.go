@@ -3,6 +3,7 @@ package session
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/database"
@@ -36,6 +37,9 @@ func (s *DatabaseSession) Connect(config ConnectionConfig) error {
 
 	if config.Name != "" {
 		s.title = config.Name
+	} else if config.DBType == "sqlite" {
+		// File-backed: title the session after the database file.
+		s.title = filepath.Base(config.Host)
 	} else {
 		s.title = fmt.Sprintf("%s:%s@%s:%d", config.DBType, config.User, config.Host, config.Port)
 	}

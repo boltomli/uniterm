@@ -1,5 +1,15 @@
 <template>
-  <div ref="startTabRef" class="start-tab">
+  <div ref="startTabRef" class="start-tab" :class="{ 'start-all-hidden': allSectionsHidden }">
+    <!-- Start-page layout settings: low-key corner gear -->
+    <button
+      v-if="tab.viewMode === 'home'"
+      class="start-corner-btn"
+      :title="t('startTab.layoutSettings')"
+      @click.stop="layoutMenuRef?.toggle($event.currentTarget as HTMLElement)"
+    >
+      <el-icon><Settings :size="lucideSize('0.875rem')" /></el-icon>
+    </button>
+
     <div class="start-content" :style="contentStyle">
       <!-- Branding -->
       <div class="start-brand" v-show="!searchQuery.trim()">uniTerm</div>
@@ -68,9 +78,11 @@
       </span>
     </div>
 
-    <!-- Home view sections -->
+    <!-- Home view sections, rendered in the user-configured order -->
     <template v-if="tab.viewMode === 'home'">
+      <template v-for="section in homeSectionOrder" :key="section">
       <!-- Favorites -->
+      <template v-if="section === 'favorites'">
       <template v-if="favoriteConfigs.length > 0">
         <div class="start-section-label">{{ t('startTab.favorites') }}</div>
         <div class="start-cards-grid">
@@ -99,8 +111,10 @@
           </div>
         </div>
       </template>
+      </template>
 
       <!-- Recent connections -->
+      <template v-else-if="section === 'recent'">
       <template v-if="recentConfigs.length > 0">
         <div class="start-section-label">{{ t('startTab.recentConnections') }}</div>
         <div class="start-cards-grid">
@@ -127,8 +141,10 @@
           </div>
         </div>
       </template>
+      </template>
 
       <!-- Groups -->
+      <template v-else-if="section === 'groups' && hasGroupContent">
       <div class="start-section-label">
         {{ t('startTab.groups') }}
         <span class="start-add-group-btn" @click="openNewGroupDialog" :title="t('conn.newGroupTitle')"><el-icon><Plus :size="lucideSize('0.75rem')" /></el-icon></span>
@@ -167,6 +183,8 @@
           </div>
         </div>
       </div>
+      </template>
+      </template>
 
       <!-- All connections - only shown when searching -->
       <template v-if="searchQuery.trim()">
@@ -308,8 +326,19 @@
     <RenameGroupDialog v-model:visible="showRenameGroupDialog" :name="groupContextTarget?.name || ''" @confirm="onRenameGroupConfirm" />
 
     <NewGroupDialog v-model:visible="showNewGroupDialog" :parent-id="newGroupParentId" @confirm="onAddGroupConfirm" />
-
     <DeleteGroupDialog v-model:visible="showDeleteGroupDialog" :group="deleteGroupTarget" @confirm="confirmDeleteGroup" />
+
+    <!-- Start-page layout menu: visibility + order of the home sections -->
+    <Menu ref="layoutMenuRef" v-model:visible="layoutMenuVisible" align="end" root-class="start-layout-menu">
+      <MenuItem v-for="(b, idx) in layoutRows" :key="b.key" iconic>
+        <span class="start-layout-label">{{ t(START_PAGE_BLOCK_LABEL_KEYS[b.key]) }}</span>
+        <span class="start-layout-controls">
+          <button class="start-layout-move" :disabled="idx === 0" @click.stop="moveBlock(b.key, -1)" :title="t('startTab.moveUp')"><ChevronUp :size="lucideSize('0.75rem')" /></button>
+          <button class="start-layout-move" :disabled="idx === layoutRows.length - 1" @click.stop="moveBlock(b.key, 1)" :title="t('startTab.moveDown')"><ChevronDown :size="lucideSize('0.75rem')" /></button>
+          <el-switch size="small" :model-value="b.visible" @change="toggleBlock(b.key, $event as boolean)" />
+        </span>
+      </MenuItem>
+    </Menu>
 
   </div>
 </template>
@@ -336,8 +365,9 @@ import { GetRecentConnections } from '../../bindings/github.com/ys-ll/uniterm/ap
 import { formatConnSubtitle, formatTypeFilterLabel, matchTypeFilter } from '../utils/quickConnect'
 import { connectionTypeIcon as connTypeIcon, connectionTypeLabel as connTypeLabel } from '../utils/connectionTypes'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
+import { START_PAGE_BLOCK_LABEL_KEYS, type StartPageBlock } from '../types/settings'
 import MenuItem from './MenuItem.vue'
-import { Filter, Plus, Laptop, Server, Folder, FolderOpen, Zap, MoreHorizontal, ChevronDown, Star, LayoutDashboard } from '@lucide/vue'
+import { Filter, Plus, Laptop, Server, Folder, FolderOpen, Zap, MoreHorizontal, ChevronDown, ChevronUp, Settings, Star, LayoutDashboard } from '@lucide/vue'
 
 const props = defineProps<{
   tab: StartTab
@@ -399,8 +429,12 @@ const lastClickId = ref<string | null>(null)
 function getAllVisibleIds(): string[] {
   const ids: string[] = []
   if (props.tab.viewMode === 'home') {
-    for (const c of favoriteConfigs.value) ids.push('fav:' + c.id)
-    for (const c of recentConfigs.value) ids.push('recent:' + c.id)
+    // Match the rendered section order so shift-click ranges span the cards
+    // the user actually sees.
+    for (const section of homeSectionOrder.value) {
+      if (section === 'favorites') for (const c of favoriteConfigs.value) ids.push('fav:' + c.id)
+      else if (section === 'recent') for (const c of recentConfigs.value) ids.push('recent:' + c.id)
+    }
   }
   for (const { config } of filteredConnections.value) ids.push('conn:' + config.id)
   return ids
@@ -456,6 +490,61 @@ const isMobile = isMobilePlatform()
 // ── Shell label helper ──
 function getShellLabel(path: string): string {
   return getShellLabelBase(path, 'Local')
+}
+
+// ── Start-page layout ──
+const startPage = computed(() => settingsStore.settings.startPage)
+
+const layoutMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const layoutMenuVisible = ref(false)
+
+// Content sections in the user-configured order. Hiding only affects idle
+// browsing: while searching, every section is shown so matches inside hidden
+// sections are still surfaced.
+const homeSectionOrder = computed<StartPageBlock[]>(() => {
+  const sp = startPage.value
+  if (searchQuery.value.trim()) return sp.order
+  return sp.order.filter(key => sp.visible[key])
+})
+
+// Rows of the layout panel: the content sections in their configured order.
+const layoutRows = computed(() =>
+  startPage.value.order.map(key => ({ key, visible: startPage.value.visible[key] }))
+)
+
+// The groups section only renders when it has something to show (it has no
+// empty-state of its own); an empty groups list would otherwise leave a
+// lone "Groups" label on the page.
+const hasGroupContent = computed(() =>
+  groupCards.value.groups.length > 0 || groupCards.value.ungroupedCount > 0
+)
+
+// True when no home section actually renders cards — every section is either
+// hidden by settings or empty (favorites/recent guard on their list length,
+// groups on hasGroupContent). Idle view only: searching always shows all
+// sections. The header block then centers vertically in the page.
+const allSectionsHidden = computed(() => {
+  if (props.tab.viewMode !== 'home') return false
+  return !homeSectionOrder.value.some(key =>
+    key === 'favorites' ? favoriteConfigs.value.length > 0
+      : key === 'recent' ? recentConfigs.value.length > 0
+        : hasGroupContent.value
+  )
+})
+
+function moveBlock(key: StartPageBlock, dir: -1 | 1) {
+  const order = [...startPage.value.order]
+  const i = order.indexOf(key)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= order.length) return
+  ;[order[i], order[j]] = [order[j], order[i]]
+  startPage.value.order = order
+  settingsStore.save()
+}
+
+function toggleBlock(key: StartPageBlock, visible: boolean) {
+  startPage.value.visible[key] = visible
+  settingsStore.save()
 }
 
 // ── Recent connections ──
@@ -711,7 +800,8 @@ function updateContentWidth() {
   const available = el.clientWidth - PADDING() * 2
   // Min 1 column: narrow phone screens can't fit two 15rem cards, so allow
   // a single centered column there (wide desktop windows still get >= 2).
-  const cols = Math.max(1, Math.min(6, Math.floor((available + g) / (w + g))))
+  // Max 4: more columns make the search block above read too wide.
+  const cols = Math.max(1, Math.min(4, Math.floor((available + g) / (w + g))))
   contentCols.value = cols
   contentWidth.value = cols * w + (cols - 1) * g
   el.style.setProperty('--start-cols', String(cols))
@@ -719,7 +809,9 @@ function updateContentWidth() {
 
 const contentStyle = computed(() => ({
   width: contentWidth.value + 'px',
-  margin: '0 auto'
+  // With every section hidden, auto margins center the header block both
+  // ways inside the flex-column .start-tab (see .start-all-hidden).
+  margin: allSectionsHidden.value ? 'auto' : '0 auto'
 }))
 
 let resizeObserver: ResizeObserver | null = null
@@ -744,10 +836,15 @@ const focusableItems = computed<FocusableItem[]>(() => {
     return items
   }
   const items: FocusableItem[] = []
-  for (const config of favoriteConfigs.value) items.push({ kind: 'favorite', config })
-  for (const config of recentConfigs.value) items.push({ kind: 'recent', config })
-  for (const group of groupCards.value.groups) items.push({ kind: 'group', groupId: group.id, name: group.name })
-  if (groupCards.value.ungroupedCount > 0) items.push({ kind: 'group', groupId: '__ungrouped__', name: t('conn.noGroup') })
+  for (const section of homeSectionOrder.value) {
+    if (section === 'favorites') {
+      for (const config of favoriteConfigs.value) items.push({ kind: 'favorite', config })
+    } else if (section === 'recent') for (const config of recentConfigs.value) items.push({ kind: 'recent', config })
+    else if (section === 'groups') {
+      for (const group of groupCards.value.groups) items.push({ kind: 'group', groupId: group.id, name: group.name })
+      if (groupCards.value.ungroupedCount > 0) items.push({ kind: 'group', groupId: '__ungrouped__', name: t('conn.noGroup') })
+    }
+  }
   for (const { config } of filteredConnections.value) items.push({ kind: 'connection', config })
   if (searchQuery.value.trim()) items.push({ kind: 'quick' })
   return items
@@ -1139,6 +1236,46 @@ function doEditConnection(config: ConnectionConfig | null) {
 .start-search-input {
   flex: 1;
 }
+
+/* Low-key corner gear for the start-page layout settings */
+.start-tab {
+  position: relative;
+}
+/* Every section hidden: flex-column + the content block's auto margins
+   center the search block vertically in the page. The brand's large idle
+   margins would push the visual center low, so they collapse here. */
+.start-tab.start-all-hidden {
+  display: flex;
+  flex-direction: column;
+}
+.start-tab.start-all-hidden .start-brand {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+}
+/* Nudge the centered block slightly above true center (optical centering). */
+.start-tab.start-all-hidden .start-content {
+  transform: translateY(-1.5rem);
+}
+.start-corner-btn {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text-disabled);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  z-index: 3;
+}
+.start-corner-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
 </style>
 
 <style>
@@ -1158,6 +1295,49 @@ function doEditConnection(config: ConnectionConfig | null) {
 }
 .start-search-input .el-input__inner::placeholder {
   color: var(--text-disabled) !important;
+}
+
+/* Start-page layout menu (teleported to <body> by Menu, so these rules live
+   in the unscoped block). Rows are MenuItem.iconic flex lines: label left,
+   move buttons + switch pushed to the right edge. */
+.start-layout-menu {
+  min-width: 13.5rem;
+}
+/* Compact rows: the standard .menu-item padding is tuned for text-only
+   rows and reads tall next to the small move buttons + switch. */
+.start-layout-menu .menu-item {
+  padding-top: 0.1875rem;
+  padding-bottom: 0.1875rem;
+}
+.start-layout-label {
+  flex-shrink: 0;
+}
+.start-layout-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  margin-left: auto;
+  padding-left: 0.75rem;
+}
+.start-layout-move {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+.start-layout-move:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.start-layout-move:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .start-action-btns {

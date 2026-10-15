@@ -108,7 +108,7 @@ func TestParseDBeaver(t *testing.T) {
 				},
 			},
 			"sqlite-x": map[string]any{
-				"name":         "Unsupported",
+				"name":         "Local File",
 				"provider":     "sqlite",
 				"configuration": map[string]any{"host": "", "database": "/tmp/x.db"},
 			},
@@ -142,8 +142,8 @@ func TestParseDBeaver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(res.Connections) != 2 {
-		t.Fatalf("expected 2 connections, got %d", len(res.Connections))
+	if len(res.Connections) != 3 {
+		t.Fatalf("expected 3 connections, got %d", len(res.Connections))
 	}
 	byName := map[string]int{}
 	for i, c := range res.Connections {
@@ -160,6 +160,10 @@ func TestParseDBeaver(t *testing.T) {
 	pg := res.Connections[byName["PG Dev"]]
 	if pg.DBType != "postgres" || pg.Port != 5433 || pg.User != "pguser" || pg.Password != "secret-pg" {
 		t.Fatalf("pg-dev mapping wrong: %+v", pg)
+	}
+	sq := res.Connections[byName["Local File"]]
+	if sq.Type != "database" || sq.DBType != "sqlite" || sq.Host != "/tmp/x.db" || sq.DBName != "" {
+		t.Fatalf("sqlite mapping wrong: %+v", sq)
 	}
 }
 
@@ -204,7 +208,8 @@ func TestParseNavicat(t *testing.T) {
 	ncx := `<Root>
 <Connection ConnectionName="Local MySQL" ConnType="MYSQL" Host="127.0.0.1" Port="3306" Database="shop" UserName="root" Password="` + dbeaverEncryptV12(t, "root-pw") + `"/>
 <Connection ConnectionName="Team PG" ConnType="POSTGRESQL" Host="db.corp" Port="5432" Database="analytics" UserName="analyst" Password="` + dbeaverEncryptV11(t, "pg-pw") + `" Folder="Corp"/>
-<Connection ConnectionName="Bad Type" ConnType="SQLITE" Host="x" Port="0"/>
+<Connection ConnectionName="Local File" ConnType="SQLITE" Host="C:\data\app.db" Port="0"/>
+<Connection ConnectionName="Bad Type" ConnType="VERTICA" Host="x" Port="0"/>
 </Root>`
 	path := filepath.Join(t.TempDir(), "connections.ncx")
 	if err := os.WriteFile(path, []byte(ncx), 0600); err != nil {
@@ -214,8 +219,8 @@ func TestParseNavicat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(res.Connections) != 2 {
-		t.Fatalf("expected 2 connections, got %d", len(res.Connections))
+	if len(res.Connections) != 3 {
+		t.Fatalf("expected 3 connections, got %d", len(res.Connections))
 	}
 	my := res.Connections[0]
 	if my.DBType != "mysql" || my.Host != "127.0.0.1" || my.Port != 3306 || my.DBName != "shop" ||
@@ -228,5 +233,9 @@ func TestParseNavicat(t *testing.T) {
 	}
 	if pg.GroupId == nil || groupPathFor(res.Groups, *pg.GroupId) != "Corp" {
 		t.Fatalf("pg group wrong: %+v", pg.GroupId)
+	}
+	sq := res.Connections[2]
+	if sq.Type != "database" || sq.DBType != "sqlite" || sq.Host != `C:\data\app.db` || sq.Port != 0 {
+		t.Fatalf("sqlite mapping wrong: %+v", sq)
 	}
 }

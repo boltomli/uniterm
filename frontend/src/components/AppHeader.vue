@@ -27,6 +27,7 @@
         @close-tab-batch="(ids: string[]) => emit('close-tab-batch', ids)"
         @toggle-ai-lock="(panelId: string) => emit('toggle-ai-lock', panelId)"
         @tab-dragstart="(e: DragEvent, tabId: string) => emit('tab-dragstart', e, tabId)"
+        @new-local-terminal="emit('new-local-terminal')"
       />
     </div>
 
@@ -303,6 +304,7 @@ const emit = defineEmits<{
   'close-tab-batch': [ids: string[]]
   'toggle-ai-lock': [panelId: string]
   'tab-dragstart': [e: DragEvent, tabId: string]
+  'new-local-terminal': []
 }>()
 
 const platform = ref(detectPlatformSync())

@@ -107,10 +107,10 @@ func initEmpty(repoPath, repoURL string) (*GitRepo, error) {
 	return &GitRepo{repo: repo, repoPath: repoPath}, nil
 }
 
-// StageAndCommit stages the legacy syncedFiles whitelist plus repo metadata.
+// StageAndCommit stages the whole default sync set plus repo metadata.
 // Returns true if committed.
 func (g *GitRepo) StageAndCommit(msg string) (bool, error) {
-	return g.StageAndCommitFiles(msg, syncedFiles)
+	return g.StageAndCommitFiles(msg, defaultSyncedFiles)
 }
 
 // StageAndCommitFiles stages exactly files plus ".sync-salt"/"README.md".
@@ -413,11 +413,11 @@ func (g *GitRepo) CommitTime(h plumbing.Hash) (time.Time, error) {
 	return commit.Committer.When, nil
 }
 
-// ExtractCommitFiles writes the legacy syncedFiles set as committed at hash
+// ExtractCommitFiles writes the whole default sync set as committed at hash
 // into destDir. The extracted files are still encrypted — the caller
 // decrypts them. Files absent from that commit's tree are skipped.
 func (g *GitRepo) ExtractCommitFiles(hash plumbing.Hash, destDir string) error {
-	return g.ExtractCommitFilesIn(hash, syncedFiles, destDir)
+	return g.ExtractCommitFilesIn(hash, defaultSyncedFiles, destDir)
 }
 
 // ExtractCommitFilesIn writes exactly files as committed at hash into destDir

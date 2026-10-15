@@ -150,7 +150,7 @@
         </span>
         <el-pagination
           v-if="browseMode"
-          small
+          size="small"
           background
           layout="sizes, prev, pager, next"
           :total="browsePageTotal"

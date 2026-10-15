@@ -18,6 +18,11 @@ import type { Terminal } from '@xterm/xterm'
 // keyCode 229, so uppercase had no delivery path left at all. xterm skips its
 // direct path whenever `composed && _keyDownSeen`, so that is the condition we
 // key off, rather than inferring it from an IME-specific keyCode.
+//
+// Event-tap IMEs (XKey/EVKey/OpenKey for Vietnamese) never compose at all; they
+// backspace and retype, delivering the replacement as a multi-character
+// `keydown.key`. That needs intercepting before keypress — see
+// deliverKeyTextRewrite below.
 
 export interface Disposable {
   dispose(): void
@@ -66,6 +71,11 @@ interface DeliveredInput {
 }
 
 const PRINTABLE_ASCII = /^[\x20-\x7E]$/
+// Every multi-character DOM key value is a CamelCase ASCII identifier
+// ("Backspace", "ArrowUp", "F11", "Dead", "Process"). Anything else longer
+// than one character is literal text the IME wants inserted.
+const NAMED_KEY = /^[A-Z][A-Za-z0-9]*$/
+const PRINTABLE_TEXT = /^[^\p{C}]+$/u
 const LATE_EVENT_WINDOW_MS = 250
 const noopDisposable: Disposable = { dispose() {} }
 
@@ -160,6 +170,42 @@ function installMacImePatch(terminal: Terminal): Disposable {
     }
   }
 
+  // Event-tap Vietnamese IMEs (XKey, EVKey, OpenKey) edit the text themselves
+  // instead of composing: they post real Backspace key events, then ONE keydown
+  // whose `key` holds the entire replacement run. Typing "tieengs" ends with
+  // Backspace x3 followed by `key="iếng"` (code=KeyA, keyCode=73, charCode=105).
+  //
+  // xterm has no path for that. evaluateKeyboardEvent only accepts
+  // `key.length === 1`, so _keyDown bails at `if (!result.key) return true`
+  // without sending or cancelling. _keyPress then runs and sends
+  // String.fromCharCode(ev.charCode) — just the FIRST character, "i" — and sets
+  // _keyPressHandled, which makes _inputEvent discard the full "iếng" at its
+  // first line. The backspaces land, the replacement does not: "tiêng" becomes
+  // "ti". Only letters carrying a second diacritic hit this, because those are
+  // the ones whose tone mark lands on a vowel that is no longer last; "ê", "ô",
+  // "đ" arrive as a single-character `key` that xterm handles on its own.
+  //
+  // Deliver the run here. preventDefault suppresses both the keypress that
+  // would leak the first character and the input event that would double-send.
+  const deliverKeyTextRewrite = (keyboardEvent: KeyboardEvent): boolean => {
+    if (
+      keyboardEvent.key.length < 2 ||
+      NAMED_KEY.test(keyboardEvent.key) ||
+      !PRINTABLE_TEXT.test(keyboardEvent.key) ||
+      keyboardEvent.keyCode === 229 ||
+      keyboardEvent.isComposing ||
+      keyboardEvent.ctrlKey ||
+      keyboardEvent.metaKey ||
+      keyboardEvent.altKey ||
+      isCompositionActive(helper)
+    ) {
+      return false
+    }
+    keyboardEvent.preventDefault()
+    terminal.input(keyboardEvent.key)
+    return true
+  }
+
   const onKeyDown = (event: Event) => {
     const keyboardEvent = event as KeyboardEvent
     pruneLateEventRecords()
@@ -169,6 +215,10 @@ function installMacImePatch(terminal: Terminal): Disposable {
     const textareaValueBeforeKeydown = core.textarea?.value ?? ''
     if (latestKeydownWas229) {
       textareaValueBefore229Keydown = textareaValueBeforeKeydown
+    }
+
+    if (deliverKeyTextRewrite(keyboardEvent)) {
+      return
     }
 
     if (

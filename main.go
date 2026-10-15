@@ -506,6 +506,8 @@ var trayLabels = map[string][6]string{
 	"es":    {"Mostrar ventana principal", "Ocultar en la bandeja", "Restablecer posición", "Ajustes", "Acerca de", "Salir"},
 	"fr":    {"Afficher la fenêtre", "Réduire dans la zone de notification", "Réinitialiser la position", "Paramètres", "À propos", "Quitter"},
 	"ru":    {"Показать главное окно", "Свернуть в трей", "Сбросить положение окна", "Настройки", "О программе", "Выход"},
+	"pt":    {"Mostrar janela principal", "Ocultar na bandeja", "Redefinir posição da janela", "Configurações", "Sobre", "Sair"},
+	"vi":    {"Hiện cửa sổ chính", "Ẩn vào khay hệ thống", "Đặt lại vị trí cửa sổ", "Cài đặt", "Giới thiệu", "Thoát"},
 }
 
 func trayLabel(lang string, idx int) string {
@@ -516,12 +518,12 @@ func trayLabel(lang string, idx int) string {
 }
 
 const (
-	trayShow   = 0
-	trayHide   = 1
-	trayReset  = 2
-	traySet    = 3
-	trayAbout  = 4
-	trayQuit   = 5
+	trayShow  = 0
+	trayHide  = 1
+	trayReset = 2
+	traySet   = 3
+	trayAbout = 4
+	trayQuit  = 5
 )
 
 // setupTray creates the system tray icon and menu. lang is the persisted UI
