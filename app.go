@@ -388,8 +388,23 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 // that must never run twice. Later callers return without re-running anything.
 func (a *App) initStores(dataDir string, upgrade bool) {
 	a.storesInitOnce.Do(func() {
+		// F-12.2: releases before this fix created the data dir 0755 —
+		// tighten it on every boot (files are already 0600; this stops other
+		// local users from listing filenames). Best effort; Windows ignores
+		// POSIX permission bits.
+		hardenDataDirPerm(dataDir)
 		a.runStoreBootstrap(dataDir, upgrade)
 	})
+}
+
+// hardenDataDirPerm forces 0700 on the data directory (F-12.2). Best
+// effort: a failed chmod must never block startup, and Windows does not
+// enforce POSIX permission bits.
+func hardenDataDirPerm(dir string) {
+	if dir == "" {
+		return
+	}
+	_ = os.Chmod(dir, 0700)
 }
 
 // runStoreBootstrap invokes the bootstrap body (the test override when set,
@@ -3029,9 +3044,12 @@ func (a *App) SetDataDir(kind, customDir string, migrate bool) error {
 	if !isWritable(target) {
 		return fmt.Errorf("directory not writable: %s", target)
 	}
-	if err := os.MkdirAll(target, 0755); err != nil {
+	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
 	}
+	// F-12.2: tighten pre-existing dirs too (MkdirAll never re-modes an
+	// existing directory).
+	hardenDataDirPerm(target)
 
 	// On first run: init stores at the target and return. The publication of
 	// dataDir, the bootstrap pointer and the store bootstrap all run inside
@@ -3334,7 +3352,9 @@ func dataDirFor(kind, customDir string) (string, error) {
 
 func isWritable(dir string) bool {
 	probe := filepath.Join(dir, ".probe")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// F-12.2: the data dir is private to the user — 0700, not 0755 (files
+	// inside are 0600; the dir mode stopped other local users listing names).
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return false
 	}
 	if err := os.WriteFile(probe, []byte("x"), 0600); err != nil {
@@ -3449,7 +3469,8 @@ func copyDir(src, dst string) error {
 		}
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
-			return os.MkdirAll(target, 0755)
+			// F-12.2: migration copies keep the private 0700 mode.
+			return os.MkdirAll(target, 0700)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

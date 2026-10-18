@@ -172,3 +172,46 @@ func TestCheckMigratePaths(t *testing.T) {
 		t.Errorf("parent target should report errParentDataDir, got %v", checkMigratePaths(sub, src))
 	}
 }
+
+// F-12.2: the data directory must be private (0700) — the pre-fix builds
+// created it 0755, letting other local users list file names (the files
+// themselves are 0600). Windows does not enforce POSIX permission bits, so
+// the assertions are skipped there.
+func TestDataDirCreatedPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	base := t.TempDir()
+	target := filepath.Join(base, "uniTerm-data")
+	if !isWritable(target) {
+		t.Fatal("isWritable must create the data dir")
+	}
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0700 {
+		t.Fatalf("data dir mode = %04o, want 0700", fi.Mode().Perm())
+	}
+}
+
+// F-12.2: pre-existing 0755 data dirs are tightened on startup.
+func TestHardenDataDirPermTightensLegacyDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	hardenDataDirPerm(dir)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0700 {
+		t.Fatalf("mode after hardening = %04o, want 0700", fi.Mode().Perm())
+	}
+	// Empty input is a no-op (startup may call it before the dir exists).
+	hardenDataDirPerm("")
+}

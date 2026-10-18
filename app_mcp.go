@@ -228,7 +228,7 @@ func (a *App) mcpWriteTokens(f MCPTokensFile) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(a.dataDir, 0755); err != nil {
+	if err := os.MkdirAll(a.dataDir, 0700); err != nil { // F-12.2: private dir
 		return err
 	}
 	if err := os.WriteFile(a.mcpTokensPath(), buf, 0600); err != nil {

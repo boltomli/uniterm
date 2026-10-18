@@ -207,7 +207,7 @@ func writeBootstrapAt(exe, defDir, kind, customDir string) error {
 	if kind == "custom" {
 		b.DataDir = customDir
 	}
-	if err := os.MkdirAll(filepath.Dir(primary), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(primary), 0700); err != nil { // F-12.2: private dir
 		return err
 	}
 	if err := writeJSONFile(primary, b); err != nil {
