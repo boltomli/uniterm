@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,5 +367,185 @@ func TestFrameRoundTrip(t *testing.T) {
 		if gotType != ptyFrameData || !bytes.Equal(gotPayload, want) {
 			t.Fatalf("round trip mismatch: type=%d len=%d want len=%d", gotType, len(gotPayload), len(want))
 		}
+	}
+}
+
+// ── F-10: spawn-frame Env / WorkDir / dims ──────────────────────────────────
+
+// The spawn frame arrives from same-user code, but the shell it starts is
+// elevated: environment injection (BASH_ENV, PSModulePath, ...) would turn
+// the broker into an arbitrary elevated code launcher. Only a tight
+// allowlist survives.
+func TestFilterElevatedEnv(t *testing.T) {
+	keep := []string{
+		"WT_SESSION=0",
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"LANG=zh_CN.UTF-8",
+		"LC_ALL=C",
+		"LC_MESSAGES=en_US.UTF-8",
+	}
+	drop := []string{
+		"BASH_ENV=/tmp/pwn.sh",
+		"ENV=/tmp/pwn.sh",
+		"PSModulePath=C:\\evil\\modules",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.fsmonitor",
+		"WSLENV=pwn/u",
+		"LD_PRELOAD=/tmp/evil.so",
+		"PATH=/evil/bin",
+		"PROMPT=$pwned",
+		"NOEQUALS",
+		"=empty-name",
+		"BROKEN=value\x00with-nul",
+	}
+	in := append(append([]string{}, keep...), drop...)
+	// Windows environment names are case-insensitive: the lowercase variant
+	// must survive too.
+	in = append(in, "wt_session=0")
+	out := filterElevatedEnv(in)
+
+	if len(out) != len(keep)+1 {
+		t.Fatalf("filterElevatedEnv kept %d entries, want %d: %v", len(out), len(keep)+1, out)
+	}
+	for _, kv := range keep {
+		found := false
+		for _, got := range out {
+			if strings.EqualFold(got, kv) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("allowlisted entry %q was dropped", kv)
+		}
+	}
+	for _, kv := range out {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		upper := strings.ToUpper(name)
+		if !elevatedEnvAllowlist[upper] && !strings.HasPrefix(upper, "LC_") {
+			t.Errorf("non-allowlisted entry survived the filter: %q", kv)
+		}
+	}
+	if got := filterElevatedEnv(nil); got != nil {
+		t.Fatalf("nil input should stay nil, got %v", got)
+	}
+}
+
+// The elevated working directory must be a plain local path: no UNC/device
+// namespace, no "..", no relative or drive-relative forms.
+func TestElevatedWorkDirRefusal(t *testing.T) {
+	ok := []string{
+		"",
+		"C:\\Users\\me\\project",
+		"D:/work",
+		"C:\\",
+	}
+	for _, dir := range ok {
+		if refusal := elevatedWorkDirRefusal(dir); refusal != "" {
+			t.Errorf("elevatedWorkDirRefusal(%q) = %q, want accepted", dir, refusal)
+		}
+	}
+	bad := []struct {
+		dir  string
+		want string
+	}{
+		{"C:\\Windows\\System32\\..\\evil", ".."},
+		{"C:\\a\\..\\..\\evil", ".."},
+		{"..\\evil", "absolute"},
+		{"evil", "absolute"},
+		{"C:foo", "absolute"},
+		{"\\foo", "absolute"},
+		{"\\\\server\\share\\dir", "UNC"},
+		{"\\\\.\\pipe\\x", "UNC"},
+		{"\\\\?\\C:\\evil", "UNC"},
+		{"//server/share", "UNC"},
+		{"C:\\x\x00y", "NUL"},
+	}
+	for _, c := range bad {
+		refusal := elevatedWorkDirRefusal(c.dir)
+		if refusal == "" {
+			t.Errorf("elevatedWorkDirRefusal(%q) accepted, want refusal", c.dir)
+			continue
+		}
+		if !strings.Contains(refusal, c.want) {
+			t.Errorf("elevatedWorkDirRefusal(%q) = %q, want mention of %q", c.dir, refusal, c.want)
+		}
+	}
+}
+
+func TestClampPtyDims(t *testing.T) {
+	cases := []struct{ cols, rows, wantCols, wantRows int }{
+		{80, 25, 80, 25},
+		{0, 0, 80, 24},
+		{-5, -1, 80, 24},
+		{1, 1, 1, 1},
+		{100000, 100000, maxPtyDim, maxPtyDim},
+	}
+	for _, c := range cases {
+		gotCols, gotRows := clampPtyDims(c.cols, c.rows)
+		if gotCols != c.wantCols || gotRows != c.wantRows {
+			t.Errorf("clampPtyDims(%d,%d) = %d,%d want %d,%d", c.cols, c.rows, gotCols, gotRows, c.wantCols, c.wantRows)
+		}
+	}
+}
+
+// Full protocol case (F-10): a valid administrator shell command line with an
+// unsafe WorkDir must be refused before any ConPTY capability check, with the
+// reason delivered as PTY output and broker exit code 1.
+func TestAdminPtyBrokerRefusesUnsafeWorkDir(t *testing.T) {
+	comspec := os.Getenv("ComSpec")
+	if comspec == "" {
+		comspec = "C:\\Windows\\System32\\cmd.exe"
+	}
+
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	pipeName := `\\.\pipe\uniterm-pty-test-` + hex.EncodeToString(suffix)
+
+	handle, err := createPtyPipeServer(pipeName)
+	if err != nil {
+		t.Fatalf("pipe server: %v", err)
+	}
+	brokerDone := make(chan int, 1)
+
+	p := &adminPty{f: os.NewFile(uintptr(handle), pipeName)}
+	defer p.Close()
+
+	go func() { brokerDone <- serveLocalPtyBroker(pipeName) }()
+
+	brokerGone := make(chan struct{})
+	if err := p.waitBrokerHello(brokerGone, 10*time.Second); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	specBytes, err := json.Marshal(localPtySpawn{
+		CommandLine: fmt.Sprintf(`"%s" /k`, comspec),
+		WorkDir:     `\\server\share\wd`,
+		Cols:        80,
+		Rows:        25,
+		Env:         []string{"WT_SESSION=0", "BASH_ENV=/tmp/pwn"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ptyFrameWriteTo(p.f, ptyFrameSpawn, specBytes); err != nil {
+		t.Fatalf("send spawn: %v", err)
+	}
+
+	waitForMarker(t, p, "refused", 10*time.Second)
+
+	select {
+	case code := <-brokerDone:
+		if code != 1 {
+			t.Fatalf("broker exit code = %d, want 1", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("broker did not exit after refusing the spawn")
 	}
 }

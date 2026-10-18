@@ -301,6 +301,97 @@ func elevatedSpawnRefusal(cmdline string) string {
 	return ""
 }
 
+// elevatedEnvAllowlist lists the environment variables a spawn frame may add
+// to the elevated shell (F-10). The broker's own environment is inherited as
+// before; this gate only controls what same-user code can inject on top —
+// BASH_ENV/ENV (non-login sh sources them), PSModulePath (PowerShell module
+// auto-load), GIT_*, WSLENV and friends would turn "only start a sanctioned
+// shell" into arbitrary elevated code execution. LC_* is allowed by prefix.
+var elevatedEnvAllowlist = map[string]bool{
+	"WT_SESSION": true, // clink:// shells toggle Windows Terminal integration
+	"TERM":       true,
+	"COLORTERM":  true,
+	"LANG":       true,
+	"LANGUAGE":   true,
+}
+
+// allowedElevatedEnvName matches case-insensitively (Windows environment
+// names are case-insensitive).
+func allowedElevatedEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	return elevatedEnvAllowlist[upper] || strings.HasPrefix(upper, "LC_")
+}
+
+// filterElevatedEnv drops every spawn-frame entry outside the allowlist plus
+// anything malformed (no "=", empty name, NUL byte — a NUL would corrupt the
+// environment block handed to CreateProcess).
+func filterElevatedEnv(env []string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok || name == "" || strings.ContainsRune(kv, 0) {
+			continue
+		}
+		if allowedElevatedEnvName(name) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// elevatedWorkDirRefusal returns "" when dir is a working directory the
+// elevated broker may chdir into (F-10). Empty keeps the broker default;
+// otherwise it must be a plain drive-rooted local path: no ".." segments
+// (the elevated process would open files relative to an attacker-chosen
+// base), no UNC share and no device/namespace path (\\server\share,
+// \\.\, \\?\) — those are the sideload / namespace surfaces worth
+// blocking for a process running as Administrator.
+func elevatedWorkDirRefusal(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if strings.ContainsRune(dir, 0) {
+		return "workdir contains a NUL byte"
+	}
+	if strings.HasPrefix(dir, `\\`) || strings.HasPrefix(dir, `//`) {
+		return "UNC or device namespace workdir is not allowed"
+	}
+	if !filepath.IsAbs(dir) {
+		return "workdir must be an absolute local path"
+	}
+	for _, elem := range strings.FieldsFunc(dir, func(r rune) bool { return r == '\\' || r == '/' }) {
+		if elem == ".." {
+			return `workdir must not contain ".." segments`
+		}
+	}
+	vol := filepath.VolumeName(dir)
+	if vol == "" || (!strings.HasPrefix(dir, vol+`\`) && !strings.HasPrefix(dir, vol+"/")) {
+		return "workdir must be drive-rooted (e.g. C:\\Users\\...)"
+	}
+	return ""
+}
+
+// maxPtyDim caps ConPTY dimensions taken from a spawn frame (F-10): the
+// previous code only fixed <= 0, and absurd values make ConPTY pre-allocate
+// a huge screen buffer.
+const maxPtyDim = 1000
+
+func clampPtyDims(cols, rows int) (int, int) {
+	if cols <= 0 || rows <= 0 {
+		return 80, 24
+	}
+	if cols > maxPtyDim {
+		cols = maxPtyDim
+	}
+	if rows > maxPtyDim {
+		rows = maxPtyDim
+	}
+	return cols, rows
+}
+
 // serveLocalPtyBroker serves one elevated shell and returns the process exit
 // code, so tests can run it in-process.
 func serveLocalPtyBroker(pipeName string) int {
@@ -338,19 +429,21 @@ func serveLocalPtyBroker(pipeName string) int {
 		return 1
 	}
 
+	// F-10: the spawn frame arrives from same-user code; the working
+	// directory and environment feed the elevated process exactly like the
+	// command line does, so they live under the same threat model.
+	if refusal := elevatedWorkDirRefusal(spec.WorkDir); refusal != "" {
+		noteAndClose(pipe, "refused: "+refusal)
+		return 1
+	}
+
 	if !conpty.IsConPtyAvailable() {
 		noteAndClose(pipe, "ConPTY is not available on this Windows version")
 		return 1
 	}
 
-	cols, rows := spec.Cols, spec.Rows
-	if cols <= 0 || rows <= 0 {
-		cols, rows = 80, 24
-	}
-	env := os.Environ()
-	if len(spec.Env) > 0 {
-		env = append(env, spec.Env...)
-	}
+	cols, rows := clampPtyDims(spec.Cols, spec.Rows)
+	env := append(os.Environ(), filterElevatedEnv(spec.Env)...)
 	cpty, err := conpty.Start(spec.CommandLine,
 		conpty.ConPtyDimensions(cols, rows),
 		conpty.ConPtyWorkDir(spec.WorkDir),
