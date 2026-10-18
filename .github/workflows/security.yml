@@ -1,0 +1,53 @@
+# F-12.9: standing security scans. Started NON-BLOCKING (continue-on-error)
+# so pre-existing findings don't redden every PR; tighten to required checks
+# once the backlog is drained. Covers the three gaps from the 2026-10-18
+# audit: no govulncheck, no npm audit, no gosec — plus the fork blind spot
+# (govulncheck can't see replaced modules under their upstream names).
+name: Security scans
+
+on:
+  push:
+    branches: [main, 'sec/**', 'fix/**']
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1' # weekly, Monday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26'
+
+      - name: govulncheck (reachable vulnerabilities)
+        continue-on-error: true # non-blocking start (F-12.9)
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: gosec (Go security linter)
+        continue-on-error: true # non-blocking start (F-12.9)
+        run: go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./...
+
+      - name: Forked-module advisories (upstream view)
+        continue-on-error: true # non-blocking start (F-12.9)
+        run: python3 scripts/check-fork-advisories.py
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+
+      - name: npm audit (production dependencies)
+        continue-on-error: true # non-blocking start (F-12.9)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit --omit=dev

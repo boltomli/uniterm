@@ -1,0 +1,31 @@
+# F-12.9: keep third-party dependencies moving. Pinned versions still come
+# from the lockfiles / go.sum — these PRs only propose the bumps, and the
+# security workflow re-scans whatever they change.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependencies", "go"]
+
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependencies", "npm"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    labels: ["dependencies", "ci"]
