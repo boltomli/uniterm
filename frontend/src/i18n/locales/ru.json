@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "Выберите, какие данные участвуют в облачной синхронизации на этом устройстве.",
   "settings.syncScopeEmpty": "Должен оставаться выбран хотя бы один элемент",
   "settings.skills": "Навыки",
+  "settings.skillsCreateConfirm": "Создать новый навык «{name}»? Он будет сохранён в вашей библиотеке и использован ИИ в будущих сессиях.",
   "settings.skillsDesc": "Управление навыками командной строки, вызываемыми ИИ.",
   "settings.skillsCreate": "Создать / Импорт",
   "settings.skillsDelete": "Удалить",

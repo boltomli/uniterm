@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "Wähle, welche Daten an der Cloud-Synchronisierung auf diesem Gerät teilnehmen.",
   "settings.syncScopeEmpty": "Mindestens ein Element muss ausgewählt bleiben",
   "settings.skills": "Skills",
+  "settings.skillsCreateConfirm": "Neuen Skill „{name}“ erstellen? Er wird in Ihrer Skill-Bibliothek gespeichert und künftigen KI-Sitzungen verwendet.",
   "settings.skillsDesc": "Kommandozeilen-Skills verwalten, die von der KI aufrufbar sind.",
   "settings.skillsCreate": "Neu / Importieren",
   "settings.skillsDelete": "Löschen",

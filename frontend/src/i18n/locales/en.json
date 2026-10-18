@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "Choose which data participates in cloud sync on this device.",
   "settings.syncScopeEmpty": "At least one item must stay selected",
   "settings.skills": "Skills",
+  "settings.skillsCreateConfirm": "Create the new skill \"{name}\"? It will be stored in your skill library and used by the AI in future sessions.",
   "settings.skillsDesc": "Manage command-line skills callable by AI.",
   "settings.skillsCreate": "New / Import",
   "settings.skillsDelete": "Delete",

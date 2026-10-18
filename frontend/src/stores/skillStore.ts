@@ -32,6 +32,26 @@ async function defaultOverwriteConfirm(name: string): Promise<boolean> {
   }
 }
 
+// F-12.6: creating a NEW skill persists it and adds it to the system-prompt
+// skill index for every future session — a prompt injection must not plant
+// one silently, so creations ask exactly like overwrites do.
+async function defaultCreateConfirm(name: string): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(
+      t('settings.skillsCreateConfirm', { name }),
+      t('settings.skills'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 export const useSkillStore = defineStore('skills', () => {
   const skills = ref<SkillMeta[]>([])
   const loaded = ref(false)
@@ -114,6 +134,7 @@ export const useSkillStore = defineStore('skills', () => {
   // 才覆写（prompt injection 不再能静默种下一个用户以后会执行的 skill），
   // 用户拒绝时一个字节都不落盘。同名已锁定的 skill 由后端拒绝，无需打扰用户。
   const confirmOverwrite = ref<OverwriteConfirm>(defaultOverwriteConfirm)
+  const confirmCreate = ref<OverwriteConfirm>(defaultCreateConfirm)
 
   async function saveByAgent(
     name: string,
@@ -124,6 +145,11 @@ export const useSkillStore = defineStore('skills', () => {
     const existing = skills.value.find(s => s.name === name)
     if (existing && !existing.locked) {
       const approved = await confirmOverwrite.value(name)
+      if (!approved) return 'declined'
+    } else if (!existing) {
+      // F-12.6: new skills are created with a confirmation too — see
+      // defaultCreateConfirm.
+      const approved = await confirmCreate.value(name)
       if (!approved) return 'declined'
     }
     if (existing) {
@@ -154,7 +180,7 @@ export const useSkillStore = defineStore('skills', () => {
   }
 
   return {
-    skills, loaded, enabledSkills, confirmOverwrite,
+    skills, loaded, enabledSkills, confirmOverwrite, confirmCreate,
     load, reload,
     toggleEnabled, toggleLocked, remove, create, save, saveByAgent, getBody, openFolder,
   }

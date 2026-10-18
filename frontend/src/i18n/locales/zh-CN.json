@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "勾选要在这台设备上参与云同步的数据。",
   "settings.syncScopeEmpty": "至少需要勾选一项",
   "settings.skills": "技能",
+  "settings.skillsCreateConfirm": "创建新技能「{name}」？它会写入技能库，并在后续 AI 会话中生效。",
   "settings.skillsDesc": "管理可被 AI 调用的命令行技能。",
   "settings.skillsCreate": "新建/导入",
   "settings.skillsDelete": "删除",

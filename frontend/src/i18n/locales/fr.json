@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "Choisissez les données qui participent à la synchronisation cloud sur cet appareil.",
   "settings.syncScopeEmpty": "Au moins un élément doit rester sélectionné",
   "settings.skills": "Compétences",
+  "settings.skillsCreateConfirm": "Créer la nouvelle compétence « {name} » ? Elle sera enregistrée dans votre bibliothèque et utilisée par l’IA lors des prochaines sessions.",
   "settings.skillsDesc": "Gérer les compétences en ligne de commande appelables par l'IA.",
   "settings.skillsCreate": "Nouveau / Importer",
   "settings.skillsDelete": "Supprimer",

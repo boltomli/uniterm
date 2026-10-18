@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "Elige qué datos participan en la sincronización en la nube en este dispositivo.",
   "settings.syncScopeEmpty": "Debe permanecer seleccionado al menos un elemento",
   "settings.skills": "Skills",
+  "settings.skillsCreateConfirm": "¿Crear el nuevo skill \"{name}\"? Se guardará en tu biblioteca de skills y se usará en futuras sesiones de IA.",
   "settings.skillsDesc": "Gestiona skills de línea de comandos invocables por la IA.",
   "settings.skillsCreate": "Nuevo / Importar",
   "settings.skillsDelete": "Eliminar",

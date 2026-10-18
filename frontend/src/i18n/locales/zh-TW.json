@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "勾選要在這台裝置上參與雲同步的資料。",
   "settings.syncScopeEmpty": "至少需要勾選一項",
   "settings.skills": "技能",
+  "settings.skillsCreateConfirm": "建立新技能「{name}」？它會寫入技能庫，並在後續 AI 會話中生效。",
   "settings.skillsDesc": "管理可被 AI 呼叫的技能",
   "settings.skillsCreate": "新建技能",
   "settings.skillsDelete": "刪除",

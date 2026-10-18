@@ -637,6 +637,7 @@
   "settings.syncScopeHint": "Chọn dữ liệu nào tham gia đồng bộ đám mây trên thiết bị này.",
   "settings.syncScopeEmpty": "Phải chọn ít nhất một mục",
   "settings.skills": "Kỹ năng",
+  "settings.skillsCreateConfirm": "Tạo kỹ năng mới \"{name}\"? Nó sẽ được lưu vào thư viện kỹ năng và dùng trong các phiên AI sau.",
   "settings.skillsDesc": "Quản lý kỹ năng dòng lệnh mà AI có thể gọi.",
   "settings.skillsCreate": "Mới / Nhập",
   "settings.skillsDelete": "Xóa",

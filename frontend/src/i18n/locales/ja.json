@@ -639,6 +639,7 @@
   "settings.syncScopeHint": "このデバイスでクラウド同期に参加するデータを選択してください。",
   "settings.syncScopeEmpty": "少なくとも 1 つは選択してください",
   "settings.skills": "スキル",
+  "settings.skillsCreateConfirm": "新規スキル「{name}」を作成しますか？スキルライブラリに保存され、今後の AI セッションで使用されます。",
   "settings.skillsDesc": "AI が呼び出せるコマンドラインスキルを管理します。",
   "settings.skillsCreate": "新規 / インポート",
   "settings.skillsDelete": "削除",

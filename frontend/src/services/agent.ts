@@ -1617,7 +1617,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           store.addMessage({
             id: `msg-${Date.now()}`,
             role: 'tool',
-            content: `[Skill not saved: the user declined to overwrite the existing skill "${name}".]`,
+            content: `[Skill not saved: the user declined the save of skill "${name}".]`,
             tool_call_id: tu.id
           })
         } else {
