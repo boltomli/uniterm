@@ -228,7 +228,12 @@ func main() {
 
 	w3app := application.New(application.Options{
 		Name:       "uniTerm",
-		Assets:     application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(assets),
+			// F-09b: production CSP + nosniff on every asset (dev server
+			// untouched — vite serves wails3 dev).
+			Middleware: cspMiddleware,
+		},
 		OnShutdown: app.shutdown,
 		// Single-instance: a second GUI launch acquires the OS lock, notifies
 		// this instance (which shows/focuses the existing window) and exits.
