@@ -73,6 +73,67 @@ func SafeDefaultLiteral(v string) (string, error) {
 	return "", fmt.Errorf("unsafe DEFAULT literal: %s", v)
 }
 
+// SafeColumnType validates a column TYPE string before it is interpolated
+// into a DDL statement (F-11). Types are free text in the UI, so only a
+// conservative character set survives: letters, digits, underscore, spaces,
+// parentheses, comma and single quotes — enough for "VARCHAR2(100 CHAR)",
+// "NUMBER(10,2)", "TIMESTAMP(6) WITH TIME ZONE" … Statement separators,
+// comments, backticks, double quotes and backslashes are all rejected.
+func SafeColumnType(t string) (string, error) {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return "", errors.New("empty column type")
+	}
+	if len(t) > 120 {
+		return "", errors.New("column type too long")
+	}
+	for _, r := range t {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == ' ' || r == '(' || r == ')' || r == ',' || r == '\'':
+		default:
+			return "", fmt.Errorf("unsafe character %q in column type", r)
+		}
+	}
+	return t, nil
+}
+
+// SafeColumnCollation validates a collation/charset name (F-11): identifiers
+// only — MySQL interpolates it as "COLLATE <name>".
+func SafeColumnCollation(c string) (string, error) {
+	c = strings.TrimSpace(c)
+	if c == "" {
+		return "", nil
+	}
+	if len(c) > 64 {
+		return "", errors.New("collation name too long")
+	}
+	for _, r := range c {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		default:
+			return "", fmt.Errorf("unsafe character %q in collation", r)
+		}
+	}
+	return c, nil
+}
+
+// safeColumnTypeFor rewrites col with a validated type/collation so every
+// provider's DDL builders can interpolate the fields without re-checking
+// (F-11: shared entry guard for AddColumn/ModifyColumn).
+func safeColumnTypeFor(col ColumnDef) (ColumnDef, error) {
+	t, err := SafeColumnType(col.Type)
+	if err != nil {
+		return col, err
+	}
+	c, err := SafeColumnCollation(col.Collation)
+	if err != nil {
+		return col, err
+	}
+	col.Type, col.Collation = t, c
+	return col, nil
+}
+
 // identValidate rejects names that are empty, contain path-traversal
 // segments, NUL bytes, or are absurdly long (MySQL limit is 64, Postgres
 // 63; we pick 128 as a generous cap covering schema-qualified forms).

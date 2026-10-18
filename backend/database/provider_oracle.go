@@ -343,7 +343,12 @@ func (p *oracleProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName s
 // ── DDL: Column ──
 
 func (p *oracleProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
-	if _, err := db.Exec(p.buildColumnSQL("ADD", p.qualifiedTable(dbName, tableName), col)); err != nil {
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(p.buildColumnSQL("ADD", dbName, tableName, col)); err != nil {
 		return err
 	}
 	if col.Comment != "" {
@@ -354,8 +359,12 @@ func (p *oracleProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 }
 
 func (p *oracleProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
-	table := p.qualifiedTable(dbName, tableName)
-	stmts := []string{p.buildColumnSQL("MODIFY", table, col)}
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
+	stmts := []string{p.buildColumnSQL("MODIFY", dbName, tableName, col)}
 	if col.Comment != "" {
 		stmts = append(stmts, p.commentOnColumnSQL(dbName, tableName, col.Name, col.Comment))
 	}
@@ -402,10 +411,11 @@ func (p *oracleProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string
 
 // ── SQL builders ──
 
-func (p *oracleProvider) buildColumnSQL(action, tableName string, col ColumnDef) string {
-	if !strings.Contains(tableName, `"`) {
-		tableName = p.Quote(tableName)
-	}
+// buildColumnSQL renders the ALTER TABLE statement. F-11: the table parts
+// are ALWAYS quoted through qualifiedTable — the previous "already contains
+// a double quote, skip quoting" special case was trivially satisfied by
+// user input (a"b) and skipped escaping entirely.
+func (p *oracleProvider) buildColumnSQL(action, dbName, tableName string, col ColumnDef) string {
 	var parts []string
 	parts = append(parts, p.Quote(col.Name), col.Type)
 
@@ -422,7 +432,7 @@ func (p *oracleProvider) buildColumnSQL(action, tableName string, col ColumnDef)
 		parts = append(parts, "DEFAULT "+oracleDefaultValue(col.DefaultVal))
 	}
 
-	return fmt.Sprintf("ALTER TABLE %s %s %s", tableName, action, strings.Join(parts, " "))
+	return fmt.Sprintf("ALTER TABLE %s %s %s", p.qualifiedTable(dbName, tableName), action, strings.Join(parts, " "))
 }
 
 func (p *oracleProvider) createTableSQL(dbName, tableName string) string {

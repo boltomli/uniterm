@@ -397,6 +397,12 @@ func (p *mysqlProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName st
 // ── DDL: Column ──
 
 func (p *mysqlProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	// F-11: type/collation are free text in the UI — validate before
+	// interpolation (collation lands in "COLLATE <name>").
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	conn, err := p.mysqlUseDB(db, dbName)
 	if err != nil {
 		return err
@@ -408,6 +414,12 @@ func (p *mysqlProvider) AddColumn(db *sql.DB, dbName, tableName string, col Colu
 }
 
 func (p *mysqlProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	// F-11: type/collation are free text in the UI — validate before
+	// interpolation (collation lands in "COLLATE <name>").
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	conn, err := p.mysqlUseDB(db, dbName)
 	if err != nil {
 		return err

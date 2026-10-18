@@ -366,11 +366,21 @@ func (p *sqlserverProvider) CopyTable(db *sql.DB, dbName, tableName, newTableNam
 // ── DDL: Column ──
 
 func (p *sqlserverProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
-	_, err := db.Exec(p.withUse(dbName, p.buildColumnSQL("ADD", tableName, col)))
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(p.withUse(dbName, p.buildColumnSQL("ADD", tableName, col)))
 	return err
 }
 
 func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	q := p.qualifiedTable
 	stmts := []string{}
 

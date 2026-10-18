@@ -351,6 +351,11 @@ func (p *sqliteProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	if col.DefaultType == "auto" {
 		return fmt.Errorf("sqlite only supports AUTOINCREMENT on INTEGER PRIMARY KEY columns at table creation time; use CREATE TABLE instead")
 	}
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	q := p.Quote
 	var parts []string
 	parts = append(parts, q(col.Name), col.Type)
@@ -373,7 +378,7 @@ func (p *sqliteProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	_, err := db.Exec(sql)
+	_, err = db.Exec(sql)
 	return err
 }
 

@@ -398,6 +398,11 @@ func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName
 // ── DDL: Column ──
 
 func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	q := p.Quote
 	var parts []string
 	parts = append(parts, q(col.Name), col.Type)
@@ -424,11 +429,16 @@ func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col C
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	_, err := db.Exec(sql)
+	_, err = db.Exec(sql)
 	return err
 }
 
 func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	// F-11: the type is free text in the UI — validate before interpolation.
+	col, err := safeColumnTypeFor(col)
+	if err != nil {
+		return err
+	}
 	q := p.Quote
 	var stmts []string
 
