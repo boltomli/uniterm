@@ -95,7 +95,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 | Database | PostgreSQL | PostgreSQL protocol: PostgreSQL, CockroachDB, and more |
 | Database | Oracle Database | Oracle Database connections through a pure Go driver |
 | Database | SQL Server | SQL Server connections through a pure Go driver |
-| Database | SQLite (1.10.1-alpha) | Embedded local database, connect by opening the database file |
+| Database | SQLite | Embedded local database, connect by opening the database file |
 | Database | rqlite | Lightweight distributed DB built on SQLite with Raft consensus |
 | Database | Redis | In-memory key-value store with visual key browsing and editing |
 | Database | MongoDB | Document database with tree browsing, query editor, and inline editing |
@@ -302,6 +302,9 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@chris-edstrom](https://github.com/chris-edstrom)
 - [@andreafunicelli](https://github.com/andreafunicelli)
 - [@dungvv](https://github.com/dungvv)
+- [@zhongqian97](https://github.com/zhongqian97)
+- [@laigcss](https://github.com/laigcss)
+- [@lutzr400](https://github.com/lutzr400)
 
 ## License
 

@@ -72,15 +72,29 @@ func TestConnectPathsUseSharedSecretResolver(t *testing.T) {
 		t.Errorf("ContainerConnect must materialize the referenced proxy before dialing")
 	}
 
+	// mcpConnect now delegates to the shared mcpOpenTerminal path, which
+	// creates the session through CreateSession — the single hardened entry
+	// point (fillStoredSecrets + identity/proxy materialization + jump-host
+	// tunnel). Never an ad-hoc password fill.
 	mcp := funcBody(t, "app_mcp.go", "(a *App) mcpConnect")
 	if strings.Contains(mcp, "EnsurePassword(") {
-		t.Errorf("mcpConnect must resolve secrets via fillStoredSecrets, not an unguarded EnsurePassword fallback")
+		t.Errorf("mcpConnect must not fall back to an unguarded EnsurePassword fill")
 	}
-	if !strings.Contains(mcp, "fillStoredSecrets(") {
-		t.Errorf("mcpConnect must call fillStoredSecrets (guarded secret resolution)")
+	if !strings.Contains(mcp, "mcpOpenTerminal(") {
+		t.Errorf("mcpConnect must delegate to mcpOpenTerminal")
 	}
-	if !strings.Contains(mcp, "setupJumpHostTunnel(") {
-		t.Errorf("mcpConnect must set up the jump-host tunnel before dialing (bastion-only hosts otherwise dial around the bastion)")
+	openTerminal := funcBody(t, "app_mcp.go", "(a *App) mcpOpenTerminal")
+	if strings.Contains(openTerminal, "EnsurePassword(") {
+		t.Errorf("mcpOpenTerminal must not fall back to an unguarded EnsurePassword fill")
+	}
+	if !strings.Contains(openTerminal, "CreateSession(") {
+		t.Errorf("mcpOpenTerminal must create the session through CreateSession (shared credential/tunnel path)")
+	}
+	createSession := funcBody(t, "app_terminal.go", "(a *App) CreateSession")
+	for _, want := range []string{"fillStoredSecrets(", "materializeProxy(", "setupJumpHostTunnel("} {
+		if !strings.Contains(createSession, want) {
+			t.Errorf("CreateSession must call %s (shared hardened connect path)", want)
+		}
 	}
 
 	// The companion file-transfer session (SFTP/SCP for MCP file tools) used

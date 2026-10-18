@@ -5,22 +5,31 @@
 ### What's Changed
 
 - Remote desktop: RDP clipboard redirection is on by default again. A connection saved before the redirection fields existed now shares the clipboard — pasting local text into the remote desktop works as it did before the security hardening — while local drive redirection stays off unless explicitly enabled per connection; an explicit opt-out of either flag still wins. The connection form and its hint text describe the new split default.
-## v1.10.1-alpha
+
+## v1.10.1
 
 ### What's Changed
 
 **New Features**
 - AI: image and file attachments — an image can be pasted straight from the clipboard into a conversation, and files can be attached by picking them or dragging them into the conversation; the attachments are sent to the model along with the message. (@surenwuyuwuqiu)
-- Database: local SQLite database files can be opened as connections — a new SQLite type in the database connection form carries the database file path (selected with a file picker) in the host field, the SSH tunnel control is hidden since an embedded file cannot be reached through a tunnel, and SQLite entries from Navicat / DBeaver imports are mapped to it.
+- Database: add SQLite database type support — select a local database file in the connection form and open it directly; SQLite connections imported from Navicat / DBeaver are also recognized.
 - Import: mRemoteNG connection files can be imported — the folder structure is preserved and per-connection attributes (protocol, host, port, username) are mapped; passwords are imported when the export file uses supported encryption. (@andreafunicelli)
 - Import: MobaXterm private keys can be imported, and PuTTY `.ppk` keys are supported as authentication keys — keys from PuTTY-based tools can be selected directly, without converting them to OpenSSH format first. (@chris-edstrom)
+- MCP Client: the built-in AI can use tools from external MCP servers over HTTP, stdio or SSE, with encrypted storage for sensitive configuration. (@surenwuyuwuqiu)
+- MCP Server: foreground execution lets AI operate in the current terminal after interactive login through a jump host or bastion, reaching the actual target node when a separate background SSH session cannot. It shares the built-in AI's terminal tools, supports screen capture, keyboard input and asynchronous output collection, and retains approval policies; background SSH execution remains available. (@surenwuyuwuqiu)
 - MCP: file tools now run through the connection's file-transfer session, following the connection's transfer protocol — SFTP or SCP — so hosts whose SSH server provides no SFTP subsystem (common on embedded devices) work by switching the connection to SCP.
+- Android: local terminals are available from the start page and connection form, with configurable default shell and system-shell / PATH fallbacks. (@laigcss)
+- Cloud sync: SFTP, S3 and SMB join Git and WebDAV as sync sources, with connection testing and a shared snapshot engine for the four file-based backends.
 - i18n: Portuguese and Vietnamese locales — the UI now ships pt / vi translations selectable in settings.
 
 **Improvements**
 - AI: starting a conversation automatically locks the AI to the currently active terminal, so replies are grounded in the right session without a manual lock step first.
+- MCP: client configurations use add/edit dialogs with connection testing, a compact list, localized transport names and HTTP as the default; server port and execution mode are locked while running. Foreground tool parameters now match the built-in AI, replacing the previous parameter names.
 - UI: sidebar widths persist across restarts — resized sidebars no longer reset to the default width on every launch.
-- Sync: only files whose content actually changed are uploaded — a content comparison skips unchanged files, cutting sync traffic and write churn on the cloud source.
+- Connections: advanced settings are grouped into protocol, terminal and network sections; terminal type is configurable per SSH, Telnet and local connection, defaulting to `xterm-256color`, with improved field layout and translated labels.
+- SSH tunnels: configurable automatic reconnection with a retry interval and random jitter for local, remote and dynamic forwarding. (@zhongqian97)
+- RDP: input wakes the message loop immediately, reducing keyboard and mouse latency and improving redraw responsiveness. (@IBRAHIMELAMRABET)
+- Cloud sync: only files whose content actually changed are uploaded — a content comparison skips unchanged files, cutting sync traffic and write churn on the cloud source.
 - Terminal: the timestamp column gains a millisecond option, useful for timing fast-producing output precisely.
 - Shells: the Git Bash path is configurable in settings for non-default install locations, and scoop-installed Git Bash is detected automatically. (@chris-edstrom)
 - Workspace: a group can be selected when saving / editing a workspace so workspaces can be organized into groups, and new creation entries make saving one reachable from more places.
@@ -31,37 +40,51 @@
 
 **Bug Fixes**
 - AI: fixes requests to the OpenCode Zen Go endpoint missing the required `x-opencode-session` header — the session ID is now sent so the server can correctly track the conversation session. (@andreafunicelli)
+- MCP: approval dialog text can be selected and copied.
 - Terminal: fixes pasted multi-line text inserting LF line feeds that Windows local sessions mishandle (ConPTY expects CR) — newlines are converted to CR when bracketed paste is off, so pasting a multi-line command sequence now executes correctly.
 - Terminal: fixes multi-character IME key rewrites not being delivered to the terminal — keyboards whose IME rewrites a key press into a string (such as Vietnamese Telex input) now work in the terminal. (@dungvv)
 - SSH: fixes key-based authentication failing when a stale remembered password was left on the host — the leftover password no longer breaks the key attempt.
 - SSH: fixes the cwd hook injection interfering with sessions that run post-login automation (commands or scripts started automatically at login); the injection is reworked, and WSL and SSH now share the same typed state machine.
 - SSH: fixes GSSAPI / Kerberos authentication failing when `KRB5CCNAME` points at a Windows drive path — such paths are now treated as FILE ticket caches.
+- RDP: fixes security dialogs blocking connections on operating systems using languages other than Chinese or English; credential prompts still require user input.
 - Credentials: data-safety hardening — a recovered key is verified against the actual data before unlocking, so a bad recovery can no longer produce a half-unlocked store; the reset flow derives the affected field list from the store manifest instead of a hardcoded list; and the unlock dialog is reworded with an exit option.
 - Import: fixes `.utm` exports depending on the exporting machine's credential store — exports are now self-contained (credentials travel inside the connections) and every secret field is encrypted with the export password.
+- App: fixes nil-window crashes in headless/server mode; local file browsing falls back to the home directory when sandbox permissions prevent reading the root directory. (@laigcss)
 - App: a fixed webview user-data folder is used instead of a per-process temp dir, so WebView data is no longer scattered across temp folders that accumulate; legacy per-pid temp dirs are swept at startup.
 - App: refuses to migrate the data directory into itself (nesting it under its own subfolder), which previously corrupted the directory layout.
 - Database: fixes binary Guid columns rendering as garbled bytes in the result grid — SQL Server `UNIQUEIDENTIFIER` and Oracle `RAW(16)` columns (the form EF Core / ABP write Guid keys in) now display as formatted GUID text, and other non-text binary values render as `0x`-prefixed hex. (@IBRAHIMELAMRABET)
-- Shells: scoop-installed Git Bash is labeled separately from system Git Bash, so the two entries in the shell list are distinguishable.
+- Shells: scoop-installed Git Bash is labeled separately from system Git Bash, so the two entries in the shell list are distinguishable. (@chris-edstrom)
 - Terminal: fixes full-screen TUIs (ncurses menus, ...) rendering incorrectly under heavy load — no more corrupted output or leftover content after exiting.
 - Credentials: fixes the credential store failing to unlock after the data directory is moved or copied, and a possible lockout after switching the encryption mode or changing the master password.
 - UI: fixes a black flash at startup when a light theme is configured.
 
-Thanks to @surenwuyuwuqiu, @dungvv, @andreafunicelli, @chris-edstrom and @IBRAHIMELAMRABET for their contributions to this release.
+**Notes**
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+
+Thanks to @surenwuyuwuqiu, @dungvv, @andreafunicelli, @chris-edstrom, @IBRAHIMELAMRABET, @zhongqian97 and @laigcss for their contributions to this release.
 
 ### 更新内容
 
 **新功能**
 - AI：支持图片与文件附件——可直接从剪贴板把图片粘贴进会话，也可通过文件选择或拖拽附加文件，附件随消息一并发送给模型。(@surenwuyuwuqiu)
-- 数据库：支持直接打开本地 SQLite 数据库文件作为连接——数据库连接表单新增 SQLite 类型，主机字段承载由文件选择器选定的数据库文件路径；由于内嵌文件无法走隧道，SSH 隧道控件在该类型下隐藏；Navicat / DBeaver 导入的 SQLite 条目也会映射到该类型。
+- 数据库：新增 SQLite 数据库类型支持——可在连接表单中选择本地数据库文件并直接打开；同时支持识别从 Navicat / DBeaver 导入的 SQLite 连接。
 - 导入：支持导入 mRemoteNG 连接文件——保留文件夹层级结构，映射各连接的协议、主机、端口、用户名等属性；导出文件使用受支持加密方式时密码可一并导入。(@andreafunicelli)
 - 导入：支持导入 MobaXterm 私钥，并支持使用 PuTTY `.ppk` 密钥认证——来自 PuTTY 系工具的密钥可直接选用，无需先转换为 OpenSSH 格式。(@chris-edstrom)
+- MCP 客户端：内置 AI 可通过 HTTP、stdio 或 SSE 使用外部 MCP 服务器的工具，敏感配置加密存储。(@surenwuyuwuqiu)
+- MCP 服务端：新增前台执行模式，支持在跳板机、堡垒机等场景下完成交互式登录后，让 AI 直接操作当前终端，解决独立后台 SSH 会话无法访问实际目标节点的问题。与内置 AI 共用终端工具，支持屏幕捕获、按键输入和异步输出收集，保留审批策略；同时保留后台 SSH 执行模式。 (@surenwuyuwuqiu)
 - MCP：文件工具改走连接的文件传输会话，传输协议跟随连接设置——支持 SFTP 或 SCP，没有 SFTP 子系统的主机（嵌入式设备常见）把连接改为 SCP 即可使用。
+- Android：开放起始页和连接表单中的本地终端入口，支持默认 Shell 设置，并补充系统 Shell 和 PATH 回退处理。(@laigcss)
+- 云同步：新增 SFTP、S3、SMB 同步源，与 Git、WebDAV 一同可选；四种文件型后端共用快照同步引擎，并支持连接测试。
 - 国际化：新增葡萄牙语、越南语——设置中现可选 pt / vi 界面语言。
 
 **改进**
 - AI：开始会话时自动将 AI 锁定到当前活动终端，回复自动关联正确的会话，无需先手动锁定。
+- MCP：客户端配置改用新增 / 编辑弹窗，支持弹窗内测试连接，列表布局更紧凑，传输方式名称本地化并默认选择 HTTP；服务运行期间禁止修改端口和执行模式。前台工具参数与内置 AI 统一，替换原有参数名。
 - 界面：侧边栏宽度在重启后保持，调整过的侧边栏不再每次启动都恢复默认宽度。
-- 同步：只上传内容真正有变化的文件——通过内容比对跳过未变化的文件，减少同步流量和对云端的写入。
+- 连接：高级设置按协议、终端、网络分组；SSH、Telnet 和本地连接可分别设置终端类型，默认 `xterm-256color`，并优化字段布局和翻译文案。
+- SSH 隧道：支持配置自动重连、重试间隔和随机抖动，适用于本地、远程及动态转发。(@zhongqian97)
+- RDP：输入事件立即唤醒消息循环，降低键盘和鼠标延迟，改善画面刷新响应。(@IBRAHIMELAMRABET)
+- 云同步：只上传内容真正有变化的文件——通过内容比对跳过未变化的文件，减少同步流量和对云端的写入。
 - 终端：时间戳列新增毫秒选项，可更精确地度量快速产出的输出。
 - Shell：Git Bash 路径可在设置中配置以支持非默认安装位置，并自动检测 scoop 安装的 Git Bash。(@chris-edstrom)
 - 工作区：保存 / 编辑工作区时可选择分组，便于将工作区归入分组管理；同时新增了创建入口，保存工作区更容易触达。
@@ -72,22 +95,28 @@ Thanks to @surenwuyuwuqiu, @dungvv, @andreafunicelli, @chris-edstrom and @IBRAHI
 
 **修复**
 - AI：修复请求 OpenCode Zen 的 Go 端点时缺少必需的 `x-opencode-session` 会话头的问题——现在会传入会话 ID，服务端可正确关联同一会话。(@andreafunicelli)
+- MCP：审批弹窗中的文字支持选中复制。
 - 终端：修复 Windows 本地会话中粘贴多行文本插入 LF 换行导致命令出错的问题（ConPTY 期望 CR）——关闭括号粘贴时换行符转换为 CR，粘贴多行命令序列可正确执行。
 - 终端：修复多字符输入法按键改写未送达终端的问题——会把单次按键改写为字符串的输入法（如越南语 Telex）现在可正常使用。(@dungvv)
 - SSH：修复主机残留旧登录密码导致密钥认证失败的问题——遗留密码不再破坏密钥认证。
 - SSH：修复 cwd 钩子注入干扰登录后自动化（登录时自动执行的命令或脚本）的问题；注入逻辑重构，WSL 与 SSH 现共用同一状态机。
 - SSH：修复 GSSAPI / Kerberos 认证在 `KRB5CCNAME` 指向 Windows 盘符路径时失败的问题——这类路径现在按 FILE 票据缓存处理。
+- RDP：修复非中英文操作系统上的安全提示弹窗阻塞连接的问题；凭据输入弹窗仍需用户操作。
 - 凭据：数据安全加固——恢复的密钥解锁前先对实际数据校验，错误的恢复不再产生半解锁的存储；重置流程按存储清单推导受影响字段，不再依赖硬编码列表；解锁对话框文案调整并新增退出选项。
 - 导入：修复 `.utm` 导出依赖导出机器凭据存储的问题——导出现在自包含（凭据随连接一并写入），且所有机密字段均用导出密码加密。
+- 应用：修复无窗口 / 服务端模式的空指针崩溃；沙箱权限禁止读取根目录时，本地文件浏览自动回退到用户主目录。(@laigcss)
 - 应用：WebView 用户数据目录改为固定路径，不再按进程创建临时目录（避免临时目录不断累积）；启动时清理历史遗留的按进程临时目录。
 - 应用：拒绝将数据目录迁移到其自身内部（嵌套在自身子目录下），此前会破坏目录结构。
 - 数据库：修复二进制 Guid 列在结果网格中显示为乱码的问题——SQL Server 的 `UNIQUEIDENTIFIER` 与 Oracle 的 `RAW(16)` 列（EF Core / ABP 写入 Guid 主键的形式）现按格式化 GUID 文本显示，其他非文本二进制值以 `0x` 前缀的十六进制显示。(@IBRAHIMELAMRABET)
-- Shell：scoop 安装的 Git Bash 与系统 Git Bash 分开标注，shell 列表中两者可区分。
+- Shell：scoop 安装的 Git Bash 与系统 Git Bash 分开标注，shell 列表中两者可区分。 (@chris-edstrom)
 - 终端：修复负载高时全屏 TUI（ncurses 菜单等）界面显示错乱、退出后残留内容的问题。
 - 凭据：修复数据目录移动或复制后凭据存储无法恢复解锁的问题，以及切换加密模式 / 修改主密码后可能锁死存储的问题。
 - 界面：修复浅色主题下启动时闪黑的问题。
 
-感谢 @surenwuyuwuqiu、@dungvv、@andreafunicelli、@chris-edstrom 和 @IBRAHIMELAMRABET 对本版本的贡献。
+**说明**
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+
+感谢 @surenwuyuwuqiu、@dungvv、@andreafunicelli、@chris-edstrom、@IBRAHIMELAMRABET、@zhongqian97 和 @laigcss 对本版本的贡献。
 
 ## v1.10.0
 

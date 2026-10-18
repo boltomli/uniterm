@@ -61,6 +61,7 @@ type TelnetSession struct {
 	localEcho      bool
 	telnetSendMode string // "character" | "line"
 	newlineMode    string // "cr" | "crlf"
+	termType       string // terminal name replied to the server's TTYPE SEND
 	lineBuf        []byte // line mode only: bytes since the last flushed line
 
 	// iacPending holds an incomplete telnet command carried across reads
@@ -107,6 +108,7 @@ func (s *TelnetSession) Connect(config ConnectionConfig) error {
 	s.localEcho = config.LocalEcho
 	s.telnetSendMode = config.TelnetSendMode
 	s.newlineMode = config.NewlineMode
+	s.termType = EffectiveTermType(config.TermType)
 
 	// Proactively negotiate binary transmission, character-at-a-time mode,
 	// and terminal type — unless the user opted for passive negotiation.
@@ -266,8 +268,8 @@ func (s *TelnetSession) handleSubNegotiation(data []byte, start int) {
 	}
 	opt := data[start+2]
 	if opt == telnetOptTerminalType && data[start+3] == telnetTTYPESend {
-		// Server requests terminal type: reply with "xterm-256color"
-		term := []byte("xterm-256color")
+		// Server requests terminal type: reply with the configured value.
+		term := []byte(s.termType)
 		msg := make([]byte, 0, 4+len(term))
 		msg = append(msg, telnetIAC, telnetSB, telnetOptTerminalType, telnetTTYPEIs)
 		msg = append(msg, term...)

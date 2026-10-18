@@ -15,7 +15,7 @@ import (
 
 	"github.com/zalando/go-keyring"
 
-	unitsync "github.com/ys-ll/uniterm/backend/sync"
+	"github.com/ys-ll/uniterm/backend/kdf"
 )
 
 // Keychain is the subset of sync.Keychain this package needs.
@@ -197,11 +197,11 @@ func (s *Store) Setup(mode, masterPassword string) error {
 			return errors.New("existing encrypted data; use switch-credential-mode to re-encrypt instead of setup")
 		}
 		var err error
-		salt, err = unitsync.GenerateSalt()
+		salt, err = kdf.GenerateSalt()
 		if err != nil {
 			return err
 		}
-		key = unitsync.DeriveKey(masterPassword, salt)
+		key = kdf.DeriveKey(masterPassword, salt)
 	default:
 		return fmt.Errorf("unknown credential mode %q", mode)
 	}
@@ -220,7 +220,7 @@ func (s *Store) Unlock(masterPassword string) error {
 	if mode != ModeMasterPassword {
 		return errors.New("not in master-password mode")
 	}
-	key := unitsync.DeriveKey(masterPassword, salt)
+	key := kdf.DeriveKey(masterPassword, salt)
 	// Verify before caching: the cached entry may hold a key this data
 	// cannot be opened with, and a failed attempt must not overwrite it
 	// with another one that cannot either. Both checks run: the meta

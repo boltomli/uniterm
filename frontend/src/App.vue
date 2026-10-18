@@ -155,7 +155,7 @@
     <DataDirDialog v-model:visible="dataDirVisible" :first-run="credStore.firstRun || credStore.dataDirInfo.firstRun" @done="onDataDirDone" />
     <EncryptionModeDialog v-model:visible="encryptVisible" :existing-secrets="credStore.status.existingSecrets" @done="onEncryptDone" />
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
-    <MobileKeyBar v-if="keyBarSessionId" :session-id="keyBarSessionId" />
+    <MobileKeyBar v-if="keyBarSessionId" :key="keyBarSessionId" :session-id="keyBarSessionId" />
   </div>
   </el-config-provider>
 </template>
@@ -239,6 +239,7 @@ import { waitForTerminalSize } from './services/terminalManager'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
 import type { ConnectionConfig } from './types/session'
+import type { PanelType } from './types/workspace'
 import { Application, Clipboard, Events } from '@wailsio/runtime'
 import { parseQuickConnect } from './utils/quickConnect'
 import { getShellLabel as getShellLabelBase, parseWslFromShell } from './utils/shellLabel'
@@ -297,20 +298,24 @@ const sessionStore = useSessionStore()
 // Soft keyboards lack Esc/Tab/arrows/Ctrl combos. The bar floats at the bottom
 // of .app-container — directly above the soft keyboard, because MainActivity
 // pads the app root by the IME inset. It shows only while the keyboard is up
-// from a terminal textarea focus and an SSH-family session is connected.
+// from a terminal textarea focus and its session is connected.
 const isMobile = isMobilePlatform()
-const terminalFocusActive = ref(false)
+const focusedTerminalSessionId = ref<string | null>(null)
+
+function updateFocusedTerminal(el: HTMLElement | null) {
+  focusedTerminalSessionId.value = el?.classList?.contains('xterm-helper-textarea')
+    ? el.closest<HTMLElement>('[data-terminal-session-id]')?.dataset.terminalSessionId || null
+    : null
+}
 
 function onDocFocusIn(e: FocusEvent) {
-  const el = e.target as HTMLElement | null
-  terminalFocusActive.value = !!el?.classList?.contains('xterm-helper-textarea')
+  updateFocusedTerminal(e.target as HTMLElement | null)
 }
 function onDocFocusOut() {
   // Focus may move between xterm instances or to nothing; re-check after the
   // focusin/focusout pair settles.
   requestAnimationFrame(() => {
-    const el = document.activeElement as HTMLElement | null
-    terminalFocusActive.value = !!el?.classList?.contains('xterm-helper-textarea')
+    updateFocusedTerminal(document.activeElement as HTMLElement | null)
   })
 }
 if (isMobile) {
@@ -350,15 +355,10 @@ onUnmounted(() => {
 })
 
 const keyBarSessionId = computed(() => {
-  if (!isMobile || !terminalFocusActive.value) return null
-  const tab = activeTab.value
-  if (!tab || tab.type !== 'terminal') return null
-  const panel = panelStore.getPanel(tab.panelId)
-  if (!panel?.sessionId) return null
-  // local/wsl panels have no need for the escape-sequence bar
-  if (panel.type === 'local' || panel.type === 'wsl') return null
-  if (sessionStore.getStatus(panel.sessionId) !== 'connected') return null
-  return panel.sessionId
+  const sessionId = focusedTerminalSessionId.value
+  if (!isMobile || !sessionId) return null
+  if (sessionStore.getStatus(sessionId) !== 'connected') return null
+  return sessionId
 })
 const { duplicateSession } = useDuplicateSession()
 const aiStore = useAIStore()
@@ -661,16 +661,11 @@ function onMcpApprovalResolve(approved: boolean, reason: string) {
   mcpApprovalVisible.value = mcpApprovalRequest.value !== null
 }
 
-// backend mcp:session-created: an agent opened a new SSH session; mount a
-// visible terminal tab for it so the user can watch and control it.
-function onMcpSessionCreated(payload: { sessionId: string; name?: string; host?: string }) {
-  const cfg: Partial<ConnectionConfig> = {
-    type: 'ssh',
-    name: payload.name || payload.host || 'MCP',
-    host: payload.host || '',
-  }
-  const panel = panelStore.createPanel(cfg as ConnectionConfig, 'ssh')
-  const title = payload.name || payload.host || 'MCP'
+// MCP-created sessions follow the same terminal mounting and sizing flow as UI sessions.
+async function onMcpSessionCreated(payload: { sessionId: string; type: string; name?: string; host?: string; config: ConnectionConfig }) {
+  const cfg = payload.config
+  const panel = panelStore.createPanel(cfg, payload.type as PanelType)
+  const title = payload.name || payload.host || payload.type
   panelStore.updateTitle(panel.id, title)
   panelStore.bindSession(panel.id, payload.sessionId)
   sessionStore.initSession(payload.sessionId)
@@ -679,7 +674,20 @@ function onMcpSessionCreated(payload: { sessionId: string; name?: string; host?:
     ? tabStore.replaceStartTab(tabStore.activeTab.id, title, panel.id)
     : tabStore.createTerminalTab(title, panel.id)
   panelStore.movePanelToTab(panel.id, tab.id)
+  // TCP sessions already connect during CreateSession; other text terminals
+  // wait for measured dimensions before starting their PTY.
+  if (payload.type === 'tcp') return
+  try {
+    const size = await waitForTerminalSize(payload.sessionId)
+    cfg.initialCols = size.cols
+    cfg.initialRows = size.rows
+    await SessionStart(payload.sessionId, cfg)
+  } catch (e) {
+    console.error('Failed to start MCP terminal:', e)
+    CloseSession(payload.sessionId).catch(() => {})
+  }
 }
+
 
 // 凭据补全统一在 composables/useTunnelCredentials.ts：终端连接、容器、K8s 等
 // 入口共用同一实现。App.vue 自身的 showCredentialDialog 无法被本组件
@@ -988,7 +996,7 @@ onMounted(async () => {
     mcpApprovalVisible.value = mcpApprovalRequest.value !== null
   })
   unsubMcpSessionCreated = Events.On('mcp:session-created', (ev) => {
-    onMcpSessionCreated(ev.data)
+    void onMcpSessionCreated(ev.data)
   })
   // Go-side WndProc events: window move/resize start/end. The RDP window is a
   // WS_CHILD, so it moves with the main window automatically; only a resize of

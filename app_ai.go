@@ -25,6 +25,8 @@ import (
 	_ "image/png"  // registered for image.DecodeConfig
 
 	"github.com/mattn/go-ieproxy"
+	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/ys-ll/uniterm/backend/mcpclient"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
@@ -2058,4 +2060,156 @@ func (a *App) ReadLocalAttachmentFile(path string) (LocalAttachmentFile, error) 
 		Size:    info.Size(),
 		DataB64: base64.StdEncoding.EncodeToString(data),
 	}, nil
+}
+
+// MCP client wiring: uniTerm connects to external MCP servers and feeds their
+// tools into the built-in AI assistant. This is the CLIENT half; the SERVER
+// half (uniTerm exposed to external agents) lives in app_mcp.go / backend/mcp.
+// The two share no state and persist independently.
+
+// ensureMCPClient lazily builds the manager over mcp_clients.json.
+func (a *App) ensureMCPClient() *mcpclient.Manager {
+	a.mcpClientOnce.Do(func() {
+		if a.mcpClientStore == nil {
+			a.mcpClientStore = store.NewMCPClientStore(a.dataDir)
+			if a.credentialStore != nil {
+				a.mcpClientStore.SetPasswordStore(a.credentialStore)
+			}
+		}
+		a.mcpClient = mcpclient.NewManager(a.mcpClientStore)
+	})
+	return a.mcpClient
+}
+
+// StartMCPClient loads persisted external servers and connects the enabled
+// ones. Called after stores are ready (alongside StartMCP).
+func (a *App) StartMCPClient() {
+	if a.dataDir == "" {
+		return
+	}
+	mgr := a.ensureMCPClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mgr.Reload(ctx)
+}
+
+// ListMCPClients returns every persisted external server config.
+func (a *App) ListMCPClients() ([]store.MCPClientConfig, error) {
+	a.ensureMCPClient()
+	return a.mcpClientStore.Load()
+}
+
+// SaveMCPClient upserts one external server by name, persists, and reloads
+// live connections (a newly added/enabled server connects immediately; a
+// disabled/edited one is dropped and re-dialed as needed).
+func (a *App) SaveMCPClient(cfg store.MCPClientConfig) error {
+	return a.saveMCPClient(cfg, "")
+}
+
+// UpdateMCPClient edits or renames an existing server in one store save.
+func (a *App) UpdateMCPClient(originalName string, cfg store.MCPClientConfig) error {
+	if strings.TrimSpace(originalName) == "" {
+		return errors.New("original MCP client name is required")
+	}
+	return a.saveMCPClient(cfg, originalName)
+}
+
+func (a *App) saveMCPClient(cfg store.MCPClientConfig, originalName string) error {
+	cfg.Name = strings.TrimSpace(cfg.Name)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	mgr := a.ensureMCPClient()
+	all, err := a.mcpClientStore.Load()
+	if err != nil {
+		return err
+	}
+	replaced := false
+	if originalName != "" {
+		for _, c := range all {
+			if c.Name == cfg.Name && c.Name != originalName {
+				return errors.New("an MCP client with this name already exists")
+			}
+		}
+	}
+	for i := range all {
+		if (originalName == "" && all[i].Name == cfg.Name) || all[i].Name == originalName {
+			all[i] = cfg
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		if originalName != "" {
+			return errors.New("MCP client no longer exists")
+		}
+		all = append(all, cfg)
+	}
+	if err := a.mcpClientStore.Save(all); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mgr.Reload(ctx)
+	return nil
+}
+
+// RemoveMCPClient deletes a persisted server and closes its live connection.
+func (a *App) RemoveMCPClient(name string) error {
+	mgr := a.ensureMCPClient()
+	all, err := a.mcpClientStore.Load()
+	if err != nil {
+		return err
+	}
+	kept := all[:0]
+	for _, c := range all {
+		if c.Name != name {
+			kept = append(kept, c)
+		}
+	}
+	if err := a.mcpClientStore.Save(kept); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mgr.Reload(ctx)
+	return nil
+}
+
+// TestMCPClient dials a candidate config once, lists its tools, and closes —
+// used by the settings "test" button without persisting first.
+func (a *App) TestMCPClient(cfg store.MCPClientConfig) ([]mcpclient.DiscoveredTool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return a.ensureMCPClient().TestConnection(ctx, cfg)
+}
+
+// ListMCPTools flattens healthy external servers' tools for the AI panel.
+// Never errors out: a broken connection degrades to "no tools from it".
+func (a *App) ListMCPTools() ([]mcpclient.DiscoveredTool, error) {
+	if a.dataDir == "" {
+		return []mcpclient.DiscoveredTool{}, nil
+	}
+	return a.ensureMCPClient().ListTools(), nil
+}
+
+// CallMCPTool invokes an external tool by its qualified name and returns text.
+func (a *App) CallMCPTool(qualified string, args map[string]any) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return a.ensureMCPClient().CallTool(ctx, qualified, args)
+}
+
+// MCPClientStatuses reports per-server health for the settings UI.
+func (a *App) MCPClientStatuses() []mcpclient.ConnStatus {
+	if a.dataDir == "" {
+		return nil
+	}
+	mgr := a.ensureMCPClient()
+	configs, err := a.mcpClientStore.Load()
+	if err != nil {
+		log.Writef("mcpclient: statuses: %v", err)
+		return nil
+	}
+	return mgr.Statuses(configs)
 }

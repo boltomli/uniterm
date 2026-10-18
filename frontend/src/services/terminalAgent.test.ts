@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Use vi.hoisted to allow factory references to variables defined at top level
-const { mockSessionWrite } = vi.hoisted(() => {
+const { mockSessionWrite, mockStartForeground, mockPollForeground, mockInterruptForeground, mockCaptureScreen, mockSendKey, mockStartForegroundCapture } = vi.hoisted(() => {
   const mockSessionWrite = vi.fn().mockResolvedValue(undefined)
-  return { mockSessionWrite }
+  // Backend execution-engine bindings (executeCommand/startCommand now run
+  // through the MCP foreground job registry instead of the raw session:data stream).
+  const mockStartForeground = vi.fn().mockResolvedValue('fg-job-1')
+  const mockPollForeground = vi.fn().mockResolvedValue(['', '', 0, 'exited'])
+  const mockInterruptForeground = vi.fn().mockResolvedValue(undefined)
+  const mockCaptureScreen = vi.fn().mockResolvedValue('screen output')
+  const mockSendKey = vi.fn().mockResolvedValue(undefined)
+  const mockStartForegroundCapture = vi.fn().mockResolvedValue('fg-observer')
+  return { mockSessionWrite, mockStartForeground, mockPollForeground, mockInterruptForeground, mockCaptureScreen, mockSendKey, mockStartForegroundCapture }
 })
 
 // ---- mock wailsjs modules ----
@@ -14,64 +22,20 @@ vi.mock('@wailsio/runtime', () => ({
 
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   SessionWrite: mockSessionWrite,
+  CaptureScreen: mockCaptureScreen,
+  SendKey: mockSendKey,
+  StartForegroundCapture: mockStartForegroundCapture,
+  StartForeground: (...args: any[]) => mockStartForeground(...args),
+  PollForeground: async (...args: any[]) => {
+    const [out, err, code, state] = await mockPollForeground(...args)
+    const encode = (s: string) => btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(''))
+    return [encode(out), encode(err), code, state]
+  },
+  InterruptForeground: (...args: any[]) => mockInterruptForeground(...args),
 }))
 
 vi.mock('../services/sessionWriter', () => ({
   queuedSessionWrite: (...args: any[]) => mockSessionWrite(...args),
-}))
-
-// ---- mock terminal manager (prompt-line capture + screen-buffer reads) ----
-// The fake terminal exposes a scripted screen buffer: `fakeScreen` models the
-// buffer rows xterm.js would hold after parsing the PTY stream. Tests set it
-// to the *final* screen state while feeding raw (possibly redraw-heavy) data
-// through the session:data events.
-const PROMPT = '[root@node140 ~]#'
-
-let fakeScreen: string[] = [PROMPT + ' ']
-let fakeBufferType: 'normal' | 'alternate' = 'normal'
-
-function setFakeScreen(lines: string[], type: 'normal' | 'alternate' = 'normal') {
-  fakeScreen = lines
-  fakeBufferType = type
-}
-
-function makeFakeTerminal() {
-  const screen = fakeScreen
-  const type = fakeBufferType
-  return {
-    rows: screen.length,
-    buffer: {
-      active: {
-        type,
-        baseY: 0,
-        cursorY: 0,
-        length: screen.length,
-        getLine: (n: number) => {
-          if (n < 0 || n >= screen.length) return undefined
-          return {
-            translateToString: (trim?: boolean) =>
-              trim ? screen[n].replace(/\s+$/, '') : screen[n],
-          }
-        },
-      },
-    },
-  }
-}
-
-const mockGetManagedTerminal = vi.fn(() => ({
-  terminal: makeFakeTerminal(),
-  lineOffset: 0,
-}))
-const mockIsTerminalActive = vi.fn(() => true)
-const mockGetMirrorPromptSnapshot = vi.fn((): { promptLine: string; startRow: number } | null => null)
-const mockReadMirrorScreenFromRow = vi.fn((): string | null => null)
-const mockReadMirrorTail = vi.fn((): string | null => null)
-vi.mock('../services/terminalManager', () => ({
-  getManagedTerminal: (...args: any[]) => mockGetManagedTerminal(...(args as [])),
-  isTerminalActive: (...args: any[]) => mockIsTerminalActive(...(args as [])),
-  getMirrorPromptSnapshot: (...args: any[]) => mockGetMirrorPromptSnapshot(...(args as [])),
-  readMirrorScreenFromRow: (...args: any[]) => mockReadMirrorScreenFromRow(...(args as [])),
-  readMirrorTail: (...args: any[]) => mockReadMirrorTail(...(args as [])),
 }))
 
 // ---- mock pinia stores ----
@@ -92,9 +56,13 @@ const mockTabStore = {
   getAILockedPanels: mockGetAILockedPanels,
   activeTab: mockActiveTab,
 }
+const mockPanels = new Map<string, { id: string; title: string }>([
+  ['panel-1', { id: 'panel-1', title: 'Panel A' }],
+  ['panel-2', { id: 'panel-2', title: 'Prod DB' }],
+])
 const mockPanelStore = {
   getPanel: mockGetPanel,
-  panels: new Map<string, { id: string; title: string }>(),
+  panels: mockPanels,
 }
 
 vi.mock('../stores/tabStore', () => ({
@@ -114,43 +82,8 @@ vi.mock('../stores/sessionStore', () => ({
 }))
 
 // ---- import after mocks ----
-import {
-  watchOutput,
-  executeCommand,
-  truncateOutput,
-  startCommand,
-  sendTerminalKey,
-  captureTerminal,
-  scanTailPrompt,
-  capOutput,
-  TAIL_SCAN_CHARS,
-  OUTPUT_CAP_CHARS,
-} from './terminalAgent'
-import type { ExecuteResult, WatchResult } from './terminalAgent'
-// ---- helpers ----
-const MOCK_TIMESTAMP = 1700000000000
-
-function fakeData(sessionId: string, data: string) {
-  return { id: sessionId, data }
-}
-
-// @wailsio/runtime invokes registered handlers with a WailsEvent object
-// ({ name, data }); the session:data payload rides on `data`. Tests capture the
-// handler the code under test registered and invoke it with that event shape to
-// simulate incoming PTY output.
-type SessionDataEvent = { name: string; data: { id: string; data: string } }
-
-function withMockedTime() {
-  const originalNow = Date.now
-  const originalRandom = Math.random
-  Date.now = vi.fn(() => MOCK_TIMESTAMP)
-  Math.random = vi.fn(() => 0)
-  return () => {
-    Date.now = originalNow
-    Math.random = originalRandom
-  }
-}
-
+import { collectOutput, executeCommand, truncateOutput, startCommand, sendTerminalKey, captureTerminal } from './terminalAgent'
+import type { ExecuteResult } from './terminalAgent'
 describe('truncateOutput', () => {
   it('returns full text when lines <= threshold', () => {
     const text = 'line1\nline2\nline3'
@@ -229,316 +162,6 @@ describe('ExecuteResult interface', () => {
   })
 })
 
-describe('watchOutput', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    setFakeScreen([PROMPT + ' '])
-  })
-
-  it('returns promise and cleanup', () => {
-    const result = watchOutput('session-1', PROMPT, 1000)
-    expect(result.promise).toBeInstanceOf(Promise)
-    expect(typeof result.cleanup).toBe('function')
-  })
-
-  it('resolves when the prompt line reappears after the command', async () => {
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
-
-    // Final screen state after the command: echoed command, output, new prompt.
-    setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
-
-    // Echoed command line, then output, then the prompt returns.
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toContain('hi')
-    // The reappeared prompt line is stripped: output ends at the last output
-    // line, not with a trailing prompt.
-    expect(result.output).not.toMatch(/\[root@node140 ~\]#\s*$/)
-  })
-
-  it('captures the final screen state, not raw ConPTY redraw frames (issue 624)', async () => {
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
-
-    // What the user actually sees on screen after the command completes.
-    setFakeScreen([
-      `${PROMPT} reg query X`,
-      'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server',
-      `${PROMPT} `,
-    ])
-
-    // Windows Server 2016 ConPTY redraws a wrapping line by moving the cursor
-    // left (ESC[nD) and re-emitting progressively shorter tails — the raw
-    // stream is full of intermediate redraw frames the screen never shows.
-    const redrawFragments = [
-      'Server\\WinStation\\SYSTEM\\CurrentControlSet\\Control\\Terminal',
-      'Server\\WinStationSYSTEM\\CurrentControlSet\\Control\\Terminal',
-      'Server\\WinStationYSTEM\\CurrentControlSet\\Control\\Terminal',
-      'Server\\WinStationM\\CurrentControlSet\\Control\\Terminal',
-      'Server\\WinStationtControlSet\\Control\\Terminal',
-    ].join('\r\n')
-    capturedCallback!({
-      name: 'session:data',
-      data: fakeData(
-        's1',
-        `${PROMPT} reg query X\r\n${redrawFragments}\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\r\n${PROMPT} `
-      ),
-    })
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toBe(
-      `${PROMPT} reg query X\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server`
-    )
-    // None of the redraw fragments may leak into the AI-visible output.
-    expect(result.output).not.toContain('WinStation')
-  })
-
-  it('resolves via idle heuristic when prompt differs (e.g. dynamic prompt)', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', PROMPT, 5000)
-
-    setFakeScreen([`${PROMPT} echo hi`, 'hi', '[user@host ~]$ '])
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n[user@host ~]$ `) })
-    vi.advanceTimersByTime(800)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toContain('hi')
-    vi.useRealTimers()
-  })
-
-  it('does not resolve on the initial prompt alone', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', PROMPT, 1000)
-
-    // Only the prompt so far (no echoed command line before it) → keep waiting.
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} `) })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(true)
-    vi.useRealTimers()
-  })
-
-  it('never resolves early when promptLine is empty (timeout only)', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', '', 1000)
-
-    // Even output that looks like a prompt must not trigger detection.
-    setFakeScreen([`${PROMPT} echo hi`, 'hi', `${PROMPT} `])
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', `${PROMPT} echo hi\nhi\n${PROMPT} `) })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(true)
-    expect(result.output).toContain('hi')
-    vi.useRealTimers()
-  })
-
-  it('times out after timeoutMs', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const { promise } = watchOutput('s1', PROMPT, 1000)
-
-    setFakeScreen(['partial output'])
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'partial output') })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(true)
-    expect(result.output).toContain('partial output')
-    vi.useRealTimers()
-  })
-
-  it('ignores events from different sessions', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    setFakeScreen([''])
-    const { promise } = watchOutput('s1', PROMPT, 1000)
-
-    capturedCallback!({ name: 'session:data', data: fakeData('s2', 'wrong session data') })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.output).toBe('')
-    vi.useRealTimers()
-  })
-
-  it('cleanup prevents resolution', async () => {
-    vi.useFakeTimers()
-    vi.mocked(Events.On).mockImplementation((_eventName, _callback) => {
-      return () => { }
-    })
-
-    const { promise, cleanup } = watchOutput('s1', PROMPT, 1000)
-    cleanup()
-
-    // Should not resolve/resolve with undefined after cleanup
-    let resolved = false
-    promise.then(() => { resolved = true }).catch(() => { resolved = true })
-    vi.advanceTimersByTime(2000)
-    // After cleanup, the promise should not settle via the normal path
-    // (it's prevented by the resolved flag)
-    expect(resolved).toBe(false)
-    vi.useRealTimers()
-  })
-})
-
-// Bounded per-event work for watchOutput (security.md batch2): prompt
-// detection scans only a small tail window and raw output is capped, so a
-// long-running command cannot make each session:data event re-scan (and
-// retain) the full stream.
-describe('watchOutput bounded tail scan', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    setFakeScreen([PROMPT + ' '])
-    mockIsTerminalActive.mockReturnValue(true)
-  })
-
-  afterEach(() => {
-    mockIsTerminalActive.mockReturnValue(true)
-    vi.useRealTimers()
-  })
-
-  it('scanTailPrompt only processes a bounded window of multi-MB output', () => {
-    const filler = ('x'.repeat(120) + '\n').repeat(18000) // ~2.1MB
-    expect(filler.length).toBeGreaterThan(2 * 1024 * 1024)
-
-    const scan = scanTailPrompt(filler + `${PROMPT} `)
-    expect(scan).not.toBeNull()
-    expect(scan!.line).toBe(PROMPT)
-    // The string fed to stripAnsi + line splitting must stay bounded no
-    // matter how large the total output is.
-    expect(scan!.scannedLength).toBeLessThanOrEqual(TAIL_SCAN_CHARS + 1)
-  })
-
-  it('scanTailPrompt keeps the initial-prompt guard semantics', () => {
-    // First (and only) line is the prompt → index 0, no earlier lines: the
-    // watcher must not treat this as completion.
-    const alone = scanTailPrompt(`${PROMPT} `)
-    expect(alone).not.toBeNull()
-    expect(alone!.line).toBe(PROMPT)
-    expect(alone!.index).toBe(0)
-    expect(alone!.hasEarlierLines).toBe(false)
-
-    // Prompt on a later line → resolvable (index >= 1, still fully in window).
-    const afterOutput = scanTailPrompt(`echo hi\nhi\n${PROMPT} `)
-    expect(afterOutput).not.toBeNull()
-    expect(afterOutput!.line).toBe(PROMPT)
-    expect(afterOutput!.index).toBe(2)
-    expect(afterOutput!.hasEarlierLines).toBe(false)
-  })
-
-  it('scanTailPrompt reports earlier lines once output leaves the window', () => {
-    const scan = scanTailPrompt('filler line\n'.repeat(1000) + `${PROMPT} `)
-    expect(scan).not.toBeNull()
-    expect(scan!.line).toBe(PROMPT)
-    expect(scan!.hasEarlierLines).toBe(true)
-    expect(scan!.scannedLength).toBeLessThanOrEqual(TAIL_SCAN_CHARS + 1)
-  })
-
-  it('capOutput keeps only the newest 64KB, dropping the head at a line boundary', () => {
-    const capped = capOutput('HEAD-MARKER\n' + 'h'.repeat(70000) + '\nTAIL-MARKER line\n')
-    expect(capped.length).toBeLessThanOrEqual(OUTPUT_CAP_CHARS)
-    expect(capped).not.toContain('HEAD-MARKER')
-    expect(capped).toContain('TAIL-MARKER line')
-
-    // Under the cap → untouched.
-    expect(capOutput('small\noutput')).toBe('small\noutput')
-  })
-
-  it('resolves when the prompt reappears beyond the tail window', async () => {
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    setFakeScreen([`${PROMPT} big`, 'row of output', `${PROMPT} `])
-    const { promise } = watchOutput('s1', PROMPT, 5000, undefined, 0)
-
-    // ~72KB of output — far past the 4KB scan window; the prompt that follows
-    // must still be detected as the last complete line.
-    const filler = 'row of output with some padding text\n'.repeat(2000)
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', filler + `${PROMPT} `) })
-
-    const result: WatchResult = await promise
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toContain('row of output')
-  })
-
-  it('drops the oldest output beyond the 64KB cap on the raw-stream fallback', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    // No screen available → watchOutput falls back to the raw stream, which
-    // exposes the retained output.
-    mockIsTerminalActive.mockReturnValue(false)
-
-    const { promise } = watchOutput('s1', '', 1000)
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'HEAD-MARKER\n' + 'h'.repeat(70000) + '\n') })
-    capturedCallback!({ name: 'session:data', data: fakeData('s1', 'TAIL-MARKER line\n') })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: WatchResult = await promise
-    expect(result.output.length).toBeLessThanOrEqual(OUTPUT_CAP_CHARS)
-    expect(result.output).not.toContain('HEAD-MARKER')
-    expect(result.output).toContain('TAIL-MARKER line')
-  })
-})
-
 describe('executeCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -550,7 +173,8 @@ describe('executeCommand', () => {
     vi.mocked(mockGetRemoteOS).mockReturnValue(undefined)
     mockActiveTab.type = 'terminal'
     mockActiveTab.panelId = 'panel-1'
-    setFakeScreen([PROMPT + ' '])
+    mockStartForeground.mockResolvedValue('fg-job-1')
+    mockPollForeground.mockResolvedValue(['', '', 0, 'exited'])
   })
 
   // A failing assertion inside a fake-timer test must not leak fake timers
@@ -566,86 +190,47 @@ describe('executeCommand', () => {
     await expect(executeCommand('ls')).rejects.toThrow('No active terminal session')
   })
 
-  it('sends the command with no injected marker', async () => {
-    const restore = withMockedTime()
+  it('hands the command to the backend engine with no injected marker', async () => {
+    mockStartForeground.mockResolvedValueOnce('fg-job-1')
+    mockPollForeground.mockResolvedValueOnce(['hello\n', '', 0, 'exited'])
 
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => {}
-    })
+    const result = await executeCommand('echo hello')
 
-    const cmdPromise = executeCommand('echo hello')
-
-    // Should have written to session — command only, no marker echo appended.
-    expect(mockSessionWrite).toHaveBeenCalledOnce()
-    const writtenArg = mockSessionWrite.mock.calls[0][1]
-    expect(writtenArg).toContain('echo hello')
-    expect(writtenArg).not.toContain('__AI_DONE_')
-    expect(writtenArg).not.toContain('echo "')
-
-    // Wait for async EventsOn to fire (inside Promise constructor = microtask)
-    await Promise.resolve()
-    expect(capturedCallback).not.toBeNull()
-
-    // Prompt reappears after the echoed command + output → completion.
-    setFakeScreen([`${PROMPT} echo hello`, 'hello', `${PROMPT} `])
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} echo hello\nhello\n${PROMPT} `) })
-
-    const result = await cmdPromise
+    expect(mockStartForeground).toHaveBeenCalledOnce()
+    const [sid, cmd, idleMs, hardLimitMs] = mockStartForeground.mock.calls[0]
+    expect(sid).toBe('test-session-id')
+    expect(cmd).toContain('echo hello')
+    expect(cmd).not.toContain('__AI_DONE_')
+    expect(cmd).not.toContain('echo "')
+    expect(idleMs).toBe(800)
+    expect(hardLimitMs).toBe(60000)
     expect(result.exitCode).toBe(0)
     expect(result.timedOut).toBe(false)
-    expect(typeof result.output).toBe('string')
+    expect(result.output).toContain('hello')
+  })
 
-    restore()
-  }, 10000)
-
-  it('sends CR newline (not LF) and no leading space for Windows OpenSSH', async () => {
+  it('sends no newline and no leading space for Windows OpenSSH (the engine appends CR)', async () => {
     vi.mocked(mockGetRemoteOS).mockReturnValue('windows-openssh')
-    const restore = withMockedTime()
+    mockPollForeground.mockResolvedValueOnce(['dir listing\n', '', 0, 'exited'])
 
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => {}
+    await executeCommand('dir')
+
+    expect(mockStartForeground).toHaveBeenCalledOnce()
+    const cmd = mockStartForeground.mock.calls[0][1] as string
+    expect(cmd).toBe('dir') // newline now lives in the backend newlineFor()
+  })
+
+  it('returns timedOut=true when the engine reports the timeout state', async () => {
+    mockStartForeground.mockResolvedValueOnce('fg-job-2')
+    let polls = 0
+    mockPollForeground.mockImplementation(async () => {
+      polls++
+      if (polls === 1) return ['some output line1\nline2\nline3\nline4\nline5', '', 0, 'running']
+      return ['', '', 0, 'timeout']
     })
 
-    const cmdPromise = executeCommand('dir')
+    const result: ExecuteResult = await executeCommand('long-command', 1000, 2, 2)
 
-    expect(mockSessionWrite).toHaveBeenCalledOnce()
-    const writtenArg = mockSessionWrite.mock.calls[0][1] as string
-    expect(writtenArg).toBe('dir\r') // CR terminator, no leading space
-
-    await Promise.resolve()
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} dir\r\n${PROMPT} `) })
-    await cmdPromise
-
-    restore()
-  }, 10000)
-
-  it('returns timedOut=true on timeout', async () => {
-    vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
-    const cmdPromise = executeCommand('long-command', 1000, 2, 2)
-
-    // Wait for async EventsOn to capture the callback
-    await Promise.resolve()
-    expect(capturedCallback).not.toBeNull()
-
-    // Command still running at timeout: screen holds the output lines so far
-    // (no trailing prompt row yet). Five lines so head=2/tail=2 keeps
-    // line1+line2 and line4+line5.
-    setFakeScreen(['line1', 'line2', 'line3', 'line4', 'line5'])
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', 'some output line1\nline2\nline3\nline4\nline5') })
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
-
-    const result: ExecuteResult = await cmdPromise
     expect(result.exitCode).toBe(-1)
     expect(result.timedOut).toBe(true)
     expect(result.output).toContain('TRUNCATED')
@@ -654,50 +239,75 @@ describe('executeCommand', () => {
     expect(result.output).toContain('line4')
     expect(result.output).toContain('line5')
     expect(result.output).not.toContain('line3') // truncated middle
-    vi.useRealTimers()
+  })
+
+  it('returns cancelled and interrupts the job on stop', async () => {
+    mockStartForeground.mockResolvedValueOnce('fg-job-3')
+    let polls = 0
+    mockPollForeground.mockImplementation(async () => {
+      polls++
+      return ['', '', 0, 'running']
+    })
+    // Cancel after the first poll so the loop's stop check fires on the next
+    // iteration, exactly like the store's stopRequested flag does.
+    const result = await executeCommand('long-command', 5000, 50, 300, () => polls >= 1)
+    expect(result.cancelled).toBe(true)
+    expect(mockInterruptForeground).toHaveBeenCalledWith('fg-job-3', 'SIGINT')
+  }, 1000)
+
+  it('advances byte offsets for Unicode output', async () => {
+    mockPollForeground.mockResolvedValueOnce(['\u4e2d\u6587\u{1f642}', '', 0, 'running'])
+      .mockResolvedValueOnce(['\u5b8c\u6210', '', 0, 'exited'])
+    const result = await executeCommand('echo unicode')
+    expect(result.output).toBe('\u4e2d\u6587\u{1f642}\u5b8c\u6210')
+    expect(mockPollForeground.mock.calls[1][1]).toBe(10)
+  })
+
+  it('drains all pages after completion, including split UTF-8', async () => {
+    const output = 'a'.repeat(65535) + '\u4e2d' + 'tail'
+    // Supply the actual base64 wire pages, splitting the Chinese character.
+    const bytes = new TextEncoder().encode(output)
+    const spy = vi.spyOn(await import('../../bindings/github.com/ys-ll/uniterm/app'), 'PollForeground')
+    const encode = (b: Uint8Array) => btoa(Array.from(b, c => String.fromCharCode(c)).join(''))
+    spy.mockResolvedValueOnce([encode(bytes.slice(0, 65536)), '', 0, 'exited'] as any)
+      .mockResolvedValueOnce([encode(bytes.slice(65536)), '', 0, 'exited'] as any)
+    try {
+      expect((await executeCommand('large')).output).toBe(output)
+      expect(spy).toHaveBeenLastCalledWith('fg-job-1', 65536, 65536)
+    } finally { spy.mockRestore() }
+  })
+
+  it('does not report a closed session as success', async () => {
+    mockPollForeground.mockResolvedValueOnce(['partial', '', -1, 'session_closed'])
+    expect((await executeCommand('cmd')).exitCode).toBe(-1)
+  })
+
+  it('passes custom idle_ms through to the shared engine', async () => {
+    mockPollForeground.mockResolvedValueOnce(['done', '', 0, 'exited'])
+    await executeCommand('ls', 5000, 50, 300, undefined, undefined, 1750)
+    expect(mockStartForeground).toHaveBeenCalledWith('test-session-id', expect.any(String), 1750, 5000)
   })
 
   it('truncates long output on success path', async () => {
-    const restore = withMockedTime()
-
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-
     const lines = Array.from({ length: 10 }, (_, i) => `line${i + 1}`)
     const output = lines.join('\n')
 
-    // headLines=3 so the head keeps the echoed command line + line1 + line2.
-    const cmdPromise = executeCommand('some-cmd', 5000, 3, 3)
+    mockStartForeground.mockResolvedValueOnce('fg-job-4')
+    mockPollForeground.mockResolvedValueOnce([output, '', 0, 'exited'])
 
-    // Wait for async EventsOn to capture the callback
-    await Promise.resolve()
-    expect(capturedCallback).not.toBeNull()
+    // headLines=3 keeps line1 + line2 in the head; tailLines=3 keeps
+    // line8 + line9 + line10 (no echoed-command line nor returning prompt
+    // occupies slots anymore — the engine output starts after the echo).
+    const result: ExecuteResult = await executeCommand('some-cmd', 5000, 3, 3)
 
-    // Echoed command + long output + returning prompt on the final screen.
-    setFakeScreen([`${PROMPT} some-cmd`, ...lines, `${PROMPT} `])
-    // Echoed command + long output + returning prompt triggers completion.
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', `${PROMPT} some-cmd\n` + output + `\n${PROMPT} `) })
-
-    const result: ExecuteResult = await cmdPromise
     expect(result.exitCode).toBe(0)
     expect(result.timedOut).toBe(false)
     expect(result.output).toContain('TRUNCATED')
-    // headLines=3 keeps the echoed command line + line1 + line2. The trailing
-    // prompt that reappeared on completion is stripped before truncation, so
-    // tailLines=3 now keeps line8 + line9 + line10 (line8 was previously
-    // omitted because the returning prompt occupied one tail slot).
     expect(result.output).toContain('line1')
     expect(result.output).toContain('line2')
     expect(result.output).toContain('line8')
     expect(result.output).toContain('line9')
     expect(result.output).toContain('line10')
-    // The reappeared prompt must not leak into the returned output.
-    expect(result.output).not.toMatch(/\n\[root@node140 ~\]#\s*$/)
-
-    restore()
   })
 })
 
@@ -705,21 +315,17 @@ describe('startCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(Events.On).mockReturnValue(() => {})
-    setFakeScreen([PROMPT + ' '])
+    mockStartForeground.mockResolvedValue('fg-job-1')
+    mockPollForeground.mockResolvedValue(['', '', 0, 'running'])
   })
 
-  it('returns the screen content collected during the window', async () => {
+  it('returns the engine output sampled during the window', async () => {
     vi.useFakeTimers()
+    mockStartForeground.mockResolvedValueOnce('fg-job-5')
+    mockPollForeground.mockResolvedValue(['log line A\nlog line B', '', 0, 'running'])
 
     const p = startCommand('tail -f app.log')
-
-    // startCommand awaits SessionWrite before subscribing/scheduling — flush.
-    await Promise.resolve()
-
-    // Output streams in during the 3s collect window and lands on screen.
-    setFakeScreen([`${PROMPT} tail -f app.log`, 'log line A', 'log line B'])
-    vi.advanceTimersByTime(3000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
+    await vi.advanceTimersByTimeAsync(3000)
 
     const result = await p
     expect(result.started).toBe(true)
@@ -728,252 +334,127 @@ describe('startCommand', () => {
     vi.useRealTimers()
   })
 
-  it('returns the final screen state even when the stream carries redraw frames', async () => {
+  it('returns the engine screen-resolved output — redraw frames never reach the caller', async () => {
     vi.useFakeTimers()
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
+    mockStartForeground.mockResolvedValueOnce('fg-job-6')
+    // The backend emulator already resolved the ConPTY frames; the frontend
+    // sees only the final text.
+    mockPollForeground.mockResolvedValue(['final state only', '', 0, 'running'])
 
     const p = startCommand('cmd-with-redraws')
-    await Promise.resolve() // flush the SessionWrite await inside startCommand
-
-    setFakeScreen([`${PROMPT} cmd-with-redraws`, 'final state only'])
-    capturedCallback!({
-      name: 'session:data',
-      data: fakeData('test-session-id', 'frame1\rframe2\rframe3\r\nfinal state only'),
-    })
-    vi.advanceTimersByTime(3000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
+    await vi.advanceTimersByTimeAsync(3000)
 
     const result = await p
-    expect(result.output).toBe(`${PROMPT} cmd-with-redraws\nfinal state only`)
+    expect(result.output).toBe('final state only')
     expect(result.output).not.toContain('frame1')
     vi.useRealTimers()
   })
 })
 
-describe('sendTerminalKey', () => {
+describe('shared backend terminal tools', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(Events.On).mockReturnValue(() => {})
-    setFakeScreen([PROMPT + ' '])
+    mockActiveTab.type = 'terminal'
+    mockActiveTab.panelId = 'panel-1'
+    mockGetPanel.mockReturnValue(mockPanel)
+    mockGetAILockedPanels.mockReturnValue([])
+    mockCaptureScreen.mockResolvedValue('backend screen')
+    mockStartForegroundCapture.mockResolvedValue('fg-observer')
+    mockPollForeground.mockResolvedValue(['collected', '', 0, 'exited'])
   })
 
-  it('captures the screen response after ctrl_c', async () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('captures through the same screen backend as MCP', async () => {
+    expect(await captureTerminal(80)).toEqual({ output: 'backend screen' })
+    expect(mockCaptureScreen).toHaveBeenCalledWith('test-session-id', 80)
+  })
+
+  it('propagates capture errors', async () => {
+    mockCaptureScreen.mockRejectedValueOnce(new Error('session closed'))
+    await expect(captureTerminal()).rejects.toThrow('session closed')
+  })
+
+  it('sends text through the same input backend as MCP', async () => {
+    await sendTerminalKey('yes', undefined, false)
+    expect(mockSendKey).toHaveBeenCalledWith('test-session-id', 'yes', '', false)
+    expect(mockSessionWrite).not.toHaveBeenCalled()
+  })
+
+  it('uses the shared screen for the response to ctrl_c', async () => {
     vi.useFakeTimers()
+    const pending = sendTerminalKey(undefined, 'ctrl_c')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await pending).toEqual({ output: 'backend screen' })
+    expect(mockSendKey).toHaveBeenCalledWith('test-session-id', '', 'ctrl_c', true)
+    expect(mockCaptureScreen).toHaveBeenCalledWith('test-session-id', 200)
+  })
 
-    const p = sendTerminalKey(undefined, 'ctrl_c', true)
-    await Promise.resolve() // flush the SessionWrite await inside sendTerminalKey
+  it('collects using a read-only backend job without sending a command', async () => {
+    expect(await collectOutput(5000)).toEqual({ output: 'collected', completed: true, timedOut: false })
+    expect(mockStartForegroundCapture).toHaveBeenCalledWith('test-session-id', 800, 5000)
+    expect(mockPollForeground).toHaveBeenCalledWith('fg-observer', 0, 65536)
+    expect(mockStartForeground).not.toHaveBeenCalled()
+    expect(mockSessionWrite).not.toHaveBeenCalled()
+  })
 
-    // The interrupted program stops and the shell prompt returns.
-    setFakeScreen([`${PROMPT} ^C`, `${PROMPT} `])
-    vi.advanceTimersByTime(1000)
-    vi.advanceTimersByTime(100) // screen-read settle delay
+  it('keeps timeout distinct from completion during collection', async () => {
+    mockPollForeground.mockResolvedValueOnce(['partial', '', -1, 'timeout'])
+    expect(await collectOutput()).toEqual({ output: 'partial', completed: false, timedOut: true })
+  })
 
-    const result = await p
-    expect(result.output).toContain('^C')
-    vi.useRealTimers()
+  it('cancels the observer without typing Ctrl+C into the terminal', async () => {
+    const result = await collectOutput(5000, 100, 300, () => true)
+    expect(result.completed).toBe(false)
+    expect(mockInterruptForeground).toHaveBeenCalledWith('fg-observer', 'SIGINT')
+    expect(mockSendKey).not.toHaveBeenCalled()
   })
 })
 
-// ---- background (deactivated) terminal fallback ----
-// While a panel sits in the background, BaseTerminal gates live session:data
-// writes on isActive and replays on reactivation — the xterm screen buffer
-// stays frozen at the pre-command state. The AI output path must not read
-// that stale buffer: it falls back to the raw PTY stream, which sessionStore
-// buffers losslessly regardless of visibility.
-describe('background terminal fallback (frozen xterm buffer)', () => {
-  const flush = async () => { await new Promise(r => setTimeout(r, 0)) }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    // Frozen screen: only the pre-command prompt, no command output.
-    setFakeScreen([PROMPT + ' '])
-    mockIsTerminalActive.mockReturnValue(false)
-  })
-
-  afterEach(() => {
-    mockIsTerminalActive.mockReturnValue(true)
-    mockGetMirrorPromptSnapshot.mockReturnValue(null)
-    mockReadMirrorScreenFromRow.mockReturnValue(null)
-    mockReadMirrorTail.mockReturnValue(null)
-  })
-
-  it('executeCommand rebuilds output from the raw stream instead of the frozen screen', async () => {
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-    // What actually flowed through the PTY while the panel was in background.
-    const stream = `${PROMPT} echo hi\r\nhi\r\n${PROMPT} `
-    mockSessionStore.getChunkCount.mockReturnValue(4)
-    mockSessionStore.getDataFromChunk.mockReturnValue(stream)
-
-    const pending = executeCommand('echo hi', 5000)
-    await flush()
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
-
-    const result = await pending
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toBe(`${PROMPT} echo hi\nhi`)
-  })
-
-  it('capturePromptSnapshot derives the prompt from the buffered stream when inactive', async () => {
-    // Indirect: exact-prompt completion only fires when the snapshot matches
-    // the stream's final line. A frozen-buffer snapshot of a panel that was
-    // backgrounded mid-command would not contain the prompt at all.
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-    const stream = `${PROMPT} sleep 1\r\ndone\r\n${PROMPT} `
-    mockSessionStore.getChunkCount.mockReturnValue(7)
-    mockSessionStore.getDataFromChunk.mockReturnValue(stream)
-
-    const pending = executeCommand('sleep 1', 5000)
-    await flush()
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
-
-    const result = await pending
-    expect(result.timedOut).toBe(false)
-    expect(result.output).toContain('done')
-  })
-
-  it('captureTerminal rebuilds the tail from the buffered stream when inactive', () => {
-    mockSessionStore.getChunkCount.mockReturnValue(10)
-    mockSessionStore.getDataFromChunk.mockReturnValue(`${PROMPT} tail\nline1\nline2\n${PROMPT} `)
-
-    const result = captureTerminal(200)
-    // Raw per-line text is kept verbatim (trailing spaces included), matching
-    // the live screen path's translateToString() semantics.
-    expect(result.output).toBe(`${PROMPT} tail\nline1\nline2\n${PROMPT} `)
-  })
-
-  it('captureTerminal still reads the live screen buffer when active', () => {
-    mockIsTerminalActive.mockReturnValue(true)
-    setFakeScreen([`${PROMPT} cmd`, 'out', `${PROMPT} `])
-
-    const result = captureTerminal(200)
-    expect(result.output).toBe(`${PROMPT} cmd\nout\n${PROMPT} `)
-  })
-})
-
-describe('background terminal headless mirror', () => {
-  const flush = async () => { await new Promise(r => setTimeout(r, 0)) }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    setFakeScreen([PROMPT + ' '])
-    mockIsTerminalActive.mockReturnValue(false)
-  })
-
-  afterEach(() => {
-    mockIsTerminalActive.mockReturnValue(true)
-    mockGetMirrorPromptSnapshot.mockReturnValue(null)
-    mockReadMirrorScreenFromRow.mockReturnValue(null)
-    mockReadMirrorTail.mockReturnValue(null)
-  })
-
-  it('executeCommand prefers the mirror screen over raw reconstruction when inactive', async () => {
-    let capturedCallback: ((ev: SessionDataEvent) => void) | null = null
-    vi.mocked(Events.On).mockImplementation((_eventName, callback) => {
-      capturedCallback = callback
-      return () => { }
-    })
-    // The raw stream carries a prompt redraw glued onto the data row (ConPTY
-    // cursor positioning, stripped by stripAnsi) — raw text reconstruction
-    // collapses that line to the prompt and the data row is lost.
-    const stream = `${PROMPT} echo hi\r\nhi\r${PROMPT} `
-    mockGetMirrorPromptSnapshot.mockReturnValue({ promptLine: PROMPT, startRow: 0 })
-    // The mirror buffer, fully emulator-resolved: what the screen would show.
-    mockReadMirrorScreenFromRow.mockReturnValue([`${PROMPT} echo hi`, 'hi', `${PROMPT} `].join('\n'))
-
-    const pending = executeCommand('echo hi', 5000)
-    await flush()
-    capturedCallback!({ name: 'session:data', data: fakeData('test-session-id', stream) })
-
-    const result = await pending
-    expect(result.timedOut).toBe(false)
-    // The data row survives — it would be gone under raw reconstruction.
-    expect(result.output).toBe(`${PROMPT} echo hi\nhi`)
-  })
-
-  it('captureTerminal prefers the mirror tail when inactive', () => {
-    mockReadMirrorTail.mockReturnValue(`${PROMPT} cmd\nrow1\nrow2\n${PROMPT} `)
-
-    const result = captureTerminal(200)
-    expect(result.output).toBe(`${PROMPT} cmd\nrow1\nrow2\n${PROMPT} `)
-  })
-})
-
-// ── P1: explicit panel targets are restricted to the AI conversation ──────
-// buildDynamicContext only shows the model the locked (or active) panel, but
-// resolveActiveSession used to accept any panel title / "x (id: y)" from the
-// whole panel store — an injected execute_command {panel:"prod-db"} could
-// type into a session the user never attached.
 describe('resolveActiveSession explicit-panel restriction', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(Events.On).mockReturnValue(() => {})
     vi.mocked(mockSessionWrite).mockClear()
     vi.mocked(mockGetAILockedPanel).mockReturnValue(null)
+    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
     vi.mocked(mockGetRemoteOS).mockReturnValue(undefined)
     mockActiveTab.type = 'terminal'
     mockActiveTab.panelId = 'panel-1'
-    // Two live panels; the active tab is panel-1.
     vi.mocked(mockGetPanel).mockImplementation((id: string) => ({
       id,
       sessionId: `sess-${id}`,
       title: id === 'panel-2' ? 'Prod DB' : 'Panel A',
       config: { shellPath: '/bin/bash' },
     }))
-    // The title→panelId index reads panelStore.panels.
-    mockPanelStore.panels = new Map<string, { id: string; title: string }>([
-      ['panel-1', { id: 'panel-1', title: 'Panel A' }],
-      ['panel-2', { id: 'panel-2', title: 'Prod DB' }],
-    ])
+    mockStartForeground.mockResolvedValue('fg-job-1')
+    mockPollForeground.mockResolvedValue(['', '', 0, 'exited'])
   })
 
   it('rejects a panel that is neither locked nor active (no locks)', async () => {
-    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
-
     await expect(executeCommand('rm -rf /', 1000, 1, 1, undefined, 'Prod DB'))
       .rejects.toThrow('not associated with this AI conversation')
-    expect(mockSessionWrite).not.toHaveBeenCalled()
+    expect(mockStartForeground).not.toHaveBeenCalled()
   })
 
   it('allows the active panel when nothing is locked', async () => {
-    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
-
-    await expect(
-      executeCommand('ls', 10, 1, 1, undefined, 'Panel A').then(() => 'ok', (e: unknown) => String(e))
-    ).resolves.toBe('ok')
+    await expect(executeCommand('ls', 10, 1, 1, undefined, 'Panel A')).resolves.toBeDefined()
+    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-1', expect.stringContaining('ls'), 800, 10)
   })
 
   it('allows an explicitly locked panel', async () => {
     vi.mocked(mockGetAILockedPanels).mockReturnValue(['panel-2'])
-
-    const out = await executeCommand('ls', 10, 1, 1, undefined, 'Prod DB')
-      .then(() => 'ok', (e: unknown) => String(e))
-    expect(out).toBe('ok')
-    // bash gets a CRLF line terminator (see getShellNewline).
-    expect(mockSessionWrite).toHaveBeenCalledWith('sess-panel-2', ' ls\r\n')
+    await expect(executeCommand('ls', 10, 1, 1, undefined, 'Prod DB')).resolves.toBeDefined()
+    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-2', expect.stringContaining('ls'), 800, 10)
   })
 
   it('rejects another panel when a different one is locked', async () => {
     vi.mocked(mockGetAILockedPanels).mockReturnValue(['panel-1'])
-
     await expect(executeCommand('ls', 1000, 1, 1, undefined, 'Prod DB'))
       .rejects.toThrow('not associated with this AI conversation')
   })
 
   it('rejects the "title (id: …)" suffix form for a non-associated panel', async () => {
-    vi.mocked(mockGetAILockedPanels).mockReturnValue([])
-
     await expect(executeCommand('ls', 1000, 1, 1, undefined, 'Prod DB (id: panel-2)'))
       .rejects.toThrow('not associated with this AI conversation')
   })

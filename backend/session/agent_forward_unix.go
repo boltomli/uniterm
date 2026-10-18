@@ -13,6 +13,17 @@ import (
 )
 
 func localAgentAuthMethod() (ssh.AuthMethod, func(), error) {
+	client, cleanup, err := localAgentClient()
+	if err != nil {
+		return nil, cleanup, err
+	}
+	return ssh.PublicKeysCallback(client.Signers), cleanup, nil
+}
+
+// localAgentClient connects to the agent at SSH_AUTH_SOCK. The returned
+// cleanup closes the connection; signers obtained from the client stay usable
+// until then.
+func localAgentClient() (agent.Agent, func(), error) {
 	addr, err := localAgentSocket()
 	if err != nil {
 		return nil, func() {}, err
@@ -21,7 +32,7 @@ func localAgentAuthMethod() (ssh.AuthMethod, func(), error) {
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("connect to SSH_AUTH_SOCK %q: %w", addr, err)
 	}
-	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), func() { _ = conn.Close() }, nil
+	return agent.NewClient(conn), func() { _ = conn.Close() }, nil
 }
 
 // localAgentSocket returns the Unix socket exported by the SSH agent in the

@@ -65,6 +65,7 @@ var SecretFiles = []SecretFile{
 	{File: "identities.json", Paths: []string{"identities.*.password", "identities.*.keyContent"}},
 	{File: "proxies.json", Paths: []string{"proxies.*.pass"}},
 	{File: "ai.json", Paths: []string{"models.*.apiKey"}},
+	{File: "mcp_clients.json", Paths: []string{"clients.*.headers.*", "clients.*.env.*"}},
 	{File: "settings.json", Paths: []string{"ai.models.*.apiKey"}},
 	{File: "tunnels.json", Paths: []string{"tunnels.*.upstream.pass", "tunnels.*.socksPass"}},
 }

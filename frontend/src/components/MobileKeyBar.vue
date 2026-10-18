@@ -22,6 +22,7 @@
 </template>
 
 <script setup lang="ts">
+import { onBeforeUnmount } from 'vue'
 import { queuedSessionWrite } from '../services/sessionWriter'
 import { mobileCtrlArmed } from '../utils/mobileCtrlKey'
 
@@ -53,7 +54,7 @@ function onKey(key: BarKey) {
     mobileCtrlArmed.value = !mobileCtrlArmed.value
   } else {
     // Ctrl+arrow jumps words in most shells — 1;5C / 1;5D etc.
-    const seq = mobileCtrlArmed.value
+    const seq = mobileCtrlArmed.value && key.csi
       ? `\x1b[1;5${key.csi}`
       : key.seq
     mobileCtrlArmed.value = false
@@ -61,11 +62,15 @@ function onKey(key: BarKey) {
   }
   // Defensive: keep focus on the terminal so the soft keyboard stays up even
   // if the browser still moved focus despite pointerdown preventDefault.
-  const ta = document.querySelector('.xterm-helper-textarea') as HTMLElement | null
+  const host = Array.from(document.querySelectorAll<HTMLElement>('[data-terminal-session-id]'))
+    .find(el => el.dataset.terminalSessionId === props.sessionId)
+  const ta = host?.querySelector<HTMLElement>('.xterm-helper-textarea')
   ta?.focus()
 }
 
 const props = defineProps<{ sessionId: string }>()
+
+onBeforeUnmount(() => { mobileCtrlArmed.value = false })
 </script>
 
 <style scoped>

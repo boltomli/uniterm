@@ -1,15 +1,18 @@
 package session
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -23,107 +26,213 @@ import (
 // connection and recurse its jump hosts without importing the store package.
 type ConnResolver func(id string) (ConnectionConfig, bool)
 
-// userTunnelEntry is one running user-configured tunnel: the local (or remote)
-// listener plus every ssh.Client in its chain, so Stop can tear the whole thing
-// down.
+// userTunnelEntry owns one requested lifecycle, including connection attempts and
+// retry waits. Its resolver (and any temporary credentials) lives only in memory.
 type userTunnelEntry struct {
-	listener net.Listener
-	clients  []*ssh.Client // chain order; last is the exit
-	quit     chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	state  TunnelState // guarded by TunnelService.mu
 }
 
-// StartTunnel brings a user-configured tunnel up: it dials the proxy chain
-// (recursing the exit connection's own jump hosts, optionally entering through
-// an upstream SOCKS5/HTTP proxy) and starts the listener for the tunnel's mode.
-// It returns the running state; on failure the returned state carries the error
-// and nothing is left running.
+// StartTunnel connects once before returning. When automatic reconnection is
+// enabled, a failed attempt returns reconnecting and retries in the background.
 func (ts *TunnelService) StartTunnel(t Tunnel, resolve ConnResolver) TunnelState {
+	return ts.StartTunnelContext(context.Background(), t, resolve)
+}
+
+// StartTunnelContext also honors cancellation while the caller prepares a
+// tunnel. Cancelling it tears down the lifecycle and publishes stopped.
+func (ts *TunnelService) StartTunnelContext(ctx context.Context, t Tunnel, resolve ConnResolver) TunnelState {
 	// A dynamic tunnel that would expose an unauthenticated SOCKS proxy to
 	// the network is rejected before anything is reserved or dialed.
 	if err := validateSOCKSExposure(t); err != nil {
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
-	}
-
-	// Reserve the ID under the lock BEFORE dialing. Everything below is
-	// network I/O: without the reservation an auto-start and a manual start
-	// of the same ID both dialed, and the loser either overwrote the winner's
-	// entry — orphaning a listener and SSH chain nothing could stop — or
-	// flipped a running tunnel to error.
-	quit := make(chan struct{})
-	ts.mu.Lock()
-	if _, exists := ts.userTunnels[t.ID]; exists {
-		ts.mu.Unlock()
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelRunning})
-	}
-	// Placeholder entry; the finished listener/clients replace it on publish.
-	ts.userTunnels[t.ID] = &userTunnelEntry{quit: quit}
-	ts.mu.Unlock()
-
-	// release drops the reservation after a failure. StopTunnel may already
-	// have removed it (and closed quit) — never delete someone else's entry.
-	release := func() {
+		st := TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()}
+		ts.stateMu.Lock()
 		ts.mu.Lock()
-		if cur, ok := ts.userTunnels[t.ID]; ok && cur.quit == quit {
-			delete(ts.userTunnels, t.ID)
-		}
+		cb := ts.recordTunnelStateLocked(st)
 		ts.mu.Unlock()
+		ts.stateMu.Unlock()
+		if cb != nil {
+			cb(st)
+		}
+		return st
 	}
+	ts.mu.Lock()
+	if ts.closed || ctx.Err() != nil {
+		ts.mu.Unlock()
+		return TunnelState{ID: t.ID, Status: TunnelStopped}
+	}
+	if entry, exists := ts.userTunnels[t.ID]; exists {
+		st := entry.state
+		ts.mu.Unlock()
+		return st
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	entry := &userTunnelEntry{
+		ctx: ctx, cancel: cancel, done: make(chan struct{}),
+		state: TunnelState{ID: t.ID, Status: TunnelConnecting},
+	}
+	ts.userTunnels[t.ID] = entry
+	first := make(chan TunnelState, 1)
+	go ts.runUserTunnel(t, resolve, entry, first)
+	ts.mu.Unlock()
+	select {
+	case st := <-first:
+		return st
+	case <-ctx.Done():
+		// A completed first attempt also cancels its lifecycle during cleanup.
+		// Preserve that result when both cases became ready together.
+		select {
+		case st := <-first:
+			return st
+		default:
+			return TunnelState{ID: t.ID, Status: TunnelStopped}
+		}
+	}
+}
 
+func tunnelReconnectDelay(seconds, jitter int) time.Duration {
+	if seconds < 1 || seconds > 86400 {
+		seconds = 120
+	}
+	base := time.Duration(seconds) * time.Second
+	if jitter < 1 || jitter > 100 {
+		return base
+	}
+	spread := base * time.Duration(jitter) / 100
+	lower := max(time.Second, base-spread)
+	upper := base + spread
+	return lower + time.Duration(rand.Int64N(int64(upper-lower)+1))
+}
+
+func (ts *TunnelService) runUserTunnel(t Tunnel, resolve ConnResolver, entry *userTunnelEntry, first chan<- TunnelState) {
+	defer func() {
+		entry.cancel()
+		ts.finishStoppedTunnel(t.ID, entry)
+		close(entry.done)
+	}()
+	report := func(st TunnelState) {
+		if first != nil {
+			first <- st
+			first = nil
+		}
+	}
+	for {
+		if !ts.publishTunnelState(entry, TunnelState{ID: t.ID, Status: TunnelConnecting}, false) {
+			return
+		}
+		// Bound proxy negotiation, SSH handshakes, and remote listener setup.
+		attempt, cancel := context.WithTimeout(entry.ctx, 30*time.Second)
+		listener, clients, err := ts.openUserTunnel(attempt, t, resolve)
+		cancel()
+		if err == nil {
+			exit := clients[len(clients)-1]
+			stopClose := context.AfterFunc(entry.ctx, func() { closeClients(clients) })
+			st := TunnelState{ID: t.ID, Status: TunnelRunning, LocalPort: listener.Addr().(*net.TCPAddr).Port}
+			if ts.publishTunnelState(entry, st, false) {
+				report(st)
+				alive, stopAlive := context.WithCancel(entry.ctx)
+				go userTunnelKeepAlive(alive, clients)
+				exit.Wait()
+				stopAlive()
+			}
+			stopClose()
+			// Close SSH first: remote listener.Close sends an SSH request and
+			// must not wait forever for an unresponsive server to acknowledge it.
+			closeClients(clients)
+			listener.Close()
+			err = fmt.Errorf("ssh chain disconnected")
+		}
+		if entry.ctx.Err() != nil {
+			return
+		}
+		st := TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()}
+		if !t.AutoReconnect {
+			ts.publishTunnelState(entry, st, true)
+			report(st)
+			return
+		}
+		st.Status = TunnelReconnecting
+		if !ts.publishTunnelState(entry, st, false) {
+			return
+		}
+		report(st)
+		timer := time.NewTimer(tunnelReconnectDelay(t.ReconnectInterval, t.ReconnectJitter))
+		select {
+		case <-timer.C:
+		case <-entry.ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
+}
+
+func (ts *TunnelService) openUserTunnel(ctx context.Context, t Tunnel, resolve ConnResolver) (net.Listener, []*ssh.Client, error) {
 	chain, err := buildHopChain(t.SSHConnID, resolve)
 	if err != nil {
-		release()
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
+		return nil, nil, err
 	}
-
-	exit, clients, err := ts.dialChain(chain, t.Upstream)
+	exit, clients, err := ts.dialChain(ctx, chain, t.Upstream)
 	if err != nil {
-		release()
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
+		return nil, nil, err
 	}
-
-	listener, err := ts.startListener(t, exit, quit)
+	stopClose := context.AfterFunc(ctx, func() { closeClients(clients) })
+	listener, err := ts.startListener(t, exit)
+	stopped := stopClose()
+	if err == nil && (!stopped || ctx.Err() != nil) {
+		err = ctx.Err()
+	}
 	if err != nil {
 		closeClients(clients)
-		release()
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: err.Error()})
-	}
-
-	// Publish over the reservation: if StopTunnel removed it while we were
-	// dialing, tear down instead of orphaning a listener that nothing can
-	// stop any more.
-	ts.mu.Lock()
-	cur, ok := ts.userTunnels[t.ID]
-	if !ok || cur.quit != quit {
-		ts.mu.Unlock()
-		listener.Close()
-		closeClients(clients)
-		return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelStopped})
-	}
-	ts.userTunnels[t.ID] = &userTunnelEntry{listener: listener, clients: clients, quit: quit}
-	ts.mu.Unlock()
-
-	// Watch the exit client: keepalive actively closes a dead chain, and Wait
-	// unblocks when the connection drops, so we can flip the tunnel to error.
-	go tunnelKeepAlive(exit, quit, "tunnel="+t.ID)
-	go func() {
-		exit.Wait()
-		select {
-		case <-quit:
-			// Stopped by the user; state already handled by StopTunnel.
-		default:
-			ts.StopTunnel(t.ID)
-			ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelError, Error: "ssh chain disconnected"})
+		if listener != nil {
+			listener.Close()
 		}
-	}()
+		return nil, nil, err
+	}
+	return listener, clients, nil
+}
 
-	port := listener.Addr().(*net.TCPAddr).Port
-	return ts.setState(t.ID, TunnelState{ID: t.ID, Status: TunnelRunning, LocalPort: port})
+// Unlike session keepalives, a standalone tunnel must detect silent connection
+// loss. A reply (including an unsupported-request reply) proves the chain is
+// alive; a missing reply closes it so Wait starts the configured retry delay.
+func userTunnelKeepAlive(ctx context.Context, clients []*ssh.Client) {
+	client := clients[len(clients)-1]
+	ticker := time.NewTicker(sshKeepAliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		reply := make(chan error, 1)
+		go func() {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			reply <- err
+		}()
+		timer := time.NewTimer(30 * time.Second)
+		select {
+		case err := <-reply:
+			timer.Stop()
+			if err != nil {
+				closeClients(clients)
+				return
+			}
+		case <-timer.C:
+			closeClients(clients)
+			return
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
 }
 
 // startListener opens the listener appropriate to the tunnel's mode and starts
 // its accept loop. For local/dynamic the listener is local (net.Listen); for
 // remote it lives on the exit host (exit.Listen).
-func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan struct{}) (net.Listener, error) {
+func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client) (net.Listener, error) {
 	bindHost := t.ListenHost
 	if bindHost == "" {
 		bindHost = "127.0.0.1"
@@ -137,7 +246,7 @@ func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan str
 			return nil, fmt.Errorf("tunnel listen: %w", err)
 		}
 		target := net.JoinHostPort(t.TargetHost, strconv.Itoa(t.TargetPort))
-		go acceptLoop(ln, quit, func(c net.Conn) {
+		go acceptLoop(ln, func(c net.Conn) {
 			remote, err := exit.Dial("tcp", target)
 			if err != nil {
 				c.Close()
@@ -152,7 +261,7 @@ func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan str
 		if err != nil {
 			return nil, fmt.Errorf("tunnel listen: %w", err)
 		}
-		go acceptLoop(ln, quit, func(c net.Conn) {
+		go acceptLoop(ln, func(c net.Conn) {
 			// Bounded, optionally authenticated negotiation (see
 			// socks5Negotiate / validateSOCKSExposure).
 			target, err := socks5Negotiate(c, t.SOCKSUser, t.SOCKSPass)
@@ -184,7 +293,7 @@ func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan str
 			return nil, fmt.Errorf("tunnel remote listen: %w (check whether the port is already in use on the server by a stale session or another process)", err)
 		}
 		target := net.JoinHostPort(t.TargetHost, strconv.Itoa(t.TargetPort))
-		go acceptLoop(ln, quit, func(c net.Conn) {
+		go acceptLoop(ln, func(c net.Conn) {
 			local, err := net.Dial("tcp", target)
 			if err != nil {
 				c.Close()
@@ -205,36 +314,47 @@ func (ts *TunnelService) startListener(t Tunnel, exit *ssh.Client, quit chan str
 // the port is free on the server) under a throwaway ID, and torn down
 // immediately once the listener is bound. Running means everything bound;
 // Error carries the reason. Throwaway-ID states never reach the UI (see
-// setState), so failures are reported only through the return value.
+// recordTunnelStateLocked), so failures are reported only through the return value.
 func (ts *TunnelService) TestTunnel(t Tunnel, resolve ConnResolver) TunnelState {
 	t.ID = fmt.Sprintf("__test__%d", time.Now().UnixNano())
+	t.AutoReconnect = false
 	st := ts.StartTunnel(t, resolve)
 	ts.StopTunnel(t.ID)
 	return st
 }
 
-// StopTunnel tears down a running user tunnel (listener + whole ssh.Client
-// chain). No-op if the tunnel isn't running. Safe on a reservation entry (a
-// dial still in flight): closing quit cancels it, and the dialing StartTunnel
-// tears down whatever it produced when it finds the reservation gone.
+// StopTunnel cancels retries and in-flight connections, then waits until the
+// listener is released. A subsequent StartTunnel can safely reuse its port.
 func (ts *TunnelService) StopTunnel(id string) {
 	ts.mu.Lock()
 	entry, ok := ts.userTunnels[id]
 	if ok {
-		delete(ts.userTunnels, id)
+		entry.cancel()
 	}
 	ts.mu.Unlock()
 	if !ok {
 		return
 	}
-	close(entry.quit)
-	if entry.listener != nil {
-		entry.listener.Close()
+	<-entry.done
+}
+
+// The lifecycle owns final cleanup, including cancellation from a caller's
+// context before StopTunnel reaches the service.
+func (ts *TunnelService) finishStoppedTunnel(id string, entry *userTunnelEntry) {
+	ts.stateMu.Lock()
+	defer ts.stateMu.Unlock()
+	ts.mu.Lock()
+	if ts.userTunnels[id] != entry {
+		ts.mu.Unlock()
+		return
 	}
-	if entry.clients != nil {
-		closeClients(entry.clients)
+	delete(ts.userTunnels, id)
+	st := TunnelState{ID: id, Status: TunnelStopped}
+	cb := ts.recordTunnelStateLocked(st)
+	ts.mu.Unlock()
+	if cb != nil {
+		cb(st)
 	}
-	ts.setState(id, TunnelState{ID: id, Status: TunnelStopped})
 }
 
 // buildHopChain resolves the exit connection and recurses its jump host
@@ -270,13 +390,15 @@ func buildHopChain(exitID string, resolve ConnResolver) ([]ConnectionConfig, err
 // client (chain tail) plus every client for teardown. The first hop is dialed
 // directly (or through the upstream proxy); each subsequent hop is dialed
 // through the previous client — the standard ProxyJump chaining.
-func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProxy) (*ssh.Client, []*ssh.Client, error) {
-	dialHop := ts.dialHop
-	if dialHop == nil {
-		dialHop = dialFirstHop
-	}
+func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig, upstream *SocksProxy) (*ssh.Client, []*ssh.Client, error) {
 	var clients []*ssh.Client
 	var prev *ssh.Client
+	var stopClose []func() bool
+	defer func() {
+		for _, stop := range stopClose {
+			stop()
+		}
+	}()
 
 	for i, cfg := range chain {
 		addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
@@ -286,11 +408,20 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("ssh auth %s: %w", addr, err)
 		}
 
+		cleanup = sync.OnceFunc(cleanup)
+		stopClose = append(stopClose, context.AfterFunc(ctx, cleanup))
+
 		var raw net.Conn
 		if i == 0 {
-			raw, err = dialHop(addr, upstream)
+			// Tests may substitute the first-hop dialer to observe or stall
+			// dialing without a network.
+			if ts.dialHop != nil {
+				raw, err = ts.dialHop(addr, upstream)
+			} else {
+				raw, err = dialFirstHopContext(ctx, addr, upstream)
+			}
 		} else {
-			raw, err = prev.Dial("tcp", addr)
+			raw, err = prev.DialContext(ctx, "tcp", addr)
 		}
 		if err != nil {
 			cleanup()
@@ -298,6 +429,7 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 			return nil, nil, fmt.Errorf("dial %s: %w", addr, err)
 		}
 
+		stopClose = append(stopClose, context.AfterFunc(ctx, func() { raw.Close() }))
 		pinAddr := hostKeyPinAddr(cfg, addr)
 		cb, trust := NewHostKeyVerifier(pinAddr)
 		algoSet, _, err := resolveSSHAlgorithms(cfg.SSHAlgorithms)
@@ -342,8 +474,12 @@ func (ts *TunnelService) dialChain(chain []ConnectionConfig, upstream *SocksProx
 // dialFirstHop dials the first hop directly, or through an upstream SOCKS5/HTTP
 // proxy when configured (the chain's entry point).
 func dialFirstHop(addr string, upstream *SocksProxy) (net.Conn, error) {
+	return dialFirstHopContext(context.Background(), addr, upstream)
+}
+
+func dialFirstHopContext(ctx context.Context, addr string, upstream *SocksProxy) (net.Conn, error) {
 	if upstream == nil {
-		conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+		conn, err := (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, "tcp", addr)
 		if err == nil {
 			if tcp, ok := conn.(*net.TCPConn); ok {
 				tcp.SetKeepAlive(true)
@@ -364,9 +500,9 @@ func dialFirstHop(addr string, upstream *SocksProxy) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return d.Dial("tcp", addr)
+		return d.(proxy.ContextDialer).DialContext(ctx, "tcp", addr)
 	case "http":
-		return dialHTTPConnect(proxyAddr, upstream, addr)
+		return dialHTTPConnectContext(ctx, proxyAddr, upstream, addr)
 	default:
 		return nil, fmt.Errorf("unsupported upstream proxy kind %q", upstream.Kind)
 	}
@@ -374,10 +510,16 @@ func dialFirstHop(addr string, upstream *SocksProxy) (net.Conn, error) {
 
 // dialHTTPConnect opens a CONNECT tunnel through an HTTP proxy to addr.
 func dialHTTPConnect(proxyAddr string, up *SocksProxy, addr string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, 30*time.Second)
+	return dialHTTPConnectContext(context.Background(), proxyAddr, up, addr)
+}
+
+func dialHTTPConnectContext(ctx context.Context, proxyAddr string, up *SocksProxy, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}
+	stopClose := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopClose()
 	req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\n"
 	if up.User != "" {
 		cred := basicAuth(up.User, up.Pass)
@@ -423,14 +565,10 @@ func dialHTTPConnect(proxyAddr string, up *SocksProxy, addr string) (net.Conn, e
 
 // --- accept / copy helpers ---
 
-func acceptLoop(ln net.Listener, quit chan struct{}, handle func(net.Conn)) {
+func acceptLoop(ln net.Listener, handle func(net.Conn)) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			select {
-			case <-quit:
-			default:
-			}
 			return
 		}
 		go handle(conn)
@@ -460,22 +598,35 @@ func basicAuth(user, pass string) string {
 
 // --- runtime state ---
 
-// setState records a tunnel's runtime state and notifies the callback (app.go
-// wires it to a Wails event). Returns the state for convenience.
-func (ts *TunnelService) setState(id string, st TunnelState) TunnelState {
-	// Throwaway IDs from TestTunnel never surface in the UI: no recording, no
-	// event — a failed test reports through its return value, not a toast.
-	if strings.HasPrefix(id, "__test__") {
-		return st
-	}
+// publishTunnelState rejects results from a cancelled/replaced lifecycle and
+// serializes callback delivery so an older event cannot overwrite a newer one.
+func (ts *TunnelService) publishTunnelState(entry *userTunnelEntry, st TunnelState, finished bool) bool {
+	ts.stateMu.Lock()
+	defer ts.stateMu.Unlock()
 	ts.mu.Lock()
-	ts.states[id] = st
-	cb := ts.onState
+	if ts.userTunnels[st.ID] != entry || entry.ctx.Err() != nil {
+		ts.mu.Unlock()
+		return false
+	}
+	entry.state = st
+	if finished {
+		delete(ts.userTunnels, st.ID)
+	}
+	cb := ts.recordTunnelStateLocked(st)
 	ts.mu.Unlock()
 	if cb != nil {
 		cb(st)
 	}
-	return st
+	return true
+}
+
+// recordTunnelStateLocked omits throwaway test IDs from snapshots and events.
+func (ts *TunnelService) recordTunnelStateLocked(st TunnelState) func(TunnelState) {
+	if strings.HasPrefix(st.ID, "__test__") {
+		return nil
+	}
+	ts.states[st.ID] = st
+	return ts.onState
 }
 
 // SetStateCallback registers a callback invoked whenever a tunnel's state

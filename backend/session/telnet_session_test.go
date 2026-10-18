@@ -48,6 +48,7 @@ func (c *telnetRecConn) snapshot() [][]byte {
 func newTelnetTestSession(t *testing.T) (*TelnetSession, *telnetRecConn) {
 	t.Helper()
 	s := NewTelnetSession("telnet-test")
+	s.termType = EffectiveTermType("")
 	conn := &telnetRecConn{}
 	s.conn = conn
 	return s, conn

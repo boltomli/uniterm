@@ -573,7 +573,7 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 		}
 	}
 
-	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+	if err := session.RequestPty(EffectiveTermType(config.TermType), rows, cols, modes); err != nil {
 		session.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("request pty: %w", err)

@@ -92,6 +92,22 @@
         <span class="inline-hint">{{ t('tunnels.autoStart') }}</span>
       </el-form-item>
 
+      <el-form-item :label="t('tunnels.autoReconnectLabel')">
+        <el-switch v-model="form.autoReconnect" />
+        <span class="inline-hint">{{ t('tunnels.autoReconnect') }}</span>
+      </el-form-item>
+      <el-form-item v-if="form.autoReconnect" :label="t('tunnels.reconnectInterval')">
+        <el-input-number v-model="form.reconnectInterval" :min="1" :max="86400" :precision="0" :step="1" />
+        <span class="inline-hint">{{ t('tunnels.seconds') }}</span>
+        <div class="reconnect-hint">{{ t('tunnels.reconnectHint') }}</div>
+      </el-form-item>
+      <el-form-item v-if="form.autoReconnect" :label="t('tunnels.reconnectJitter')">
+        <span class="jitter-prefix">±</span>
+        <el-input-number v-model="form.reconnectJitter" :min="0" :max="100" :precision="0" :step="1" />
+        <span class="inline-hint">%</span>
+        <div class="reconnect-hint">{{ t('tunnels.reconnectJitterHint') }}</div>
+      </el-form-item>
+
       <!-- Equivalent ssh command, as a form row: mirrors the values above so
            users can verify what the fields map to -->
       <el-form-item :label="t('tunnels.sshExample')">
@@ -105,12 +121,12 @@
     <template #footer>
       <el-button
         :loading="testing"
-        :disabled="testing || editRunning"
-        :title="editRunning ? t('tunnels.testDisabledRunning') : undefined"
+        :disabled="testing || editActive"
+        :title="editActive ? t('tunnels.testDisabledRunning') : undefined"
         @click="handleTest"
       >{{ t('tunnels.test') }}</el-button>
       <el-button @click="visible = false">{{ t('tunnels.cancel') }}</el-button>
-      <el-button type="primary" @click="handleSave">{{ t('tunnels.save') }}</el-button>
+      <el-button type="primary" :disabled="editActive" :title="editActive ? t('tunnels.editDisabledActive') : undefined" @click="handleSave">{{ t('tunnels.save') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -166,6 +182,9 @@ function blankForm() {
     targetHost: '',
     targetPort: undefined as number | undefined,
     autoStart: false,
+    autoReconnect: false,
+    reconnectInterval: 120 as number | undefined,
+    reconnectJitter: 0 as number | undefined,
     groupId: undefined as string | undefined,
   }
 }
@@ -190,6 +209,9 @@ watch(visible, (v) => {
         targetHost: t0.targetHost || '',
         targetPort: t0.targetPort,
         autoStart: !!t0.autoStart,
+        autoReconnect: !!t0.autoReconnect,
+        reconnectInterval: t0.reconnectInterval || 120,
+        reconnectJitter: t0.reconnectJitter ?? 0,
         groupId: t0.groupId,
       })
     }
@@ -198,9 +220,8 @@ watch(visible, (v) => {
   }
 })
 
-// Editing a tunnel that is currently running: a test would grab the same
-// ports the live tunnel already holds, so disable it.
-const editRunning = computed(() => !!props.editingId && store.statusOf(props.editingId) === 'running')
+// Connecting and waiting to retry also own the tunnel configuration and ports.
+const editActive = computed(() => !!props.editingId && store.isActive(props.editingId))
 
 const testing = ref(false)
 
@@ -209,6 +230,8 @@ function validate(): string {
   if (!form.sshConnId) return t('tunnels.errConn')
   if (!form.listenPort) return t('tunnels.errListenPort')
   if (form.mode !== 'dynamic' && (!form.targetHost.trim() || !form.targetPort)) return t('tunnels.errTarget')
+  if (form.autoReconnect && (!Number.isInteger(form.reconnectInterval) || form.reconnectInterval! < 1 || form.reconnectInterval! > 86400)) return t('tunnels.errReconnectInterval')
+  if (form.autoReconnect && (!Number.isInteger(form.reconnectJitter) || form.reconnectJitter! < 0 || form.reconnectJitter! > 100)) return t('tunnels.errReconnectJitter')
   return ''
 }
 
@@ -223,11 +246,15 @@ function formPayload() {
     targetHost: form.mode === 'dynamic' ? undefined : form.targetHost.trim(),
     targetPort: form.mode === 'dynamic' ? undefined : form.targetPort,
     autoStart: form.autoStart,
+    autoReconnect: form.autoReconnect,
+    reconnectInterval: form.reconnectInterval ?? 120,
+    reconnectJitter: form.reconnectJitter ?? 0,
     groupId: form.groupId,
   }
 }
 
 async function handleTest() {
+  if (editActive.value) return
   const invalid = validate()
   if (invalid) { errorMsg.value = invalid; return }
   // Exit connection without saved credentials: prompt for user/password and
@@ -250,6 +277,7 @@ async function handleTest() {
 }
 
 function handleSave() {
+  if (editActive.value) return
   if (!form.name.trim()) { errorMsg.value = t('tunnels.errName'); return }
   const invalid = validate()
   if (invalid) { errorMsg.value = invalid; return }
@@ -295,6 +323,8 @@ const needsGatewayHint = computed(() => {
 .full { width: 100%; }
 .tunnel-dialog :deep(.el-select) { width: 100%; }
 .inline-hint { font-size: 0.75rem; color: var(--text-secondary); margin-left: 0.625rem; }
+.reconnect-hint { width: 100%; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; }
+.jitter-prefix { margin-right: 0.5rem; }
 .hostport { display: grid; grid-template-columns: 1fr auto 7.5rem; gap: 0.5rem; align-items: center; width: 100%; }
 .hostport .colon { color: var(--text-muted); text-align: center; }
 .hostport :deep(.el-input-number) { width: 100%; }

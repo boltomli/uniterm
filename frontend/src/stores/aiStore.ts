@@ -51,7 +51,7 @@ function estimateMessageTokens(msg: AIMessage): number {
 const SYSTEM_RULES = `You are an AI assistant inside uniTerm, a terminal emulator. You can execute shell commands in the user's active terminal to help them complete tasks.
 
 AVAILABLE TOOLS:
-1. execute_command — Run a shell command and wait for its output. Set timeout based on expected duration. Use head_lines/tail_lines to control how much output you receive.
+1. execute_command — Run a shell command and wait for its output. Set timeout_ms based on expected duration; the unit is milliseconds. Use head_lines/tail_lines to control how much output you receive.
 2. start_command — Start a background/long-running command (servers, daemons). Returns initial output immediately without waiting.
 3. capture_terminal — Take an instant snapshot of the terminal screen. Use to check current state without running commands.
 4. collect_output — Wait and collect new terminal output. Pure passive listening — does NOT send anything to the terminal. Use when a command is still running and you want to see progress.
@@ -70,11 +70,11 @@ CRITICAL RULES:
 - Always explain what you are about to do before executing commands.
 - If a command might be destructive, warn the user.
 
-TIMEOUT GUIDELINES:
-- 5-10s: quick commands (ls, cat, pwd, whoami)
-- 15-30s: moderate commands (grep, find, df, systemctl status)
-- 60-120s: build/install tasks (npm install, pip install, apt-get)
-- 120-300s: very long tasks (docker build, large git clone, full compilation)
+TIMEOUT GUIDELINES (timeout_ms):
+- 5000-10000 ms: quick commands (ls, cat, pwd, whoami)
+- 15000-30000 ms: moderate commands (grep, find, df, systemctl status)
+- 60000-120000 ms: build/install tasks (npm install, pip install, apt-get)
+- 120000-300000 ms: very long tasks (docker build, large git clone, full compilation)
 
 HANDLING TIMEOUTS:
 When execute_command times out, read the output carefully:
@@ -235,6 +235,7 @@ export const useAIStore = defineStore('ai', () => {
     dangerous: boolean
     panel?: string
     timeout?: number
+    idleMs?: number
     headLines?: number
     tailLines?: number
     // send_terminal_key replay payload: the literal input (or control key)
@@ -313,7 +314,7 @@ export const useAIStore = defineStore('ai', () => {
     lastDebugInfo.value = null
   }
 
-  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; headLines?: number; tailLines?: number; keyInput?: string; keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'; sendEnter?: boolean }) {
+  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; idleMs?: number; headLines?: number; tailLines?: number; keyInput?: string; keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'; sendEnter?: boolean }) {
     pendingCommand.value = cmd
   }
 

@@ -7,6 +7,7 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSkillStore } from '../stores/skillStore'
+import { loadRemoteMCPTools, toAgentToolEntry, callRemoteMCPTool, isRemoteMCPTool } from './mcpTools'
 import { GetSkillFile, ListSkillFiles } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { AIAttachment, AIMessage } from '../types/ai'
 import { Events } from '@wailsio/runtime'
@@ -476,9 +477,22 @@ function shouldConfirm(risk: RiskLevel): boolean {
 // On any failure we throw InputValidationError so the dispatch site can
 // surface the error back to the model and continue the agent loop.
 
+function positiveMilliseconds(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function nonNegativeLines(value: unknown, fallback: number, name: string): number {
+  if (value === undefined || value === null) return fallback
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new InputValidationError(`${name} must be a non-negative integer`)
+  }
+  return value
+}
+
 interface ExecuteCommandInput {
   command: string
-  timeout: number
+  timeout_ms: number
+  idle_ms: number
   head_lines: number
   tail_lines: number
   panel?: string
@@ -488,9 +502,10 @@ function validateExecuteCommandInput(raw: unknown): ExecuteCommandInput {
   const obj = validateObject(raw, 'execute_command input')
   return {
     command: validateRequiredString(obj.command, 'command'),
-    timeout: typeof obj.timeout === 'number' && Number.isFinite(obj.timeout) && obj.timeout > 0 ? obj.timeout : 60,
-    head_lines: typeof obj.head_lines === 'number' && Number.isFinite(obj.head_lines) ? obj.head_lines : 50,
-    tail_lines: typeof obj.tail_lines === 'number' && Number.isFinite(obj.tail_lines) ? obj.tail_lines : 300,
+    timeout_ms: positiveMilliseconds(obj.timeout_ms, 60000),
+    idle_ms: positiveMilliseconds(obj.idle_ms, 800),
+    head_lines: nonNegativeLines(obj.head_lines, 50, 'head_lines'),
+    tail_lines: nonNegativeLines(obj.tail_lines, 300, 'tail_lines'),
     panel: typeof obj.panel === 'string' ? obj.panel : undefined,
   }
 }
@@ -918,6 +933,11 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
     setActiveAssistantMsg(null)
   }
 
+  // External MCP client tools: fetched once per run and merged into the tool
+  // set. A failing/external server degrades to an empty list (see mcpTools).
+  const remoteTools = await loadRemoteMCPTools()
+  const mergedTools = [...AVAILABLE_TOOLS, ...remoteTools.map(toAgentToolEntry)]
+
   let turnCount = 0
   const maxTurns = useSettingsStore().settings.ai.maxTurns ?? 20
 
@@ -973,7 +993,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
     const chatOptions: any = {
       system: buildSystemPrompt(),
       messages: store.conversation,
-      tools: AVAILABLE_TOOLS,
+      tools: mergedTools,
       onChunk: (chunk: string) => {
         if (store.stopRequested) return
         if (streamedText) return // already handled by ai:token events
@@ -1114,7 +1134,8 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       const command = validated.command
       // Honor the model-provided timeout as-is (no clamping); the validator
       // falls back to 60s when the argument is missing or invalid.
-      const timeoutMs = validated.timeout * 1000
+      const timeoutMs = validated.timeout_ms
+      const idleMs = validated.idle_ms
       const headLines = validated.head_lines
       const tailLines = validated.tail_lines
       const risk = getRisk(tu)
@@ -1129,6 +1150,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           dangerous: risk === 'dangerous',
           panel: validated.panel,
           timeout: timeoutMs,
+          idleMs,
           headLines,
           tailLines
         })
@@ -1149,7 +1171,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       try {
         store.status = 'executing'
         const panelTitle = validated.panel
-        const result = await executeCommand(command, timeoutMs, headLines, tailLines, () => store.stopRequested, panelTitle)
+        const result = await executeCommand(command, timeoutMs, headLines, tailLines, () => store.stopRequested, panelTitle, idleMs)
         if (result.cancelled || store.stopRequested) {
           store.addMessage({
             id: `msg-${Date.now()}`,
@@ -1228,11 +1250,11 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         })
       }
     } else if (tu.name === 'capture_terminal') {
-      const tailLines = (tu.input.tail_lines as number) ?? 200
       try {
+        const tailLines = nonNegativeLines(tu.input.tail_lines, 200, 'tail_lines')
         store.status = 'executing'
         const panelTitle = tu.input.panel as string | undefined
-        const result = captureTerminal(tailLines, panelTitle)
+        const result = await captureTerminal(tailLines, panelTitle)
         store.addMessage({
           id: `msg-${Date.now()}`,
           role: 'tool',
@@ -1248,15 +1270,14 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         })
       }
     } else if (tu.name === 'collect_output') {
-      // Honor the model-provided timeout as-is (no clamping); `|| 30` falls
-      // back to 30s when the argument is missing or invalid.
-      const timeoutMs = ((tu.input.timeout as number) || 30) * 1000
-      const headLines = (tu.input.head_lines as number) ?? 100
-      const tailLines = (tu.input.tail_lines as number) ?? 300
+      const timeoutMs = positiveMilliseconds(tu.input.timeout_ms, 30000)
+      const idleMs = positiveMilliseconds(tu.input.idle_ms, 800)
       try {
+        const headLines = nonNegativeLines(tu.input.head_lines, 100, 'head_lines')
+        const tailLines = nonNegativeLines(tu.input.tail_lines, 300, 'tail_lines')
         store.status = 'executing'
         const panelTitle = tu.input.panel as string | undefined
-        const result = await collectOutput(timeoutMs, headLines, tailLines, () => store.stopRequested, panelTitle)
+        const result = await collectOutput(timeoutMs, headLines, tailLines, () => store.stopRequested, panelTitle, idleMs)
         if (store.stopRequested) {
           store.addMessage({
             id: `msg-${Date.now()}`,
@@ -1505,6 +1526,25 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
           tool_call_id: tu.id
         })
       }
+    } else if (isRemoteMCPTool(tu.name)) {
+      // External MCP client tool: route straight to the Go manager. Arguments
+      // are passed through as the model supplied them; no terminal/risk gating.
+      try {
+        const result = await callRemoteMCPTool(tu.name, tu.input as Record<string, unknown>)
+        store.addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'tool',
+          content: capToolResult(result || `[${tu.name} returned no output]`),
+          tool_call_id: tu.id
+        })
+      } catch (e: any) {
+        store.addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'tool',
+          content: `[Error calling ${tu.name}: ${e.message ?? e}]`,
+          tool_call_id: tu.id
+        })
+      }
     }
   }
 
@@ -1570,7 +1610,8 @@ export async function approveTool(_messageId: string) {
         cmd.headLines,
         cmd.tailLines,
         () => store.stopRequested,
-        cmd.panel
+        cmd.panel,
+        cmd.idleMs
       )
       store.addMessage({
         id: `msg-${Date.now()}`,

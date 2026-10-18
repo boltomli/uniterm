@@ -48,10 +48,13 @@ type Tunnel struct {
 	TargetHost string `json:"targetHost,omitempty"`
 	TargetPort int    `json:"targetPort,omitempty"`
 
-	Upstream  *SocksProxy `json:"upstream,omitempty"`
-	AutoStart bool        `json:"autoStart,omitempty"`
-	GroupID   string      `json:"groupId,omitempty"`
-	SortOrder int         `json:"sortOrder,omitempty"`
+	Upstream          *SocksProxy `json:"upstream,omitempty"`
+	AutoStart         bool        `json:"autoStart,omitempty"`
+	AutoReconnect     bool        `json:"autoReconnect,omitempty"`
+	ReconnectInterval int         `json:"reconnectInterval,omitempty"` // seconds; defaults to 120
+	ReconnectJitter   int         `json:"reconnectJitter,omitempty"`   // +/- percentage, 0..100
+	GroupID           string      `json:"groupId,omitempty"`
+	SortOrder         int         `json:"sortOrder,omitempty"`
 
 	// SOCKSUser/SOCKSPass authenticate clients of a dynamic (SOCKS5)
 	// tunnel, per RFC 1929. They are required when ListenHost exposes the
@@ -85,9 +88,11 @@ type TunnelStoreData struct {
 type TunnelStatus string
 
 const (
-	TunnelStopped TunnelStatus = "stopped"
-	TunnelRunning TunnelStatus = "running"
-	TunnelError   TunnelStatus = "error"
+	TunnelStopped      TunnelStatus = "stopped"
+	TunnelConnecting   TunnelStatus = "connecting"
+	TunnelReconnecting TunnelStatus = "reconnecting"
+	TunnelRunning      TunnelStatus = "running"
+	TunnelError        TunnelStatus = "error"
 )
 
 // TunnelState is the runtime state of a tunnel, pushed to the frontend via the

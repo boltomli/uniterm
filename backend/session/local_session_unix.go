@@ -118,8 +118,17 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 
 	s.title = shellName(shell)
 
+	// Android/HarmonyOS fallback: if the selected shell can't be found in
+	// PATH, use /system/bin/sh directly. We skip os.Stat because SELinux
+	// may block stat on /system/bin even though exec is allowed (or vice
+	// versa). If /system/bin/sh truly doesn't exist, pty.Start will return
+	// a clear error.
+	if _, err := exec.LookPath(shell); err != nil {
+		shell = "/system/bin/sh"
+	}
+
 	s.cmd = exec.Command(shell, loginShellArgs(shell)...)
-	s.cmd.Env = ensureTerminalEnv(os.Environ())
+	s.cmd.Env = ensureTerminalEnv(os.Environ(), ExplicitTermType(config.TermType))
 	s.cmd.Dir = workDir
 
 	ptyFile, err := pty.Start(s.cmd)
@@ -326,11 +335,21 @@ func defaultShell() string {
 		}
 		return "cmd.exe"
 	default:
+		// Android/HarmonyOS: /system/bin/sh is always present.
+		// Don't gate on os.Stat — SELinux may block stat but allow exec.
+		// Return the absolute path so there's no PATH dependency.
+		if runtime.GOOS == "android" {
+			return "/system/bin/sh"
+		}
+		// Other Unix: check SHELL env, then look for bash/sh in PATH.
 		if shell := os.Getenv("SHELL"); shell != "" {
 			return shell
 		}
-		if _, err := exec.LookPath("bash"); err == nil {
-			return "bash"
+		if path, err := exec.LookPath("bash"); err == nil {
+			return path
+		}
+		if path, err := exec.LookPath("sh"); err == nil {
+			return path
 		}
 		return "sh"
 	}
@@ -385,12 +404,16 @@ func loginShellArgs(shellPath string) []string {
 //     cannot compose multibyte UTF-8 — garbled CJK/IME input.
 //   - missing TERM: zsh's ZLE has no terminfo to redraw the line, so backspace
 //     and other editing keys leave the display out of sync and appear broken.
+//
 // bash/sh tolerate both; zsh's ZLE does not. We inject each variable only when
-// it is not already set so we never override the user's explicit configuration.
-func ensureTerminalEnv(env []string) []string {
-	cleaned := make([]string, 0, len(env)+3)
+// it is not already set so we never override the user's explicit configuration
+// — except termOverride, the user's explicit per-connection terminal type,
+// which always wins over an inherited TERM.
+func ensureTerminalEnv(env []string, termOverride string) []string {
+	cleaned := make([]string, 0, len(env)+4)
 	hasLocale := false
 	hasTerm := false
+	hasPath := false
 	for _, kv := range env {
 		isLocaleKey := strings.HasPrefix(kv, "LC_ALL=") ||
 			strings.HasPrefix(kv, "LC_CTYPE=") ||
@@ -406,10 +429,22 @@ func ensureTerminalEnv(env []string) []string {
 			}
 		}
 		if strings.HasPrefix(kv, "TERM=") {
+			if termOverride != "" {
+				// Explicit per-connection choice wins over inherited TERM.
+				continue
+			}
 			if kv != "TERM=" {
 				hasTerm = true
 			} else {
 				continue
+			}
+		}
+		// Android/HarmonyOS: ensure PATH includes /system/bin so terminal
+		// commands work even if the environment didn't set it up.
+		if runtime.GOOS == "android" && strings.HasPrefix(kv, "PATH=") {
+			hasPath = true
+			if !strings.Contains(kv, "/system/bin") {
+				kv = kv + ":/system/bin:/system/xbin:/vendor/bin"
 			}
 		}
 		cleaned = append(cleaned, kv)
@@ -419,7 +454,10 @@ func ensureTerminalEnv(env []string) []string {
 		cleaned = append(cleaned, "LANG="+locale, "LC_CTYPE="+locale)
 	}
 	if !hasTerm {
-		cleaned = append(cleaned, "TERM=xterm-256color")
+		cleaned = append(cleaned, "TERM="+EffectiveTermType(termOverride))
+	}
+	if runtime.GOOS == "android" && !hasPath {
+		cleaned = append(cleaned, "PATH=/system/bin:/system/xbin:/vendor/bin")
 	}
 	return cleaned
 }

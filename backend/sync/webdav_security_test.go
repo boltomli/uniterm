@@ -31,10 +31,18 @@ func testFilesUnder(t *testing.T, root string) map[string]bool {
 	return files
 }
 
-// TestWebDAVClientRejectsCleartextServerURL: the sync password rides on
+// fakeDAVPut seeds a resource under the "sync" base path without going
+// through the backend — a malicious server can send anything.
+func fakeDAVPut(f *fakeDAV, name string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files["sync/"+name] = data
+}
+
+// TestWebDAVBackendRejectsCleartextServerURL: the sync password rides on
 // every WebDAV request, so a non-loopback cleartext (or non-HTTP) server
 // URL must be rejected before any request is sent.
-func TestWebDAVClientRejectsCleartextServerURL(t *testing.T) {
+func TestWebDAVBackendRejectsCleartextServerURL(t *testing.T) {
 	cases := []struct{ name, serverURL string }{
 		{"plain http", "http://dav.example.com/dav"},
 		{"http by ip", "http://203.0.113.10/dav"},
@@ -44,36 +52,44 @@ func TestWebDAVClientRejectsCleartextServerURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := NewWebDAVClient(tc.serverURL, "sync", "u", "p")
-			// rootURL resolves the base for every request; the scheme
-			// rejection must surface here, before any request is sent.
-			if _, err := c.rootURL(); err == nil || !strings.Contains(err.Error(), "https://") {
-				t.Fatalf("rootURL err = %v, want https:// rejection", err)
-			}
-			if err := c.MkdirAll(); err == nil || !strings.Contains(err.Error(), "https://") {
-				t.Fatalf("MkdirAll err = %v, want https:// rejection", err)
+			// NewWebDAVBackend defers the connect error to the first use so
+			// the legacy signature can stay error-free; Probe surfaces it.
+			b := NewWebDAVBackend(tc.serverURL, "sync", "u", "p", nil)
+			err := b.Probe()
+			if err == nil || !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("Probe err = %v, want https:// rejection", err)
 			}
 		})
 	}
 }
 
-// TestWebDAVClientAllowsLoopbackHTTP: plain http:// stays tolerated for
+// TestWebDAVBackendAllowsLoopbackHTTP: plain http:// stays tolerated for
 // loopback hosts (local servers, tests) — guard against over-blocking.
-func TestWebDAVClientAllowsLoopbackHTTP(t *testing.T) {
+func TestWebDAVBackendAllowsLoopbackHTTP(t *testing.T) {
 	f := newFakeDAV(t)
 	for _, host := range []string{"127.0.0.1", "localhost"} {
 		t.Run(host, func(t *testing.T) {
 			serverURL := strings.Replace(f.server.URL, "127.0.0.1", host, 1)
-			c := NewWebDAVClient(serverURL, "sync", "u", "p")
-			if err := c.MkdirAll(); err != nil {
+			b := NewWebDAVBackend(serverURL, "sync", "u", "p", nil)
+			if err := b.Probe(); err != nil {
 				t.Fatal(err)
 			}
-			if err := c.Put("connections.json", []byte("cipher")); err != nil {
+			staging := t.TempDir()
+			if err := os.WriteFile(filepath.Join(staging, "connections.json"), []byte("cipher"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := c.Get("connections.json")
-			if err != nil || string(got) != "cipher" {
-				t.Fatalf("get = %q err=%v", got, err)
+			if err := b.StoreAll(staging, []byte("0123456789abcdef"), SnapshotInfo{
+				Version: "v1", UpdatedAt: time.Now().UTC(),
+				FileHashes: map[string]string{"connections.json": "aaa"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mirror := t.TempDir()
+			if err := b.FetchAll(mirror); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(mirror, manifestName)); err != nil {
+				t.Fatalf("manifest not mirrored over loopback http: %v", err)
 			}
 		})
 	}
@@ -100,21 +116,13 @@ func TestWebDAVBackendFetchAllRejectsTraversalNames(t *testing.T) {
 			if err := b.Probe(); err != nil {
 				t.Fatal(err)
 			}
-			// Plant the hostile manifest and the resource it references
-			// directly, bypassing StoreAll: a malicious server can send
-			// anything.
-			c := NewWebDAVClient(f.server.URL, "sync", "u", "p")
 			manifest := SnapshotInfo{
 				Version:    "v1",
 				UpdatedAt:  time.Now().UTC(),
 				FileHashes: map[string]string{name: "aaa"},
 			}
-			if err := c.Put(manifestName, mustJSON(manifest)); err != nil {
-				t.Fatal(err)
-			}
-			if err := c.Put(name, []byte("pwned")); err != nil {
-				t.Fatal(err)
-			}
+			fakeDAVPut(f, manifestName, mustJSON(manifest))
+			fakeDAVPut(f, name, []byte("pwned"))
 
 			// Nest the mirror two levels deep inside this test function's
 			// private temp tree so a ".."/"../.." escape lands inside the
@@ -153,7 +161,6 @@ func TestWebDAVBackendFetchAllRejectsBeforeWritingAnything(t *testing.T) {
 	if err := b.Probe(); err != nil {
 		t.Fatal(err)
 	}
-	c := NewWebDAVClient(f.server.URL, "sync", "u", "p")
 	manifest := SnapshotInfo{
 		Version:   "v1",
 		UpdatedAt: time.Now().UTC(),
@@ -162,15 +169,8 @@ func TestWebDAVBackendFetchAllRejectsBeforeWritingAnything(t *testing.T) {
 			"../../evil.txt":   "bbb",
 		},
 	}
-	if err := c.Put(manifestName, mustJSON(manifest)); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Put("connections.json", []byte("cipher")); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Put("../../evil.txt", []byte("pwned")); err != nil {
-		t.Fatal(err)
-	}
+	fakeDAVPut(f, manifestName, mustJSON(manifest))
+	fakeDAVPut(f, "connections.json", []byte("cipher"))
 
 	mirror := t.TempDir()
 	outside := filepath.Dir(filepath.Dir(mirror))

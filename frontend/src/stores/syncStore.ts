@@ -8,7 +8,9 @@ import {
   SyncResolveConflict,
   SyncTestConnection,
   SyncConfigureRepo,
-  SyncConfigureRepoWebDAV,
+  SyncConfigureRemote,
+  SyncTestRemote,
+  SyncUpdateRemotePassword,
   SyncChangePassword,
   SyncDeleteRepo,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -21,6 +23,24 @@ import { backendErrorText } from '../utils/backendError'
 let unsubSyncConflict: (() => void) | null = null
 let unsubSyncCompleted: (() => void) | null = null
 
+// Connection description shared by every snapshot backend (webdav/sftp/
+// s3/smb). Mirrors backend sync.RemoteConfig; the password-class secret
+// lives in the keychain, never here.
+export interface RemoteConfig {
+  server: string
+  path: string
+  user: string
+  bucket: string
+  region: string
+  urlStyle: string
+  domain: string
+  share: string
+}
+
+export function emptyRemoteConfig(): RemoteConfig {
+  return { server: '', path: '', user: '', bucket: '', region: '', urlStyle: '', domain: '', share: '' }
+}
+
 export interface SyncConfig {
   backend: string
   repoUrl: string
@@ -28,9 +48,7 @@ export interface SyncConfig {
   username: string
   autoSync: boolean
   syncScope: string[] | null
-  webdavServer: string
-  webdavPath: string
-  webdavUser: string
+  remote: RemoteConfig
   lastSyncedHash: string
   lastSyncAt: string
   lastSyncStatus: string
@@ -70,9 +88,7 @@ export const useSyncStore = defineStore('sync', () => {
     username: '',
     autoSync: false,
     syncScope: null,
-    webdavServer: '',
-    webdavPath: '',
-    webdavUser: '',
+    remote: emptyRemoteConfig(),
     lastSyncedHash: '',
     lastSyncAt: '',
     lastSyncStatus: '',
@@ -99,9 +115,16 @@ export const useSyncStore = defineStore('sync', () => {
         username: cfg.username || '',
         autoSync: cfg.autoSync || false,
         syncScope: cfg.syncScope ?? null,
-        webdavServer: cfg.webdavServer ?? (cfg as any).WebDAVServer ?? '',
-        webdavPath: cfg.webdavPath ?? (cfg as any).WebDAVPath ?? '',
-        webdavUser: cfg.webdavUser ?? (cfg as any).WebDAVUser ?? '',
+        remote: {
+          server: cfg.remote?.server ?? '',
+          path: cfg.remote?.path ?? '',
+          user: cfg.remote?.user ?? '',
+          bucket: cfg.remote?.bucket ?? '',
+          region: cfg.remote?.region ?? '',
+          urlStyle: cfg.remote?.urlStyle ?? '',
+          domain: cfg.remote?.domain ?? '',
+          share: cfg.remote?.share ?? '',
+        },
         lastSyncedHash: cfg.lastSyncedHash ?? (cfg as any).LastSyncedHash ?? '',
         lastSyncAt: cfg.lastSyncAt || '',
         lastSyncStatus: cfg.lastSyncStatus || '',
@@ -121,9 +144,7 @@ export const useSyncStore = defineStore('sync', () => {
       cfg.username = config.value.username
       cfg.autoSync = config.value.autoSync
       cfg.syncScope = config.value.syncScope ?? undefined
-      cfg.webdavServer = config.value.webdavServer
-      cfg.webdavPath = config.value.webdavPath
-      cfg.webdavUser = config.value.webdavUser
+      cfg.remote = { ...config.value.remote }
       cfg.lastSyncedHash = config.value.lastSyncedHash
       cfg.lastSyncAt = config.value.lastSyncAt
       cfg.lastSyncStatus = config.value.lastSyncStatus
@@ -223,16 +244,15 @@ export const useSyncStore = defineStore('sync', () => {
     }
   }
 
-  async function configureWebDAV(
-    serverUrl: string,
-    basePath: string,
-    username: string,
-    password: string,
+  async function configureRemote(
+    backend: string,
+    remote: RemoteConfig,
+    secret: string,
     masterPassword: string
   ): Promise<SyncResult | null> {
     syncing.value = true
     try {
-      const result = await SyncConfigureRepoWebDAV(serverUrl, basePath, username, password, masterPassword)
+      const result = await SyncConfigureRemote(backend, remote, secret, masterPassword)
       await loadConfig()
       const direction = result.direction ?? (result as any).Direction ?? 0
       if (direction === 3) {
@@ -251,6 +271,21 @@ export const useSyncStore = defineStore('sync', () => {
       throw e
     } finally {
       syncing.value = false
+    }
+  }
+
+  async function updateRemotePassword(secret: string, masterPassword: string): Promise<void> {
+    await SyncUpdateRemotePassword(secret, masterPassword)
+  }
+
+  // Probe a snapshot remote with form-provided values (add-repo dialog's
+  // test-connection button). Returns null on success, error text on failure.
+  async function testRemote(backend: string, remote: RemoteConfig, secret: string): Promise<string | null> {
+    try {
+      await SyncTestRemote(backend, remote, secret)
+      return null
+    } catch (e: any) {
+      return backendErrorText(e)
     }
   }
 
@@ -319,7 +354,9 @@ export const useSyncStore = defineStore('sync', () => {
     resolveConflict,
     testConnection,
     configureRepo,
-    configureWebDAV,
+    configureRemote,
+    testRemote,
+    updateRemotePassword,
     changePassword,
     deleteRepo,
     formatSyncTime,

@@ -239,6 +239,10 @@ type ConnectionConfig struct {
 	// Terminal character encoding for ssh/telnet, filename charset for ftp:
 	// "" / "utf-8"(default) | "gbk" | "gb2312" | "gb18030" | "big5" | "shift-jis" | "euc-jp" | "euc-kr" | "latin-1"
 	Encoding string `json:"encoding,omitempty"`
+	// TermType is the terminal type reported to the remote host (SSH
+	// pty-req / telnet TTYPE / local TERM env). "" falls back to
+	// DefaultTermType; see EffectiveTermType for the whitelist.
+	TermType string `json:"termType,omitempty"`
 	// X11Forwarding enables SSH X11 forwarding (ssh -X semantics). Sends an
 	// "x11-req" global request after RequestPty; accepts "x11" channels from
 	// the server and bridges them to the local X server at $DISPLAY. If
@@ -308,6 +312,46 @@ type ConnectionConfig struct {
 	// secret is ever duplicated here.
 	WorkspaceMembers []SavedWorkspaceMember    `json:"workspaceMembers,omitempty"`
 	WorkspaceLayout  *SavedWorkspaceLayoutNode `json:"workspaceLayout,omitempty"`
+}
+
+// DefaultTermType is the terminal type reported to remote hosts when the
+// connection does not configure one (the pty-req terminal name for SSH, the
+// TTYPE reply for telnet, and the TERM environment entry for local shells).
+const DefaultTermType = "xterm-256color"
+
+// supportedTermTypes whitelists the terminal names a connection may choose
+// from. The value is sent verbatim to remote hosts (SSH pty-req, telnet
+// TTYPE), so anything outside this set falls back to DefaultTermType instead
+// of reaching the server's terminfo lookup.
+var supportedTermTypes = map[string]bool{
+	"xterm-256color": true,
+	"xterm":          true,
+	"vt100":          true,
+	"vt220":          true,
+	"vt320":          true,
+	"ansi":           true,
+	"linux":          true,
+}
+
+// EffectiveTermType maps the connection's terminal type to the value sent to
+// the remote host: the configured value when supported, DefaultTermType
+// otherwise (including for the empty/unset case).
+func EffectiveTermType(cfgTermType string) string {
+	if supportedTermTypes[cfgTermType] {
+		return cfgTermType
+	}
+	return DefaultTermType
+}
+
+// ExplicitTermType returns the connection's terminal type only when the user
+// explicitly chose a supported one, and "" otherwise. Local-shell sessions
+// use this to keep their existing "never override inherited environment"
+// behavior unless the user made an explicit per-connection choice.
+func ExplicitTermType(cfgTermType string) string {
+	if supportedTermTypes[cfgTermType] {
+		return cfgTermType
+	}
+	return ""
 }
 
 // SavedWorkspaceMember is one terminal slot inside a saved workspace.
@@ -392,7 +436,16 @@ type baseSession struct {
 	// fired after onStatusCallback. Cross-cutting concerns (the Android
 	// foreground-keepalive counter) register here so they survive the App
 	// layer re-registering onStatusCallback via SetOnStatusChangeCallback.
-	statusListeners  []func(SessionStatus)
+	statusListeners []func(SessionStatus)
+	// dataTaps are ADDITIONAL data observers (AddDataTap), fired alongside the
+	// single-slot onDataCallback without replacing it. Used by the MCP
+	// foreground job tap to collect a typed command's output without disturbing
+	// the frontend's own stream subscription.
+	dataTaps []func([]byte)
+	// statusTaps are REMOVABLE status observers (AddStatusTap); a short-lived
+	// watcher (MCP foreground job EOF) detaches when its job ends, unlike
+	// session-lifetime statusListeners. Guarded by s.mu.
+	statusTaps       []func(SessionStatus)
 	mu               sync.RWMutex
 	pendingCols      int
 	pendingRows      int
@@ -503,12 +556,70 @@ func (s *baseSession) AddStatusListener(cb func(SessionStatus)) {
 	s.statusListeners = append(s.statusListeners, cb)
 }
 
+// AddDataTap registers an additive data observer. Unlike the single-slot
+// SetOnDataCallback (owned by the App layer and overwritten on re-register),
+// taps accumulate and are fired alongside it, so a job tap never replaces the
+// frontend's stream subscription. Returns an unsubscribe function.
+func (s *baseSession) AddDataTap(cb func([]byte)) func() {
+	s.mu.Lock()
+	idx := len(s.dataTaps)
+	for i, tap := range s.dataTaps {
+		if tap == nil {
+			idx = i
+			break
+		}
+	}
+	if idx == len(s.dataTaps) {
+		s.dataTaps = append(s.dataTaps, cb)
+	} else {
+		s.dataTaps[idx] = cb
+	}
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.dataTaps[idx] = nil
+			s.mu.Unlock()
+		})
+	}
+}
+
+// AddStatusTap registers a removable observer with a stable slot. Removing
+// one observer must never change the identity of another observer's slot.
+func (s *baseSession) AddStatusTap(cb func(SessionStatus)) func() {
+	s.mu.Lock()
+	idx := len(s.statusTaps)
+	for i, tap := range s.statusTaps {
+		if tap == nil {
+			idx = i
+			break
+		}
+	}
+	if idx == len(s.statusTaps) {
+		s.statusTaps = append(s.statusTaps, cb)
+	} else {
+		s.statusTaps[idx] = cb
+	}
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			s.statusTaps[idx] = nil
+			s.mu.Unlock()
+		})
+	}
+}
+
 func (s *baseSession) setStatus(st SessionStatus) {
 	s.mu.Lock()
 	s.status = st
 	cb := s.onStatusCallback
 	listeners := make([]func(SessionStatus), len(s.statusListeners))
 	copy(listeners, s.statusListeners)
+	taps := make([]func(SessionStatus), len(s.statusTaps))
+	copy(taps, s.statusTaps)
 	s.mu.Unlock()
 	if st == StatusDisconnected || st == StatusError {
 		// Terminal output is over; flush anything still queued (e.g. the
@@ -522,6 +633,11 @@ func (s *baseSession) setStatus(st SessionStatus) {
 	}
 	for _, l := range listeners {
 		l(st)
+	}
+	for _, tap := range taps {
+		if tap != nil {
+			tap(st)
+		}
 	}
 }
 
@@ -561,9 +677,16 @@ func (s *baseSession) emitData(data []byte) {
 	s.mu.RLock()
 	w := s.outputLogWriter
 	cb := s.onDataCallback
+	taps := make([]func([]byte), len(s.dataTaps))
+	copy(taps, s.dataTaps)
 	s.mu.RUnlock()
 	if w != nil {
 		w(data)
+	}
+	for _, tap := range taps {
+		if tap != nil {
+			tap(data)
+		}
 	}
 	if cb == nil {
 		return

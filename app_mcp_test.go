@@ -11,8 +11,46 @@ import (
 	"time"
 
 	"github.com/ys-ll/uniterm/backend/mcp"
+	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
+
+func TestMCPForegroundDiscoversAllTextTerminals(t *testing.T) {
+	dir := t.TempDir()
+	cs, err := store.NewConnectionStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{sessionManager: session.NewSessionManager(), connectionStore: cs, localStateStore: store.NewLocalStateStore(dir)}
+	profiles := []session.ConnectionConfig{}
+	for _, kind := range []string{"ssh", "local", "wsl", "telnet", "mosh", "serial", "tcp", "sftp"} {
+		cfg := session.ConnectionConfig{ID: kind, Type: kind, Name: kind}
+		profiles = append(profiles, cfg)
+		if _, err := a.sessionManager.Create(kind, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cs.Save(session.ConnectionStoreData{Connections: profiles}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{{"foreground", 7}, {"background", 1}} {
+		if err := a.localStateStore.Save(store.LocalState{MCP: &store.MCPSettings{ExecMode: tc.mode}}); err != nil {
+			t.Fatal(err)
+		}
+		listed, saved := a.mcpListSessions(), a.mcpListConnections()
+		if len(listed) != tc.want || len(saved) != tc.want {
+			t.Fatalf("%s: sessions=%d profiles=%d", tc.mode, len(listed), len(saved))
+		}
+		for _, row := range listed {
+			if row.Type == "sftp" {
+				t.Fatal("file session exposed as terminal")
+			}
+		}
+	}
+}
 
 func TestMcpNotifyStrings(t *testing.T) {
 	en := mcpNotifyStringsFor("en")

@@ -28,7 +28,16 @@ func (o *localFSOps) ListLocal(dir string) (FileListResult, error) {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return FileListResult{}, err
+		// Fallback for sandboxed environments (e.g. HarmonyOS, Android)
+		// where the root directory "/" is not readable. Fall back to the
+		// user's home directory instead of returning an error.
+		if dir == "/" && o.localCwd != "" {
+			dir = o.localCwd
+			entries, err = os.ReadDir(dir)
+		}
+		if err != nil {
+			return FileListResult{}, err
+		}
 	}
 	files := make([]FileItem, 0, len(entries))
 	for _, e := range entries {

@@ -19,9 +19,11 @@ export interface MCPSettings {
   enabled: boolean
   port?: number
   policy?: string
+  execMode?: string
 }
 
 export const DEFAULT_MCP_SETTINGS: MCPSettings = {
   enabled: false,
   policy: 'confirm_write',
+  execMode: 'background',
 }

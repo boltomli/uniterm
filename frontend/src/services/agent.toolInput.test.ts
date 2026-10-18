@@ -116,7 +116,8 @@ describe('execute_command input shape (FE-P0-3 wrong-shape bug)', () => {
     const out = validate({
       command: 'ls -la',
       risk: 'read',
-      timeout: 60,
+      timeout_ms: 60000,
+      idle_ms: 800,
       head_lines: 50,
       tail_lines: 300,
       panel: 'main',
@@ -152,5 +153,21 @@ describe('send_terminal_key input shape', () => {
     expect(validate({ control: 'ctrl_c' }).control).toBe('ctrl_c')
     expect(validate({ control: 'ctrl_d' }).control).toBe('ctrl_d')
     expect(validate({ control: 'enter' }).control).toBe('enter')
+  })
+})
+
+describe('terminal tool parameter schema', () => {
+  it('uses milliseconds and exposes idle and output limits consistently', async () => {
+    const { AVAILABLE_TOOLS } = await import('./llm')
+    for (const name of ['execute_command', 'collect_output']) {
+      const tool = AVAILABLE_TOOLS.find(t => t.name === name)!
+      const props = tool.input_schema.properties as Record<string, any>
+      expect(props.timeout_ms.type).toBe('integer')
+      expect(props.idle_ms.type).toBe('integer')
+      expect(props.head_lines.minimum).toBe(0)
+      expect(props.tail_lines.minimum).toBe(0)
+      expect(props).not.toHaveProperty('timeout')
+      expect(props).not.toHaveProperty('timeoutMs')
+    }
   })
 })

@@ -9,13 +9,13 @@
     <el-form label-width="7.5rem" class="edit-repo-form">
       <el-form-item :label="t('addRepo.backend')">
         <div class="locked-field">
-          <span class="locked-value">{{ isWebdav ? t('addRepo.backendWebDAV') : t('addRepo.backendGit') }}</span>
-          <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+          <span class="locked-value">{{ backendLabel }}</span>
+          <el-icon class="lock-icon"><Lock :size="14" /></el-icon>
         </div>
         <div class="form-hint">{{ t('addRepo.backendSwitchHint') }}</div>
       </el-form-item>
 
-      <template v-if="!isWebdav">
+      <template v-if="!isSnapshot">
         <el-form-item :label="t('editRepo.url')">
           <div class="locked-field">
             <span class="locked-value">{{ syncStore.config.repoUrl }}</span>
@@ -45,7 +45,7 @@
       <template v-else>
         <el-form-item :label="t('addRepo.serverUrl')">
           <div class="locked-field">
-            <span class="locked-value">{{ syncStore.config.webdavServer }}</span>
+            <span class="locked-value">{{ syncStore.config.remote?.server }}</span>
             <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
           </div>
           <div class="form-hint">{{ t('editRepo.webdavTargetLocked') }}</div>
@@ -53,19 +53,58 @@
 
         <el-form-item :label="t('addRepo.basePath')">
           <div class="locked-field">
-            <span class="locked-value">{{ syncStore.config.webdavPath }}</span>
+            <span class="locked-value">{{ syncStore.config.remote?.path }}</span>
             <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
           </div>
         </el-form-item>
 
-        <el-form-item :label="t('addRepo.webdavUser')">
+        <el-form-item :label="isS3 ? 'Access Key' : t('addRepo.username')">
           <div class="locked-field">
-            <span class="locked-value">{{ syncStore.config.webdavUser }}</span>
+            <span class="locked-value">{{ syncStore.config.remote?.user }}</span>
             <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
           </div>
         </el-form-item>
 
-        <el-form-item :label="t('addRepo.webdavPassword')">
+        <template v-if="isS3">
+          <el-form-item :label="t('conn.s3Bucket')">
+            <div class="locked-field">
+              <span class="locked-value">{{ syncStore.config.remote?.bucket }}</span>
+              <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+            </div>
+          </el-form-item>
+
+          <el-form-item :label="t('conn.s3Region')">
+            <div class="locked-field">
+              <span class="locked-value">{{ syncStore.config.remote?.region }}</span>
+              <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+            </div>
+          </el-form-item>
+
+          <el-form-item :label="t('conn.s3UrlStyle')">
+            <div class="locked-field">
+              <span class="locked-value">{{ urlStyleLabel }}</span>
+              <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+            </div>
+          </el-form-item>
+        </template>
+
+        <template v-if="isSmb">
+          <el-form-item :label="t('conn.smbShare')">
+            <div class="locked-field">
+              <span class="locked-value">{{ syncStore.config.remote?.share }}</span>
+              <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+            </div>
+          </el-form-item>
+
+          <el-form-item :label="t('conn.smbDomain')">
+            <div class="locked-field">
+              <span class="locked-value">{{ syncStore.config.remote?.domain }}</span>
+              <el-icon class="lock-icon"><Lock :size="lucideSize('0.875rem')" /></el-icon>
+            </div>
+          </el-form-item>
+        </template>
+
+        <el-form-item :label="isS3 ? 'Secret Key' : t('conn.password')">
           <el-input
             v-model="webdavPassword"
             type="password"
@@ -82,7 +121,7 @@
           show-password
           :placeholder="t('editRepo.currentPasswordPlaceholder')"
         />
-        <div class="form-hint">{{ isWebdav ? t('addRepo.masterPasswordHint') : t('editRepo.currentPasswordHint') }}</div>
+        <div class="form-hint">{{ isSnapshot ? t('addRepo.masterPasswordHint') : t('editRepo.currentPasswordHint') }}</div>
       </el-form-item>
     </el-form>
 
@@ -103,7 +142,7 @@ import { ref, computed, watch } from 'vue'
 import { Lock } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { useSyncStore } from '../stores/syncStore'
-import { SyncVerifyPassword, SyncUpdateWebDAVPassword } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SyncVerifyPassword, SyncUpdateRemotePassword } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { backendErrorText } from '../utils/backendError'
 import { msg } from '../services/message'
 
@@ -120,7 +159,29 @@ const webdavPassword = ref('')
 const currentPassword = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
-const isWebdav = computed(() => syncStore.config.backend === 'webdav')
+// Any non-git backend is a snapshot remote (webdav/sftp/s3/smb); they all
+// share the remote branch of the edit dialog.
+const isSnapshot = computed(() => syncStore.config.backend !== 'git')
+const isS3 = computed(() => syncStore.config.backend === 's3')
+const isSmb = computed(() => syncStore.config.backend === 'smb')
+// Same wording as the connection form's URL-style dropdown options.
+const urlStyleLabel = computed(() =>
+  syncStore.config.remote?.urlStyle === 'path'
+    ? 'Path (https://endpoint/bucket/key)'
+    : 'Virtual-hosted (https://bucket.endpoint/key)'
+)
+
+const backendLabel = computed(() => {
+  // Protocol names are language-neutral; the connection-type picker
+  // (connectionTypes.ts) hardcodes them the same way.
+  switch (syncStore.config.backend) {
+    case 'webdav': return 'WebDAV'
+    case 'sftp': return 'SFTP'
+    case 's3': return 'S3'
+    case 'smb': return 'SMB'
+    default: return 'Git'
+  }
+})
 
 watch(visible, (v) => {
   if (v) {
@@ -150,7 +211,7 @@ async function handleSubmit() {
   // username are locked, mirroring the locked repo URL in the git branch.
   // Same shape as the git flow: verify (probe new password + master
   // password against the remote snapshot) → save → sync.
-  if (isWebdav.value) {
+  if (isSnapshot.value) {
     if (!currentPassword.value) {
       errorMsg.value = t('editRepo.currentPasswordRequired')
       return
@@ -158,7 +219,7 @@ async function handleSubmit() {
 
     submitting.value = true
     try {
-      await SyncUpdateWebDAVPassword(webdavPassword.value, currentPassword.value)
+      await SyncUpdateRemotePassword(webdavPassword.value, currentPassword.value)
       const syncResult = await syncStore.doSync()
       if (syncResult) {
         if (syncResult.direction === 3) {
@@ -213,11 +274,21 @@ async function handleSubmit() {
   gap: 0.25rem;
 }
 
+.edit-repo-form :deep(.el-form-item) {
+  /* The flex gap above already spaces the rows; Element Plus's
+     default 18px form-item margin stacked on top of it made the
+     rows feel double-spaced. */
+  margin-bottom: 0;
+}
+
 .locked-field {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.25rem 0.6rem;
+  /* .el-form-item__content sets line-height: 32px (matching input
+     height); inherited into this box it inflated every locked row. */
+  line-height: 1.35;
   background: var(--el-fill-color-light);
   border-radius: var(--radius-sm);
   font-size: 0.8125rem;

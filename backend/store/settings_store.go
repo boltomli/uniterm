@@ -145,13 +145,22 @@ type MCPSettings struct {
 	// confirm_dangerous / bypass. Unknown or empty values fall back to
 	// confirm_write when the policy is evaluated (mcpPolicy in app_mcp.go).
 	Policy string `json:"policy,omitempty"`
+	// ExecMode selects which terminal-execution toolset the MCP server
+	// exposes: "background" (default, non-PTY SSH exec with real exit codes)
+	// or "foreground" (types into any live terminal, screen-resolved output,
+	// plus capture/send-key tools). The user picks the mode — the agent never
+	// chooses at call time. Unknown or empty values fall back to background
+	// (mcpExecMode in app_mcp.go). Takes effect on the next MCP server start
+	// (StartMCP runs after every SaveLocalState).
+	ExecMode string `json:"execMode,omitempty"`
 }
 
 // DefaultMCPSettings is the off-by-default MCP block for settings.json.
 func DefaultMCPSettings() MCPSettings {
 	return MCPSettings{
-		Enabled: false,
-		Policy:  "confirm_write",
+		Enabled:  false,
+		Policy:   "confirm_write",
+		ExecMode: "background",
 	}
 }
 

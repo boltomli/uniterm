@@ -3,6 +3,8 @@ package session
 import (
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -57,6 +59,13 @@ func NewWebDAVSession(id string) *WebDAVSession {
 }
 
 func (s *WebDAVSession) Connect(config ConnectionConfig) error {
+	// The sync password (and any credentials) rides on every request; a
+	// cleartext non-loopback endpoint would send it unencrypted. Reject
+	// before dialing or creating any client state.
+	if err := validateWebDAVServerURL(config.Host); err != nil {
+		s.setStatus(StatusError)
+		return err
+	}
 	s.setStatus(StatusConnecting)
 
 	url := strings.TrimSuffix(config.Host, "/")
@@ -74,6 +83,36 @@ func (s *WebDAVSession) Connect(config ConnectionConfig) error {
 	s.mu.Unlock()
 	s.setStatus(StatusConnected)
 	return nil
+}
+
+// validateWebDAVServerURL enforces an encrypted transport: https:// is
+// always accepted, plain http:// only for loopback hosts, any other scheme
+// is rejected outright.
+func validateWebDAVServerURL(serverURL string) error {
+	u, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil {
+		return fmt.Errorf("webdav: invalid server url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHostname(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("webdav server must use https:// (password would be sent unencrypted), got %q", serverURL)
+	default:
+		return fmt.Errorf("webdav server must use https://, got %s:// scheme (%q)", u.Scheme, serverURL)
+	}
+}
+
+// isLoopbackHostname reports whether host is "localhost" or a loopback IP.
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *WebDAVSession) Write(data []byte) error     { return nil }

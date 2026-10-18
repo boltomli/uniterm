@@ -26,25 +26,35 @@ var (
 	procAtlAxWinInit    = atlDll.NewProc("AtlAxWinInit")
 	procAtlAxGetControl = atlDll.NewProc("AtlAxGetControl")
 
-	user32Dll            = windows.NewLazySystemDLL("user32.dll")
-	procCreateWindowExW  = user32Dll.NewProc("CreateWindowExW")
-	procSetWindowPos     = user32Dll.NewProc("SetWindowPos")
-	procShowWindow       = user32Dll.NewProc("ShowWindow")
-	procDestroyWindow    = user32Dll.NewProc("DestroyWindow")
-	procFindWindowW      = user32Dll.NewProc("FindWindowW")
-	procPeekMessage      = user32Dll.NewProc("PeekMessageW")
-	procTranslateMessage = user32Dll.NewProc("TranslateMessage")
-	procDispatchMessage  = user32Dll.NewProc("DispatchMessageW")
-	procGetWindowRect    = user32Dll.NewProc("GetWindowRect")
-	procGetClientRect    = user32Dll.NewProc("GetClientRect")
-	procClientToScreen   = user32Dll.NewProc("ClientToScreen")
-	procPostMessageW     = user32Dll.NewProc("PostMessageW")
-	procGetSystemMetrics = user32Dll.NewProc("GetSystemMetrics")
-	procInvalidateRect   = user32Dll.NewProc("InvalidateRect")
-	procRedrawWindow     = user32Dll.NewProc("RedrawWindow")
-	procGetDC            = user32Dll.NewProc("GetDC")
-	procReleaseDC        = user32Dll.NewProc("ReleaseDC")
-	procPrintWindow      = user32Dll.NewProc("PrintWindow")
+	user32Dll              = windows.NewLazySystemDLL("user32.dll")
+	procCreateWindowExW    = user32Dll.NewProc("CreateWindowExW")
+	procSetWindowPos       = user32Dll.NewProc("SetWindowPos")
+	procShowWindow         = user32Dll.NewProc("ShowWindow")
+	procDestroyWindow      = user32Dll.NewProc("DestroyWindow")
+	procFindWindowW        = user32Dll.NewProc("FindWindowW")
+	procPeekMessage        = user32Dll.NewProc("PeekMessageW")
+	procTranslateMessage   = user32Dll.NewProc("TranslateMessage")
+	procDispatchMessage    = user32Dll.NewProc("DispatchMessageW")
+	procGetWindowRect      = user32Dll.NewProc("GetWindowRect")
+	procGetClientRect      = user32Dll.NewProc("GetClientRect")
+	procClientToScreen     = user32Dll.NewProc("ClientToScreen")
+	procPostMessageW       = user32Dll.NewProc("PostMessageW")
+	procGetSystemMetrics   = user32Dll.NewProc("GetSystemMetrics")
+	procGetWindowThreadPID = user32Dll.NewProc("GetWindowThreadProcessId")
+	procInvalidateRect     = user32Dll.NewProc("InvalidateRect")
+	procRedrawWindow       = user32Dll.NewProc("RedrawWindow")
+	procEnumWindows        = user32Dll.NewProc("EnumWindows")
+	procEnumChildWindows   = user32Dll.NewProc("EnumChildWindows")
+	procGetClassNameW      = user32Dll.NewProc("GetClassNameW")
+	procGetWindowTextW     = user32Dll.NewProc("GetWindowTextW")
+	procGetWindow          = user32Dll.NewProc("GetWindow")
+	procMsgWaitForMultiple = user32Dll.NewProc("MsgWaitForMultipleObjectsEx")
+	procGetDC              = user32Dll.NewProc("GetDC")
+	procReleaseDC          = user32Dll.NewProc("ReleaseDC")
+	procPrintWindow        = user32Dll.NewProc("PrintWindow")
+
+	// kernel32Dll is declared in local_session_windows.go (same package).
+	procGetCurrentProcID = kernel32Dll.NewProc("GetCurrentProcessId")
 
 	gdi32Dll                   = windows.NewLazySystemDLL("gdi32.dll")
 	procBitBlt                 = gdi32Dll.NewProc("BitBlt")
@@ -76,6 +86,11 @@ const (
 	RDW_INVALIDATE     = 0x0001
 	RDW_ALLCHILDREN    = 0x0080
 	RDW_UPDATENOW      = 0x0100
+	WM_COMMAND         = 0x0111
+	IDYES              = 6
+	IDNO               = 7
+	IDOK               = 1
+	GW_OWNER           = 4
 	SM_CXSCREEN        = 0
 	SM_CYSCREEN        = 1
 
@@ -152,6 +167,13 @@ const (
 	rdpTopReserve    = 80
 	rdpBottomReserve = 32
 	rdpSideMargin    = 4
+)
+
+// Message-pump constants for waiting on input instead of sleeping.
+const (
+	QS_ALLINPUT         = 0x04FF
+	MWMO_INPUTAVAILABLE = 0x0004
+	rdpWaitTimeout      = 0x00000102 // WAIT_TIMEOUT
 )
 
 type RDPSession struct {
@@ -737,9 +759,19 @@ func (s *RDPSession) runMessagePump() {
 			procDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
 			noMsgCount = 0
 		} else {
-			// No message available; sleep briefly to avoid busy-wait.
+			// No message available: block until one arrives or the 50 ms
+			// housekeeping tick elapses. A plain Sleep here delayed every
+			// input event and repaint by up to 50 ms, including the low-level
+			// keyboard hook the control installs for KeyboardHookMode=1,
+			// which Windows runs on this thread.
+			r, _, _ := procMsgWaitForMultiple.Call(0, 0, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+			if r == 0 { // WAIT_OBJECT_0: input is waiting, pump it now
+				continue
+			}
+			if r != rdpWaitTimeout { // WAIT_FAILED: keep the previous pacing
+				time.Sleep(50 * time.Millisecond)
+			}
 			// Check hwnd every ~1 second via heartbeat counter.
-			time.Sleep(50 * time.Millisecond)
 			noMsgCount++
 
 			// Detect full-screen exit via the built-in connection bar: the

@@ -29,6 +29,13 @@ func makeSSHAuthMethodsForAttempt(config ConnectionConfig, kbCallback ssh.Keyboa
 	case "key", "keyText":
 		if signer, ok := parseAuthKeySigner(config); ok {
 			methods = append(methods, ssh.PublicKeys(signer))
+		} else if pub, ok := publicKeyFromFile(config); ok {
+			method, release, err := agentPublicKeyAuthMethod(pub, config.KeyPath)
+			if err != nil {
+				return nil, cleanup, err
+			}
+			cleanup = release
+			methods = append(methods, method)
 		}
 	case "kerberos":
 		method, release, err := kerberosAuthMethodWithCleanup(config.Host, config.KerberosRealm)
@@ -73,6 +80,13 @@ func buildAuthMethodsWithCleanup(config ConnectionConfig) ([]ssh.AuthMethod, fun
 	case "key", "keyText":
 		signer, ok := parseAuthKeySigner(config)
 		if !ok {
+			if pub, isPub := publicKeyFromFile(config); isPub {
+				method, release, err := agentPublicKeyAuthMethod(pub, config.KeyPath)
+				if err != nil {
+					return nil, cleanup, err
+				}
+				return []ssh.AuthMethod{method}, release, nil
+			}
 			return nil, cleanup, utils.UserErr("ssh_key_unavailable", keySourceLabel(config))
 		}
 		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, cleanup, nil

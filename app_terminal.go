@@ -175,6 +175,7 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		})
 	}
 
+	a.sessionCaptureFor(s)
 	s.SetOnDataCallback(func(data []byte) {
 		a.emitSessionData(s.ID(), string(data))
 	})
@@ -478,6 +479,7 @@ func (a *App) DuplicateSSHChannel(sourceSessionID string, config session.Connect
 	}
 	s.SetEncoding(config.Encoding)
 
+	a.sessionCaptureFor(s)
 	s.SetOnDataCallback(func(data []byte) {
 		a.emitSessionData(s.ID(), string(data))
 	})
@@ -573,6 +575,7 @@ func (a *App) CloseSession(sessionID string) error {
 		a.tunnelService.Stop(sessionID)
 	}
 	a.forgetSftpLocalRoots(sessionID)
+	a.removeCapture(sessionID)
 	return a.sessionManager.Close(sessionID)
 }
 

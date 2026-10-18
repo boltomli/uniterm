@@ -28,6 +28,8 @@ type tunnelEntry struct {
 // from the tunnels panel; see tunnel_forward.go).
 type TunnelService struct {
 	mu          sync.Mutex
+	stateMu     sync.Mutex // serialize state changes and callback delivery
+	closed      bool
 	tunnels     map[string]*tunnelEntry
 	userTunnels map[string]*userTunnelEntry
 	states      map[string]TunnelState
@@ -249,6 +251,12 @@ func (ts *TunnelService) Stop(sessionID string) {
 // Shutdown closes all tunnels. Call on app shutdown.
 func (ts *TunnelService) Shutdown() {
 	ts.mu.Lock()
+	ts.closed = true
+	userIDs := make([]string, 0, len(ts.userTunnels))
+	for id, entry := range ts.userTunnels {
+		entry.cancel()
+		userIDs = append(userIDs, id)
+	}
 	entries := make([]*tunnelEntry, 0, len(ts.tunnels))
 	for id, entry := range ts.tunnels {
 		entries = append(entries, entry)
@@ -256,6 +264,9 @@ func (ts *TunnelService) Shutdown() {
 	}
 	ts.mu.Unlock()
 
+	for _, id := range userIDs {
+		ts.StopTunnel(id)
+	}
 	for _, entry := range entries {
 		close(entry.quit)
 		if entry.listener != nil {

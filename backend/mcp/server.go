@@ -78,6 +78,8 @@ type Env struct {
 	// Connect opens a new SSH session for a saved connection id and returns
 	// the session id. The approval gate runs before dialing.
 	Connect func(connectionID string) (sessionID string, err error)
+	// OpenTerminal opens a saved terminal profile, or an ad hoc local/WSL terminal.
+	OpenTerminal func(connectionID, terminalType, shellPath string) (string, error)
 	// Approve surfaces a confirmation request to the user and waits for the
 	// verdict. err is non-nil on timeout/no-window.
 	Approve func(req ApprovalRequest) error
@@ -98,6 +100,42 @@ type Env struct {
 	// ResolveLocalPath validates a local path against the user-configured
 	// allowed directories (SFTP bookmarks) and returns the resolved path.
 	ResolveLocalPath func(path string) (resolved string, err error)
+	// Foreground runs a command in the live terminal PTY as an async job and
+	// completes on idle-settle / EOF rather than an end marker. When nil the
+	// unified uniterm_exec tool reports foreground mode unsupported; background
+	// mode still works over Sessions/Commands.
+	Foreground ForegroundJobs
+	// ExecMode returns the user-selected execution mode: "background" (SSH
+	// non-PTY exec tools) or "foreground" (live-terminal tools plus capture /
+	// send-key). Read once per server Start to pick the registered toolset;
+	// the user stops the endpoint before changing it in settings.
+	// "" / unknown falls back to background.
+	ExecMode func() string
+	// Capture snapshots a live session's terminal screen (redraw-resolved,
+	// like what the user sees). Used by the foreground toolset's
+	// uniterm_capture; nil disables the tool.
+	Capture func(sessionID string, tailLines int) (string, error)
+	// SendKey types text or a control key into a live session's terminal.
+	// text is typed verbatim (sendEnter appends the shell newline); control
+	// is "ctrl_c" | "ctrl_d" | "enter". Used by uniterm_send_key; nil
+	// disables the tool.
+	SendKey func(sessionID, text, control string, sendEnter bool) error
+	// Collect starts read-only output observation using the foreground job engine.
+	Collect func(sessionID string, idleMs, hardLimitMs int) (string, error)
+}
+
+// ForegroundJobs is the unified async-job surface for the live-PTY (foreground)
+// mode. Implemented by the App layer over the foreground job registry; kept as an
+// interface so the mcp package stays testable without a real session.
+type ForegroundJobs interface {
+	// StartForeground types command into sessionID's live terminal and returns
+	// a jobId. idleMs bounds the silence that counts as completion; hardLimitMs
+	// is the hard runtime cap (the job moves to "timeout" but stays pollable).
+	StartForeground(sessionID, command string, idleMs, hardLimitMs int) (jobID string, err error)
+	// PollForeground returns output-so-far, exit code and state for a jobId.
+	PollForeground(jobID string, offset, max int) (stdout, stderr []byte, exitCode int, state string, err error)
+	// InterruptForeground stops a running foreground job.
+	InterruptForeground(jobID, signal string) error
 }
 
 // SessionSummary is one live session row for list_sessions.
@@ -199,6 +237,10 @@ type Server struct {
 	httpSrv *http.Server
 	port    int
 	started bool
+	// finishedBg caches sync-completed background results for the unified
+	// uniterm_exec_result poll path (keyed by bg- jobId).
+	finishedBg       map[string]finishedBackground
+	foregroundOutput map[string]terminalOutputOptions
 }
 
 // TokenInfo is the stored form of one client token.

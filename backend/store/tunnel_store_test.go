@@ -237,7 +237,8 @@ func TestTunnelStoreSyncRoundTrip(t *testing.T) {
 	seed := session.TunnelStoreData{
 		Version: 1,
 		Groups:  []session.TunnelGroup{{ID: "tg1", Name: "g"}},
-		Tunnels: []session.Tunnel{{ID: "t1", Name: "tn", Mode: "local", SSHConnID: "c1", ListenPort: 8080}},
+		Tunnels: []session.Tunnel{{ID: "t1", Name: "tn", Mode: "local", SSHConnID: "c1", ListenPort: 8080,
+			AutoStart: true, AutoReconnect: true, ReconnectInterval: 120, ReconnectJitter: 20}},
 	}
 	if err := a.Save(seed); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -256,5 +257,8 @@ func TestTunnelStoreSyncRoundTrip(t *testing.T) {
 	}
 	if len(got.Groups) != 1 || len(got.Tunnels) != 1 || got.Tunnels[0].ID != "t1" || got.Tunnels[0].ListenPort != 8080 {
 		t.Fatalf("tunnels lost: %+v", got)
+	}
+	if !got.Tunnels[0].AutoStart || !got.Tunnels[0].AutoReconnect || got.Tunnels[0].ReconnectInterval != 120 || got.Tunnels[0].ReconnectJitter != 20 {
+		t.Fatalf("tunnel reconnect settings lost: %+v", got.Tunnels[0])
 	}
 }

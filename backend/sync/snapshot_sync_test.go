@@ -503,7 +503,7 @@ func newWebDAVConfigTestService(t *testing.T) *SyncService {
 
 // publishWebDAVSnapshot pre-populates the fake WebDAV remote with a
 // one-file snapshot encrypted under DeriveKey(masterPassword, salt).
-func publishWebDAVSnapshot(t *testing.T, f *fakeDAV, masterPassword string) *WebDAVBackend {
+func publishWebDAVSnapshot(t *testing.T, f *fakeDAV, masterPassword string) SnapshotBackend {
 	t.Helper()
 	salt := []byte("0123456789abcdef")
 	key := DeriveKey(masterPassword, salt)
@@ -540,7 +540,7 @@ func TestConfigureRepoWebDAVFreshRemote(t *testing.T) {
 	writeConfig(t, s.dataDir, "connections.json", `{"v":1}`)
 
 	f := newFakeDAV(t)
-	res, err := s.ConfigureRepoWebDAV(f.server.URL, "sync", "u", "p", "master-pw")
+	res, err := s.ConfigureRepoRemote("webdav", RemoteConfig{Server: f.server.URL, Path: "sync", User: "u"}, "p", "master-pw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestConfigureRepoWebDAVAdoptsRemote(t *testing.T) {
 	f := newFakeDAV(t)
 	publishWebDAVSnapshot(t, f, "master-pw")
 
-	res, err := s.ConfigureRepoWebDAV(f.server.URL, "sync", "u", "p", "master-pw")
+	res, err := s.ConfigureRepoRemote("webdav", RemoteConfig{Server: f.server.URL, Path: "sync", User: "u"}, "p", "master-pw")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +620,7 @@ func TestConfigureRepoWebDAVWrongMasterPassword(t *testing.T) {
 	f := newFakeDAV(t)
 	publishWebDAVSnapshot(t, f, "master-pw")
 
-	if _, err := s.ConfigureRepoWebDAV(f.server.URL, "sync", "u", "p", "wrong-pw"); err == nil {
+	if _, err := s.ConfigureRepoRemote("webdav", RemoteConfig{Server: f.server.URL, Path: "sync", User: "u"}, "p", "wrong-pw"); err == nil {
 		t.Fatal("want error for wrong master password")
 	} else if !strings.Contains(err.Error(), "master_password_mismatch") {
 		t.Fatalf("err = %v, want master_password_mismatch", err)

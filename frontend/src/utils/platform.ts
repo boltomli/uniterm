@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 
 // Platform detection shared by components that adapt desktop-only UI
-// (window controls, local terminal, keyboard hints) for mobile.
+// (window controls and keyboard hints) for mobile.
 export type UiPlatform = 'windows' | 'darwin' | 'linux' | 'android' | 'ios'
 
 // Detect synchronously so the layout is correct on first render, even if the
@@ -15,10 +15,13 @@ export function detectPlatformSync(): UiPlatform {
   return 'windows'
 }
 
-// Mobile platforms have no OS window, no hardware keyboard and no local
-// shell, so desktop-only affordances are hidden there.
+// Mobile platforms use touch layouts without desktop window controls.
 export function isMobilePlatform(p: UiPlatform = detectPlatformSync()): boolean {
   return p === 'android' || p === 'ios'
+}
+
+export function supportsLocalTerminal(p: UiPlatform = detectPlatformSync()): boolean {
+  return p !== 'ios'
 }
 
 // Phone-shaped viewport: a touch platform whose window is phone-narrow.

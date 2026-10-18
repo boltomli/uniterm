@@ -380,6 +380,7 @@ type rekeyHarness struct {
 	proxyStore    *store.ProxyStore
 	aiStore       *store.AIConfigStore
 	tunnelStore   *store.TunnelStore
+	mcpStore      *store.MCPClientStore
 }
 
 func newRekeyHarness(t *testing.T, startMode, startPass string) rekeyHarness {
@@ -424,9 +425,12 @@ func newRekeyHarness(t *testing.T, startMode, startPass string) rekeyHarness {
 	aiStore.SetPasswordStore(cs)
 	tunnelStore.SetPasswordStore(cs)
 
+	mcpStore := store.NewMCPClientStore(dir)
+	mcpStore.SetPasswordStore(cs)
+
 	h := rekeyHarness{dir: dir, kc: kc, cs: cs, connStore: connStore,
 		settingsStore: settingsStore, identStore: identStore,
-		proxyStore: proxyStore, aiStore: aiStore, tunnelStore: tunnelStore}
+		proxyStore: proxyStore, aiStore: aiStore, tunnelStore: tunnelStore, mcpStore: mcpStore}
 	// Seed one encrypted secret into every manifest file.
 	if err := connStore.Save(session.ConnectionStoreData{Connections: []session.ConnectionConfig{{
 		ID: "c1", Type: "ssh", Host: "h", Port: 22, AuthType: "password", Password: "pw-conn"}}}); err != nil {
@@ -454,6 +458,9 @@ func newRekeyHarness(t *testing.T, startMode, startPass string) rekeyHarness {
 	}}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := mcpStore.Save([]store.MCPClientConfig{{Name: "external", Transport: store.MCPTransportStreamableHTTP, URL: "http://localhost/mcp", Headers: map[string]string{"Authorization": "pw-mcp"}}}); err != nil {
+		t.Fatal(err)
+	}
 	return h
 }
 
@@ -461,7 +468,7 @@ func (h rekeyHarness) app() *App {
 	return &App{dataDir: h.dir, credentialStore: h.cs,
 		connectionStore: h.connStore, settingsStore: h.settingsStore,
 		identityStore: h.identStore, proxyStore: h.proxyStore,
-		aiConfigStore: h.aiStore, tunnelStore: h.tunnelStore}
+		aiConfigStore: h.aiStore, tunnelStore: h.tunnelStore, mcpClientStore: h.mcpStore}
 }
 
 // assertAllFilesDecryptUnderKey reads every manifest secret file and checks

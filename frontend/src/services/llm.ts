@@ -209,7 +209,7 @@ export async function chat(options: ChatOptions): Promise<void> {
 export const AVAILABLE_TOOLS = [
   {
     name: 'execute_command',
-    description: 'Execute a shell command in the active terminal session and return its output. You MUST classify every command with a risk level. Use "timeout" to control how long to wait — short commands need less time, long tasks (builds, installs) need more.',
+    description: 'Execute a shell command in the active terminal session and return its output. You MUST classify every command with a risk level. Use "timeout_ms" to control how long to wait — short commands need less time, long tasks (builds, installs) need more.',
     input_schema: {
       type: 'object',
       properties: {
@@ -222,16 +222,24 @@ export const AVAILABLE_TOOLS = [
           enum: ['read', 'write', 'dangerous'],
           description: 'The risk level of this command:\n- "read": only inspects/views data, absolutely no modifications (e.g. ls, cat, grep, head, tail, df, du, ps, top, find, pwd, whoami, git status, git log, docker ps, npm list)\n- "write": modifies or creates data but not system-destructive (e.g. echo > file, touch, mkdir, cp, mv, git commit, curl POST, npm install, pip install)\n- "dangerous": potentially destructive or system-altering (e.g. rm, > overwrite, chmod, chown, shutdown, mkfs, dd, reboot, force push)'
         },
-        timeout: {
-          type: 'number',
-          description: 'Maximum seconds to wait for command completion. Default 60s. Use 5-10s for quick commands (ls, cat, pwd), 30-60s for moderate tasks, 120-300s for long tasks (npm install, docker build, git clone). NEVER set below 5s.'
+        timeout_ms: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum milliseconds to collect command output. Default 60000. Use 5000-10000 for quick commands, 30000-60000 for moderate tasks, 120000-300000 for long tasks. Expiry stops collection, not the terminal command.'
+        },
+        idle_ms: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Terminal silence in milliseconds that completes output collection. Default 800. Silence does not guarantee that the process has exited.'
         },
         head_lines: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description: 'Number of lines to keep from the START of output when truncation occurs. Default 50. Increase to see more of the beginning.'
         },
         tail_lines: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description: 'Number of lines to keep from the END of output when truncation occurs. Default 300. Increase to see more recent output (errors usually at the end).'
         },
         panel: {
@@ -272,7 +280,8 @@ export const AVAILABLE_TOOLS = [
       type: 'object',
       properties: {
         tail_lines: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description: 'Lines from the bottom of the buffer. Default 200. Increase to see more of the recent output.'
         },
         panel: {
@@ -288,16 +297,24 @@ export const AVAILABLE_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        timeout: {
-          type: 'number',
-          description: 'Seconds to wait. Default 30s. Use 15-30s for active progress checks, 60-120s for slower operations.'
+        timeout_ms: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Maximum milliseconds to collect output. Default 30000. Use 15000-30000 for active progress checks, 60000-120000 for slower operations.'
+        },
+        idle_ms: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Terminal silence in milliseconds that completes output collection. Default 800. Silence does not guarantee that the process has exited.'
         },
         head_lines: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description: 'Head lines to keep on truncation. Default 100.'
         },
         tail_lines: {
-          type: 'number',
+          type: 'integer',
+          minimum: 0,
           description: 'Tail lines to keep on truncation. Default 300.'
         },
         panel: {

@@ -5,8 +5,10 @@ package main
 // inline credentials supplied by the frontend's credential dialog.
 
 import (
+	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -80,13 +82,13 @@ func TestApp_StartTunnel_InlineCredentials(t *testing.T) {
 
 	ts := store.NewTunnelStore(t.TempDir())
 	tunnel := session.Tunnel{
-		ID:           "tun-1",
-		Name:         "regression",
-		Mode:         session.TunnelLocal,
-		SSHConnID:    "jump-1",
-		ListenPort:   freeLocalPort(t),
-		TargetHost:   "127.0.0.1",
-		TargetPort:   targetPort,
+		ID:         "tun-1",
+		Name:       "regression",
+		Mode:       session.TunnelLocal,
+		SSHConnID:  "jump-1",
+		ListenPort: freeLocalPort(t),
+		TargetHost: "127.0.0.1",
+		TargetPort: targetPort,
 	}
 	if err := ts.Save(session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{tunnel}}); err != nil {
 		t.Fatalf("save tunnel: %v", err)
@@ -129,4 +131,203 @@ func freeLocalPort(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+func TestApp_SaveTunnels_CancelsReconnectForDeletedTunnel(t *testing.T) {
+	a := NewApp("")
+	a.tunnelStore = store.NewTunnelStore(t.TempDir())
+	a.tunnelService = session.NewTunnelService()
+	t.Cleanup(a.tunnelService.Shutdown)
+	tunnel := session.Tunnel{ID: "deleted", SSHConnID: "missing", AutoReconnect: true}
+	if err := a.SaveTunnels(session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{tunnel}}); err != nil {
+		t.Fatal(err)
+	}
+	state := a.tunnelService.StartTunnel(tunnel, func(string) (session.ConnectionConfig, bool) {
+		return session.ConnectionConfig{}, false
+	})
+	if state.Status != session.TunnelReconnecting {
+		t.Fatalf("expected pending reconnect, got %+v", state)
+	}
+	if err := a.SaveTunnels(session.TunnelStoreData{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range a.ListTunnelStates() {
+		if state.ID == tunnel.ID && state.Status != session.TunnelStopped {
+			t.Fatalf("deleted tunnel still active: %+v", state)
+		}
+	}
+}
+
+func TestApp_CancelsTunnelWhilePreparing(t *testing.T) {
+	actions := map[string]func(*App) error{
+		"stop": func(a *App) error { return a.StopTunnel("pending") },
+		"delete": func(a *App) error {
+			return a.SaveTunnels(session.TunnelStoreData{Version: 1})
+		},
+		"shutdown": func(a *App) error { a.shutdown(); return nil },
+	}
+	for name, cancel := range actions {
+		t.Run(name, func(t *testing.T) {
+			a := NewApp(t.TempDir())
+			a.tunnelStore = store.NewTunnelStore(t.TempDir())
+			a.tunnelService = session.NewTunnelService()
+			t.Cleanup(a.tunnelService.Shutdown)
+			preparing, done := make(chan struct{}), make(chan struct{})
+			resume, release := context.WithCancel(context.Background())
+			t.Cleanup(release)
+			var state session.TunnelState
+			var err error
+			go func() {
+				defer close(done)
+				state, err = a.runTunnelStart("pending", func(ctx context.Context) (session.TunnelState, error) {
+					close(preparing)
+					<-resume.Done()
+					return a.tunnelService.StartTunnelContext(ctx, session.Tunnel{
+						ID: "pending", SSHConnID: "missing", AutoReconnect: true,
+					}, func(string) (session.ConnectionConfig, bool) {
+						return session.ConnectionConfig{}, false
+					}), nil
+				})
+			}()
+			waitTunnelTestSignal(t, preparing)
+			if err := cancel(a); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			waitTunnelTestSignal(t, done)
+			if err != nil || state.Status != session.TunnelStopped {
+				t.Fatalf("cancelled preparation: state=%+v error=%v", state, err)
+			}
+			if states := a.ListTunnelStates(); len(states) != 0 {
+				t.Fatalf("cancelled preparation reached the service: %+v", states)
+			}
+			if name == "shutdown" {
+				state, _ := a.runTunnelStart("late", func(context.Context) (session.TunnelState, error) {
+					t.Fatal("started preparing a tunnel after shutdown")
+					return session.TunnelState{}, nil
+				})
+				if state.Status != session.TunnelStopped {
+					t.Fatalf("start after shutdown: %+v", state)
+				}
+			}
+		})
+	}
+}
+
+func TestApp_SuccessfulTunnelStartKeepsLifecycleContext(t *testing.T) {
+	a := NewApp("")
+	var lifecycle context.Context
+	a.runTunnelStart("running", func(ctx context.Context) (session.TunnelState, error) {
+		lifecycle = ctx
+		return session.TunnelState{ID: "running", Status: session.TunnelRunning}, nil
+	})
+	if lifecycle.Err() != nil {
+		t.Fatal("successful start cancelled its lifecycle when returning")
+	}
+}
+
+func TestApp_OldTunnelPreparationCannotRemoveReplacement(t *testing.T) {
+	a := NewApp("")
+	start := func() (context.CancelFunc, <-chan struct{}, <-chan context.Context) {
+		resume, release := context.WithCancel(context.Background())
+		t.Cleanup(release)
+		done := make(chan struct{})
+		prepared := make(chan context.Context, 1)
+		go func() {
+			defer close(done)
+			a.runTunnelStart("same", func(ctx context.Context) (session.TunnelState, error) {
+				prepared <- ctx
+				<-resume.Done()
+				return session.TunnelState{ID: "same", Status: session.TunnelRunning}, nil
+			})
+		}()
+		return release, done, prepared
+	}
+	oldRelease, oldDone, oldPrepared := start()
+	var oldCtx context.Context
+	select {
+	case oldCtx = <-oldPrepared:
+	case <-time.After(3 * time.Second):
+		t.Fatal("old preparation did not start")
+	}
+	a.StopTunnel("same")
+	newRelease, newDone, newPrepared := start()
+	var newCtx context.Context
+	select {
+	case newCtx = <-newPrepared:
+	case <-time.After(3 * time.Second):
+		t.Fatal("replacement preparation did not start")
+	}
+	oldRelease()
+	waitTunnelTestSignal(t, oldDone)
+	if oldCtx.Err() == nil || newCtx.Err() != nil {
+		t.Fatal("old cancellation affected the replacement")
+	}
+	a.StopTunnel("same")
+	if newCtx.Err() == nil {
+		t.Fatal("old completion removed the replacement cancellation handle")
+	}
+	newRelease()
+	waitTunnelTestSignal(t, newDone)
+}
+
+func TestApp_AutoStartSkipsTunnelDeletedWhileEarlierStartIsPending(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		t.Cleanup(func() { conn.Close() })
+		// Leave the SSH handshake pending until the test stops this tunnel.
+		close(accepted)
+	}()
+	cs, err := store.NewConnectionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs.SetPasswordStore(stubPasswordStore{})
+	if err := cs.Save(session.ConnectionStoreData{Connections: []session.ConnectionConfig{{
+		ID: "slow", Type: "ssh", Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port,
+		AuthType: "password", User: "test",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp("")
+	a.connectionStore = cs
+	a.tunnelStore = store.NewTunnelStore(t.TempDir())
+	a.tunnelService = session.NewTunnelService()
+	t.Cleanup(a.tunnelService.Shutdown)
+	first := session.Tunnel{ID: "first", SSHConnID: "slow", AutoStart: true}
+	second := session.Tunnel{ID: "deleted", SSHConnID: "missing", AutoStart: true, AutoReconnect: true}
+	if err := a.SaveTunnels(session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{first, second}}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); a.autoStartTunnels() }()
+	waitTunnelTestSignal(t, accepted)
+	if err := a.SaveTunnels(session.TunnelStoreData{Version: 1, Tunnels: []session.Tunnel{first}}); err != nil {
+		t.Fatal(err)
+	}
+	a.StopTunnel(first.ID)
+	waitTunnelTestSignal(t, done)
+	for _, state := range a.ListTunnelStates() {
+		if state.ID == second.ID {
+			t.Fatalf("deleted tunnel was started from the old snapshot: %+v", state)
+		}
+	}
+}
+
+func waitTunnelTestSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for tunnel operation")
+	}
 }

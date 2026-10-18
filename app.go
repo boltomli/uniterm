@@ -29,6 +29,7 @@ import (
 	"github.com/ys-ll/uniterm/backend/k8s"
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/mcp"
+	"github.com/ys-ll/uniterm/backend/mcpclient"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -62,6 +63,9 @@ type App struct {
 	favoriteStore        *store.FavoriteStore
 	syncService          *sync.SyncService
 	tunnelService        *session.TunnelService
+	tunnelStartsMu       stdsync.Mutex
+	tunnelStarts         map[string]*tunnelStartRequest
+	tunnelsClosed        bool
 	mainHwnd             uintptr
 	mainWindowAttach     stdsync.Once
 	originalWndProc      uintptr
@@ -143,6 +147,25 @@ type App struct {
 	mcpTokenCache      map[string]mcp.TokenInfo
 	mcpTokenCacheMtime time.Time
 
+	// MCP client (uniTerm connects to external MCP servers). Separate from the
+	// mcpServer above: that one exposes uniTerm to external agents; this one
+	// feeds external tools into the built-in AI panel. Lazily created.
+	mcpClient      *mcpclient.Manager
+	mcpClientStore *store.MCPClientStore
+	mcpClientOnce  stdsync.Once
+	// Unified async foreground-job registry — the single execution engine for
+	// both the MCP server's foreground toolset and the built-in AI panel's
+	// execute path. Background non-PTY exec stays on the session mcpExec path.
+	jobs    *mcp.Registry
+	jobOnce stdsync.Once
+
+	// Session-lifetime screen emulators backing CaptureScreen (the MCP
+	// uniterm_capture tool and the frontend's collect-output fallback). One
+	// per session, attached before connecting; fed via additive data
+	// taps, removed when the session disconnects.
+	captureMu stdsync.Mutex
+	captures  map[string]*sessionCapture
+
 	// session objects and the log file spans all of them. sessionToPanel
 	// tracks the current session→panel binding so emitData can look up
 	// the right logger. panelAutoTriggered records which panels have
@@ -182,6 +205,16 @@ type App struct {
 	// loading; the additive channel just makes the failure visible.
 	errCh      chan error
 	startupErr error
+}
+
+// A request owns cancellation while configuration and credentials are loading,
+// before the tunnel service has registered its connection lifecycle.
+type tunnelStartRequest struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	state  session.TunnelState
+	err    error
 }
 
 func NewApp(webviewDataPath string) *App {
@@ -431,6 +464,7 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 	} else {
 		a.aiConfigStore = acs
 	}
+	a.mcpClientStore = store.NewMCPClientStore(dataDir)
 
 	is, err := store.NewIdentityStore(dataDir)
 	if err != nil {
@@ -467,12 +501,13 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 	a.tunnelService.SetStateCallback(func(st session.TunnelState) {
 		a.emit("tunnel:state", st)
 	})
-	go a.autoStartTunnels()
 	go a.watchForeground(a.ctx)
 
 	// Credential store + auto-unlock / upgrade (wires PasswordStore into
 	// connection + settings stores).
 	a.initCredentials(dataDir, upgrade)
+	// Resolve saved tunnel credentials only after the credential store is ready.
+	go a.autoStartTunnels()
 
 	// Sync service: sync metadata (sync-config.json + local repo clone) lives
 	// in the system user-config dir; the config files it encrypts/decrypts are
@@ -519,6 +554,11 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 		log.Writef("mcp: start failed: %v", err)
 		a.emit("app:startup-error", "MCP server: "+err.Error())
 	}
+
+	// MCP client: connect persisted external servers so their tools are
+	// available to the built-in AI panel. Failures are logged per-server; one
+	// bad external server never blocks startup.
+	a.StartMCPClient()
 
 	// Raise the window to the foreground once, shortly after launch. On Windows a
 	// relaunched instance can otherwise land behind other windows; the short delay
@@ -634,6 +674,9 @@ func (a *App) initCredentials(dataDir string, upgrade bool) {
 	if a.tunnelStore != nil {
 		a.tunnelStore.SetPasswordStore(cred)
 	}
+	if a.mcpClientStore != nil {
+		a.mcpClientStore.SetPasswordStore(cred)
+	}
 }
 
 // sendStartupErr records a non-fatal init failure so the frontend can see
@@ -684,6 +727,10 @@ func (a *App) StartupError() string {
 // API calls. Called from the WndProc event loop on Windows (WM_EXITSIZEMOVE).
 func (a *App) saveWindowStateFromRuntime() {
 	if a.localStateStore == nil {
+		return
+	}
+	// Server mode (headless): no window to query.
+	if a.window == nil {
 		return
 	}
 	// Do not save geometry when minimised — the position is off-screen
@@ -888,6 +935,9 @@ func (a *App) watchForeground(ctx context.Context) {
 			if a.ctx == nil {
 				continue
 			}
+			if a.window == nil {
+				continue
+			}
 			visible := !a.win().IsMinimised()
 			if visible != a.foreground.Load() {
 				a.SetAppVisibility(visible)
@@ -915,6 +965,15 @@ func (a *App) shutdown() {
 	if a.mcpServer != nil {
 		a.mcpServer.Stop()
 	}
+	if a.mcpClient != nil {
+		a.mcpClient.CloseAll()
+	}
+	a.tunnelStartsMu.Lock()
+	a.tunnelsClosed = true
+	for _, request := range a.tunnelStarts {
+		request.cancel()
+	}
+	a.tunnelStartsMu.Unlock()
 	if a.tunnelService != nil {
 		a.tunnelService.Shutdown()
 	}
@@ -1456,6 +1515,26 @@ func (a *App) SaveTunnels(data session.TunnelStoreData) error {
 	}
 	err := a.tunnelStore.Save(data)
 	if err == nil {
+		// Cancel pending reconnects as well as live forwards when a tunnel is
+		// removed, including deletions saved by another window.
+		if a.tunnelService != nil {
+			kept := make(map[string]bool, len(data.Tunnels))
+			for _, tunnel := range data.Tunnels {
+				kept[tunnel.ID] = true
+			}
+			a.tunnelStartsMu.Lock()
+			for id, request := range a.tunnelStarts {
+				if !kept[id] {
+					request.cancel()
+				}
+			}
+			a.tunnelStartsMu.Unlock()
+			for _, state := range a.tunnelService.TunnelStates() {
+				if !kept[state.ID] {
+					a.tunnelService.StopTunnel(state.ID)
+				}
+			}
+		}
 		a.emit("store:tunnels:changed", data)
 	}
 	return err
@@ -1665,37 +1744,93 @@ func withExitCredOverride(resolve session.ConnResolver, exitID, user, password s
 // user/password carry inline credentials resolved by the frontend's credential
 // dialog for exit connections with nothing saved; they only fill empty fields.
 func (a *App) StartTunnel(id, user, password string) (session.TunnelState, error) {
-	if a.tunnelService == nil || a.tunnelStore == nil || a.connectionStore == nil {
-		return session.TunnelState{}, fmt.Errorf("tunnel service not initialized")
-	}
-	data, err := a.tunnelStore.Load()
-	if err != nil {
-		return session.TunnelState{}, err
-	}
-	var t *session.Tunnel
-	for i := range data.Tunnels {
-		if data.Tunnels[i].ID == id {
-			t = &data.Tunnels[i]
-			break
+	return a.startTunnel(id, user, password, false)
+}
+
+func (a *App) startTunnel(id, user, password string, autoStartOnly bool) (session.TunnelState, error) {
+	return a.runTunnelStart(id, func(ctx context.Context) (session.TunnelState, error) {
+		if a.tunnelService == nil || a.tunnelStore == nil || a.connectionStore == nil {
+			return session.TunnelState{}, fmt.Errorf("tunnel service not initialized")
 		}
+		data, err := a.tunnelStore.Load()
+		if err != nil {
+			return session.TunnelState{}, err
+		}
+		var t *session.Tunnel
+		for i := range data.Tunnels {
+			if data.Tunnels[i].ID == id {
+				t = &data.Tunnels[i]
+				break
+			}
+		}
+		if t == nil {
+			if autoStartOnly {
+				return session.TunnelState{ID: id, Status: session.TunnelStopped}, nil
+			}
+			return session.TunnelState{}, fmt.Errorf("tunnel %s not found", id)
+		}
+		if ctx.Err() != nil || (autoStartOnly && !t.AutoStart) {
+			return session.TunnelState{ID: id, Status: session.TunnelStopped}, nil
+		}
+		resolve, err := a.connResolver()
+		if err != nil {
+			return session.TunnelState{}, err
+		}
+		resolve = withExitCredOverride(resolve, t.SSHConnID, user, password)
+		st := a.tunnelService.StartTunnelContext(ctx, *t, resolve)
+		// A failed start is reported through the state (error, or reconnecting when
+		// automatic retries are enabled, with Error text);
+		// returning a Go error here too would turn the Wails call into a rejected
+		// promise and the frontend would lose the state it needs for the toast.
+		return st, nil
+	})
+}
+
+func (a *App) runTunnelStart(id string, start func(context.Context) (session.TunnelState, error)) (session.TunnelState, error) {
+	a.tunnelStartsMu.Lock()
+	if a.tunnelsClosed {
+		a.tunnelStartsMu.Unlock()
+		return session.TunnelState{ID: id, Status: session.TunnelStopped}, nil
 	}
-	if t == nil {
-		return session.TunnelState{}, fmt.Errorf("tunnel %s not found", id)
+	if existing := a.tunnelStarts[id]; existing != nil && existing.ctx.Err() == nil {
+		a.tunnelStartsMu.Unlock()
+		<-existing.done
+		return existing.state, existing.err
 	}
-	resolve, err := a.connResolver()
-	if err != nil {
-		return session.TunnelState{}, err
+	ctx, cancel := context.WithCancel(context.Background())
+	request := &tunnelStartRequest{ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	if a.tunnelStarts == nil {
+		a.tunnelStarts = make(map[string]*tunnelStartRequest)
 	}
-	resolve = withExitCredOverride(resolve, t.SSHConnID, user, password)
-	st := a.tunnelService.StartTunnel(*t, resolve)
-	// A failed start is reported through the state (Status=Error + Error text);
-	// returning a Go error here too would turn the Wails call into a rejected
-	// promise and the frontend would lose the state it needs for the toast.
-	return st, nil
+	a.tunnelStarts[id] = request
+	a.tunnelStartsMu.Unlock()
+	defer func() {
+		a.tunnelStartsMu.Lock()
+		if a.tunnelStarts[id] == request {
+			delete(a.tunnelStarts, id)
+		}
+		close(request.done)
+		a.tunnelStartsMu.Unlock()
+	}()
+	request.state, request.err = start(ctx)
+	if ctx.Err() != nil {
+		request.state, request.err = session.TunnelState{ID: id, Status: session.TunnelStopped}, nil
+	}
+	// The service retains ctx for a running/retrying lifecycle. Cancelling it
+	// here would stop a successful start as soon as its RPC returned.
+	if request.err != nil || request.state.Status == session.TunnelStopped || request.state.Status == session.TunnelError {
+		cancel()
+	}
+	return request.state, request.err
 }
 
 // StopTunnel tears down the tunnel with the given ID.
 func (a *App) StopTunnel(id string) error {
+	a.tunnelStartsMu.Lock()
+	if request := a.tunnelStarts[id]; request != nil {
+		request.cancel()
+	}
+	a.tunnelStartsMu.Unlock()
 	if a.tunnelService != nil {
 		a.tunnelService.StopTunnel(id)
 	}
@@ -1741,13 +1876,14 @@ func (a *App) autoStartTunnels() {
 	if err != nil {
 		return
 	}
-	resolve, err := a.connResolver()
-	if err != nil {
-		return
-	}
 	for _, t := range data.Tunnels {
 		if t.AutoStart {
-			if st := a.tunnelService.StartTunnel(t, resolve); st.Status == session.TunnelError {
+			// A previous connection may take time to establish. Re-read this
+			// definition so a tunnel deleted or disabled meanwhile stays stopped.
+			st, err := a.startTunnel(t.ID, "", "", true)
+			if err != nil {
+				log.Writef("auto-start tunnel %s (%s): %v", t.Name, t.ID, err)
+			} else if st.Error != "" {
 				// The failure also reaches the frontend via the tunnel:state
 				// event; the log keeps a trace for diagnostics.
 				log.Writef("auto-start tunnel %s (%s): %s", t.Name, t.ID, st.Error)
@@ -2127,15 +2263,28 @@ func (a *App) SyncConfigureRepo(repoURL, username, token, masterPassword string)
 	return result, err
 }
 
-// SyncConfigureRepoWebDAV configures a WebDAV snapshot share as sync backend.
-func (a *App) SyncConfigureRepoWebDAV(serverURL, basePath, username, password, masterPassword string) (*sync.SyncResult, error) {
+// SyncTestRemote probes a snapshot remote with form-provided values
+// (the add-repo dialog's test-connection button), without saving anything.
+func (a *App) SyncTestRemote(backend string, remote sync.RemoteConfig, secret string) error {
+	if a.syncService == nil {
+		return fmt.Errorf("sync service not initialized")
+	}
+	if !a.waitSyncReady(time.Second) {
+		return fmt.Errorf("sync service still initializing")
+	}
+	return a.syncService.TestRemote(backend, remote, secret)
+}
+
+// SyncConfigureRemote configures a snapshot remote (webdav/sftp/s3/smb)
+// as the sync backend.
+func (a *App) SyncConfigureRemote(backend string, remote sync.RemoteConfig, secret, masterPassword string) (*sync.SyncResult, error) {
 	if a.syncService == nil {
 		return nil, fmt.Errorf("sync service not initialized")
 	}
 	if !a.waitSyncReady(time.Second) {
 		return nil, fmt.Errorf("sync service still initializing")
 	}
-	result, err := a.syncService.ConfigureRepoWebDAV(serverURL, basePath, username, password, masterPassword)
+	result, err := a.syncService.ConfigureRepoRemote(backend, remote, secret, masterPassword)
 	if err == nil {
 		a.reloadStoresAfterSync()
 		a.emit("sync:completed")
@@ -2165,17 +2314,18 @@ func (a *App) SyncVerifyPassword(password, username, token string) error {
 	return a.syncService.VerifySyncPassword(password, username, token)
 }
 
-// SyncUpdateWebDAVPassword swaps the WebDAV credential only. The server,
+// SyncUpdateRemotePassword swaps the snapshot remote credential only. The
+// server,
 // remote folder and username are display-only in the edit dialog —
 // changing the sync target must go through delete + re-configure.
-func (a *App) SyncUpdateWebDAVPassword(password, masterPassword string) error {
+func (a *App) SyncUpdateRemotePassword(secret, masterPassword string) error {
 	if a.syncService == nil {
 		return fmt.Errorf("sync service not initialized")
 	}
 	if !a.waitSyncReady(time.Second) {
 		return fmt.Errorf("sync service still initializing")
 	}
-	return a.syncService.UpdateWebDAVPassword(password, masterPassword)
+	return a.syncService.UpdateRemotePassword(secret, masterPassword)
 }
 
 // SyncDeleteRepo removes the sync repository configuration.
@@ -3033,11 +3183,11 @@ func (a *App) ResetCredentials() error {
 // consistent key, exactly as before the rekey.
 //
 // Every manifest secret file (connections, settings, identities, proxies,
-// ai.json and tunnels.json) has a wired store below; the nil guard fails
+// ai.json, tunnels.json and mcp-clients.json) has a wired store below; the nil guard fails
 // loudly when one is missing, so a rekey can never leave a file stranded
 // under oldKey (the ai.json gap that once stayed under the old key).
 func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
-	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil || a.proxyStore == nil || a.aiConfigStore == nil || a.tunnelStore == nil {
+	if a.connectionStore == nil || a.settingsStore == nil || a.identityStore == nil || a.proxyStore == nil || a.aiConfigStore == nil || a.tunnelStore == nil || a.mcpClientStore == nil {
 		return errors.New("stores not initialized")
 	}
 	conns, err := a.connectionStore.Load()
@@ -3064,6 +3214,7 @@ func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
 	// strand its ciphertext under oldKey forever (Load fails with a decrypt
 	// error, including tunnel auto-start).
 	tunnels, err := a.tunnelStore.Load()
+	mcpClients, err := a.mcpClientStore.Load()
 	if err != nil {
 		return err
 	}
@@ -3074,6 +3225,7 @@ func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
 		func() error { return a.proxyStore.ForceSave(proxies) },
 		func() error { return a.aiConfigStore.ForceSave(ai) },
 		func() error { return a.tunnelStore.ForceSave(tunnels) },
+		func() error { return a.mcpClientStore.ForceSave(mcpClients) },
 	}
 	cs.SetKey(newKey)
 	var saveErrs []error

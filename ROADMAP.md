@@ -77,9 +77,8 @@ Legend: ✅ Shipped, 🚧 Planned
 | Multi-Panel AI Lock | ✅ | v1.5.0 | Control multiple terminals simultaneously |  |
 | Skill Support | ✅ | v1.6.0 | Packaged, reusable workflows the agent can invoke | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
 | Prompt Library | ✅ | v1.6.0 | Manage and trigger reusable AI prompts | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
-| Interaction Modes | 🚧 | — | Chat / read-only / agent modes to constrain AI actions |  |
 | MCP Server | ✅ | v1.10.0 | Expose uniTerm as an MCP server for external AI agents | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
-| MCP Client | 🚧 | — | Connect external MCP servers to extend uniTerm's AI |  |
+| MCP Client | ✅ | v1.10.1 | Connect external MCP servers to extend uniTerm's AI | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
 | File Attachments | ✅ | v1.10.1 | Attach files to AI prompts for the agent to read | [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu) |
 
 ### Personalization

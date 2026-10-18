@@ -1,0 +1,1043 @@
+package mcp
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+)
+
+// Job states shared by both modes. The MCP tool layer maps these onto the
+// agent-facing state strings.
+const (
+	StateRunning       = "running"
+	StateExited        = "exited"
+	StateError         = "error"
+	StateKilled        = "killed"
+	StateTimeout       = "timeout"
+	StateSessionClosed = "session_closed"
+)
+
+// Foreground completion events delivered by the tap.
+const (
+	eventIdleSettled = "idle"
+	eventEOF         = "eof"
+	eventHardTimeout = "timeout"
+	eventInterrupted = "killed"
+)
+
+// Default caps; the MCP layer can override per call.
+const (
+	DefaultIdleSettle    = 800 * time.Millisecond
+	DefaultHardLimit     = 5 * time.Minute
+	DefaultMaxOutput     = 64 * 1024
+	defaultOutputCap     = DefaultMaxOutput * 4
+	defaultJobTTL        = 10 * time.Minute
+	defaultMaxConcurrent = 8
+)
+
+// Job is one foreground execution lifecycle. Background jobs are tracked by the
+// session package's own registry; this struct models the foreground path.
+type Job struct {
+	ID        string
+	SessionID string
+
+	mu       sync.Mutex
+	stdout   []byte
+	stderr   []byte
+	exitCode int
+	state    string
+	err      error
+
+	// screen is the redraw-resolving emulator fed by the data tap. When nil
+	// (raw mode, used by tests and by Start) the job accumulates the raw
+	// stream — which on Windows OpenSSH/ConPTY carries redraw frames the
+	// screen never shows. Set via StartWithScreen.
+	screen *Screen
+	// watermark is the absolute line index of the last line already emitted
+	// into stdout. Emission happens after each Feed: lines above the cursor
+	// are final; the cursor line flushes at completion (FlushFrom).
+	watermark int
+
+	done     chan struct{}
+	finished bool
+}
+
+// Snapshot returns a consistent copy of the current output/state.
+func (j *Job) Snapshot() (stdout, stderr []byte, exitCode int, state string, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]byte, len(j.stdout))
+	copy(out, j.stdout)
+	errOut := make([]byte, len(j.stderr))
+	copy(errOut, j.stderr)
+	return out, errOut, j.exitCode, j.state, j.err
+}
+
+func (j *Job) setState(state string, exitCode int, err error) {
+	j.mu.Lock()
+	if j.finished {
+		j.mu.Unlock()
+		return
+	}
+	j.state = state
+	j.exitCode = exitCode
+	j.err = err
+	j.finished = state != StateRunning
+	if j.finished {
+		close(j.done)
+	}
+	j.mu.Unlock()
+}
+
+func (j *Job) appendLocked(dst *[]byte, b []byte) {
+	// Keep a stable prefix so byte offsets remain valid throughout polling.
+	remaining := defaultOutputCap - len(*dst)
+	if len(b) > remaining {
+		b = b[:remaining]
+	}
+	*dst = append(*dst, b...)
+}
+
+// Pty is the small live-session surface the foreground tap needs, implemented
+// by the session layer (Write + data/status callbacks). Kept narrow so the
+// registry tests against a fake.
+type Pty interface {
+	// Write sends bytes (the command + newline) to the live terminal.
+	Write(data []byte) error
+	// OnData registers a stream listener; returns an unsubscribe function.
+	OnData(cb func(data []byte)) (off func())
+	// OnStatusChange registers a connection-lost listener; returns unsub.
+	OnStatusChange(cb func(status string)) (off func())
+
+	// Alive reports whether the session is still connected at tap start.
+	Alive() bool
+}
+
+// Registry tracks foreground jobs across all live sessions.
+type Registry struct {
+	mu      sync.Mutex
+	jobs    map[string]*Job
+	running int
+	// busy maps sessionID → running job id. One executor per session keeps
+	// the live terminal coherent (see ErrSessionBusy).
+	busy map[string]string
+	// newID is injectable for tests (deterministic ids); default uuid.
+	newID func() string
+}
+
+// NewRegistry builds an empty registry with the uuid id generator.
+func NewRegistry() *Registry {
+	return &Registry{
+		jobs:  make(map[string]*Job),
+		busy:  make(map[string]string),
+		newID: func() string { return "fg-" + uuid.New().String() },
+	}
+}
+
+// Start types command into pty and watches for completion. It returns the job
+// immediately; the caller polls Snapshot. Completion is driven by the idle
+// timer (no output for idleSettle) or an explicit EOF (session closed) — never
+// by matching an end marker. A hard deadline moves the job to StateTimeout; it
+// stays pollable and interruptible instead of hanging the caller.
+// Start launches a raw-mode job (no screen emulator; the tap accumulates the
+// raw PTY stream, ConPTY redraw frames included). Kept for tests and callers
+// that want the pre-emulator behavior; production uses StartWithScreen.
+func (r *Registry) Start(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int) (*Job, error) {
+	return r.StartWithScreen(pty, sessionID, command, newline, idleSettle, hardLimit, maxOutput, 0, 0)
+}
+
+// StartWithScreen launches a job whose output is the redraw-resolved screen
+// text produced by a vt emulator fed by the data tap (see the screen emulator below). On
+// Windows OpenSSH/ConPTY the raw stream carries redraw frames the screen never
+// displays; the emulator resolves them the same way an xterm.js buffer does.
+// cols/rows <= 0 falls back to raw mode. Completion semantics are unchanged:
+// idle-settle or EOF, never an end marker. A hard limit moves the job to
+// StateTimeout; it stays pollable and interruptible instead of hanging.
+func (r *Registry) StartWithScreen(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int, cols, rows int) (*Job, error) {
+	return r.start(pty, sessionID, command, newline, idleSettle, hardLimit, maxOutput, cols, rows, false)
+}
+
+// ObserveWithScreen collects future terminal output without typing a command.
+// Read-only observers share the execution lifecycle but do not lock the session.
+func (r *Registry) ObserveWithScreen(pty Pty, sessionID string, idleSettle, hardLimit time.Duration, cols, rows int) (*Job, error) {
+	return r.start(pty, sessionID, "", "", idleSettle, hardLimit, DefaultMaxOutput, cols, rows, true)
+}
+
+func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int, cols, rows int, observe bool) (*Job, error) {
+	if idleSettle <= 0 {
+		idleSettle = DefaultIdleSettle
+	}
+	if hardLimit <= 0 {
+		hardLimit = DefaultHardLimit
+	}
+	if maxOutput <= 0 {
+		maxOutput = DefaultMaxOutput
+	}
+
+	r.mu.Lock()
+	if r.running >= defaultMaxConcurrent {
+		r.mu.Unlock()
+		return nil, ErrTooMany
+	}
+	if _, taken := r.busy[sessionID]; taken && !observe {
+		r.mu.Unlock()
+		return nil, ErrSessionBusy
+	}
+	r.running++
+
+	job := &Job{
+		ID:        r.newID(),
+		SessionID: sessionID,
+		state:     StateRunning,
+		done:      make(chan struct{}),
+	}
+	if cols > 0 && rows > 0 {
+		job.screen = NewScreen(cols, rows)
+		job.watermark = 0
+	}
+	r.jobs[job.ID] = job
+	if !observe {
+		r.busy[sessionID] = job.ID
+	}
+	r.mu.Unlock()
+	r.scheduleReaper(job.ID)
+
+	if !pty.Alive() {
+		r.finish(job, StateSessionClosed, -1, ErrSessionClosed)
+		r.release(job)
+		return job, nil
+	}
+
+	ready := make(chan struct{})
+	go r.watch(pty, job, idleSettle, hardLimit, maxOutput, ready)
+	<-ready // Install taps before Write: a command may produce output immediately.
+	if observe {
+		return job, nil
+	}
+	if err := pty.Write([]byte(command + newline)); err != nil {
+		r.finish(job, StateError, -1, err)
+		return job, nil
+	}
+
+	return job, nil
+}
+
+func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration, maxOutput int, ready chan struct{}) {
+	defer r.release(job)
+
+	var (
+		eof      bool
+		lastData = time.Now()
+		start    = time.Now()
+	)
+	dataOff := pty.OnData(func(data []byte) {
+		job.mu.Lock()
+		defer job.mu.Unlock()
+		if job.finished {
+			return
+		}
+		if job.screen != nil {
+			// Feed the emulator, then emit the logical lines that became
+			// final with this chunk: everything above the cursor row. The
+			// cursor line itself flushes at completion — it may still grow.
+			// This is what kills the ConPTY duplicate-text problem: redraw
+			// frames mutate the grid instead of appending bytes.
+			job.screen.Feed(data)
+			if chunk := job.screen.LinesSince(job.watermark, job.screen.CursorAbs()); chunk != "" {
+				job.appendLocked(&job.stdout, []byte(chunk))
+				job.watermark = job.screen.CursorAbs()
+			}
+		} else {
+			job.appendLocked(&job.stdout, data)
+		}
+		lastData = time.Now()
+	})
+	statusOff := pty.OnStatusChange(func(status string) {
+		job.mu.Lock()
+		defer job.mu.Unlock()
+		if status == "disconnected" || status == "error" {
+			eof = true
+		}
+	})
+	close(ready)
+	defer func() {
+		if dataOff != nil {
+			dataOff()
+		}
+		if statusOff != nil {
+			statusOff()
+		}
+	}()
+
+	// flushTail pushes the not-yet-emitted remainder (cursor line and any
+	// rows below the watermark) into stdout. Only meaningful in screen mode;
+	// without it the last output line would sit on the cursor row forever.
+	flushTail := func() {
+		if job.screen == nil {
+			return
+		}
+		job.mu.Lock()
+		if tail := job.screen.FlushFrom(job.watermark); tail != "" {
+			job.appendLocked(&job.stdout, []byte(tail))
+		}
+		job.mu.Unlock()
+	}
+
+	// Poll on a short ticker: check EOF, the idle-settle deadline and the hard
+	// limit. Completion is an event (idle gap / session close), never a marker
+	// match, so a dynamic prompt or TUI cannot make the watcher hang.
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-job.done:
+			return
+		case now := <-ticker.C:
+			job.mu.Lock()
+			closed, last := eof, lastData
+			job.mu.Unlock()
+			if closed {
+				flushTail()
+				r.finish(job, StateSessionClosed, -1, ErrSessionClosed)
+				return
+			}
+			if now.Sub(start) >= hardLimit {
+				flushTail()
+				r.finish(job, StateTimeout, -1, nil)
+				return
+			}
+			if now.Sub(last) >= idleSettle {
+				flushTail()
+				r.finish(job, StateExited, 0, nil)
+				return
+			}
+		}
+	}
+}
+
+// release frees the concurrency slot and the per-session busy marker. The
+// busy marker is only cleared when it still points at this job — a finished
+// job's slot may already have been re-used by a newer StartWithScreen.
+func (r *Registry) release(job *Job) {
+	r.mu.Lock()
+	if r.running > 0 {
+		r.running--
+	}
+	if cur, ok := r.busy[job.SessionID]; ok && cur == job.ID {
+		delete(r.busy, job.SessionID)
+	}
+	r.mu.Unlock()
+}
+
+// Interrupt stops a running job: foreground taps just close the job (the typed
+// command keeps running in the terminal, but the watcher stops collecting).
+func (r *Registry) Interrupt(jobID string) error {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	r.mu.Unlock()
+	if !ok {
+		return ErrUnknownJob
+	}
+	job.mu.Lock()
+	running := job.state == StateRunning
+	job.mu.Unlock()
+	if running {
+		r.finish(job, StateKilled, -1, ErrInterrupted)
+	}
+	return nil
+}
+
+// Lookup returns the job for polling.
+func (r *Registry) Lookup(jobID string) (*Job, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.jobs[jobID]
+	return job, ok
+}
+
+func (r *Registry) finish(job *Job, state string, exitCode int, err error) {
+	job.setState(state, exitCode, err)
+}
+
+func (r *Registry) scheduleReaper(id string) {
+	time.AfterFunc(defaultJobTTL, func() {
+		r.mu.Lock()
+		if job, ok := r.jobs[id]; ok {
+			job.mu.Lock()
+			done := job.finished
+			job.mu.Unlock()
+			if done {
+				delete(r.jobs, id)
+			}
+		}
+		r.mu.Unlock()
+	})
+}
+
+// Truncate caps a byte slice at max, cutting at a newline when possible and
+// appending a marker. Shared by both modes' result shaping.
+func Truncate(b []byte, max int) []byte {
+	if max <= 0 || len(b) <= max {
+		return b
+	}
+	const marker = "\n…[uniterm: output truncated]"
+	trunc := b[:max]
+	if i := strings.LastIndexByte(string(trunc), '\n'); i > max/2 {
+		trunc = trunc[:i]
+	}
+	return append(trunc, []byte(marker)...)
+}
+
+// Result is the normalized poll payload both modes return.
+type Result struct {
+	JobID      string
+	State      string
+	Stdout     string
+	Stderr     string
+	ExitCode   int
+	NextOffset int
+	Truncated  bool
+}
+
+// TruncateOutputLines applies the same head/tail display limits used by the
+// built-in assistant. Byte paging remains independent of presentation.
+func TruncateOutputLines(output string, head, tail int) (string, bool) {
+	lines := strings.Split(output, "\n")
+	if head < 0 {
+		head = 0
+	}
+	if tail < 0 {
+		tail = 0
+	}
+	if head >= len(lines) || tail >= len(lines)-head {
+		return output, false
+	}
+	return strings.Join(lines[:head], "\n") + fmt.Sprintf(
+		"\n\n─────── [TRUNCATED: %d lines total, %d lines omitted] ────────\nAdjust head_lines / tail_lines to see more content.\n\n",
+		len(lines), len(lines)-head-tail) + strings.Join(lines[len(lines)-tail:], "\n"), true
+}
+
+// Sentinel errors surfaced to the MCP tool layer and mapped onto readable
+// agent-facing messages.
+var (
+	ErrTooMany       = errors.New("too many concurrent jobs")
+	ErrSessionClosed = errors.New("session closed")
+	ErrUnknownJob    = errors.New("job not found or expired")
+	ErrInterrupted   = errors.New("job interrupted")
+	// ErrSessionBusy: another execution (an earlier foreground job) is still
+	// typing into / tapping this session. One executor per session keeps the
+	// live terminal coherent — two agents interleaving keystrokes corrupts
+	// both runs and each other's completion detection.
+	ErrSessionBusy = errors.New("session is busy with another execution")
+)
+
+const (
+	// Sane minimums so hostile dimension requests can't produce a
+	// degenerate (0-wide) grid.
+	minCols = 20
+	minRows = 5
+
+	// Scrollback bound: enough context for watermark-style consumers
+	// (they drain promptly) without unbounded growth on long output.
+	scrollbackCap = 500
+
+	// CSI param/length caps keep hostile sequences (ESC [ 0;0;0;... )
+	// from allocating without bound. Anything past the cap is treated
+	// as garbage and the whole sequence is ignored.
+	maxCSIParams = 8
+	maxCSILen    = 64
+)
+
+type parserState int
+
+const (
+	stateGround  parserState = iota
+	stateEscape              // after ESC
+	stateCSI                 // after ESC [
+	stateOSC                 // after ESC ] — until BEL or ST
+	stateString              // DCS/SOS/PM/APC — until ST
+	stateCharset             // ESC ( / ESC ) — swallow one byte
+)
+
+// Screen is a cols x rows grid of rune cells plus a small state machine
+// that turns raw PTY bytes into grid updates.
+type Screen struct {
+	cols, rows int
+	grid       [][]rune
+	x, y       int // cursor; x may equal cols as a "wrap pending" sentinel
+
+	savedX, savedY int
+
+	state    parserState
+	csiBuf   []byte
+	csiInter bool   // intermediate/overflow byte seen → ignore the sequence
+	oscEsc   bool   // last byte in OSC/string was ESC (ST detection)
+	pending  []byte // trailing bytes of a UTF-8 rune split across Feeds
+
+	// Absolute line tracking for consumers that must emit each logical
+	// output line exactly once. absTop is the absolute index of grid
+	// row 0; it only grows when lines scroll off the top (LF past the
+	// bottom, SU), so numbering is monotonic. scrollback holds the
+	// trimmed text of absolute lines [absTop-len(scrollback), absTop).
+	absTop     int
+	scrollback []string
+}
+
+// NewScreen creates a screen with the given grid dimensions (e.g. 120x40).
+// Dimensions are clamped to sane minimums (cols>=20, rows>=5) so hostile
+// values can't produce a degenerate grid.
+func NewScreen(cols, rows int) *Screen {
+	if cols < minCols {
+		cols = minCols
+	}
+	if rows < minRows {
+		rows = minRows
+	}
+	s := &Screen{cols: cols, rows: rows, grid: make([][]rune, rows)}
+	for i := range s.grid {
+		s.grid[i] = s.newRow()
+	}
+	return s
+}
+
+func (s *Screen) newRow() []rune {
+	row := make([]rune, s.cols)
+	for i := range row {
+		row[i] = ' '
+	}
+	return row
+}
+
+// Feed parses one chunk of raw PTY output and updates the grid.
+// Chunks may split multi-byte UTF-8 runes; the trailing partial rune is
+// stashed and prepended to the next chunk.
+func (s *Screen) Feed(data []byte) {
+	if len(s.pending) > 0 {
+		data = append(s.pending, data...)
+		s.pending = s.pending[:0]
+	}
+	for i := 0; i < len(data); {
+		b := data[i]
+		// Multi-byte runes only matter in ground state; escape
+		// sequences are pure ASCII.
+		if s.state == stateGround && b >= utf8.RuneSelf {
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				// Invalid byte, or a sequence truncated by the end of
+				// this chunk. Only stash plausible lead bytes — a stray
+				// continuation byte is dropped so a malformed stream
+				// can't wedge the parser waiting for bytes that never
+				// come.
+				if data[i] >= 0xC2 && data[i] <= 0xF4 && !utf8.FullRune(data[i:]) {
+					s.pending = append(s.pending, data[i:]...)
+					return
+				}
+				i++
+				continue
+			}
+			i += size
+			s.writeRune(r)
+			continue
+		}
+		i++
+		s.step(b)
+	}
+}
+
+func (s *Screen) step(b byte) {
+	switch s.state {
+	case stateGround:
+		s.ground(b)
+	case stateEscape:
+		s.escape(b)
+	case stateCSI:
+		s.csi(b)
+	case stateOSC, stateString:
+		s.swallowString(b)
+	case stateCharset:
+		// Charset designations affect rendering only; swallow the byte.
+		s.state = stateGround
+	}
+}
+
+func (s *Screen) ground(b byte) {
+	switch b {
+	case 0x1B:
+		s.state = stateEscape
+	case '\r':
+		s.x = 0
+	case '\n', 0x0B, 0x0C: // VT/FF are LF in practice
+		s.linefeed()
+	case '\b':
+		if s.x > 0 {
+			s.x--
+		}
+	case '\t':
+		s.tab()
+	case 0x07: // BEL: ignored
+	default:
+		if b < 0x20 || b == 0x7F {
+			return // remaining C0 controls and DEL are ignored
+		}
+		s.writeRune(rune(b))
+	}
+}
+
+func (s *Screen) escape(b byte) {
+	s.state = stateGround
+	switch b {
+	case '[':
+		s.state = stateCSI
+		s.csiBuf = s.csiBuf[:0]
+		s.csiInter = false
+	case ']':
+		s.state = stateOSC
+		s.oscEsc = false
+	case 'P', 'X', '^', '_': // DCS/SOS/PM/APC
+		s.state = stateString
+		s.oscEsc = false
+	case '(', ')', '*', '+': // charset designation: swallow next byte
+		s.state = stateCharset
+	case '7':
+		s.savedX, s.savedY = s.x, s.y
+	case '8':
+		s.x, s.y = s.savedX, s.savedY
+		s.clampCursor()
+	case 'D': // IND behaves like LF
+		s.linefeed()
+	case 'M': // RI: up, reverse-scroll at top
+		s.reverseLinefeed()
+	case 'E': // NEL: CR+LF
+		s.x = 0
+		s.linefeed()
+	case 'c': // RIS: clear screen, home
+		s.reset()
+	case 0x1B: // ESC ESC: restart escape
+		s.state = stateEscape
+	case 0x18, 0x1A: // CAN/SUB abort
+	default:
+		// Unknown escape (ESC =, ESC >, ...): parse and ignore.
+	}
+}
+
+// swallowString consumes OSC/DCS/SOS/PM/APC payload bytes until BEL
+// (OSC only) or ST (ESC \). CAN/SUB abort, matching xterm.
+func (s *Screen) swallowString(b byte) {
+	switch {
+	case b == 0x07 && s.state == stateOSC:
+		s.state = stateGround
+	case b == 0x1B:
+		s.oscEsc = true
+	case s.oscEsc:
+		s.oscEsc = false
+		if b == '\\' {
+			s.state = stateGround
+		}
+	case b == 0x18 || b == 0x1A:
+		s.state = stateGround
+	}
+}
+
+func (s *Screen) csi(b byte) {
+	switch {
+	case b >= 0x30 && b <= 0x3F: // parameter bytes (digits ; : ? > =)
+		if len(s.csiBuf) < maxCSILen {
+			s.csiBuf = append(s.csiBuf, b)
+		} else {
+			s.csiInter = true // overlong: ignore whole sequence
+		}
+	case b >= 0x20 && b <= 0x2F: // intermediates → non-standard, ignore
+		s.csiInter = true
+	case b >= 0x40 && b <= 0x7E: // final byte
+		s.state = stateGround
+		if !s.csiInter {
+			s.csiDispatch(b)
+		}
+	case b == 0x1B:
+		s.state = stateEscape
+	case b == 0x18 || b == 0x1A:
+		s.state = stateGround
+	default:
+		// C0 controls inside CSI (e.g. CR mid-sequence): ignored rather
+		// than executed — simpler, and ConPTY doesn't rely on it.
+	}
+}
+
+func (s *Screen) csiDispatch(final byte) {
+	ps := s.params()
+	switch final {
+	case 'A': // CUU
+		s.moveCursor(s.x, s.y-param(ps, 0, 1))
+	case 'B', 'e': // CUD / VPR
+		s.moveCursor(s.x, s.y+param(ps, 0, 1))
+	case 'C', 'a': // CUF / HPR
+		s.moveCursor(s.x+param(ps, 0, 1), s.y)
+	case 'D': // CUB
+		s.moveCursor(s.x-param(ps, 0, 1), s.y)
+	case 'E': // CNL
+		s.moveCursor(0, s.y+param(ps, 0, 1))
+	case 'F': // CPL
+		s.moveCursor(0, s.y-param(ps, 0, 1))
+	case 'G', '`': // CHA / HPA
+		s.moveCursor(param(ps, 0, 1)-1, s.y)
+	case 'd': // VPA
+		s.moveCursor(s.x, param(ps, 0, 1)-1)
+	case 'H', 'f': // CUP / HVP (1-based, default 1)
+		s.moveCursor(param(ps, 1, 1)-1, param(ps, 0, 1)-1)
+	case 'J': // ED
+		s.eraseDisplay(param(ps, 0, 0))
+	case 'K': // EL
+		s.eraseLine(param(ps, 0, 0))
+	case 'L': // IL
+		s.insertLines(param(ps, 0, 1))
+	case 'M': // DL
+		s.deleteLines(param(ps, 0, 1))
+	case 'S': // SU
+		s.scrollUp(param(ps, 0, 1))
+	case 'T': // SD
+		s.scrollDown(param(ps, 0, 1))
+	case 's': // SCP
+		s.savedX, s.savedY = s.x, s.y
+	case 'u': // RCP
+		s.x, s.y = s.savedX, s.savedY
+		s.clampCursor()
+	default:
+		// SGR (m), private modes (?...h/l), DSR (n), device attrs (c):
+		// parsed and ignored — no attribute model, no response channel.
+	}
+}
+
+// params splits the buffered CSI parameter bytes into ints; -1 marks a
+// missing field. Non-digit parameter bytes (?, :, >, =) are skipped so
+// private-prefix sequences still parse their numeric part.
+func (s *Screen) params() []int {
+	out := make([]int, 0, 4)
+	cur := -1
+	for _, b := range s.csiBuf {
+		switch {
+		case b >= '0' && b <= '9':
+			if cur < 0 {
+				cur = 0
+			}
+			if cur < 1_000_000 { // cap magnitude; values get clamped later
+				cur = cur*10 + int(b-'0')
+			}
+		case b == ';':
+			if len(out) < maxCSIParams {
+				out = append(out, cur)
+			}
+			cur = -1
+		}
+	}
+	if len(out) < maxCSIParams {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// param returns the i-th CSI parameter, or def when missing/zero
+// (CSI zero params mean the default per spec).
+func param(ps []int, i, def int) int {
+	if i >= len(ps) || ps[i] <= 0 {
+		return def
+	}
+	return ps[i]
+}
+
+func (s *Screen) clampCursor() {
+	if s.x > s.cols-1 {
+		s.x = s.cols - 1
+	}
+	if s.x < 0 {
+		s.x = 0
+	}
+	if s.y > s.rows-1 {
+		s.y = s.rows - 1
+	}
+	if s.y < 0 {
+		s.y = 0
+	}
+}
+
+func (s *Screen) moveCursor(x, y int) {
+	s.x, s.y = x, y
+	s.clampCursor()
+}
+
+func (s *Screen) linefeed() {
+	s.y++
+	if s.y >= s.rows {
+		s.y = s.rows - 1
+		s.scrollUp(1)
+	}
+}
+
+func (s *Screen) reverseLinefeed() {
+	if s.y > 0 {
+		s.y--
+		return
+	}
+	s.scrollDown(1)
+}
+
+func (s *Screen) tab() {
+	if s.x >= s.cols {
+		return // wrap-pending sentinel: tab is a no-op there
+	}
+	s.x = (s.x/8 + 1) * 8
+	if s.x >= s.cols {
+		s.x = s.cols - 1
+	}
+}
+
+func (s *Screen) writeRune(r rune) {
+	// Combining marks have no cell of their own; dropping them keeps
+	// column counts accurate without per-cell rune stacking.
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+		return
+	}
+	if r < 0x20 {
+		return // stray control byte that slipped through
+	}
+	if s.x >= s.cols {
+		// Deferred wrap: the previous printable filled the last column.
+		s.x = 0
+		s.linefeed()
+	}
+	s.grid[s.y][s.x] = r
+	s.x++
+	if s.x >= s.cols {
+		s.x = s.cols // wrap-pending sentinel, resolved on next printable
+	}
+}
+
+func (s *Screen) reset() {
+	for i := range s.grid {
+		s.grid[i] = s.newRow()
+	}
+	s.x, s.y, s.savedX, s.savedY = 0, 0, 0, 0
+	// absTop/scrollback survive RIS: already-scrolled lines were real
+	// output and consumers may still hold watermarks below absTop.
+}
+
+// scrollUp pushes the top n rows into scrollback, shifts the grid up and
+// blanks the bottom. Each pushed row raises absTop by one — this is the
+// only place the absolute counter moves, which keeps it monotonic.
+func (s *Screen) scrollUp(n int) {
+	if n <= 0 {
+		return
+	}
+	if n > s.rows {
+		n = s.rows
+	}
+	for i := 0; i < n; i++ {
+		s.pushScrollback(string(s.grid[i]))
+	}
+	copy(s.grid, s.grid[n:])
+	for i := 0; i < n; i++ {
+		s.grid[s.rows-1-i] = s.newRow()
+	}
+	s.absTop += n
+}
+
+// scrollDown shifts the grid down and blanks the top (SD, RI at top).
+// absTop is intentionally NOT decremented: the spec'd contract is that
+// the absolute counter never decreases. Lines pushed down keep colliding
+// numbers only in this rare path (progress redraws use CR, not SD), and
+// watermark consumers are LF-scroll driven.
+func (s *Screen) scrollDown(n int) {
+	if n <= 0 {
+		return
+	}
+	if n > s.rows {
+		n = s.rows
+	}
+	copy(s.grid[n:], s.grid)
+	for i := 0; i < n; i++ {
+		s.grid[i] = s.newRow()
+	}
+}
+
+func (s *Screen) pushScrollback(line string) {
+	s.scrollback = append(s.scrollback, strings.TrimRight(line, " "))
+	if len(s.scrollback) > scrollbackCap {
+		// Drop oldest so the ring stays bounded on very long output.
+		s.scrollback = s.scrollback[len(s.scrollback)-scrollbackCap:]
+	}
+}
+
+// insertLines blanks n rows at the cursor, shifting rows below down.
+// Grid-region only: it does not touch absTop (no lines leave the top).
+func (s *Screen) insertLines(n int) {
+	if n <= 0 {
+		return
+	}
+	region := s.grid[s.y:]
+	if n > len(region) {
+		n = len(region)
+	}
+	copy(region[n:], region)
+	for i := 0; i < n; i++ {
+		region[i] = s.newRow()
+	}
+}
+
+// deleteLines removes n rows at the cursor, shifting rows below up and
+// blanking the region bottom. Like IL it is grid-region only.
+func (s *Screen) deleteLines(n int) {
+	if n <= 0 {
+		return
+	}
+	region := s.grid[s.y:]
+	if n > len(region) {
+		n = len(region)
+	}
+	copy(region, region[n:])
+	for i := len(region) - n; i < len(region); i++ {
+		region[i] = s.newRow()
+	}
+}
+
+func (s *Screen) eraseDisplay(m int) {
+	switch m {
+	case 0: // cursor → end of screen
+		s.eraseLine(0)
+		for y := s.y + 1; y < s.rows; y++ {
+			s.grid[y] = s.newRow()
+		}
+	case 1: // start of screen → cursor
+		s.eraseLine(1)
+		for y := 0; y < s.y; y++ {
+			s.grid[y] = s.newRow()
+		}
+	default: // 2/3: everything
+		for y := range s.grid {
+			s.grid[y] = s.newRow()
+		}
+	}
+}
+
+func (s *Screen) eraseLine(m int) {
+	row := s.grid[s.y]
+	switch m {
+	case 0: // cursor → eol
+		for i := s.x; i < len(row); i++ {
+			row[i] = ' '
+		}
+	case 1: // bol → cursor (inclusive)
+		for i := 0; i <= s.x && i < len(row); i++ {
+			row[i] = ' '
+		}
+	default: // 2: whole line
+		s.grid[s.y] = s.newRow()
+	}
+}
+
+// Lines returns the current visible screen as rows of text, trailing
+// whitespace trimmed per line. Never nil; exactly Rows() lines.
+func (s *Screen) Lines() []string {
+	out := make([]string, s.rows)
+	for i, row := range s.grid {
+		out[i] = strings.TrimRight(string(row), " ")
+	}
+	return out
+}
+
+// Text returns strings.Join(Lines(), "\n") with trailing blank lines removed.
+func (s *Screen) Text() string {
+	return strings.TrimRight(strings.Join(s.Lines(), "\n"), "\n")
+}
+
+// Tail returns at most the last n non-blank lines joined with "\n".
+func (s *Screen) Tail(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := s.Lines()
+	kept := make([]string, 0, n)
+	for i := len(lines) - 1; i >= 0 && len(kept) < n; i-- {
+		if lines[i] != "" {
+			kept = append(kept, lines[i])
+		}
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	return strings.Join(kept, "\n")
+}
+
+func (s *Screen) Cols() int { return s.cols }
+func (s *Screen) Rows() int { return s.rows }
+
+// CursorLine returns the cursor's row index (0-based).
+func (s *Screen) CursorLine() int { return s.y }
+
+// AbsTop returns the absolute line index of grid row 0. Every scroll
+// that pushes a line off the top (LF past the bottom row, SU) increments
+// the numbering; the counter starts at 0 and never decreases.
+func (s *Screen) AbsTop() int { return s.absTop }
+
+// CursorAbs returns the absolute line index of the cursor row
+// (AbsTop() + cursor row index).
+func (s *Screen) CursorAbs() int { return s.absTop + s.y }
+
+// lineAt resolves the text of one absolute line from scrollback or grid.
+func (s *Screen) lineAt(idx int) (string, bool) {
+	if idx >= s.absTop {
+		row := idx - s.absTop
+		if row >= s.rows {
+			return "", false
+		}
+		return strings.TrimRight(string(s.grid[row]), " "), true
+	}
+	sbStart := s.absTop - len(s.scrollback)
+	if idx < sbStart {
+		return "", false // aged out of the bounded ring
+	}
+	return s.scrollback[idx-sbStart], true
+}
+
+// LinesSince returns the text of absolute lines [from, to), one trailing
+// "\n" each, in order. Lines that scrolled off the grid are recovered
+// from scrollback; lines not (yet) in scrollback or the grid are skipped.
+// When to <= from, returns "". Callers use AbsTop/CursorAbs watermarks:
+// emit [prevCursorAbs, CursorAbs) after each Feed, then flush the tail
+// when the command finishes.
+func (s *Screen) LinesSince(from, to int) string {
+	if to <= from {
+		return ""
+	}
+	var b strings.Builder
+	for i := from; i < to; i++ {
+		if line, ok := s.lineAt(i); ok {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// FlushFrom returns absolute lines [from, lastNonBlankLine] including
+// the final partial cursor line, each with trailing "\n", stopping at
+// the last non-blank line on screen so a prompt sitting on empty
+// trailing rows is not emitted. Used for the final flush at command
+// completion.
+func (s *Screen) FlushFrom(from int) string {
+	last := -1
+	for row := s.rows - 1; row >= 0; row-- {
+		if strings.TrimRight(string(s.grid[row]), " ") != "" {
+			last = s.absTop + row
+			break
+		}
+	}
+	if last < from {
+		return ""
+	}
+	return s.LinesSince(from, last+1)
+}

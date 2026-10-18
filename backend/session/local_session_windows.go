@@ -267,7 +267,13 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 				cmd.Env = os.Environ()
 			} else {
 				cmd = exec.Command(shell, "--login", "-i")
-				cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+				// MSYS bash reads TERM from the environment; honor the
+				// connection's explicit terminal type when one is set.
+				term := "TERM=" + DefaultTermType
+				if t := ExplicitTermType(config.TermType); t != "" {
+					term = "TERM=" + t
+				}
+				cmd.Env = append(os.Environ(), term)
 				isMSYSBash = true
 			}
 		} else {

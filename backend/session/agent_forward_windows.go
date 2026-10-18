@@ -14,6 +14,17 @@ import (
 // localAgentAuthMethod uses Pageant when available, then falls back to the
 // Windows OpenSSH agent named pipe. sshagent.New implements that priority.
 func localAgentAuthMethod() (ssh.AuthMethod, func(), error) {
+	client, cleanup, err := localAgentClient()
+	if err != nil {
+		return nil, cleanup, err
+	}
+	return ssh.PublicKeysCallback(client.Signers), cleanup, nil
+}
+
+// localAgentClient opens Pageant or the Windows OpenSSH agent. The returned
+// cleanup closes the connection; signers obtained from the client stay usable
+// until then.
+func localAgentClient() (agent.Agent, func(), error) {
 	localAgent, conn, err := sshagent.New()
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("Pageant or Windows OpenSSH agent unavailable: %w", err)
@@ -22,7 +33,7 @@ func localAgentAuthMethod() (ssh.AuthMethod, func(), error) {
 	if conn != nil {
 		cleanup = func() { _ = conn.Close() }
 	}
-	return ssh.PublicKeysCallback(localAgent.Signers), cleanup, nil
+	return localAgent, cleanup, nil
 }
 
 // forwardLocalAgent uses PuTTY Pageant when it is running, then falls back to

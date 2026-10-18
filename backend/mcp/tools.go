@@ -14,41 +14,59 @@ import (
 // are always available; side effects are governed by the approval policy
 // (gateExec) and every call is audited.
 func (s *Server) registerTools(srv *mcp.Server) {
+	connectionsDesc := "List saved SSH connection profiles with safe metadata only. Use connectionId with connect."
+	sessionsDesc := "List SSH sessions. Pass sessionId to exec_command."
+	if s.execMode() == ModeForeground {
+		connectionsDesc = "List saved text-terminal profiles (SSH, local, WSL, telnet, mosh, serial, TCP). No credentials are returned. Use connection_id with connect. Unsaved local/WSL terminals can also be opened with connect."
+		sessionsDesc = "List all text-terminal sessions, including local, WSL, SSH, telnet, mosh, serial and TCP. Use id as session_id with the foreground tools."
+	}
 	// ── Discovery group ─────────────────────────────────────────────
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_connections",
-		Description: "List saved uniTerm SSH connection profiles (id, name, host, user). No credentials are ever returned. Use the id with exec_command's connectionId, or connect to open a new session.",
+		Description: connectionsDesc,
 	}, s.toolListConnections)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_sessions",
-		Description: "List currently active uniTerm terminal sessions (id, type, title, status, cwd). Pass a session id to exec_command to run a command on that connection.",
+		Description: sessionsDesc,
 	}, s.toolListSessions)
 
 	// ── Exec group ──────────────────────────────────────────────────
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "connect",
-		Description: "Open a new SSH terminal session in uniTerm for a saved connection (by connection id from list_connections). The tab is visible to the user. Returns the new session id.",
-	}, s.toolConnect)
+	if s.execMode() == ModeForeground {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "connect",
+			Description: "Open a visible terminal from connection_id in list_connections (SSH, local, WSL, telnet, mosh, serial or TCP). Without a saved profile, set type=local or wsl and optionally shell_path. Returns session_id; wait for connected status in list_sessions before executing.",
+		}, s.toolConnectTerminal)
+	} else {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "connect",
+			Description: "Open a visible SSH terminal from a saved connectionId in list_connections.",
+		}, s.toolConnect)
+	}
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name: "exec_command",
-		Description: "Run a shell command on a remote host over an existing connected uniTerm SSH session (non-interactive; separate stdout/stderr; real exit code). " +
-			"Prefer this over writing into the user's terminal. Long-running commands (longer than ~20s) return a commandId you can poll with get_command_output. " +
-			"Each command may require user approval in the uniTerm window.",
-	}, s.toolExecCommand)
+	if s.execMode() != ModeForeground {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name: "exec_command",
+			Description: "Run a shell command on a remote host over an existing connected uniTerm SSH session (non-interactive; separate stdout/stderr; real exit code). " +
+				"Prefer this over writing into the user's terminal. Long-running commands (longer than ~20s) return a commandId you can poll with get_command_output. " +
+				"Each command may require user approval in the uniTerm window.",
+		}, s.toolExecCommand)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "get_command_output",
-		Description: "Fetch output (and status) of a command started by exec_command, by commandId. Supports paging via offset. Use for long-running commands.",
-	}, s.toolGetCommandOutput)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "get_command_output",
+			Description: "Fetch output (and status) of a command started by exec_command, by commandId. Supports paging via offset. Use for long-running commands.",
+		}, s.toolGetCommandOutput)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "interrupt_command",
-		Description: "Send a signal (SIGINT/SIGTERM/SIGKILL) to a still-running command started via exec_command.",
-	}, s.toolInterruptCommand)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "interrupt_command",
+			Description: "Send a signal (SIGINT/SIGTERM/SIGKILL) to a still-running command started via exec_command.",
+		}, s.toolInterruptCommand)
+	}
 
 	// ── Files group (SFTP over the session's connection) ─────────────
+	// ── Unified async-job group (uniterm_exec / result / interrupt) ──
+	s.registerJobTools(srv)
+
 	s.registerFileTools(srv)
 }
 
@@ -69,6 +87,53 @@ type connectIn struct {
 }
 type connectOut struct {
 	SessionID string `json:"sessionId"`
+}
+
+// IsTerminalType excludes graphical, database and file-transfer sessions.
+func IsTerminalType(kind string) bool {
+	switch kind {
+	case "ssh", "local", "wsl", "telnet", "mosh", "serial", "tcp":
+		return true
+	}
+	return false
+}
+
+type connectTerminalIn struct {
+	ConnectionID string `json:"connection_id,omitempty" jsonschema:"saved terminal connection id from list_connections"`
+	Type         string `json:"type,omitempty" jsonschema:"local or wsl when connection_id is omitted; saved profiles select their own type"`
+	ShellPath    string `json:"shell_path,omitempty" jsonschema:"local shell executable or wsl://distribution; only for terminals without a saved profile"`
+}
+
+type connectTerminalOut struct {
+	SessionID string `json:"session_id"`
+}
+
+func (s *Server) toolConnectTerminal(ctx context.Context, req *mcp.CallToolRequest, in connectTerminalIn) (*mcp.CallToolResult, connectTerminalOut, error) {
+	if in.ConnectionID != "" && (in.Type != "" || in.ShellPath != "") {
+		return nil, connectTerminalOut{}, fmt.Errorf("connection_id cannot be combined with type or shell_path")
+	}
+	if in.ConnectionID == "" && in.Type != "local" && in.Type != "wsl" {
+		return nil, connectTerminalOut{}, fmt.Errorf("provide connection_id, or type=local|wsl")
+	}
+	if in.Type == "wsl" && (!strings.HasPrefix(strings.ToLower(in.ShellPath), "wsl://") || len(in.ShellPath) <= len("wsl://")) {
+		return nil, connectTerminalOut{}, fmt.Errorf("WSL requires shell_path=wsl://distribution")
+	}
+	if s.env.OpenTerminal == nil {
+		return nil, connectTerminalOut{}, fmt.Errorf("terminal creation unavailable")
+	}
+	target := in.ConnectionID
+	if target == "" {
+		target = in.Type + ":" + in.ShellPath
+	}
+	if err := s.gateConnect(ctx, req, target); err != nil {
+		return nil, connectTerminalOut{}, err
+	}
+	id, err := s.env.OpenTerminal(in.ConnectionID, in.Type, in.ShellPath)
+	s.audit(ctx, req, "connect", target, id, nil, err)
+	if err != nil {
+		return nil, connectTerminalOut{}, err
+	}
+	return nil, connectTerminalOut{SessionID: id}, nil
 }
 
 type execIn struct {
@@ -149,6 +214,7 @@ func (s *Server) toolExecCommand(ctx context.Context, req *mcp.CallToolRequest, 
 	if strings.TrimSpace(in.Command) == "" {
 		return nil, execOut{}, fmt.Errorf("command is required")
 	}
+
 	exec, ok := s.env.Sessions(in.SessionID)
 	if !ok {
 		return nil, execOut{}, fmt.Errorf("session %s not found (use list_sessions)", in.SessionID)
@@ -218,6 +284,7 @@ func (s *Server) toolInterruptCommand(ctx context.Context, req *mcp.CallToolRequ
 	if strings.TrimSpace(in.CommandID) == "" {
 		return nil, interruptOut{}, fmt.Errorf("commandId is required")
 	}
+
 	_, exec, ok := s.env.Commands(in.CommandID)
 	if !ok || exec == nil {
 		return nil, interruptOut{}, fmt.Errorf("command %s not found or expired", in.CommandID)
@@ -293,6 +360,9 @@ func (s *Server) clientLabel(ctx context.Context, req *mcp.CallToolRequest) stri
 		if init := sess.InitializeParams(); init != nil && init.ClientInfo != nil {
 			return init.ClientInfo.Name
 		}
+	}
+	if req == nil {
+		return "unknown"
 	}
 	return "unknown"
 }

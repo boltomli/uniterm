@@ -87,7 +87,7 @@ func TestWebDAVBackendFetchAllOnEmptyRemote(t *testing.T) {
 }
 
 // storeSnapshot uploads one valid snapshot ("v1") with two files to b.
-func storeSnapshot(t *testing.T, b *WebDAVBackend) {
+func storeSnapshot(t *testing.T, b SnapshotBackend) {
 	t.Helper()
 	staging := t.TempDir()
 	for _, name := range []string{"connections.json", "favorites.json"} {
@@ -165,10 +165,9 @@ func TestWebDAVBackendHeadCorruptManifest(t *testing.T) {
 	if err := b.Probe(); err != nil {
 		t.Fatal(err)
 	}
-	c := NewWebDAVClient(f.server.URL, "sync", "u", "p")
-	if err := c.Put(manifestName, []byte("not json")); err != nil {
-		t.Fatal(err)
-	}
+	f.mu.Lock()
+	f.files["sync/"+manifestName] = []byte("not json")
+	f.mu.Unlock()
 	info, err := b.Head()
 	if err == nil {
 		t.Fatalf("corrupt manifest must error, head = %+v", info)
@@ -181,6 +180,7 @@ type fakeDAV struct {
 	files   map[string][]byte
 	puts    map[string]int
 	failPut map[string]bool
+	failGet map[string]bool
 	dirs    map[string]bool
 	server  *httptest.Server
 }
@@ -193,6 +193,11 @@ func newFakeDAV(t *testing.T) *fakeDAV {
 		defer f.mu.Unlock()
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		switch r.Method {
+		case "OPTIONS":
+			// gowebdav's Connect() probe (used by the WebDAV session the
+			// shim now dials) asks for server capabilities.
+			w.Header().Set("DAV", "1, 2")
+			w.WriteHeader(http.StatusOK)
 		case "PUT":
 			if f.rejectsPUT(path) {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -203,6 +208,10 @@ func newFakeDAV(t *testing.T) *fakeDAV {
 			f.puts[path]++
 			w.WriteHeader(http.StatusCreated)
 		case "GET":
+			if f.failGet[path] {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			data, ok := f.files[path]
 			if !ok {
 				w.WriteHeader(http.StatusNotFound)
@@ -280,59 +289,6 @@ func (f *fakeDAV) get(name string) []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.files[name]
-}
-
-func TestWebDAVClientPutGetExists(t *testing.T) {
-	f := newFakeDAV(t)
-	c := NewWebDAVClient(f.server.URL, "sub/dir", "user", "pass")
-	if err := c.MkdirAll(); err != nil {
-		t.Fatal(err)
-	}
-	// Second call must succeed: an existing collection answers 405 (MKCOL).
-	if err := c.MkdirAll(); err != nil {
-		t.Fatal(err)
-	}
-	if !f.dirs["sub"] || !f.dirs["sub/dir"] {
-		t.Fatalf("dirs=%v", f.dirs)
-	}
-	if err := c.Put("connections.json", []byte("cipher")); err != nil {
-		t.Fatal(err)
-	}
-	got, err := c.Get("connections.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "cipher" {
-		t.Fatalf("got %q", got)
-	}
-	ok, err := c.Exists("connections.json")
-	if err != nil || !ok {
-		t.Fatalf("exists=%v err=%v", ok, err)
-	}
-	if _, err := c.Get("missing.json"); err != ErrWebDAVNotFound {
-		t.Fatalf("want ErrWebDAVNotFound, got %v", err)
-	}
-	ok, err = c.Exists("missing.json")
-	if err != nil || ok {
-		t.Fatalf("exists=%v err=%v", ok, err)
-	}
-}
-
-func TestWebDAVClientPathEscaping(t *testing.T) {
-	f := newFakeDAV(t)
-	c := NewWebDAVClient(f.server.URL, "", "", "")
-	for _, name := range []string{"my file.json", "a#b.json", "a?b.json", "a%zz.json"} {
-		if err := c.Put(name, []byte(name)); err != nil {
-			t.Fatalf("put %q: %v", name, err)
-		}
-		got, err := c.Get(name)
-		if err != nil {
-			t.Fatalf("get %q: %v", name, err)
-		}
-		if string(got) != name {
-			t.Fatalf("get %q: got %q", name, got)
-		}
-	}
 }
 
 // TestWebDAVBackendStoreAllUploadsStagedOnly pins the delta contract: a
@@ -416,5 +372,35 @@ func TestWebDAVBackendFetchAllSkipsNullEntries(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(mirror, "proxies.json")); !os.IsNotExist(err) {
 		t.Fatal("a null entry must not materialise a blob")
+	}
+}
+
+// TestWebDAVFSGetNotFound pins the not-found mapping webdavFS performs on
+// gowebdav errors: the status string "404" becomes ErrRemoteNotFound.
+func TestWebDAVFSGetNotFound(t *testing.T) {
+	f := newFakeDAV(t)
+	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
+	defer closeBackend(b)
+	info, err := b.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info != nil {
+		t.Fatalf("Head on an empty remote must return nil, got %+v", info)
+	}
+}
+
+// TestWebDAVFSGetServerErrorNotNotFound pins that a 500 is not mistaken
+// for an empty remote (which would let Head report a fresh remote and
+// clobber it with a push).
+func TestWebDAVFSGetServerErrorNotNotFound(t *testing.T) {
+	f := newFakeDAV(t)
+	b := NewWebDAVBackend(f.server.URL, "sync", "u", "p", nil)
+	defer closeBackend(b)
+	f.mu.Lock()
+	f.failGet = map[string]bool{"sync/manifest.json": true}
+	f.mu.Unlock()
+	if _, err := b.Head(); err == nil {
+		t.Fatal("a 500 must surface as an error, not an empty remote")
 	}
 }

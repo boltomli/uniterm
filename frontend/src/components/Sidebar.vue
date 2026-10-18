@@ -320,6 +320,7 @@
             v-model="settingsStore.settings.terminal.fontSize"
             :min="8"
             :max="32"
+            controls-position="right"
             @change="settingsStore.save()"
           />
         </div>

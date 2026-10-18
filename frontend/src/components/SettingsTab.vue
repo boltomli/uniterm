@@ -69,6 +69,7 @@
                 :min="10"
                 :max="18"
                 :step="1"
+                controls-position="right"
                 @change="settingsStore.save()"
               />
             </div>
@@ -477,6 +478,7 @@
                 v-model="settingsStore.settings.terminal.fontSize"
                 :min="8"
                 :max="32"
+                controls-position="right"
                 @change="settingsStore.save()"
               />
             </div>
@@ -652,9 +654,8 @@
 
         <h2 class="section-title">{{ t('settings.session') }}</h2>
         <div class="settings-group">
-          <!-- No user shells exist on mobile (same reason the start page hides
-               the local terminal button) -->
-          <div v-if="!isMobile" class="setting-card">
+          <!-- Android shares the local-shell settings with desktop platforms. -->
+          <div v-if="supportsLocalTerminal()" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.defaultLocalShell') }}</div>
               <div class="setting-desc">{{ t('settings.defaultLocalShellDesc') }}</div>
@@ -697,6 +698,7 @@
                 :min="100"
                 :max="50000"
                 :step="100"
+                controls-position="right"
                 @change="settingsStore.save()"
               />
             </div>
@@ -807,12 +809,12 @@
             <div class="sync-card-body">
               <div class="repo-info">
                 <div class="repo-info-row">
-                  <span class="repo-label">{{ syncStore.config.backend === 'webdav' ? t('addRepo.serverUrl') : t('settings.syncRepoUrl') }}</span>
-                  <span class="repo-value">{{ syncStore.config.backend === 'webdav' ? syncStore.config.webdavServer : syncStore.config.repoUrl }}</span>
+                  <span class="repo-label">{{ syncStore.config.backend !== 'git' ? t('addRepo.serverUrl') : t('settings.syncRepoUrl') }}</span>
+                  <span class="repo-value">{{ syncStore.config.backend !== 'git' ? syncStore.config.remote?.server : syncStore.config.repoUrl }}</span>
                 </div>
                 <div class="repo-info-row">
                   <span class="repo-label">{{ t('settings.syncUsername') }}</span>
-                  <span class="repo-value">{{ syncStore.config.backend === 'webdav' ? syncStore.config.webdavUser : syncStore.config.username }}</span>
+                  <span class="repo-value">{{ syncStore.config.backend !== 'git' ? syncStore.config.remote?.user : syncStore.config.username }}</span>
                 </div>
               </div>
               <div class="repo-actions">
@@ -930,28 +932,29 @@
         <el-button type="primary" @click="openTunnelDialog()">{{ t('tunnels.addTunnel') }}</el-button>
         <el-table :data="tunnelStore.tunnels" size="small" style="margin-top: 0.75rem">
           <el-table-column prop="name" :label="t('tunnels.name')" />
-          <el-table-column :label="t('tunnels.modeCol')" :width="uiPx(100)">
+          <el-table-column :label="t('tunnels.modeCol')" :width="uiPx(150)">
             <template #default="{ row }">{{ modeName(row.mode) }}</template>
           </el-table-column>
           <el-table-column :label="t('tunnels.listenCol')" :width="uiPx(120)">
             <template #default="{ row }">:{{ effPort(row) }}</template>
           </el-table-column>
-          <el-table-column :label="t('tunnels.statusCol')" :width="uiPx(120)">
+          <el-table-column :label="t('tunnels.statusCol')" :width="uiPx(160)">
             <template #default="{ row }">
               <el-switch
-                :model-value="statusOf(row.id) === 'running'"
+                :model-value="tunnelStore.isActive(row.id)"
+                :title="tunnelStore.isActive(row.id) ? t('tunnels.stop') : t('tunnels.start')"
                 @change="toggleRun(row)"
-                :loading="togglingTunnelId === row.id"
               />
+              <div :title="tunnelStore.statusTitle(row.id)">{{ tunnelStore.statusLabel(row.id) }}</div>
             </template>
           </el-table-column>
           <el-table-column :label="t('common.actions')" :width="uiPx(160)">
             <template #default="{ row }">
-              <!-- Editing a running tunnel would desync the form from what's
-                   actually running; edits require a stop first. -->
+              <!-- Connecting and reconnecting tunnels must also stop before edits. -->
               <el-button
                 size="small"
-                :disabled="tunnelStore.statusOf(row.id) === 'running'"
+                :disabled="tunnelStore.isActive(row.id)"
+                :title="tunnelStore.isActive(row.id) ? t('tunnels.editDisabledActive') : undefined"
                 @click="openTunnelDialog(row)"
               >{{ t('common.edit') }}</el-button>
               <el-button size="small" type="danger" @click="removeTunnel(row)">{{ t('common.delete') }}</el-button>
@@ -1206,6 +1209,7 @@
                 v-model="settingsStore.settings.ai.maxTurns"
                 :min="0"
                 :max="100"
+                controls-position="right"
                 @change="settingsStore.save()"
               />
             </div>
@@ -1263,7 +1267,7 @@
               <div v-else-if="mcp.enabled" class="setting-desc mcp-running mcp-error">{{ t('settings.mcpNotRunning') }}</div>
             </div>
             <div class="setting-control switch-control">
-              <el-switch v-model="mcp.enabled" @change="saveMcp()" />
+              <el-switch v-model="mcp.enabled" :loading="mcpSaving" @change="saveMcp()" />
             </div>
           </div>
 
@@ -1272,7 +1276,30 @@
               <div class="setting-title">{{ t('settings.mcpPort') }}</div>
             </div>
             <div class="setting-control">
-              <el-input-number v-model="mcpPort" :min="1" :max="65535" @change="saveMcp()" />
+              <el-input-number v-model="mcpPort" :disabled="mcpStatus.running || mcpSaving" :min="1" :max="65535" controls-position="right" @change="saveMcp()" />
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.mcpExecMode') }}</div>
+              <div class="setting-desc">{{ t('settings.mcpExecModeDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="mcp.execMode" :disabled="mcpStatus.running || mcpSaving" popper-class="mode-select-popper" @change="saveMcp()">
+                <el-option :label="t('settings.mcpExecModeBackground')" value="background">
+                  <div class="mode-option">
+                    <div class="mode-option-title">{{ t('settings.mcpExecModeBackground') }}</div>
+                    <div class="mode-option-desc">{{ t('settings.mcpExecModeBackgroundDesc') }}</div>
+                  </div>
+                </el-option>
+                <el-option :label="t('settings.mcpExecModeForeground')" value="foreground">
+                  <div class="mode-option">
+                    <div class="mode-option-title">{{ t('settings.mcpExecModeForeground') }}</div>
+                    <div class="mode-option-desc">{{ t('settings.mcpExecModeForegroundDesc') }}</div>
+                  </div>
+                </el-option>
+              </el-select>
             </div>
           </div>
 
@@ -1324,6 +1351,50 @@
           </div>
         </div>
       </div>
+
+      <!-- MCP 客户端 (uniTerm 作为 client 连接外部服务器) — 无 Android 后端,入口已在移动端隐藏 -->
+      <div v-if="settingsStore.activeCategory === 'mcp-client'" class="settings-section">
+        <h2 class="section-title">{{ t('settings.mcpClientSection') }}</h2>
+        <p class="section-desc">{{ t('settings.mcpClientSectionDesc') }}</p>
+
+        <div class="settings-group">
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.mcpClientAdd') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-button @click="openMcpClientForm()"><Plus :size="lucideSize('0.875rem')" /> {{ t('settings.mcpClientAddButton') }}</el-button>
+            </div>
+          </div>
+
+          <div v-for="c in mcpClients" :key="c.name" class="model-card mcp-client-card">
+            <Plug :size="lucideSize('1rem')" class="mcp-client-icon" />
+            <div class="mcp-client-main">
+              <div class="mcp-client-heading">
+                <span class="model-name mcp-client-name" :title="c.name">{{ c.name }}</span>
+                <span class="mcp-client-transport">{{ mcpClientTransportLabel(c.transport) }}</span>
+              </div>
+              <div class="mcp-client-details">
+                <span class="mcp-client-endpoint" :title="mcpClientEndpoint(c)">{{ mcpClientEndpoint(c) }}</span>
+                <span v-if="c.enabled" class="mcp-client-status" :class="{ connected: mcpClientStatus(c.name)?.connected }" :title="mcpClientStatus(c.name)?.error || ''">
+                  {{ mcpClientStatus(c.name)?.connected
+                    ? t('settings.mcpClientOnline', { tools: mcpClientStatus(c.name)?.tools ?? 0 })
+                    : (mcpClientStatus(c.name)?.error || t('settings.mcpClientOffline')) }}
+                </span>
+              </div>
+            </div>
+            <div class="model-actions mcp-client-actions">
+              <el-switch v-model="c.enabled" @change="saveMcpClient(c)" />
+              <el-button link :title="t('common.edit')" :aria-label="t('common.edit')" @click="openMcpClientForm(c)">
+                <el-icon><Pencil :size="lucideSize('0.875rem')" /></el-icon>
+              </el-button>
+              <el-button link type="danger" :title="t('settings.mcpClientRemove')" :aria-label="t('settings.mcpClientRemove')" @click="removeMcpClient(c.name)">
+                <el-icon><Trash2 :size="lucideSize('0.875rem')" /></el-icon>
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- MCP token setup wizard (one-time token + per-client configs) -->
@@ -1333,6 +1404,54 @@
       :port="mcpStatus.port || mcpPort"
       @close="onMcpSetupClose"
     />
+
+    <el-dialog
+      append-to-body
+      v-model="showMcpClientForm"
+      :title="editingMcpClient ? t('settings.mcpClientEdit') : t('settings.mcpClientAdd')"
+      width="33.75rem"
+      :close-on-click-modal="!mcpClientSaving && !mcpClientTesting"
+      :close-on-press-escape="!mcpClientSaving && !mcpClientTesting"
+      :show-close="!mcpClientSaving && !mcpClientTesting"
+    >
+      <el-form label-position="right" label-width="5rem" :disabled="mcpClientSaving || mcpClientTesting" @submit.prevent="submitMcpClient">
+        <el-form-item :label="t('settings.mcpClientName')" required :error="mcpClientNameExists ? t('settings.mcpClientNameExists') : ''">
+          <el-input v-model="mcpClientForm.name" :placeholder="t('settings.mcpClientNamePlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="t('settings.mcpClientTransport')" required>
+          <el-select v-model="mcpClientForm.transport" popper-class="mode-select-popper" style="width: 100%">
+            <el-option v-for="option in mcpClientTransports" :key="option.value" :label="t(option.label)" :value="option.value">
+              <div class="mode-option">
+                <div class="mode-option-title">{{ t(option.label) }}</div>
+                <div class="mode-option-desc">{{ t(option.description) }}</div>
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="mcpClientForm.transport === 'stdio'" :label="t('settings.mcpClientCommand')" required>
+          <div class="mcp-client-field">
+            <el-input v-model="mcpClientForm.command" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp" />
+            <div class="setting-desc">{{ t('settings.mcpClientCommandDesc') }}</div>
+          </div>
+        </el-form-item>
+        <template v-else>
+          <el-form-item :label="t('settings.mcpClientUrl')" required>
+            <el-input v-model="mcpClientForm.url" placeholder="http://127.0.0.1:8080/mcp" />
+          </el-form-item>
+          <el-form-item :label="t('settings.mcpClientHeaders')">
+            <div class="mcp-client-field">
+              <el-input v-model="mcpClientForm.headersText" type="textarea" :rows="3" placeholder='{ "Authorization": "Bearer ..." }' />
+              <div class="setting-desc">{{ t('settings.mcpClientHeadersDesc') }}</div>
+            </div>
+          </el-form-item>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="mcpClientSaving || mcpClientTesting" @click="showMcpClientForm = false">{{ t('settings.cancel') }}</el-button>
+        <el-button :loading="mcpClientTesting" :disabled="mcpClientSaving || !canAddMcpClient" @click="testMcpClientForm">{{ t('settings.mcpClientTest') }}</el-button>
+        <el-button type="primary" :loading="mcpClientSaving" :disabled="!canAddMcpClient || mcpClientTesting" @click="submitMcpClient">{{ t('settings.save') }}</el-button>
+      </template>
+    </el-dialog>
 
     <!-- Model Form Dialog -->
     <el-dialog append-to-body v-model="showModelForm" :title="editingModel ? t('settings.editModel') : t('settings.newModel')" width="25rem">
@@ -1489,9 +1608,9 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Plug } from '@lucide/vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Plug, Server } from '@lucide/vue'
 import { msg } from '../services/message'
-import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSyncStore, SYNC_FILE_ITEMS } from '../stores/syncStore'
 import { useLocalStateStore } from '../stores/localStateStore'
@@ -1530,7 +1649,7 @@ import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import type { Tunnel, TunnelMode } from '../stores/tunnelStore'
 import type { Identity } from '../types/identity'
 import { Browser } from '@wailsio/runtime'
-import { isMobilePlatform } from '../utils/platform'
+import { isMobilePlatform, supportsLocalTerminal } from '../utils/platform'
 import type { Proxy } from '../types/proxy'
 import { uiPx } from '../utils/uiScale'
 
@@ -1682,8 +1801,8 @@ function openEditRepo() {
 
 // WebDAV configure leaves repoUrl empty, so "configured" depends on backend.
 const isSyncConfigured = computed(() =>
-  syncStore.config.backend === 'webdav'
-    ? !!syncStore.config.webdavServer
+  syncStore.config.backend !== 'git'
+    ? !!syncStore.config.remote?.server
     : !!syncStore.config.repoUrl
 )
 
@@ -1844,6 +1963,7 @@ onActivated(() => {
 const mcp = reactive({ ...DEFAULT_MCP_SETTINGS })
 const mcpPort = ref(DEFAULT_MCP_SETTINGS.port || 61207)
 const mcpStatus = ref<MCPStatus>({ running: false, port: 0 })
+const mcpSaving = ref(false)
 const mcpTokens = ref<string[]>([])
 const newTokenName = ref('')
 const mcpTokenCreated = ref('')
@@ -1863,14 +1983,20 @@ async function refreshMcpState() {
 }
 
 async function saveMcp() {
-  await localStateStore.update({
-    mcp: {
-      enabled: mcp.enabled,
-      port: mcpPort.value,
-      policy: mcp.policy,
-    },
-  })
-  refreshMcpState()
+  mcpSaving.value = true
+  try {
+    await localStateStore.update({
+      mcp: {
+        enabled: mcp.enabled,
+        port: mcpPort.value,
+        policy: mcp.policy,
+        execMode: mcp.execMode || 'background',
+      },
+    })
+    await refreshMcpState()
+  } finally {
+    mcpSaving.value = false
+  }
 }
 
 async function generateToken() {
@@ -1913,6 +2039,186 @@ async function revokeToken(name: string) {
 }
 
 onMounted(refreshMcpState)
+
+// ── MCP client (uniTerm connects to external servers) ──────────
+// List persisted in mcp_clients.json via app bindings; live health comes from
+// MCPClientStatuses. Separate from the MCP server block above.
+interface MCPClientForm {
+  name: string
+  transport: string
+  command: string
+  url: string
+  headersText: string
+  enabled: boolean
+}
+const mcpClients = ref<any[]>([])
+const mcpClientHealth = ref<Record<string, { connected: boolean; tools: number; error: string }>>({})
+const mcpClientTransports = [
+  { value: 'streamable-http', label: 'settings.mcpClientTransportHttp', description: 'settings.mcpClientTransportHttpDesc' },
+  { value: 'stdio', label: 'settings.mcpClientTransportStdio', description: 'settings.mcpClientTransportStdioDesc' },
+  { value: 'sse', label: 'settings.mcpClientTransportSse', description: 'settings.mcpClientTransportSseDesc' },
+]
+
+function mcpClientTransportLabel(value: string): string {
+  const option = mcpClientTransports.find(option => option.value === value)
+  return option ? t(option.label) : value
+}
+const mcpClientForm = reactive<MCPClientForm>({
+  name: '', transport: 'streamable-http', command: '', url: '', headersText: '', enabled: true,
+})
+
+const showMcpClientForm = ref(false)
+const mcpClientSaving = ref(false)
+const mcpClientTesting = ref(false)
+const editingMcpClient = ref<any | null>(null)
+const mcpClientNameExists = computed(() => mcpClients.value.some(c => c.name === mcpClientForm.name.trim() && c.name !== editingMcpClient.value?.name))
+const canAddMcpClient = computed(() => !!mcpClientForm.name.trim() && !mcpClientNameExists.value && !!(
+  mcpClientForm.transport === 'stdio' ? mcpClientForm.command.trim() : mcpClientForm.url.trim()
+))
+
+function formatMcpCommand(c: any): string {
+  return [c.command || '', ...(c.args || [])].map((part: string) => {
+    if (part && !/[\s"']/.test(part)) return part
+    if (!part.includes("'")) return "'" + part + "'"
+    return '"' + part.replace(/"/g, '\\"') + '"'
+  }).join(' ')
+}
+
+function mcpClientEndpoint(c: any): string {
+  return c.transport === 'stdio' ? formatMcpCommand(c) : c.url || ''
+}
+
+function openMcpClientForm(client?: any) {
+  editingMcpClient.value = client ? { ...client } : null
+  Object.assign(mcpClientForm, client ? {
+    name: client.name, transport: client.transport, command: formatMcpCommand(client), url: client.url || '',
+    headersText: Object.keys(client.headers || {}).length ? JSON.stringify(client.headers, null, 2) : '', enabled: client.enabled,
+  } : { name: '', transport: 'streamable-http', command: '', url: '', headersText: '', enabled: true })
+  showMcpClientForm.value = true
+}
+
+function mcpClientStatus(name: string) {
+  return mcpClientHealth.value[name]
+}
+
+async function refreshMcpClients() {
+  try {
+    mcpClients.value = (await ListMCPClients()) || []
+  } catch { mcpClients.value = [] }
+  try {
+    const statuses = (await MCPClientStatuses()) || []
+    const map: Record<string, { connected: boolean; tools: number; error: string }> = {}
+    for (const s of statuses) map[s.name] = { connected: s.connected, tools: s.tools, error: s.error || '' }
+    mcpClientHealth.value = map
+  } catch { /* health optional */ }
+}
+
+async function saveMcpClient(c: any) {
+  try {
+    await SaveMCPClient({ ...c, headers: parseHeaders(c) })
+    refreshMcpClients()
+  } catch (e: any) {
+    msg.error(backendErrorText(e))
+  }
+}
+
+function mcpClientFormConfig() {
+  const isStdio = mcpClientForm.transport === 'stdio'
+  const original = editingMcpClient.value
+  const tokens = !isStdio ? [] : original && mcpClientForm.command === formatMcpCommand(original)
+    ? [original.command, ...(original.args || [])] : splitCommandLine(mcpClientForm.command)
+  const cfg = {
+    ...editingMcpClient.value,
+    name: mcpClientForm.name.trim(),
+    transport: mcpClientForm.transport,
+    command: tokens[0] ?? '',
+    args: tokens.slice(1),
+    url: isStdio ? '' : mcpClientForm.url.trim(),
+    headers: isStdio ? original?.headers || {} : parseHeaders(mcpClientForm),
+    enabled: mcpClientForm.enabled,
+  }
+  return cfg
+}
+
+async function submitMcpClient() {
+  if (mcpClientSaving.value || mcpClientTesting.value || !canAddMcpClient.value) return
+  mcpClientSaving.value = true
+  try {
+    const cfg = mcpClientFormConfig()
+    if (editingMcpClient.value) await UpdateMCPClient(editingMcpClient.value.name, cfg)
+    else await SaveMCPClient(cfg)
+    await refreshMcpClients()
+    showMcpClientForm.value = false
+  } catch (e: any) {
+    msg.error(backendErrorText(e))
+  } finally {
+    mcpClientSaving.value = false
+  }
+}
+
+function parseHeaders(src: { headersText?: string; headers?: Record<string,string> }): Record<string, string> {
+  const merged: Record<string, string> = { ...src.headers }
+  const text = (src.headersText || '').trim()
+  if (!text) return merged
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { throw new Error(t('settings.mcpClientHeadersInvalid')) }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.values(parsed).some(v => typeof v !== 'string')) {
+    throw new Error(t('settings.mcpClientHeadersInvalid'))
+  }
+  return { ...merged, ...parsed as Record<string, string> }
+}
+
+function splitCommandLine(command: string): string[] {
+  const out: string[] = []
+  let word = '', quote = '', started = false
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (quote) {
+      if (char === quote) quote = ''
+      else if (quote === '"' && char === '\\' && command[i + 1] === '"') word += command[++i]
+      else word += char
+    } else if (char === '"' || char === "'") {
+      quote = char
+      started = true
+    } else if (/\s/.test(char)) {
+      if (started) { out.push(word); word = ''; started = false }
+    } else { word += char; started = true }
+  }
+  if (quote) throw new Error(t('settings.mcpClientCommandInvalid'))
+  if (started) out.push(word)
+  return out
+}
+
+async function testMcpClientForm() {
+  if (mcpClientSaving.value || mcpClientTesting.value || !canAddMcpClient.value) return
+  mcpClientTesting.value = true
+  try {
+    const cfg = mcpClientFormConfig()
+    const tools = await TestMCPClient(cfg)
+    msg.success(t('settings.mcpClientTestOk', { name: cfg.name, tools: tools.length }))
+  } catch (e: any) {
+    msg.error(backendErrorText(e))
+  } finally {
+    mcpClientTesting.value = false
+  }
+}
+
+async function removeMcpClient(name: string) {
+  try {
+    await ElMessageBox.confirm(t('settings.mcpClientRemoveConfirm', { name }), t('settings.mcpClientRemove'))
+  } catch { return }
+  try {
+    await RemoveMCPClient(name)
+    refreshMcpClients()
+  } catch (e: any) {
+    msg.error(backendErrorText(e))
+  }
+}
+
+onMounted(refreshMcpClients)
+watch(() => settingsStore.activeCategory, category => {
+  if (category === 'mcp-client') void refreshMcpClients()
+})
 
 onMounted(async () => {
   try {
@@ -2402,7 +2708,8 @@ const categories = computed(() => {
     ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard }] : []),
     { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore },
     // MCP server has no mobile backend — hidden from the category list there.
-    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Plug }] : []),
+    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Server }] : []),
+    ...(!isMobile ? [{ key: 'mcp-client', label: t('settings.mcpClient'), icon: Plug }] : []),
     { key: 'skills', label: t('settings.skillsAndCommands'), icon: Wrench },
     { key: 'identities', label: t('settings.identities'), icon: Key },
     { key: 'proxies', label: t('settings.proxies'), icon: Network },
@@ -2463,7 +2770,6 @@ async function toggleProxy(row: Proxy, v: boolean) {
 const tunnelStore = useTunnelStore()
 const tunnelDialogVisible = ref(false)
 const editingTunnelId = ref<string | undefined>(undefined)
-const togglingTunnelId = ref<string | undefined>(undefined)
 
 // ── Sidebar tab visibility ──
 // Writable computed over AppSettings.sidebarTabs. "connections" never appears
@@ -2484,6 +2790,7 @@ function onSidebarTabsChange() {
   settingsStore.save()
 }
 function openTunnelDialog(t?: Tunnel) {
+  if (t && tunnelStore.isActive(t.id)) return
   editingTunnelId.value = t?.id
   tunnelDialogVisible.value = true
 }
@@ -2492,23 +2799,15 @@ async function removeTunnel(row: Tunnel) {
 }
 const modeName = (m: TunnelMode) => t(`tunnels.mode.${m}`)
 const effPort = (t: Tunnel) => tunnelStore.states[t.id]?.localPort || t.listenPort
-const statusOf = (id: string) => tunnelStore.statusOf(id)
 async function toggleRun(row: Tunnel) {
-  if (statusOf(row.id) === 'running') {
-    togglingTunnelId.value = row.id
+  if (tunnelStore.isActive(row.id)) {
     await tunnelStore.stop(row.id)
-    togglingTunnelId.value = undefined
   } else {
     // Exit connection without saved credentials: prompt for user/password and
     // pass them inline (backend fills only empty fields). Cancel aborts.
     const creds = await resolveTunnelCredentials(row.sshConnId)
     if (!creds) return
-    togglingTunnelId.value = row.id
-    const st = await tunnelStore.start(row.id, creds.user, creds.password)
-    togglingTunnelId.value = undefined
-    if (st.status === 'error') {
-      msg.error(st.error || t('tunnels.startFailed'))
-    }
+    await tunnelStore.start(row.id, creds.user, creds.password)
   }
 }
 
@@ -2896,6 +3195,14 @@ async function onToggleSystemTitleBar(v: boolean) {
   line-height: 1.4;
 }
 
+.mcp-client-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  min-width: 0;
+}
+
 .setting-control {
   flex-shrink: 0;
   min-width: 13.125rem;
@@ -2999,6 +3306,19 @@ async function onToggleSystemTitleBar(v: boolean) {
   gap: 0.25rem;
   flex-shrink: 0;
 }
+
+.mcp-client-card { gap: 0.75rem; }
+.mcp-client-icon { flex-shrink: 0; color: var(--text-muted); }
+.mcp-client-main { flex: 1; min-width: 0; }
+.mcp-client-heading, .mcp-client-details { display: flex; align-items: center; gap: 0.625rem; min-width: 0; }
+.mcp-client-details { margin-top: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); }
+.mcp-client-name, .mcp-client-endpoint, .mcp-client-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcp-client-name { min-width: 0; }
+.mcp-client-transport { flex-shrink: 0; padding: 0.0625rem 0.375rem; border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-secondary); font-size: 0.625rem; line-height: 1.5; white-space: nowrap; }
+.mcp-client-endpoint { min-width: 0; font-family: var(--font-mono); }
+.mcp-client-status { flex-shrink: 0; max-width: 45%; }
+.mcp-client-status.connected { color: var(--el-color-success); }
+.mcp-client-actions { align-items: center; }
 
 /* MCP settings */
 .mcp-running {

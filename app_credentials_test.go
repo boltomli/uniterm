@@ -68,6 +68,7 @@ func newCredentialTestApp(t *testing.T) (*App, *credentials.Store, string) {
 		t.Fatalf("NewAIConfigStore: %v", err)
 	}
 	tunnels := store.NewTunnelStore(dir)
+	mcpClients := store.NewMCPClientStore(dir)
 
 	conn.SetPasswordStore(cs)
 	settings.SetPasswordStore(cs)
@@ -75,6 +76,7 @@ func newCredentialTestApp(t *testing.T) (*App, *credentials.Store, string) {
 	proxies.SetPasswordStore(cs)
 	ai.SetPasswordStore(cs)
 	tunnels.SetPasswordStore(cs)
+	mcpClients.SetPasswordStore(cs)
 
 	a := &App{
 		dataDir:         dir,
@@ -85,6 +87,7 @@ func newCredentialTestApp(t *testing.T) (*App, *credentials.Store, string) {
 		proxyStore:      proxies,
 		aiConfigStore:   ai,
 		tunnelStore:     tunnels,
+		mcpClientStore:  mcpClients,
 	}
 	return a, cs, dir
 }

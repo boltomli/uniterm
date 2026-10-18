@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	ggittransport "github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/utils"
 )
 
@@ -132,6 +134,50 @@ func (s *SyncService) SetStores(stores []SyncableStore) {
 	s.stores = stores
 }
 
+// newRemoteBackend builds the backend for a snapshot sync: one dedicated
+// session per call (never the user's interactive one, never via the
+// SessionManager), wrapped in the shared snapshot engine. The sessionFS
+// provider parameters exist for tests; production passes the real
+// constructors.
+func (s *SyncService) newRemoteBackend(backend string, remote RemoteConfig, secret string, files []string) (SnapshotBackend, error) {
+	switch backend {
+	case "webdav", "":
+		return newWebDAVSessionBackend(remote, secret, files, func() sessionFS { return session.NewWebDAVSession("sync-webdav") })
+	case "sftp":
+		return newSFTPBackend(remote, secret, files, func() sessionFS { return session.NewSFTPSession("sync-sftp") })
+	case "s3":
+		return newS3Backend(remote, secret, files, func() sessionFS { return session.NewS3Session("sync-s3") })
+	case "smb":
+		return newSMBBackend(remote, secret, files, func() sessionFS { return session.NewSMBSession("sync-smb") })
+	default:
+		return nil, fmt.Errorf("sync: unsupported backend %q", backend)
+	}
+}
+
+// snapshotConfigured reports whether config carries a usable snapshot
+// remote for its backend: webdav/sftp/smb need Server, s3 needs both
+// Server (endpoint) and Bucket.
+func snapshotConfigured(config SyncConfig) bool {
+	switch config.Backend {
+	case "webdav", "sftp", "smb":
+		return config.Remote.Server != ""
+	case "s3":
+		return config.Remote.Server != "" && config.Remote.Bucket != ""
+	default:
+		return false
+	}
+}
+
+// closeBackend disconnects a session-built remote backend. The session
+// constructors dial eagerly and hold an open connection (SSH/SMB), so
+// every call site that builds one through newRemoteBackend must defer
+// this.
+func closeBackend(b SnapshotBackend) {
+	if c, ok := b.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
 // requireUnlocked refuses sync when the credential store is wired but locked.
 // A nil store means no credential store was wired (test-only path) and is not
 // an error; production always wires it via SetPasswordStore. Callers must hold
@@ -204,12 +250,16 @@ func (s *SyncService) Sync() (*SyncResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	if config.Backend == "webdav" {
-		if config.WebDAVServer == "" {
-			return nil, fmt.Errorf("sync not configured: webdav server not set")
+	if config.Backend != "" && config.Backend != "git" {
+		if !snapshotConfigured(config) {
+			return nil, fmt.Errorf("sync not configured: %s remote not set", config.Backend)
 		}
-		password, _ := s.keychain.GetWebDAVPassword()
-		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		secret, _ := s.keychain.GetRemoteSecret(config.Backend)
+		backend, err := s.newRemoteBackend(config.Backend, config.Remote, secret, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer closeBackend(backend)
 		return s.syncSnapshot(backend)
 	}
 	if config.RepoURL == "" {
@@ -625,12 +675,16 @@ func (s *SyncService) ResolveConflict(useLocal bool) (*SyncResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	if config.Backend == "webdav" {
-		if config.WebDAVServer == "" {
-			return nil, fmt.Errorf("sync not configured: webdav server not set")
+	if config.Backend != "" && config.Backend != "git" {
+		if !snapshotConfigured(config) {
+			return nil, fmt.Errorf("sync not configured: %s remote not set", config.Backend)
 		}
-		password, _ := s.keychain.GetWebDAVPassword()
-		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		secret, _ := s.keychain.GetRemoteSecret(config.Backend)
+		backend, err := s.newRemoteBackend(config.Backend, config.Remote, secret, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer closeBackend(backend)
 		return s.resolveConflictSnapshot(backend, useLocal)
 	}
 	username := config.Username
@@ -711,12 +765,16 @@ func (s *SyncService) TestConnection() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if config.Backend == "webdav" {
-		if config.WebDAVServer == "" {
+	if config.Backend != "" && config.Backend != "git" {
+		if !snapshotConfigured(config) {
 			return utils.UserErr("repo_not_configured")
 		}
-		password, _ := s.keychain.GetWebDAVPassword()
-		backend := NewWebDAVBackend(config.WebDAVServer, config.WebDAVPath, config.WebDAVUser, password, nil)
+		secret, _ := s.keychain.GetRemoteSecret(config.Backend)
+		backend, err := s.newRemoteBackend(config.Backend, config.Remote, secret, nil)
+		if err != nil {
+			return err
+		}
+		defer closeBackend(backend)
 		return backend.Probe()
 	}
 	if config.RepoURL == "" {
@@ -725,6 +783,19 @@ func (s *SyncService) TestConnection() error {
 	username := config.Username
 	token := s.getToken()
 	return TestConnection(config.RepoURL, username, token)
+}
+
+// TestRemote probes a snapshot remote with form-provided values, without
+// touching the stored configuration — the add-repo dialog's test button.
+// Unlike TestConnection it never reads sync-config.json, so it can verify
+// a candidate remote before the user commits to it.
+func (s *SyncService) TestRemote(backend string, remote RemoteConfig, secret string) error {
+	b, err := s.newRemoteBackend(backend, remote, secret, nil)
+	if err != nil {
+		return err
+	}
+	defer closeBackend(b)
+	return b.Probe()
 }
 
 func (s *SyncService) updateLastSyncResult(status string, errMsg string) {
@@ -739,7 +810,7 @@ func (s *SyncService) updateLastSyncResult(status string, errMsg string) {
 // for the active backend (git repo URL, or a WebDAV server in webdav mode).
 func (s *SyncService) IsAutoSyncEnabled() bool {
 	config, _ := s.configStore.Load()
-	return config.AutoSync && (config.RepoURL != "" || (config.Backend == "webdav" && config.WebDAVServer != ""))
+	return config.AutoSync && (config.RepoURL != "" || snapshotConfigured(config))
 }
 
 // RepoPath returns the local git repo path.
@@ -1354,6 +1425,9 @@ func (s *SyncService) DeleteRepo() error {
 	_ = s.keychain.Delete("encryption-key")
 	_ = s.keychain.Delete("git-token")
 	_ = s.keychain.Delete("webdav-password")
+	_ = s.keychain.DeleteRemoteSecret("sftp")
+	_ = s.keychain.DeleteRemoteSecret("s3")
+	_ = s.keychain.DeleteRemoteSecret("smb")
 
 	return s.configStore.Save(SyncConfig{Branch: "main"})
 }

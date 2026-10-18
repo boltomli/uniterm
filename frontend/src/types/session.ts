@@ -155,6 +155,10 @@ export interface ConnectionConfig {
   s3UrlStyle?: 'virtual' | 'path'
   // Terminal encoding (SSH/Telnet)
   encoding?: string // "utf-8" | "gbk" | "gb2312" | "gb18030" | "big5" | "shift-jis" | "euc-jp" | "euc-kr"
+  // Terminal type reported to the remote host (SSH pty-req / telnet TTYPE /
+  // local TERM env). Values outside the backend session.EffectiveTermType
+  // whitelist fall back to xterm-256color.
+  termType?: string
   // Backspace key byte sequence for terminal-stream types (ssh/telnet/serial).
   // 'del'  = ASCII DEL (0x7F) — xterm.js default
   // 'bs'   = ASCII BS  (0x08) — Huawei/H3C/Cisco network gear, Windows convention

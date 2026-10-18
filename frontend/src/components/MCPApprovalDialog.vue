@@ -106,6 +106,10 @@ function onDeny() {
 </script>
 
 <style scoped>
+.mcp-approval {
+  user-select: text;
+  -webkit-user-select: text;
+}
 .mcp-approval-client {
   margin: 0 0 0.5rem;
 }

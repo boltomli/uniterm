@@ -54,6 +54,16 @@ func (a *App) GetAvailableShells() []string {
 	add("zsh")
 	add("fish")
 	add("sh")
+
+	// Android/HarmonyOS fallback: exec.LookPath may fail if PATH doesn't
+	// include /system/bin at the time this is called (e.g. c-shared mode
+	// where env propagation is unreliable). Unconditionally add the known
+	// Android shell path so the shell picker is never empty on these
+	// platforms.
+	if len(shells) == 0 {
+		shells = append(shells, "/system/bin/sh")
+	}
+
 	return shells
 }
 

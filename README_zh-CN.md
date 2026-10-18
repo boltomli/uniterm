@@ -95,7 +95,7 @@
 | 数据库 | PostgreSQL | 兼容 PostgreSQL 协议：PostgreSQL、CockroachDB 等 |
 | 数据库 | Oracle Database | 通过纯 Go 驱动连接 Oracle Database |
 | 数据库 | SQL Server | 通过纯 Go 驱动连接 SQL Server |
-| 数据库 | SQLite（1.10.1-alpha） | 本地嵌入式数据库，直接打开数据库文件 |
+| 数据库 | SQLite | 本地嵌入式数据库，直接打开数据库文件 |
 | 数据库 | rqlite | 基于 SQLite、Raft 共识的轻量分布式数据库 |
 | 数据库 | Redis | 内存键值数据库，可视化键值浏览与编辑 |
 | 数据库 | MongoDB | 文档数据库，树形浏览、查询编辑与行内编辑 |
@@ -302,6 +302,9 @@ uniTerm/
 - [@chris-edstrom](https://github.com/chris-edstrom)
 - [@andreafunicelli](https://github.com/andreafunicelli)
 - [@dungvv](https://github.com/dungvv)
+- [@zhongqian97](https://github.com/zhongqian97)
+- [@laigcss](https://github.com/laigcss)
+- [@lutzr400](https://github.com/lutzr400)
 
 ## 开源协议
 

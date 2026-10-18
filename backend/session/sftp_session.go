@@ -628,6 +628,18 @@ func (s *SFTPSession) ChangeRemoteDir(dir string) (FileListResult, error) {
 	return s.ListRemote(real)
 }
 
+// Stat returns the os.FileInfo of a remote path, resolving relative
+// paths against the session cwd like the other file operations.
+func (s *SFTPSession) Stat(p string) (os.FileInfo, error) {
+	if err := s.requireClient(); err != nil {
+		return nil, err
+	}
+	if !path.IsAbs(p) {
+		p = path.Join(s.cwd, p)
+	}
+	return s.sftpClient.Stat(p)
+}
+
 func (s *SFTPSession) MakeDir(dir string) error {
 	if err := s.requireClient(); err != nil {
 		return err

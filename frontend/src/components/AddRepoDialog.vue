@@ -11,6 +11,9 @@
         <el-radio-group v-model="backendType">
           <el-radio-button value="git">{{ t('addRepo.backendGit') }}</el-radio-button>
           <el-radio-button value="webdav">{{ t('addRepo.backendWebDAV') }}</el-radio-button>
+          <el-radio-button value="sftp">SFTP</el-radio-button>
+          <el-radio-button value="s3">S3</el-radio-button>
+          <el-radio-button value="smb">SMB</el-radio-button>
         </el-radio-group>
       </el-form-item>
 
@@ -37,40 +40,82 @@
             show-password
             :placeholder="t('addRepo.tokenPlaceholder')"
           />
-          <div class="form-hint">{{ t('addRepo.tokenHint') }}</div>
         </el-form-item>
       </template>
 
       <template v-else>
         <el-form-item :label="t('addRepo.serverUrl')">
           <el-input
-            v-model="webdavServerUrl"
-            :placeholder="t('addRepo.serverUrlPlaceholder')"
+            v-model="remoteServer"
+            :placeholder="serverPlaceholder"
           />
-          <div class="form-hint">{{ t('addRepo.serverUrlHint') }}</div>
+          <div class="form-hint">{{ serverHint }}</div>
         </el-form-item>
 
-        <el-form-item :label="t('addRepo.basePath')">
+        <!-- Uniform field order for every snapshot backend: server,
+             credentials (AK/SK for S3), backend-specific fields
+             (share/domain or bucket/region/style), then the directory. -->
+        <el-form-item :label="backendType === 's3' ? 'Access Key' : t('addRepo.username')">
           <el-input
-            v-model="webdavBasePath"
-            placeholder="uniTerm-sync"
-          />
-        </el-form-item>
-
-        <el-form-item :label="t('addRepo.webdavUser')">
-          <el-input
-            v-model="webdavUser"
+            v-model="remoteUser"
           />
         </el-form-item>
 
-        <el-form-item :label="t('addRepo.webdavPassword')">
+        <el-form-item :label="backendType === 's3' ? 'Secret Key' : t('conn.password')">
           <el-input
-            v-model="webdavPassword"
+            v-model="remoteSecret"
             type="password"
             show-password
           />
         </el-form-item>
+
+        <template v-if="backendType === 's3'">
+          <el-form-item :label="t('conn.s3Bucket')">
+            <el-input
+              v-model="s3Bucket"
+              placeholder="uniTerm-sync"
+            />
+          </el-form-item>
+
+          <el-form-item :label="t('conn.s3Region')">
+            <el-input
+              v-model="s3Region"
+              placeholder="us-east-1"
+            />
+          </el-form-item>
+
+          <el-form-item :label="t('conn.s3UrlStyle')">
+            <el-select v-model="s3UrlStyle">
+              <el-option label="Virtual-hosted (https://bucket.endpoint/key)" value="virtual" />
+              <el-option label="Path (https://endpoint/bucket/key)" value="path" />
+            </el-select>
+          </el-form-item>
+        </template>
+
+        <template v-if="backendType === 'smb'">
+          <el-form-item :label="t('conn.smbShare')">
+            <el-input
+              v-model="smbShare"
+              placeholder="Share name"
+            />
+          </el-form-item>
+
+          <el-form-item :label="t('conn.smbDomain')">
+            <el-input
+              v-model="smbDomain"
+              placeholder="e.g. WORKGROUP"
+            />
+          </el-form-item>
+        </template>
+
+        <el-form-item :label="t('addRepo.basePath')">
+          <el-input
+            v-model="remotePath"
+            placeholder="uniTerm-sync"
+          />
+        </el-form-item>
       </template>
+
 
       <el-form-item :label="t('addRepo.masterPassword')">
         <el-input
@@ -95,6 +140,13 @@
 
     <template #footer>
       <el-button @click="handleClose">{{ t('common.cancel') }}</el-button>
+      <el-button
+        v-if="backendType !== 'git'"
+        :loading="testingRemote"
+        @click="handleTestRemote"
+      >
+        {{ t('conn.testConnection') }}
+      </el-button>
       <el-button type="primary" :loading="submitting" @click="handleSubmit">
         {{ t('addRepo.saveAndConnect') }}
       </el-button>
@@ -105,7 +157,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from '../i18n'
-import { useSyncStore } from '../stores/syncStore'
+import { useSyncStore, type RemoteConfig } from '../stores/syncStore'
+import { backendErrorText } from '../utils/backendError'
 import { msg } from '../services/message'
 
 const { t } = useI18n()
@@ -116,18 +169,43 @@ const visible = computed({
   set: (v) => { if (!v) syncStore.showAddRepo = false },
 })
 
-const backendType = ref<'git' | 'webdav'>('git')
+const backendType = ref<'git' | 'webdav' | 'sftp' | 's3' | 'smb'>('git')
 const repoUrl = ref('')
 const username = ref('')
 const token = ref('')
-const webdavServerUrl = ref('')
-const webdavBasePath = ref('')
-const webdavUser = ref('')
-const webdavPassword = ref('')
+const remoteServer = ref('')
+const remotePath = ref('')
+const remoteUser = ref('')
+const remoteSecret = ref('')
+const s3Bucket = ref('')
+const s3Region = ref('')
+const s3UrlStyle = ref('virtual')
+const smbShare = ref('')
+const smbDomain = ref('')
 const masterPassword = ref('')
 const confirmPassword = ref('')
 const submitting = ref(false)
+const testingRemote = ref(false)
 const errorMsg = ref('')
+
+// Per-backend server placeholder/hint. WebDAV takes a full URL; sftp/smb
+// take host[:port]; s3 takes the endpoint.
+const serverHint = computed(() => {
+  switch (backendType.value) {
+    case 'webdav': return t('addRepo.serverUrlHint')
+    case 's3': return t('addRepo.s3EndpointHint')
+    case 'sftp': return t('addRepo.sftpServerHint')
+    default: return t('addRepo.smbServerHint')
+  }
+})
+
+const serverPlaceholder = computed(() => {
+  switch (backendType.value) {
+    case 'webdav': return 'https://dav.example.com'
+    case 's3': return 'https://s3.example.com'
+    default: return 'host[:port]'
+  }
+})
 
 function handleClose() {
   syncStore.showAddRepo = false
@@ -139,13 +217,58 @@ function resetForm() {
   repoUrl.value = ''
   username.value = ''
   token.value = ''
-  webdavServerUrl.value = ''
-  webdavBasePath.value = ''
-  webdavUser.value = ''
-  webdavPassword.value = ''
+  remoteServer.value = ''
+  remotePath.value = ''
+  remoteUser.value = ''
+  remoteSecret.value = ''
+  s3Bucket.value = ''
+  s3Region.value = ''
+  s3UrlStyle.value = 'virtual'
+  smbShare.value = ''
+  smbDomain.value = ''
   masterPassword.value = ''
   confirmPassword.value = ''
   errorMsg.value = ''
+}
+
+function buildRemote(): RemoteConfig {
+  return {
+    server: remoteServer.value.trim(),
+    path: remotePath.value.trim(),
+    user: remoteUser.value.trim(),
+    bucket: backendType.value === 's3' ? s3Bucket.value.trim() : '',
+    region: backendType.value === 's3' ? s3Region.value.trim() : '',
+    urlStyle: backendType.value === 's3' ? s3UrlStyle.value : '',
+    domain: backendType.value === 'smb' ? smbDomain.value.trim() : '',
+    share: backendType.value === 'smb' ? smbShare.value.trim() : '',
+  }
+}
+
+async function handleTestRemote() {
+  errorMsg.value = ''
+  if (!remoteServer.value.trim()) {
+    errorMsg.value = t('addRepo.remoteServerRequired')
+    return
+  }
+  if (backendType.value === 's3' && !s3Bucket.value.trim()) {
+    errorMsg.value = t('addRepo.s3BucketRequired')
+    return
+  }
+  if (backendType.value === 'smb' && !smbShare.value.trim()) {
+    errorMsg.value = t('addRepo.smbShareRequired')
+    return
+  }
+  testingRemote.value = true
+  try {
+    const err = await syncStore.testRemote(backendType.value, buildRemote(), remoteSecret.value)
+    if (err) {
+      errorMsg.value = err
+    } else {
+      msg.success(t('addRepo.testConnectionOk'))
+    }
+  } finally {
+    testingRemote.value = false
+  }
 }
 
 async function handleSubmit() {
@@ -165,15 +288,23 @@ async function handleSubmit() {
       return
     }
   } else {
-    if (!webdavServerUrl.value.trim()) {
-      errorMsg.value = t('addRepo.webdavServerUrlRequired')
+    if (!remoteServer.value.trim()) {
+      errorMsg.value = t('addRepo.remoteServerRequired')
       return
     }
-    if (!webdavUser.value.trim()) {
+    if (backendType.value === 's3' && !s3Bucket.value.trim()) {
+      errorMsg.value = t('addRepo.s3BucketRequired')
+      return
+    }
+    if (backendType.value === 'smb' && !smbShare.value.trim()) {
+      errorMsg.value = t('addRepo.smbShareRequired')
+      return
+    }
+    if (!remoteUser.value.trim()) {
       errorMsg.value = t('addRepo.usernameRequired')
       return
     }
-    if (!webdavPassword.value) {
+    if (!remoteSecret.value) {
       errorMsg.value = t('addRepo.webdavPasswordRequired')
       return
     }
@@ -198,11 +329,10 @@ async function handleSubmit() {
         masterPassword.value
       )
     } else {
-      result = await syncStore.configureWebDAV(
-        webdavServerUrl.value.trim().replace(/\/+$/, ''),
-        webdavBasePath.value.trim() || 'uniTerm-sync',
-        webdavUser.value.trim(),
-        webdavPassword.value,
+      result = await syncStore.configureRemote(
+        backendType.value,
+        buildRemote(),
+        remoteSecret.value,
         masterPassword.value
       )
     }
@@ -216,7 +346,7 @@ async function handleSubmit() {
     syncStore.showAddRepo = false
     resetForm()
   } catch (e: any) {
-    errorMsg.value = e?.message || String(e)
+    errorMsg.value = backendErrorText(e)
   } finally {
     submitting.value = false
   }
@@ -228,6 +358,13 @@ async function handleSubmit() {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.add-repo-form :deep(.el-form-item) {
+  /* The flex gap above already spaces the rows; Element Plus's
+     default 18px form-item margin stacked on top of it made the
+     rows feel double-spaced. */
+  margin-bottom: 0;
 }
 
 .form-hint {

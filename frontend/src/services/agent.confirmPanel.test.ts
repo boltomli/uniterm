@@ -80,6 +80,7 @@ describe('approveTool replays the confirmed command on its original panel (issue
       dangerous: true,
       panel: 'Panel B',
       timeout: 300000,
+      idleMs: 1500,
       headLines: 10,
       tailLines: 20,
     })
@@ -93,6 +94,7 @@ describe('approveTool replays the confirmed command on its original panel (issue
     expect(args[2]).toBe(10)
     expect(args[3]).toBe(20)
     expect(args[5]).toBe('Panel B')
+    expect(args[6]).toBe(1500)
     // Pending command cleared and a tool result recorded for the model.
     expect(store.pendingCommand).toBeNull()
   })

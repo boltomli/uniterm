@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	unitsync "github.com/ys-ll/uniterm/backend/sync"
+	"github.com/ys-ll/uniterm/backend/kdf"
 )
 
 type fakeKeychain struct {
@@ -215,10 +215,10 @@ func TestAutoUnlockRecoveryFailsStaysLost(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	seedCiphertext(t, dir, unitsync.DeriveKey("unknown-origin", salt), ModeKeychain, salt)
+	seedCiphertext(t, dir, kdf.DeriveKey("unknown-origin", salt), ModeKeychain, salt)
 	// An unrelated surviving entry: must not be adopted.
 	h := New(dir, kc).DirHash()
-	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(unitsync.DeriveKey("this-machine", salt))); err != nil {
+	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(kdf.DeriveKey("this-machine", salt))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,7 +245,7 @@ func TestAutoUnlockNoCiphertextDoesNotAdoptKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A foreign key survives in the keychain under some other dir's hash.
-	foreign := hex.EncodeToString(unitsync.DeriveKey("foreign", salt))
+	foreign := hex.EncodeToString(kdf.DeriveKey("foreign", salt))
 	if err := kc.Set("keychain-key/other-dir-hash", foreign); err != nil {
 		t.Fatal(err)
 	}
@@ -269,11 +269,11 @@ func TestAutoUnlockStaleKeyRecoversViaOtherEntry(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	right := unitsync.DeriveKey("old-dir", salt)
+	right := kdf.DeriveKey("old-dir", salt)
 	seedCiphertext(t, dir, right, ModeKeychain, salt)
 	// This dir has its own (stale) scoped entry.
 	h := New(dir, kc).DirHash()
-	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(unitsync.DeriveKey("stale", salt))); err != nil {
+	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(kdf.DeriveKey("stale", salt))); err != nil {
 		t.Fatal(err)
 	}
 	// The original dir's key survives under the old hash.
@@ -296,7 +296,7 @@ func TestAutoUnlockStaleKeyRecoversViaOtherEntry(t *testing.T) {
 func TestTransientKeychainReadSkipsRecovery(t *testing.T) {
 	dir := t.TempDir()
 	salt := []byte("0123456789abcdef")
-	seedCiphertext(t, dir, unitsync.DeriveKey("k", salt), ModeKeychain, salt)
+	seedCiphertext(t, dir, kdf.DeriveKey("k", salt), ModeKeychain, salt)
 	s := New(dir, transientKeychain{})
 	s.SetSecretFiles([]string{"connections.json"})
 	if err := s.AutoUnlock(); err == nil {
@@ -426,10 +426,10 @@ func TestAutoUnlockStaleCacheKeyDecryptFailed(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	seedCiphertext(t, dir, unitsync.DeriveKey("right", salt), ModeMasterPassword, salt)
+	seedCiphertext(t, dir, kdf.DeriveKey("right", salt), ModeMasterPassword, salt)
 
 	h := New(dir, kc).DirHash()
-	if err := kc.Set("master-key/"+h, hex.EncodeToString(unitsync.DeriveKey("old", salt))); err != nil {
+	if err := kc.Set("master-key/"+h, hex.EncodeToString(kdf.DeriveKey("old", salt))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -466,10 +466,10 @@ func TestUnlockWrongPasswordKeepsCache(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	seedCiphertext(t, dir, unitsync.DeriveKey("right", salt), ModeMasterPassword, salt)
+	seedCiphertext(t, dir, kdf.DeriveKey("right", salt), ModeMasterPassword, salt)
 
 	h := New(dir, kc).DirHash()
-	stale := hex.EncodeToString(unitsync.DeriveKey("old", salt))
+	stale := hex.EncodeToString(kdf.DeriveKey("old", salt))
 	if err := kc.Set("master-key/"+h, stale); err != nil {
 		t.Fatal(err)
 	}
@@ -492,10 +492,10 @@ func TestAutoUnlockStaleKeychainKeyDecryptFailed(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	seedCiphertext(t, dir, unitsync.DeriveKey("other-machine", salt), ModeKeychain, salt)
+	seedCiphertext(t, dir, kdf.DeriveKey("other-machine", salt), ModeKeychain, salt)
 
 	h := New(dir, kc).DirHash()
-	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(unitsync.DeriveKey("this-machine", salt))); err != nil {
+	if err := kc.Set("keychain-key/"+h, hex.EncodeToString(kdf.DeriveKey("this-machine", salt))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -527,7 +527,7 @@ func TestAutoUnlockWithoutCiphertextTriviallyUnlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := New(dir, kc).DirHash()
-	if err := kc.Set("master-key/"+h, hex.EncodeToString(unitsync.DeriveKey("whatever", salt))); err != nil {
+	if err := kc.Set("master-key/"+h, hex.EncodeToString(kdf.DeriveKey("whatever", salt))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -554,7 +554,7 @@ func TestAutoUnlockRecoveryFollowsKeyNature(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	key := unitsync.DeriveKey("random-holder", salt)
+	key := kdf.DeriveKey("random-holder", salt)
 	seedCiphertext(t, dir, key, ModeMasterPassword, salt)
 	if err := kc.Set("keychain-key/some-old-dir", hex.EncodeToString(key)); err != nil {
 		t.Fatal(err)
@@ -591,7 +591,7 @@ func TestAutoUnlockMasterPasswordSurvivesViaMasterKeyCache(t *testing.T) {
 	dir := t.TempDir()
 	kc := newFakeKeychain()
 	salt := []byte("0123456789abcdef")
-	key := unitsync.DeriveKey("pw", salt)
+	key := kdf.DeriveKey("pw", salt)
 	seedCiphertext(t, dir, key, ModeMasterPassword, salt)
 	if err := kc.Set("master-key/old-dir-hash", hex.EncodeToString(key)); err != nil {
 		t.Fatal(err)
