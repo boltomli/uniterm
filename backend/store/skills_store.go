@@ -435,7 +435,9 @@ func (s *SkillsStore) GetSkillFile(name, relPath string) (string, error) {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
 	clean := filepath.Clean(relPath)
-	if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
+	// F-12.3: 用 filepath.IsLocal + SafeLocalJoin 取代 HasPrefix(clean, "..")：
+	// 后者误杀 "..notes.md" 这类合法文件名，且对绝对路径/盘符的覆盖不完整。
+	if !filepath.IsLocal(clean) {
 		return "", fmt.Errorf("path not allowed: %s", relPath)
 	}
 	allowed := []string{".md", ".sh", ".bash", ".py", ".txt", ".json", ".yaml", ".yml"}
@@ -450,7 +452,10 @@ func (s *SkillsStore) GetSkillFile(name, relPath string) (string, error) {
 		return "", fmt.Errorf("file type not allowed: %s", relPath)
 	}
 	root := s.skillsRoot()
-	absPath := filepath.Join(root, dir, clean)
+	absPath, err := utils.SafeLocalJoin(root, filepath.Join(dir, clean))
+	if err != nil {
+		return "", fmt.Errorf("path not allowed: %s", relPath)
+	}
 	return readCapped(absPath)
 }
 
