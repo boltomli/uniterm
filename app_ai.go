@@ -123,14 +123,97 @@ func injectCacheControl(reqBody map[string]interface{}) {
 	}
 }
 
+// MaskedAPIKey is what the renderer receives instead of a stored model API
+// key (F-09): the plaintext key stays Go-side, so an XSS in the webview can
+// no longer read every stored credential. The frontend mirrors this literal
+// (frontend/src/types/settings.ts MASKED_API_KEY). A request carrying the
+// marker (or an empty key) resolves the stored key by model id; a request
+// carrying any other value is an explicitly typed key (unsaved model tests)
+// and is used verbatim. Key *removal* is not supported through the masked
+// path — replace the key instead.
+const MaskedAPIKey = "***"
+
+// maskAIModelKeys replaces every non-empty API key with MaskedAPIKey.
+func maskAIModelKeys(models []store.AIModelConfig) []store.AIModelConfig {
+	out := make([]store.AIModelConfig, len(models))
+	for i, m := range models {
+		if m.APIKey != "" {
+			m.APIKey = MaskedAPIKey
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// preserveAIModelKeys merges the stored keys back into the incoming models
+// (F-09): MaskedAPIKey and "" both mean "unchanged" — the stored key (or
+// empty, for a brand-new model) wins over whatever the renderer held.
+func preserveAIModelKeys(incoming, stored []store.AIModelConfig) []store.AIModelConfig {
+	prev := make(map[string]string, len(stored))
+	for _, m := range stored {
+		prev[m.ID] = m.APIKey
+	}
+	out := make([]store.AIModelConfig, len(incoming))
+	for i, m := range incoming {
+		if m.APIKey == "" || m.APIKey == MaskedAPIKey {
+			m.APIKey = prev[m.ID]
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// resolveAPIKey returns the key for a model-list / chat call: a typed key
+// wins verbatim; the masked/empty marker falls back to the stored key for
+// modelID (settings.json first — the device-local writer — then ai.json).
+// F-09.
+func (a *App) resolveAPIKey(modelID, apiKey string) (string, error) {
+	if apiKey != "" && apiKey != MaskedAPIKey {
+		return apiKey, nil
+	}
+	lookup := func(models []store.AIModelConfig) string {
+		for _, m := range models {
+			if m.ID == modelID && m.APIKey != "" && m.APIKey != MaskedAPIKey {
+				return m.APIKey
+			}
+		}
+		return ""
+	}
+	if modelID != "" {
+		if a.settingsStore != nil {
+			if st, err := a.settingsStore.Load(); err == nil {
+				if k := lookup(st.AI.Models); k != "" {
+					return k, nil
+				}
+			}
+		}
+		if a.aiConfigStore != nil {
+			if cfg, err := a.aiConfigStore.Load(); err == nil {
+				if k := lookup(cfg.Models); k != "" {
+					return k, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("API key not configured for model %q — set it under Settings → AI", modelID)
+}
+
 // ChatCompletion streams the Anthropic API response via SSE, emitting Wails
 // events for each token while collecting the full message. It returns the
 // complete message JSON when the stream ends (backward-compatible).
-func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string, sessionID string) (string, error) {
+//
+// apiKey may be the masked marker (or empty) — the stored key for modelID is
+// used then (F-09).
+func (a *App) ChatCompletion(modelID, apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string, sessionID string) (string, error) {
 	// F-07: endpoint transport policy — a hand-edited / sync-imported
 	// http:// URL would ship the API key and the whole conversation in
 	// plaintext. Validate Go-side so every protocol path is covered.
 	if err := a.validateLLMBaseURL(baseURL); err != nil {
+		return "", err
+	}
+	// F-09a: the renderer no longer holds plaintext keys.
+	apiKey, err := a.resolveAPIKey(modelID, apiKey)
+	if err != nil {
 		return "", err
 	}
 	// Parse the incoming request body (always Anthropic format from frontend)
@@ -1509,10 +1592,15 @@ func (a *App) aiAllowInsecureHTTP() bool {
 	return st.AI.AllowInsecureHTTP != nil && *st.AI.AllowInsecureHTTP
 }
 
-func (a *App) FetchModels(apiKey, baseURL, protocol string, proxyID string) ([]ModelInfo, error) {
+func (a *App) FetchModels(modelID, apiKey, baseURL, protocol string, proxyID string) ([]ModelInfo, error) {
 	// F-07: same transport policy as ChatCompletion — the model list call
 	// sends the API key too.
 	if err := a.validateLLMBaseURL(baseURL); err != nil {
+		return nil, err
+	}
+	// F-09a: the renderer no longer holds plaintext keys.
+	apiKey, err := a.resolveAPIKey(modelID, apiKey)
+	if err != nil {
 		return nil, err
 	}
 	base := strings.TrimRight(baseURL, "/")

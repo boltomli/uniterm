@@ -2935,7 +2935,7 @@ async function fetchModelList() {
   modelFetching.value = true
   modelSuggestions.value = []
   try {
-    const models = await FetchModels(modelForm.apiKey, modelForm.baseURL, modelForm.protocol, modelForm.proxyId || '')
+    const models = await FetchModels(modelForm.id || '', modelForm.apiKey, modelForm.baseURL, modelForm.protocol, modelForm.proxyId || '')
     modelSuggestions.value = (models || []).map((m: { id: string; display_name: string }) => ({
       value: m.id,
       label: m.display_name || m.id
@@ -2964,6 +2964,7 @@ async function testConnection() {
       messages: [{ role: 'user', content: 'Say ok' }]
     })
     await ChatCompletion(
+      modelForm.id || '',
       modelForm.apiKey,
       modelForm.baseURL,
       modelForm.model,

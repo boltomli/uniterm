@@ -100,6 +100,9 @@ export async function chat(options: ChatOptions): Promise<void> {
   const sessionId = aiStore.currentSessionId || `uniterm-${Date.now()}`
 
   const apiKey = activeModel?.apiKey || ''
+  // F-09: apiKey is the masked marker ("***") in the renderer — the Go side
+  // resolves the stored plaintext key by model id.
+  const modelId = activeModel?.id || ''
   const baseURL = activeModel?.baseURL || ''
   const model = activeModel?.model || ''
   const protocol = activeModel?.protocol || 'anthropic'
@@ -132,6 +135,7 @@ export async function chat(options: ChatOptions): Promise<void> {
    })
   try {
     responseText = await ChatCompletion(
+      modelId,
       apiKey,
       baseURL,
       model,

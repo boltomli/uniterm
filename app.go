@@ -2355,6 +2355,11 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 	if a.settingsStore == nil {
 		return fmt.Errorf("settings store not initialized")
 	}
+	// F-09: the renderer only ever holds MaskedAPIKey — merge the stored keys
+	// back in so a settings save can never wipe or persist a masked key.
+	if current, err := a.settingsStore.Load(); err == nil {
+		settings.AI.Models = preserveAIModelKeys(settings.AI.Models, current.AI.Models)
+	}
 	// Deliberately no fileGrants.addDir here: SaveSettings is a raw webview
 	// binding, so its argument is untrusted — granting it would hand a
 	// compromised webview any directory in one call. The zmodem download
@@ -2388,6 +2393,9 @@ func (a *App) LoadSettings() (store.AppSettings, error) {
 		fileGrants.addDir(settings.Terminal.ZmodemDownloadDir)
 		fileGrants.addDir(settings.Terminal.SessionLogDir)
 	}
+	// F-09: the renderer must never receive plaintext model API keys (XSS in
+	// the webview would leak every stored key) — mask them on the way out.
+	settings.AI.Models = maskAIModelKeys(settings.AI.Models)
 	return settings, err
 }
 
@@ -2397,12 +2405,20 @@ func (a *App) LoadAIModels() (store.AIStoreData, error) {
 	if a.aiConfigStore == nil {
 		return store.AIStoreData{}, fmt.Errorf("ai config store not initialized")
 	}
-	return a.aiConfigStore.Load()
+	cfg, err := a.aiConfigStore.Load()
+	// F-09: mask the keys on the way out (see LoadSettings).
+	cfg.Models = maskAIModelKeys(cfg.Models)
+	return cfg, err
 }
 
 func (a *App) SaveAIModels(cfg store.AIStoreData) error {
 	if a.aiConfigStore == nil {
 		return fmt.Errorf("ai config store not initialized")
+	}
+	// F-09: the renderer only ever holds MaskedAPIKey — merge the stored keys
+	// back in so an ai.json save can never wipe or persist a masked key.
+	if current, err := a.aiConfigStore.Load(); err == nil {
+		cfg.Models = preserveAIModelKeys(cfg.Models, current.Models)
 	}
 	err := a.aiConfigStore.Save(cfg)
 	if err == nil {

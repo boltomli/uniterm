@@ -75,7 +75,7 @@ func TestValidateLLMBaseURL(t *testing.T) {
 	}
 
 	// E2E: ChatCompletion refuses before dialing anything.
-	if _, err := deny.ChatCompletion("sk-secret", "http://evil.example/v1", "m", "{}", "openai", "", "", ""); err == nil {
+	if _, err := deny.ChatCompletion("", "sk-secret", "http://evil.example/v1", "m", "{}", "openai", "", "", ""); err == nil {
 		t.Fatal("ChatCompletion must refuse an insecure endpoint")
 	} else if !strings.Contains(err.Error(), "insecure") {
 		t.Fatalf("unexpected error: %v", err)
@@ -98,7 +98,7 @@ func TestFetchModelsRejectsOversizedResponse(t *testing.T) {
 	defer srv.Close()
 
 	a := &App{} // loopback http needs no opt-in
-	_, err := a.FetchModels("key", srv.URL, "openai", "")
+	_, err := a.FetchModels("", "key", srv.URL, "openai", "")
 	if err == nil {
 		t.Fatal("oversized models response must return an error, not OOM")
 	}
@@ -117,7 +117,7 @@ func TestFetchModelsParsesNormalResponse(t *testing.T) {
 	defer srv.Close()
 
 	a := &App{}
-	models, err := a.FetchModels("key", srv.URL, "openai", "")
+	models, err := a.FetchModels("", "key", srv.URL, "openai", "")
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}

@@ -1,6 +1,10 @@
 
 import type { ExecutionMode } from './ai'
 
+// F-09: marker the Go side returns instead of a stored model API key —
+// keep in sync with MaskedAPIKey in app_ai.go.
+export const MASKED_API_KEY = '***'
+
 export const SUPPORTED_LOCALES = [
   'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'de', 'es', 'fr', 'ru', 'pt', 'vi'
 ] as const
@@ -119,6 +123,9 @@ export interface TerminalSettings {
 export interface AIModelConfig {
   id: string
   name: string
+  // F-09: the backend never sends the plaintext key to the renderer — a
+  // non-empty stored key arrives as MASKED_API_KEY; the Go side resolves the
+  // stored key by id when a call carries the marker (or an empty key).
   apiKey: string
   baseURL: string
   model: string

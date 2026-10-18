@@ -845,7 +845,7 @@ func TestChatCompletionRejectsOversizedAttachmentBeforeSending(t *testing.T) {
 	defer srv.Close()
 
 	oversized := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, AttachmentMaxImageBytes+1))
-	_, err := (&App{}).ChatCompletion("k", srv.URL, "m", mustJSON(t, map[string]interface{}{
+	_, err := (&App{}).ChatCompletion("", "k", srv.URL, "m", mustJSON(t, map[string]interface{}{
 		"messages": []interface{}{
 			map[string]interface{}{"role": "user", "content": []interface{}{imageBlock("image/png", oversized)}},
 		},
