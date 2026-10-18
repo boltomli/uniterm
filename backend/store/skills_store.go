@@ -630,6 +630,10 @@ func copyDir(src, dst string) error {
 
 // ImportFromDir 将一个 skill 目录（含 SKILL.md）完整拷入 skills/<dir>/，返回导入的 skill name。
 func (s *SkillsStore) ImportFromDir(srcDir string) (string, error) {
+	// F-01: 与 ImportFromZip 一致，导入前先拒绝源目录树中的符号链接。
+	if err := assertNoSymlinks(srcDir); err != nil {
+		return "", err
+	}
 	mdPath := filepath.Join(srcDir, skillEntryFile)
 	content, err := readCapped(mdPath)
 	if err != nil {
@@ -673,6 +677,11 @@ func (s *SkillsStore) ImportFromZip(zipPath string) (string, error) {
 	}
 	// 用第一个 SKILL.md 的目录作为 skill 根
 	root := entries[0].dir
+	// F-01: skill 根必须是单一安全路径段（拒绝 ".."、绝对路径、盘符、分隔符），
+	// 否则前缀裁剪（TrimPrefix）会把恶意条目当作合法相对路径解压出去。
+	if err := utils.SafeRemoteName(root); err != nil {
+		return "", fmt.Errorf("unsafe skill root %q in zip: %w", root, err)
+	}
 	mdEntry := entries[0]
 
 	// 读 SKILL.md 内容
@@ -705,11 +714,25 @@ func (s *SkillsStore) ImportFromZip(zipPath string) (string, error) {
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		// F-01: 只接受普通文件；拒绝符号链接/硬链接等会把解压变成
+		// 「写到链接指向的任意位置」的 entry。
+		if f.Mode()&os.ModeSymlink != 0 || !f.Mode().IsRegular() {
+			return "", fmt.Errorf("unsafe zip entry %q: not a regular file", f.Name)
+		}
 		rel := strings.TrimPrefix(f.Name, root+"/")
 		if rel == f.Name {
 			rel = filepath.Base(f.Name)
 		}
-		target := filepath.Join(tmpDir, rel)
+		// F-01 (Zip Slip): 相对路径必须经 SafeLocalJoin 校验，
+		// 拒绝 ".."、绝对路径、盘符/UNC、双分隔符与保留名，
+		// 确保 target 永远落在 tmpDir 内。
+		if rel == "" || rel == "." {
+			return "", fmt.Errorf("unsafe zip entry %q: empty relative path", f.Name)
+		}
+		target, err := utils.SafeLocalJoin(tmpDir, rel)
+		if err != nil {
+			return "", fmt.Errorf("unsafe zip entry %q: %w", f.Name, err)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return "", fmt.Errorf("mkdir: %w", err)
 		}
@@ -731,6 +754,10 @@ func (s *SkillsStore) ImportFromZip(zipPath string) (string, error) {
 	}
 
 	dstDir := filepath.Join(s.skillsRoot(), fm.name)
+	// F-01: 拷入 skills 目录前再整体复查一遍没有符号链接（copyDir 内部亦会复查）。
+	if err := assertNoSymlinks(tmpDir); err != nil {
+		return "", err
+	}
 	return fm.name, s.importToDir(tmpDir, dstDir, fm.name)
 }
 
