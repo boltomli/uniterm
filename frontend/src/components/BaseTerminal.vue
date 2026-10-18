@@ -143,7 +143,7 @@ import { createDisposeBag } from '../utils/disposeBag'
 import '@xterm/xterm/css/xterm.css'
 import { SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { queuedSessionWrite } from '../services/sessionWriter'
-import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { WriteFileBase64, SaveFileDialog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
 import { isMobilePlatform } from '../utils/platform'
@@ -586,13 +586,10 @@ const searchRegex = ref(false)
 const searchWholeWord = ref(false)
 
 function sanitizeTerminalHistory(text: string): string {
-  const cleaned = sanitizeTerminalOutput(text)
-  // Forward debug info to backend log so we can inspect the raw garbage.
-  if (cleaned !== text) {
-    FrontendLog('sanitizeTerminalHistory', `raw last 400: ${JSON.stringify(text.slice(-400))}`)
-    FrontendLog('sanitizeTerminalHistory', `cleaned last 400: ${JSON.stringify(cleaned.slice(-400))}`)
-  }
-  return cleaned
+  // F-08: never log terminal content — session buffers routinely contain
+  // secrets (cat .env, mysql -p..., ssh output). The sanitizer itself is
+  // covered by sanitize.test.ts; no debug logging here.
+  return sanitizeTerminalOutput(text)
 }
 
 // SFTP line buffer

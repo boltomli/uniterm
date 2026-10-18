@@ -24,3 +24,34 @@ func TestFrontendLogMessageIsCapped(t *testing.T) {
 		t.Fatalf("short message rewritten to %q", got)
 	}
 }
+
+// F-08: renderer-derived text (terminal content) reaches FrontendLog verbatim
+// apart from this escaping — a raw CR/LF would let it impersonate extra log
+// lines, and a raw ESC could inject ANSI sequences into a log viewer.
+func TestEscapeFrontendLogText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain preserved", "ls -la", "ls -la"},
+		{"newline escaped", "a\nb", `a\nb`},
+		{"crlf escaped", "a\r\nb", `a\r\nb`},
+		{"esc escaped", "\x1b[31mred", `\x1b[31mred`},
+		{"tab kept", "col1\tcol2", "col1\tcol2"},
+		{"unicode line separator escaped", "a\u2028b", `a\x{2028}b`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := escapeFrontendLogText(tc.in)
+			if got != tc.want {
+				t.Fatalf("escapeFrontendLogText(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// Forged log line must be impossible: no CR/LF survives.
+	if out := escapeFrontendLogText("msg\n[FAKE] injected\r\nreal"); strings.ContainsAny(out, "\n\r") {
+		t.Fatalf("escaping left line breaks behind: %q", out)
+	}
+}

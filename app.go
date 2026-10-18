@@ -2885,12 +2885,44 @@ func truncateFrontendLogMessage(msg string) string {
 	return msg[:maxFrontendLogMessage] + frontendLogTruncationMarker
 }
 
+// escapeFrontendLogText neutralises CR/LF and other control characters in
+// renderer-controlled text so terminal/screen content cannot forge extra
+// log lines (or inject ANSI sequences into a log viewer). Tabs and normal
+// text are preserved. (F-08)
+func escapeFrontendLogText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteByte('\t')
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		case r == '\u0085' || r == '\u2028' || r == '\u2029':
+			fmt.Fprintf(&b, `\x{%x}`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // FrontendLog writes a frontend log message to the application log file.
 // This is the canonical interface for the frontend to persist debug/audit
 // messages alongside backend logs.
+//
+// Tag and message are control-character-escaped first: callers pass
+// renderer-derived text (e.g. terminal content) and a raw newline would let
+// that text impersonate additional log lines. (F-08)
 func (a *App) FrontendLog(tag string, message string) {
 	_ = log.Init()
-	log.Writef("[%s] %s", tag, truncateFrontendLogMessage(message))
+	log.Writef("[%s] %s",
+		escapeFrontendLogText(tag),
+		truncateFrontendLogMessage(escapeFrontendLogText(message)))
 }
 
 // OpenPathInExplorer reveals the given file in the platform file
