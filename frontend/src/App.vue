@@ -178,6 +178,7 @@ import MobileKeyBar from './components/MobileKeyBar.vue'
 import { isMobilePlatform } from './utils/platform'
 import { startAndroidKeepAlive, stopAndroidKeepAlive } from './utils/androidKeepAlive'
 import { writeClipboard } from './composables/useClipboardWrite'
+import { installExternalLinkGuard } from './utils/externalLinks'
 import SettingsTabContent from './components/SettingsTabContent.vue'
 import WorkspaceContent from './components/WorkspaceContent.vue'
 import FileTabContent from './components/FileTabContent.vue'
@@ -345,6 +346,19 @@ function onVisibilityChange() {
     stopAndroidKeepAlive()
   }
 }
+// F-09c: the webview must never navigate away from the bundled UI — any
+// page that lands here inherits the Wails runtime and every Go binding.
+// All anchor clicks and window.open calls are routed to the system browser
+// (or dropped) instead of the webview.
+let disposeExternalLinkGuard: (() => void) | null = null
+onMounted(() => {
+  disposeExternalLinkGuard = installExternalLinkGuard()
+})
+onUnmounted(() => {
+  disposeExternalLinkGuard?.()
+  disposeExternalLinkGuard = null
+})
+
 onUnmounted(() => {
   if (isMobile) {
     document.removeEventListener('focusin', onDocFocusIn)
