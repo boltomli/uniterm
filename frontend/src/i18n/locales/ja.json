@@ -1264,6 +1264,7 @@
   "k8s.copy": "コピー",
   "k8s.copied": "コピーしました",
   "k8s.copyFailed": "コピーに失敗しました",
+  "k8s.yamlTooLarge": "YAML が大きすぎるため解析できません（最大 2 MB）",
   "k8s.saved": "保存しました",
   "k8s.logPrevious": "前回",
   "k8s.logTimestamps": "タイムスタンプ",

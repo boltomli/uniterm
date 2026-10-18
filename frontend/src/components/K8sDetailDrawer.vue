@@ -156,6 +156,8 @@ const editing = ref(false)
 const draft = ref('')
 const saving = ref(false)
 const saveError = ref('')
+// F-05: 解析入口限制输入大小，避免恶意/超大 manifest 让 js-yaml 长时间占用（按 UTF-16 长度近似字节数）。
+const yamlParseMaxLen = 2 * 1024 * 1024
 
 watch(() => props.target, () => {
   tab.value = props.initialTab === 'yaml' ? 'yaml' : 'struct'
@@ -236,6 +238,7 @@ function selfPath(o: any): string {
 async function save() {
   saving.value = true; saveError.value = ''
   try {
+    if (draft.value.length > yamlParseMaxLen) throw new Error(t('k8s.yamlTooLarge'))
     const parsed = load(draft.value) as any
     if (!parsed || typeof parsed !== 'object') throw new Error('YAML is not an object')
     const { status, raw } = await requestJSON(props.connId, 'PUT', selfPath(props.target), JSON.stringify(parsed), 'application/json')

@@ -1264,6 +1264,7 @@
   "k8s.copy": "복사",
   "k8s.copied": "복사됨",
   "k8s.copyFailed": "복사 실패",
+  "k8s.yamlTooLarge": "YAML이 너무 커서 구문 분석할 수 없습니다 (최대 2MB)",
   "k8s.saved": "저장됨",
   "k8s.logPrevious": "이전",
   "k8s.logTimestamps": "타임스탬프",

@@ -1264,6 +1264,7 @@
   "k8s.copy": "Copy",
   "k8s.copied": "Copied",
   "k8s.copyFailed": "Copy failed",
+  "k8s.yamlTooLarge": "YAML too large to parse (max 2 MB)",
   "k8s.saved": "Saved",
   "k8s.logPrevious": "Previous",
   "k8s.logTimestamps": "Timestamps",

@@ -47,7 +47,7 @@
     "@xterm/xterm": "file:vendor/xterm-xterm-6.0.0-uniterm.1.tgz",
     "codemirror": "^6.0.2",
     "element-plus": "^2.5.0",
-    "js-yaml": "^5.2.1",
+    "js-yaml": "^5.4.1",
     "lz-string": "^1.5.0",
     "pinia": "^2.1.7",
     "spice-html5-bower": "1.7.3",

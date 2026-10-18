@@ -1264,6 +1264,7 @@
   "k8s.copy": "复制",
   "k8s.copied": "已复制",
   "k8s.copyFailed": "复制失败",
+  "k8s.yamlTooLarge": "YAML 过大，无法解析（上限 2 MB）",
   "k8s.saved": "已保存",
   "k8s.logPrevious": "上一次",
   "k8s.logTimestamps": "时间戳",

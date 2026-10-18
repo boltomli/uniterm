@@ -1256,6 +1256,7 @@
   "k8s.copy": "Sao chép",
   "k8s.copied": "Đã sao chép",
   "k8s.copyFailed": "Sao chép thất bại",
+  "k8s.yamlTooLarge": "YAML quá lớn để phân tích (tối đa 2 MB)",
   "k8s.saved": "Đã lưu",
   "k8s.logPrevious": "Trước đó",
   "k8s.logTimestamps": "Dấu thời gian",

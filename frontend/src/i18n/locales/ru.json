@@ -1264,6 +1264,7 @@
   "k8s.copy": "Копировать",
   "k8s.copied": "Скопировано",
   "k8s.copyFailed": "Ошибка копирования",
+  "k8s.yamlTooLarge": "YAML слишком большой для разбора (макс. 2 МБ)",
   "k8s.saved": "Сохранено",
   "k8s.logPrevious": "Предыдущий",
   "k8s.logTimestamps": "Отметки времени",
