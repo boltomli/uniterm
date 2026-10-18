@@ -574,7 +574,6 @@ func (a *App) CloseSession(sessionID string) error {
 	if a.tunnelService != nil {
 		a.tunnelService.Stop(sessionID)
 	}
-	a.forgetSftpLocalRoots(sessionID)
 	a.removeCapture(sessionID)
 	return a.sessionManager.Close(sessionID)
 }

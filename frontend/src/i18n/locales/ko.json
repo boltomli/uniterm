@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "모두 덮어쓰기",
   "sftp.dialog.conflictRename": "자동 이름 변경",
   "sftp.bookmark.title": "북마크",
+  "sftp.grantLocalDir": "로컬 디렉터리 선택 및 허용(편집/삭제/이름 바꾸기는 허용된 폴더에서만)",
   "sftp.bookmark.saveCurrent": "현재 디렉토리 저장",
   "sftp.bookmark.remove": "북마크 제거",
   "sftp.bookmark.saved": "저장됨",

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/session"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -122,112 +123,67 @@ func (a *App) SftpListLocal(sessionID, dir string) (session.FileListResult, erro
 	if err != nil {
 		return session.FileListResult{}, err
 	}
-	res, err := fs.ListLocal(dir)
-	if err == nil {
-		// Every successful listing is a pane navigation: register the
-		// resolved directory as one of this session's local roots.
-		a.noteSftpLocalDir(sessionID, res.Dir)
-	}
-	return res, err
+	// F-04: listing is browsing — it must NOT register local roots. The
+	// local-pane trust anchor is the user's explicit directory selection
+	// (OpenDirectoryDialog / drops → fileGrants); otherwise a compromised
+	// renderer could call SftpListLocal(sid, "/") and turn the session into
+	// an arbitrary local read/write primitive.
+	return fs.ListLocal(dir)
 }
 
-// ── Session-scoped local-pane roots ──
+// ── Local-pane path authorization ──
 //
-// The local pane of a file-transfer session navigates the local disk, and
-// every navigation lands here through SftpListLocal/SftpChangeLocalDir.
-// Those navigated directories become the session's local roots; the
-// SftpLocal* bindings only touch paths inside a root (plus
-// rejectDotDotPath), so an open file-transfer session stops being a generic
-// read/write-anywhere primitive for a compromised renderer (security.md,
-// file_grants scope note). Roots are dropped when the session closes.
+// The local pane of a file-transfer session can browse the whole disk, but
+// the mutating / content bindings (SftpLocalGetContent/PutContent/Copy/
+// Move/Remove/Rename/Mkdir and the open-with/edit-external helpers) only
+// accept paths the user explicitly chose: a directory picked through the
+// native dialog (OpenDirectoryDialog → fileGrants.addDir), or a file/drop
+// grant. (F-04: pane navigation alone used to count as trust, which let a
+// compromised renderer widen the roots to "/" with a single listing call.)
+// Containment is re-checked after symlink resolution, so a granted directory
+// containing a symlink to the outside cannot open a window to its target.
 
-// noteSftpLocalDir records a directory the session's local pane navigated to.
-func (a *App) noteSftpLocalDir(sessionID, dir string) {
-	if sessionID == "" || dir == "" {
-		return
-	}
-	clean := filepath.Clean(dir)
-	a.sftpLocalMu.Lock()
-	defer a.sftpLocalMu.Unlock()
-	if a.sftpLocalRoots == nil {
-		a.sftpLocalRoots = map[string]map[string]struct{}{}
-	}
-	if a.sftpLocalRoots[sessionID] == nil {
-		a.sftpLocalRoots[sessionID] = map[string]struct{}{}
-	}
-	a.sftpLocalRoots[sessionID][clean] = struct{}{}
-}
-
-// pathWithinRoots reports whether clean is lexically inside one of roots
-// (or equal to it).
-func pathWithinRoots(clean string, roots map[string]struct{}) bool {
-	for r := range roots {
-		rel, err := filepath.Rel(r, clean)
-		if err != nil {
-			continue
-		}
-		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-			return true
-		}
-	}
-	return false
-}
-
-// requireSftpLocalPath refuses local paths outside the directories the
-// session's pane actually navigated to, and any ".." traversal.
+// requireSftpLocalPath refuses local paths the user has not granted (plus any
+// ".." traversal and any symlink escape).
 func (a *App) requireSftpLocalPath(sessionID, p string) error {
 	if err := rejectDotDotPath(p); err != nil {
 		return err
 	}
-	clean := filepath.Clean(p)
-	a.sftpLocalMu.Lock()
-	roots := a.sftpLocalRoots[sessionID]
-	clone := make(map[string]struct{}, len(roots))
-	for r := range roots {
-		clone[r] = struct{}{}
-	}
-	a.sftpLocalMu.Unlock()
-	if len(clone) == 0 {
-		return fmt.Errorf("no local directory browsed yet in session %s", sessionID)
-	}
-	if !pathWithinRoots(clean, clone) {
-		return fmt.Errorf("path outside the session's browsed directories: %s", p)
-	}
-	return nil
+	_, err := resolveGrantedLocalPath(p)
+	return err
 }
 
 // requireLocalPanePath gates the local-pane "open with" / "edit externally"
-// bindings, whose signatures carry no session id. It accepts a file-granted
-// path (dialog/drop/log file) or a path inside SOME session's browsed local
-// roots — the pane's own navigation is the trust source — and refuses
-// everything else.
+// bindings, whose signatures carry no session id. Same grant model as
+// requireSftpLocalPath (F-04).
 func (a *App) requireLocalPanePath(p string) error {
 	if err := rejectDotDotPath(p); err != nil {
 		return err
 	}
-	clean := filepath.Clean(p)
-	if fileGrants.allows(clean) {
-		return nil
-	}
-	a.sftpLocalMu.Lock()
-	roots := map[string]struct{}{}
-	for _, rs := range a.sftpLocalRoots {
-		for r := range rs {
-			roots[r] = struct{}{}
-		}
-	}
-	a.sftpLocalMu.Unlock()
-	if pathWithinRoots(clean, roots) {
-		return nil
-	}
-	return fmt.Errorf("path not granted: %s", p)
+	_, err := resolveGrantedLocalPath(p)
+	return err
 }
 
-// forgetSftpLocalRoots drops a closed session's local roots.
-func (a *App) forgetSftpLocalRoots(sessionID string) {
-	a.sftpLocalMu.Lock()
-	delete(a.sftpLocalRoots, sessionID)
-	a.sftpLocalMu.Unlock()
+// resolveGrantedLocalPath enforces the local grant model including symlink
+// resolution (F-04): the lexical check passes for a granted directory, then// every existing path component is resolved (symlinks and Windows junctions)
+// and the containment is re-checked against the granted roots.
+func resolveGrantedLocalPath(p string) (string, error) {
+	clean := filepath.Clean(p)
+	if !fileGrants.allowsDir(clean) {
+		return "", fmt.Errorf("local path not granted: %s", p)
+	}
+	dirs := fileGrants.dirList()
+	resolved, err := mcp.ResolveMcpLocalPath(clean, dirs)
+	if err != nil {
+		// An exact file grant (dialog/drop picked this very file) stands on
+		// its own: the user chose the file, following its own link is the
+		// chosen target.
+		if fileGrants.allowsExactFile(clean) {
+			return clean, nil
+		}
+		return "", fmt.Errorf("local path not granted (symlink-resolved): %s", p)
+	}
+	return resolved, nil
 }
 
 func (a *App) SftpChangeRemoteDir(sessionID, dir string) (session.FileListResult, error) {
@@ -243,11 +199,9 @@ func (a *App) SftpChangeLocalDir(sessionID, dir string) (session.FileListResult,
 	if err != nil {
 		return session.FileListResult{}, err
 	}
-	res, err := fs.ChangeLocalDir(dir)
-	if err == nil {
-		a.noteSftpLocalDir(sessionID, res.Dir)
-	}
-	return res, err
+	// F-04: navigation is browsing only — no root registration (see
+	// SftpListLocal).
+	return fs.ChangeLocalDir(dir)
 }
 
 func (a *App) SftpListLocalDrives(sessionID string) ([]session.FileItem, error) {

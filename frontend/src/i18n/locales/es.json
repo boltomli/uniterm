@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "Sobrescribir todo",
   "sftp.dialog.conflictRename": "Auto renombrar",
   "sftp.bookmark.title": "Marcadores",
+  "sftp.grantLocalDir": "Seleccionar y conceder un directorio local (editar/eliminar/renombrar solo dentro de carpetas concedidas)",
   "sftp.bookmark.saveCurrent": "Marcar directorio actual",
   "sftp.bookmark.remove": "Eliminar marcador",
   "sftp.bookmark.saved": "Guardado",

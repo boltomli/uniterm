@@ -17,6 +17,8 @@
           :breadcrumb-path="localCwd"
           :breadcrumb-drives="localDrives"
           :breadcrumb-saved-paths="settingsStore.sftpBookmarks.localPaths"
+          :can-grant-dir="true"
+          @grant-dir="onLocalGrantDir"
           :files="localFiles"
           :loading="loadingLocal"
           :paste-loading="pasteLoadingLocal"
@@ -177,7 +179,7 @@ import {
   SftpListRemote, SftpListLocal, SftpListLocalDrives,
   SftpChangeRemoteDir, SftpChangeLocalDir,
   SftpOpenExternalEditor, OpenExternalEditorLocal, ListSessions,
-  SftpOpenWithSystem, OpenWithSystemLocal,
+  SftpOpenWithSystem, OpenWithSystemLocal, OpenDirectoryDialog,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 
 import FileList from './FileList.vue'
@@ -379,6 +381,20 @@ const {
   onEditFile: onLocalEditFile, onEditExternal: onLocalEditExternal, onOpenWithSystem: onLocalOpenWithSystem,
   onSaveBookmark: onLocalSaveBookmark, onRemoveBookmark: onLocalRemoveBookmark,
 } = localPanel
+
+// F-04: local-pane file operations (edit / delete / rename / …) only work
+// inside a directory the user explicitly granted. The native picker records
+// the choice Go-side (OpenDirectoryDialog → fileGrants.addDir) and moves the
+// pane there; browsing alone grants nothing.
+async function onLocalGrantDir() {
+  try {
+    const dir = await OpenDirectoryDialog(localCwd.value || '')
+    if (!dir) return
+    await onLocalNavigate(dir)
+  } catch (e: any) {
+    msg.error(String(e?.message ?? e))
+  }
+}
 
 let unsubscribe: (() => void) | null = null
 let unsubscribeStatus: (() => void) | null = null

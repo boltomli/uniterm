@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "Alle überschreiben",
   "sftp.dialog.conflictRename": "Auto Umbenennen",
   "sftp.bookmark.title": "Lesezeichen",
+  "sftp.grantLocalDir": "Lokales Verzeichnis auswählen und freigeben (Bearbeiten/Löschen/Umbenennen nur in freigegebenen Ordnern)",
   "sftp.bookmark.saveCurrent": "Aktuelles Verzeichnis speichern",
   "sftp.bookmark.remove": "Lesezeichen entfernen",
   "sftp.bookmark.saved": "Gespeichert",

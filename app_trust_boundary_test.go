@@ -127,32 +127,80 @@ func TestKubeconfigPathRequiresGrantOrStoredConnection(t *testing.T) {
 func TestSftpLocalScope(t *testing.T) {
 	a := &App{}
 	home := t.TempDir()
-	secret := filepath.Join(t.TempDir(), "id_rsa")
+	secretDir := t.TempDir()
+	secret := filepath.Join(secretDir, "id_rsa")
 
-	// No navigation yet: everything is refused.
+	// F-04: nothing is granted yet — and pane navigation no longer grants
+	// anything either (the old model registered every listed directory as a
+	// root, so a single SftpListLocal(sid, "/") unlocked the whole disk).
 	if err := a.requireSftpLocalPath("s1", filepath.Join(home, "file.txt")); err == nil {
-		t.Fatal("requireSftpLocalPath accepted a path before any navigation")
-	}
-	a.noteSftpLocalDir("s1", home)
-
-	inside := filepath.Join(home, "sub", "file.txt")
-	if err := a.requireSftpLocalPath("s1", inside); err != nil {
-		t.Fatalf("browsed-root path rejected: %v", err)
+		t.Fatal("requireSftpLocalPath accepted an ungranted path")
 	}
 	if err := a.requireSftpLocalPath("s1", secret); err == nil {
-		t.Fatal("path outside the browsed roots accepted")
+		t.Fatal("requireSftpLocalPath accepted an ungranted secret")
+	}
+
+	// The user's explicit directory selection is the trust source.
+	fileGrants.addDir(home)
+	inside := filepath.Join(home, "sub", "file.txt")
+	if err := a.requireSftpLocalPath("s1", inside); err != nil {
+		t.Fatalf("granted-dir path rejected: %v", err)
+	}
+	if err := a.requireSftpLocalPath("s1", secret); err == nil {
+		t.Fatal("path outside the granted dirs accepted")
 	}
 	if err := a.requireSftpLocalPath("s1", filepath.Join(home, "..", "escape")); err == nil {
 		t.Fatal("dot-dot traversal accepted")
 	}
-	// Roots are per session: another session has no roots yet.
-	if err := a.requireSftpLocalPath("s2", inside); err == nil {
-		t.Fatal("another session reused the roots of s1")
+}
+
+// F-04: a granted directory containing a symlink to the outside must not
+// open a window to the link target — containment is re-checked after
+// symlink resolution, including for not-yet-existing write targets.
+func TestSftpLocalSymlinkEscapeDenied(t *testing.T) {
+	a := &App{}
+	home := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatalf("write secret: %v", err)
 	}
-	// Closing the session drops its roots.
-	a.forgetSftpLocalRoots("s1")
-	if err := a.requireSftpLocalPath("s1", inside); err == nil {
-		t.Fatal("roots survived the session close")
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	fileGrants.addDir(home)
+
+	if err := a.requireSftpLocalPath("s1", filepath.Join(link, "secret.txt")); err == nil {
+		t.Fatal("symlinked read target outside the granted dir was accepted")
+	}
+	if err := a.requireSftpLocalPath("s1", filepath.Join(link, "new.txt")); err == nil {
+		t.Fatal("symlinked write target outside the granted dir was accepted")
+	}
+	if err := a.requireLocalPanePath(filepath.Join(link, "secret.txt")); err == nil {
+		t.Fatal("requireLocalPanePath accepted a symlinked escape")
+	}
+
+	// A plain path inside the granted dir (leaf not created yet) stays usable.
+	plain := filepath.Join(home, "real", "new-file.txt")
+	if err := a.requireSftpLocalPath("s1", plain); err != nil {
+		t.Fatalf("plain granted path rejected: %v", err)
+	}
+}
+
+// F-04: directory dialogs refuse filesystem / share roots — granting one
+// would grant the whole disk.
+func TestIsLocalRootDir(t *testing.T) {
+	roots := []string{"/", "C:\\", "D:/", `\\server\share`}
+	for _, r := range roots {
+		if !isLocalRootDir(r) {
+			t.Errorf("isLocalRootDir(%q) = false, want true", r)
+		}
+	}
+	normal := []string{"C:\\Users\\me", "/home/me", `\\server\share\\dir`}
+	for _, d := range normal {
+		if isLocalRootDir(d) {
+			t.Errorf("isLocalRootDir(%q) = true, want false", d)
+		}
 	}
 }
 
@@ -162,10 +210,11 @@ func TestOpenWithSystemLocalRequiresGrantOrScope(t *testing.T) {
 	if err := a.OpenWithSystemLocal(target); err == nil {
 		t.Fatal("OpenWithSystemLocal accepted an ungranted path")
 	}
-	// The local pane's own navigation is a valid trust source.
-	a.noteSftpLocalDir("s1", filepath.Dir(target))
+	// The user's explicit directory selection is a valid trust source (F-04:
+	// pane navigation no longer is).
+	fileGrants.addDir(filepath.Dir(target))
 	if err := a.requireLocalPanePath(target); err != nil {
-		t.Fatalf("browsed-pane path rejected: %v", err)
+		t.Fatalf("granted-pane path rejected: %v", err)
 	}
 }
 
@@ -178,7 +227,7 @@ func TestExternalEditorResolvedFromPersistedSettings(t *testing.T) {
 	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	a.noteSftpLocalDir("s1", filepath.Dir(target))
+	fileGrants.addDir(filepath.Dir(target))
 
 	// No persisted editor: the webview-supplied command must be IGNORED —
 	// no exec happens, the call fails with "not configured".

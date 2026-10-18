@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "すべて上書き",
   "sftp.dialog.conflictRename": "自動リネーム",
   "sftp.bookmark.title": "ブックマーク",
+  "sftp.grantLocalDir": "ローカルディレクトリを選択して許可（編集・削除・名前変更は許可済みフォルダ内のみ）",
   "sftp.bookmark.saveCurrent": "現在のディレクトリを保存",
   "sftp.bookmark.remove": "ブックマークを削除",
   "sftp.bookmark.saved": "保存済み",

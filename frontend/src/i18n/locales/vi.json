@@ -390,6 +390,7 @@
   "sftp.dialog.conflictOverwrite": "Ghi đè tất cả",
   "sftp.dialog.conflictRename": "Tự động đổi tên",
   "sftp.bookmark.title": "Dấu trang",
+  "sftp.grantLocalDir": "Chọn và cấp phép thư mục cục bộ (chỉnh sửa/xóa/đổi tên chỉ trong các thư mục được cấp phép)",
   "sftp.bookmark.saveCurrent": "Đánh dấu thư mục hiện tại",
   "sftp.bookmark.remove": "Xóa dấu trang",
   "sftp.bookmark.saved": "Đã đánh dấu",

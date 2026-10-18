@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "Перезаписать все",
   "sftp.dialog.conflictRename": "Авто переименование",
   "sftp.bookmark.title": "Закладки",
+  "sftp.grantLocalDir": "Выбрать и разрешить локальный каталог (правка/удаление/переименование — только в разрешённых папках)",
   "sftp.bookmark.saveCurrent": "Добавить текущий каталог",
   "sftp.bookmark.remove": "Удалить закладку",
   "sftp.bookmark.saved": "Сохранено",

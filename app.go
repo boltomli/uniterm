@@ -192,15 +192,6 @@ type App struct {
 	sessionLogFilename   string
 	sessionLogSettingsMu stdsync.RWMutex
 
-	// sftpLocalRoots records, per file-transfer session, the local
-	// directories that session's local pane has actually navigated to.
-	// The SftpLocal* bindings only touch paths inside those roots (plus
-	// rejectDotDotPath), so a compromised renderer cannot use an open
-	// file-transfer session as a generic local-file read/write primitive
-	// (security.md, file_grants scope). Lazily created.
-	sftpLocalMu    stdsync.Mutex
-	sftpLocalRoots map[string]map[string]struct{}
-
 	// errCh accumulates non-fatal init failures during startup() so the
 	// frontend can surface them (see StartupError / "app:startup-error"
 	// event). Stores may stay nil if their init fails — the existing
@@ -2692,6 +2683,11 @@ func (a *App) OpenDirectoryDialog(startDir ...string) (string, error) {
 		CanChooseFiles(false).
 		PromptForSingleSelection()
 	if err == nil {
+		// F-04: granting a filesystem / share root would grant the whole
+		// disk — pick a concrete directory instead.
+		if isLocalRootDir(dir) {
+			return "", fmt.Errorf("refusing to grant a filesystem root directory: %s", dir)
+		}
 		fileGrants.addDir(dir)
 	}
 	return dir, err

@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "Tout écraser",
   "sftp.dialog.conflictRename": "Renommer auto",
   "sftp.bookmark.title": "Favoris",
+  "sftp.grantLocalDir": "Sélectionner et autoriser un dossier local (éditer/supprimer/renommer uniquement dans les dossiers autorisés)",
   "sftp.bookmark.saveCurrent": "Ajouter le dossier actuel",
   "sftp.bookmark.remove": "Supprimer le favori",
   "sftp.bookmark.saved": "Enregistré",

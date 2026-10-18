@@ -49,6 +49,17 @@
       >
         <Bookmark :size="lucideSize('0.875rem')" :class="{ 'bookmark-active': hasCurrentPathBookmarked }" />
       </button>
+      <!-- F-04: local pane file operations (edit/delete/rename/...) need an
+           explicit directory grant — a native picker makes the user's
+           selection the trust anchor instead of pane navigation. -->
+      <button
+        v-if="canGrantDir"
+        class="bookmark-btn"
+        :title="t('sftp.grantLocalDir')"
+        @click.stop="emit('grantDir')"
+      >
+        <FolderOpen :size="lucideSize('0.875rem')" />
+      </button>
     </template>
 
     <!-- Drive dropdown -->
@@ -116,7 +127,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { Bookmark, BookmarkPlus, BookmarkCheck, Trash2, MoreHorizontal } from '@lucide/vue'
+import { Bookmark, BookmarkPlus, BookmarkCheck, Trash2, MoreHorizontal, FolderOpen } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -130,12 +141,15 @@ const props = defineProps<{
   drives?: string[]
   savedPaths?: string[]
   bookmarkMode?: 'local' | 'remote'
+  /** Show the "pick & grant directory" button (F-04: local pane). */
+  canGrantDir?: boolean
 }>()
 
 const emit = defineEmits<{
   navigate: [path: string]
   saveBookmark: [path: string]
   removeBookmark: [path: string]
+  grantDir: []
 }>()
 
 const isWindowsPath = computed(() => {

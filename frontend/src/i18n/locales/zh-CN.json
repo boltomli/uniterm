@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "全部覆盖",
   "sftp.dialog.conflictRename": "自动重命名",
   "sftp.bookmark.title": "书签",
+  "sftp.grantLocalDir": "选择并授权本地目录（编辑/删除/重命名仅在已授权目录内可用）",
   "sftp.bookmark.saveCurrent": "收藏当前目录",
   "sftp.bookmark.remove": "取消收藏",
   "sftp.bookmark.saved": "已收藏",

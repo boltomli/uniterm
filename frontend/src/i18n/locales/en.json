@@ -392,6 +392,7 @@
   "sftp.dialog.conflictOverwrite": "Overwrite All",
   "sftp.dialog.conflictRename": "Auto Rename",
   "sftp.bookmark.title": "Bookmarks",
+  "sftp.grantLocalDir": "Pick and grant a local directory (edit / delete / rename only work inside granted folders)",
   "sftp.bookmark.saveCurrent": "Bookmark current directory",
   "sftp.bookmark.remove": "Remove bookmark",
   "sftp.bookmark.saved": "Bookmarked",

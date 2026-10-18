@@ -87,6 +87,38 @@ func requireFileGrant(path string) error {
 	return nil
 }
 
+// dirList snapshots the granted directories (F-04): callers re-check
+// containment against them after resolving symlinks.
+func (g *pathGrantSet) dirList() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]string, 0, len(g.dirs))
+	for d := range g.dirs {
+		out = append(out, d)
+	}
+	return out
+}
+
+// allowsExactFile reports whether path is an exact file grant (dialog/drop
+// picked this very file), independent of any directory containment.
+func (g *pathGrantSet) allowsExactFile(path string) bool {
+	clean := filepath.Clean(path)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.files[clean]
+	return ok
+}
+
+// isLocalRootDir reports whether dir is a filesystem / share root: "/",
+// "C:\\" or a UNC share root. Granting one of those would grant the whole
+// disk, so directory dialogs refuse to hand them out (F-04).
+func isLocalRootDir(dir string) bool {
+	clean := filepath.Clean(dir)
+	vol := filepath.VolumeName(clean)
+	rest := strings.TrimPrefix(clean, vol)
+	return rest == "" || rest == "/" || rest == string(filepath.Separator)
+}
+
 // allowsDir reports whether dir is a granted directory itself or lexically
 // inside one. Unlike allows (files must sit strictly inside a granted dir),
 // the granted directory itself counts: directory-scoped bindings configure

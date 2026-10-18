@@ -65,9 +65,11 @@
       :drives="breadcrumbDrives"
       :bookmark-mode="breadcrumbMode"
       :saved-paths="breadcrumbSavedPaths"
+      :can-grant-dir="canGrantDir"
       @navigate="(p: string) => emit('navigate', p)"
       @save-bookmark="(p: string) => emit('saveBookmark', p)"
       @remove-bookmark="(p: string) => emit('removeBookmark', p)"
+      @grant-dir="emit('grantDir')"
     />
     <div v-if="clipboardCount" class="clipboard-bar">
       <span class="clipboard-info">{{ clipboardMode === 'cut' ? t('sftp.cut') : t('sftp.copy') }} ({{ clipboardCount }})</span>
@@ -324,6 +326,10 @@ const props = withDefaults(defineProps<{
   breadcrumbPath?: string
   breadcrumbSavedPaths?: string[]
   breadcrumbDrives?: string[]
+  /** Show the breadcrumb's "pick & grant directory" button (F-04: the local
+   *  pane needs an explicit user selection before file operations are
+   *  allowed inside it). */
+  canGrantDir?: boolean
   /** Whether history navigation has a previous / next directory. The back and
    *  forward buttons are disabled when omitted (hosts without history). */
   canBack?: boolean
@@ -360,6 +366,7 @@ const emit = defineEmits<{
   clearClipboard: []
   saveBookmark: [path: string]
   removeBookmark: [path: string]
+  grantDir: []
   back: []
   forward: []
   up: []
