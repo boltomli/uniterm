@@ -561,6 +561,8 @@
   "settings.browse": "浏览…",
   "settings.maxTurns": "AI 自主交互最大轮次",
   "settings.maxTurnsDesc": "AI 自主执行命令与反馈的对话轮数上限。设为 0 表示不限制。默认 20。",
+  "settings.allowInsecureHttp": "允许不安全的 HTTP 端点",
+  "settings.allowInsecureHttpDesc": "允许模型端点使用非回环地址的明文 http（例如内网网关）。默认关闭：开启后 API Key 与对话内容将明文传输。",
   "settings.modelList": "模型列表",
   "settings.modelListDesc": "配置和管理 AI 模型",
   "settings.addModel": "添加模型",

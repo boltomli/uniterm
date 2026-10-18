@@ -559,6 +559,8 @@
   "settings.browse": "Procurar…",
   "settings.maxTurns": "Máx. de rodadas autônomas",
   "settings.maxTurnsDesc": "Número máximo de rodadas de interação autônoma por requisição da IA. Use 0 para ilimitado. Padrão: 20.",
+  "settings.allowInsecureHttp": "Permitir endpoints HTTP inseguros",
+  "settings.allowInsecureHttpDesc": "Permite endpoints http simples em hosts que não são loopback (ex.: gateway LAN). Desativado por padrão: a chave de API e a conversação trafegariam em texto simples.",
   "settings.modelList": "Lista de modelos",
   "settings.modelListDesc": "Configure e gerencie modelos de IA",
   "settings.addModel": "Adicionar modelo",

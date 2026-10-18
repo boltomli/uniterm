@@ -136,6 +136,11 @@ type AISettings struct {
 	// settings.json files load; nil or unknown values backfill to
 	// confirm_write in Load.
 	ExecutionMode *string `json:"executionMode,omitempty"`
+	// AllowInsecureHTTP lifts the F-07 endpoint policy (https or loopback
+	// http only) for plain-http endpoints on routable hosts — a private LAN
+	// gateway such as LiteLLM. nil/false keeps the fail-closed default; the
+	// Settings → AI switch surfaces the plaintext warning.
+	AllowInsecureHTTP *bool `json:"allowInsecureHttp,omitempty"`
 }
 
 // MCPSettings configures the external-agent MCP server endpoint. Pointer on

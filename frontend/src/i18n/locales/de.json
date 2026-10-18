@@ -561,6 +561,8 @@
   "settings.browse": "Durchsuchen…",
   "settings.maxTurns": "Max. autonome Runden",
   "settings.maxTurnsDesc": "Maximale Anzahl autonomer Interaktionsrunden pro KI-Anfrage. 0 = unbegrenzt. Standard: 20.",
+  "settings.allowInsecureHttp": "Unsichere HTTP-Endpunkte erlauben",
+  "settings.allowInsecureHttpDesc": "Erlaubt reine-http-Endpunkte außerhalb von Loopback (z. B. ein LAN-Gateway). Standardmäßig aus: API-Schlüssel und Konversation würden im Klartext übertragen.",
   "settings.modelList": "Modellliste",
   "settings.modelListDesc": "KI-Modelle konfigurieren und verwalten",
   "settings.addModel": "Modell hinzufügen",

@@ -561,6 +561,8 @@
   "settings.browse": "Browse…",
   "settings.maxTurns": "Max Autonomous Rounds",
   "settings.maxTurnsDesc": "Maximum autonomous interaction rounds per AI request. Set to 0 for unlimited. Default 20.",
+  "settings.allowInsecureHttp": "Allow insecure HTTP endpoints",
+  "settings.allowInsecureHttpDesc": "Lets model endpoints that are plain http on non-loopback hosts (e.g. a private LAN gateway). Off by default: with it on, API keys and conversations travel in plaintext.",
   "settings.modelList": "Model List",
   "settings.modelListDesc": "Configure and manage AI models",
   "settings.addModel": "Add Model",

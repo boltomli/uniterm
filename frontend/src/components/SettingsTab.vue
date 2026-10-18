@@ -1215,6 +1215,22 @@
             </div>
           </div>
 
+          <!-- F-07: endpoint transport policy — https (or loopback http) is
+               enforced in Go; this switch is the explicit opt-in for plain
+               http on a trusted private LAN gateway. -->
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.allowInsecureHttp') }}</div>
+              <div class="setting-desc">{{ t('settings.allowInsecureHttpDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch
+                v-model="settingsStore.settings.ai.allowInsecureHttp"
+                @change="settingsStore.save()"
+              />
+            </div>
+          </div>
+
           <div class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.modelList') }}</div>

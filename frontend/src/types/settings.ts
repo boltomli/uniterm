@@ -148,6 +148,10 @@ export interface AISettings {
   // the same policy the MCP server uses — and is persisted so the user's
   // choice survives restarts (it previously reset to confirm_dangerous).
   executionMode: ExecutionMode
+  // F-07: explicit opt-in for plain-http model endpoints on non-loopback
+  // hosts (private LAN gateways). Off = https or loopback http only; the
+  // backend enforces this on every request.
+  allowInsecureHttp: boolean
 }
 
 export type ShortcutAction =
@@ -408,7 +412,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
       }
     ],
     activeModelId: 'model-default',
-    executionMode: 'confirm_write'
+    executionMode: 'confirm_write',
+    allowInsecureHttp: false
   },
   keyboard: { ...DEFAULT_KEYBOARD },
   autoCheckUpdate: true,

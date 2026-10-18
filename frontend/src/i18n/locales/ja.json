@@ -561,6 +561,8 @@
   "settings.browse": "参照…",
   "settings.maxTurns": "AI自律対話の最大ラウンド数",
   "settings.maxTurnsDesc": "AIリクエストあたりの自律的な対話ラウンドの上限。0は無制限。デフォルト：20。",
+  "settings.allowInsecureHttp": "安全でない HTTP エンドポイントを許可",
+  "settings.allowInsecureHttpDesc": "非ループバックのプレーン http エンドポイント（社内ゲートウェイ等）を許可します。既定はオフ：有効にすると API キーと会話が平文で送信されます。",
   "settings.modelList": "モデル一覧",
   "settings.modelListDesc": "AI モデルの設定と管理",
   "settings.addModel": "モデルを追加",

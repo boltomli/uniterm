@@ -127,6 +127,12 @@ func injectCacheControl(reqBody map[string]interface{}) {
 // events for each token while collecting the full message. It returns the
 // complete message JSON when the stream ends (backward-compatible).
 func (a *App) ChatCompletion(apiKey, baseURL, model string, requestJSON string, protocol string, userAgent string, proxyID string, sessionID string) (string, error) {
+	// F-07: endpoint transport policy — a hand-edited / sync-imported
+	// http:// URL would ship the API key and the whole conversation in
+	// plaintext. Validate Go-side so every protocol path is covered.
+	if err := a.validateLLMBaseURL(baseURL); err != nil {
+		return "", err
+	}
 	// Parse the incoming request body (always Anthropic format from frontend)
 	var reqBody map[string]interface{}
 	if err := json.Unmarshal([]byte(requestJSON), &reqBody); err != nil {
@@ -1442,7 +1448,73 @@ type ModelInfo struct {
 // OpenAI-compatible /models endpoint with a Bearer token; anthropic hits
 // /v1/models with the x-api-key + anthropic-version headers, mirroring
 // chatCompletionAnthropic's URL and auth handling.
+// validateLLMBaseURL enforces the model endpoint transport policy (F-07):
+//
+//   - https:// is always allowed;
+//   - http:// only for loopback hosts (local Ollama / LM Studio /
+//     llama.cpp on 127.0.0.1) — those never leave the machine;
+//   - anything else (other schemes, plain http on routable hosts) is
+//     refused unless the user explicitly opts in with the
+//     "allow insecure HTTP" switch in Settings → AI.
+//
+// The error names the host but never echoes the full URL (no userinfo /
+// query leakage into logs).
+func (a *App) validateLLMBaseURL(baseURL string) error {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return fmt.Errorf("model base URL is empty — set it under Settings → AI (https://…)")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid model base URL: %w", err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("model base URL must start with https:// (got %q)", u.Host)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackAPIHost(u.Hostname()) {
+			return nil
+		}
+		if a.aiAllowInsecureHTTP() {
+			return nil
+		}
+		return fmt.Errorf("refusing insecure http endpoint %q: use https:// (or a loopback address like http://127.0.0.1:11434), or enable Settings → AI → Allow insecure HTTP for a trusted private LAN gateway", u.Hostname())
+	default:
+		return fmt.Errorf("unsupported URL scheme %q in model base URL (https:// or loopback http:// only)", u.Scheme)
+	}
+}
+
+// isLoopbackAPIHost reports whether host is a loopback IP literal or
+// "localhost" (case-insensitive).
+func isLoopbackAPIHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
+}
+
+// aiAllowInsecureHTTP reads the explicit opt-in switch (F-07). Absent or
+// unreadable settings mean "no" — the policy fails closed.
+func (a *App) aiAllowInsecureHTTP() bool {
+	if a.settingsStore == nil {
+		return false
+	}
+	st, err := a.settingsStore.Load()
+	if err != nil {
+		return false
+	}
+	return st.AI.AllowInsecureHTTP != nil && *st.AI.AllowInsecureHTTP
+}
+
 func (a *App) FetchModels(apiKey, baseURL, protocol string, proxyID string) ([]ModelInfo, error) {
+	// F-07: same transport policy as ChatCompletion — the model list call
+	// sends the API key too.
+	if err := a.validateLLMBaseURL(baseURL); err != nil {
+		return nil, err
+	}
 	base := strings.TrimRight(baseURL, "/")
 
 	var url string
@@ -1486,9 +1558,15 @@ func (a *App) FetchModels(apiKey, baseURL, protocol string, proxyID string) ([]M
 	}
 	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
+	// F-07: bound the response — a malicious or broken endpoint could
+	// otherwise stream until the process runs out of memory.
+	const maxModelsResponseBytes = 4 << 20 // 4 MiB
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxModelsResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > maxModelsResponseBytes {
+		return nil, fmt.Errorf("models response exceeds the %d bytes limit", maxModelsResponseBytes)
 	}
 
 	if res.StatusCode != http.StatusOK {

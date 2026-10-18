@@ -72,7 +72,9 @@ export const useSettingsStore = defineStore('settings', () => {
       // maxTurns + models), so recomposing the synced slice must not drop it.
       executionMode: isExecutionMode(settings.value.ai.executionMode)
         ? settings.value.ai.executionMode
-        : DEFAULT_SETTINGS.ai.executionMode
+        : DEFAULT_SETTINGS.ai.executionMode,
+      // allowInsecureHttp is device-local too (F-07) — never re-derived.
+      allowInsecureHttp: settings.value.ai.allowInsecureHttp ?? DEFAULT_SETTINGS.ai.allowInsecureHttp
     }
   }
 
@@ -408,7 +410,9 @@ function mergeSettings(loaded: AppSettings): AppSettings {
       // instead of being trusted (the Go side validates too).
       executionMode: isExecutionMode(loaded.ai?.executionMode)
         ? loaded.ai.executionMode
-        : DEFAULT_SETTINGS.ai.executionMode
+        : DEFAULT_SETTINGS.ai.executionMode,
+      // F-07: device-local security opt-in; absent = fail closed.
+      allowInsecureHttp: loaded.ai?.allowInsecureHttp ?? DEFAULT_SETTINGS.ai.allowInsecureHttp
     },
     keyboard: normalizeKeyBindings(loaded.keyboard || {}),
     autoCheckUpdate: loaded.autoCheckUpdate ?? DEFAULT_SETTINGS.autoCheckUpdate,

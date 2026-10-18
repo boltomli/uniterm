@@ -559,6 +559,8 @@
   "settings.browse": "Duyệt…",
   "settings.maxTurns": "Số vòng tự chủ tối đa",
   "settings.maxTurnsDesc": "Số vòng tương tác tự chủ tối đa cho mỗi yêu cầu AI. Đặt 0 để không giới hạn. Mặc định 20.",
+  "settings.allowInsecureHttp": "Cho phép endpoint HTTP không an toàn",
+  "settings.allowInsecureHttpDesc": "Cho phép endpoint http thuần trên host không phải loopback (ví dụ cổng mạng nội bộ). Tắt theo mặc định: bật thì khóa API và hội thoại sẽ truyền dạng plain text.",
   "settings.modelList": "Danh sách mô hình",
   "settings.modelListDesc": "Cấu hình và quản lý các mô hình AI",
   "settings.addModel": "Thêm mô hình",
