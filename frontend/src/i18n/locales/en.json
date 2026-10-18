@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "MCP Client",
   "settings.mcpClientSection": "MCP Client",
   "settings.mcpClientSectionDesc": "Connect external MCP servers to extend AI capabilities.",
+  "settings.mcpClientConfirmHint": "External MCP tools act on real systems (files, commands, network). Every tool call asks for confirmation by default; only servers you explicitly mark as trusted skip the prompt.",
+  "settings.mcpClientTrust": "Trusted (skip confirmations)",
   "settings.mcpClientOnline": "Connected · {tools} tools",
   "settings.mcpClientOffline": "Disconnected",
   "settings.mcpClientTest": "Test",

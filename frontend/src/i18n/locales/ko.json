@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "MCP 클라이언트",
   "settings.mcpClientSection": "MCP 클라이언트",
   "settings.mcpClientSectionDesc": "외부 MCP 서버에 연결하여 AI 기능을 확장합니다.",
+  "settings.mcpClientConfirmHint": "외부 MCP 도구는 실제 시스템(파일, 명령, 네트워크)에 직접 영향을 줍니다. 도구 호출은 기본적으로 매번 확인을 요청하며, 신뢰함으로 명시적으로 표시한 서버만 확인을 건너뜁니다.",
+  "settings.mcpClientTrust": "신뢰(확인 생략)",
   "settings.mcpClientOnline": "연결됨 · 도구 {tools}개",
   "settings.mcpClientOffline": "연결 끊김",
   "settings.mcpClientTest": "테스트",

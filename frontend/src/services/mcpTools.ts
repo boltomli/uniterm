@@ -18,6 +18,12 @@ export interface RemoteMCPTool {
   qualifiedName: string
   description: string
   inputSchema?: unknown
+  /**
+   * The owning server was explicitly marked trusted in settings (F-03).
+   * Only such tools may skip the per-call confirmation; anything else —
+   * including a metadata miss — defaults to a dangerous-grade prompt.
+   */
+  trusted?: boolean
 }
 
 export interface AgentToolEntry {

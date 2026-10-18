@@ -614,6 +614,25 @@ export function getRisk(tu: { name: string; input: Record<string, unknown> }): R
   return computed
 }
 
+/**
+ * Display string for a pending external MCP call: qualified name + JSON
+ * arguments, truncated for the confirm panel. The pendingCommand keeps the
+ * complete args in `mcpTool.args` — only this preview is shortened.
+ */
+function formatRemoteMCPCommand(qualifiedName: string, args: Record<string, unknown>): string {
+  let json: string
+  try {
+    json = JSON.stringify(args ?? {})
+  } catch {
+    json = '"<unserializable arguments>"'
+  }
+  const MAX_ARGS = 600
+  if (json.length > MAX_ARGS) {
+    json = `${json.slice(0, MAX_ARGS)}… (+${json.length - MAX_ARGS} chars)`
+  }
+  return `${qualifiedName} ${json}`
+}
+
 function shouldConfirm(risk: RiskLevel): boolean {
   const store = useAIStore()
   switch (store.mode) {
@@ -1681,10 +1700,42 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         })
       }
     } else if (isRemoteMCPTool(tu.name)) {
-      // External MCP client tool: route straight to the Go manager. Arguments
-      // are passed through as the model supplied them; no terminal/risk gating.
+      // F-03: external MCP client tools write files / run commands / hit
+      // networks on the far side with model-chosen arguments. They must not
+      // bypass the confirmation dialog — gate them exactly like a terminal
+      // command: only an explicitly trusted server (settings → MCP client →
+      // trust) grades read; every other call (including a metadata miss)
+      // defaults to dangerous and prompts.
+      const remote = (await loadRemoteMCPTools()).find(t => t.qualifiedName === tu.name)
+      const risk: RiskLevel = remote?.trusted ? 'read' : 'dangerous'
+      const args = (tu.input ?? {}) as Record<string, unknown>
+
+      if (shouldConfirm(risk)) {
+        store.setPendingCommand({
+          messageId: assistantMsg.id,
+          toolId: tu.id,
+          toolName: tu.name,
+          command: formatRemoteMCPCommand(tu.name, args),
+          risk,
+          dangerous: risk === 'dangerous',
+          mcpTool: { qualifiedName: tu.name, server: remote?.server ?? '', args }
+        })
+        store.status = 'confirming'
+        assistantMsg.tool_calls = [{
+          id: tu.id,
+          type: 'function' as const,
+          function: {
+            name: tu.name,
+            arguments: JSON.stringify(tu.input)
+          }
+        }]
+        store.isRunning = false
+        cleanupStreamListeners()
+        return
+      }
+
       try {
-        const result = await callRemoteMCPTool(tu.name, tu.input as Record<string, unknown>)
+        const result = await callRemoteMCPTool(tu.name, args)
         store.addMessage({
           id: `msg-${Date.now()}`,
           role: 'tool',
@@ -1741,7 +1792,27 @@ export async function approveTool(_messageId: string) {
   store.status = 'executing'
 
   try {
-    if (cmd.toolName === 'start_command') {
+    if (cmd.mcpTool) {
+      // F-03: the user confirmed this external MCP call — forward the FULL
+      // argument set (the panel only showed a truncated preview).
+      const mcp = cmd.mcpTool
+      try {
+        const result = await callRemoteMCPTool(mcp.qualifiedName, mcp.args)
+        store.addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'tool',
+          content: capToolResult(result || `[${mcp.qualifiedName} returned no output]`),
+          tool_call_id: cmd.toolId
+        })
+      } catch (e: any) {
+        store.addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'tool',
+          content: `[Error calling ${mcp.qualifiedName}: ${e.message ?? e}]`,
+          tool_call_id: cmd.toolId
+        })
+      }
+    } else if (cmd.toolName === 'start_command') {
       const result = await startCommand(cmd.command, cmd.panel)
       store.addMessage({
         id: `msg-${Date.now()}`,
@@ -1795,7 +1866,11 @@ export function rejectTool(_messageId: string) {
   store.addMessage({
     id: `msg-${Date.now()}`,
     role: 'tool',
-    content: 'User rejected this command.',
+    // F-03: rejection is reported back as a normal tool result so the loop
+    // continues (the model gets to re-plan) instead of aborting the run.
+    content: cmd.mcpTool
+      ? `User rejected the external MCP tool call ${cmd.mcpTool.qualifiedName}.`
+      : 'User rejected this command.',
     tool_call_id: cmd.toolId
   })
 

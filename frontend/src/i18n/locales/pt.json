@@ -1921,6 +1921,8 @@
   "settings.mcpClient": "Cliente MCP",
   "settings.mcpClientSection": "Cliente MCP",
   "settings.mcpClientSectionDesc": "Ligue servidores MCP externos para expandir as capacidades da IA.",
+  "settings.mcpClientConfirmHint": "Ferramentas MCP externas agem em sistemas reais (arquivos, comandos, rede). Cada chamada pede confirmação por padrão; apenas servidores marcados como confiáveis dispensam a confirmação.",
+  "settings.mcpClientTrust": "Confiável (pular confirmação)",
   "settings.mcpClientOnline": "Ligado · {tools} ferramentas",
   "settings.mcpClientOffline": "Desligado",
   "settings.mcpClientTest": "Testar",

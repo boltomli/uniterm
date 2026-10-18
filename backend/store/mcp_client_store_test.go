@@ -121,3 +121,34 @@ func TestMCPClientStoreMigratesPlaintextAndQuarantinesCorruption(t *testing.T) {
 		t.Fatal("save after quarantine was skipped")
 	}
 }
+
+// F-03: the trust flag gates the agent's per-call confirmation, so it must
+// round-trip through mcp_clients.json (and default to false when the file
+// predates the field — the Go zero value).
+func TestMCPClientStoreRoundTripsTrustedFlag(t *testing.T) {
+	s := NewMCPClientStore(t.TempDir())
+	in := []MCPClientConfig{
+		{Name: "fs", Transport: MCPTransportStdio, Command: "npx", Enabled: true, Trusted: true},
+		{Name: "plain", Transport: MCPTransportStdio, Command: "npx", Enabled: true},
+	}
+	if err := s.Save(in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	byName := map[string]bool{}
+	for _, c := range got {
+		byName[c.Name] = c.Trusted
+	}
+	if !byName["fs"] {
+		t.Error("Trusted=true lost in round-trip")
+	}
+	if byName["plain"] {
+		t.Error("Trusted must default to false")
+	}
+}

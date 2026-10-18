@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "Клиент MCP",
   "settings.mcpClientSection": "Клиент MCP",
   "settings.mcpClientSectionDesc": "Подключите внешние MCP-серверы для расширения возможностей ИИ.",
+  "settings.mcpClientConfirmHint": "Внешние инструменты MCP воздействуют на реальные системы (файлы, команды, сеть). По умолчанию каждый вызов требует подтверждения; только явно отмеченные как доверенные серверы его пропускают.",
+  "settings.mcpClientTrust": "Доверенный (без подтверждения)",
   "settings.mcpClientOnline": "Подключено · инструментов: {tools}",
   "settings.mcpClientOffline": "Отключено",
   "settings.mcpClientTest": "Проверить",

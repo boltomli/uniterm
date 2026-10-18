@@ -247,6 +247,10 @@ export const useAIStore = defineStore('ai', () => {
     keyInput?: string
     keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'
     sendEnter?: boolean
+    // F-03: pending external MCP client call. `command` holds the truncated
+    // display string for the panel; `args` keeps the COMPLETE arguments the
+    // user confirms and approveTool forwards.
+    mcpTool?: { qualifiedName: string; server: string; args: Record<string, unknown> }
   } | null>(null)
   const pendingQuestion = ref<{
     messageId: string
@@ -318,7 +322,7 @@ export const useAIStore = defineStore('ai', () => {
     lastDebugInfo.value = null
   }
 
-  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; idleMs?: number; headLines?: number; tailLines?: number; keyInput?: string; keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'; sendEnter?: boolean }) {
+  function setPendingCommand(cmd: { messageId: string; toolId: string; toolName: string; command: string; risk: string; dangerous: boolean; panel?: string; timeout?: number; idleMs?: number; headLines?: number; tailLines?: number; keyInput?: string; keyControl?: 'ctrl_c' | 'ctrl_d' | 'enter'; sendEnter?: boolean; mcpTool?: { qualifiedName: string; server: string; args: Record<string, unknown> } }) {
     pendingCommand.value = cmd
   }
 

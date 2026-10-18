@@ -1356,6 +1356,9 @@
       <div v-if="settingsStore.activeCategory === 'mcp-client'" class="settings-section">
         <h2 class="section-title">{{ t('settings.mcpClientSection') }}</h2>
         <p class="section-desc">{{ t('settings.mcpClientSectionDesc') }}</p>
+        <!-- F-03: make the confirmation contract explicit — external tools
+             act on real systems and prompt by default. -->
+        <p class="section-desc mcp-client-confirm-hint">{{ t('settings.mcpClientConfirmHint') }}</p>
 
         <div class="settings-group">
           <div class="setting-card">
@@ -1381,6 +1384,12 @@
                     ? t('settings.mcpClientOnline', { tools: mcpClientStatus(c.name)?.tools ?? 0 })
                     : (mcpClientStatus(c.name)?.error || t('settings.mcpClientOffline')) }}
                 </span>
+              </div>
+              <!-- F-03: untrusted (default) servers make the agent confirm
+                   every tool call; trusting one opts out explicitly. -->
+              <div class="mcp-client-trust" :class="{ trusted: c.trusted }">
+                <el-switch v-model="c.trusted" size="small" @change="saveMcpClient(c)" />
+                <span class="mcp-client-trust-label">{{ t('settings.mcpClientTrust') }}</span>
               </div>
             </div>
             <div class="model-actions mcp-client-actions">
@@ -3312,6 +3321,10 @@ async function onToggleSystemTitleBar(v: boolean) {
 .mcp-client-main { flex: 1; min-width: 0; }
 .mcp-client-heading, .mcp-client-details { display: flex; align-items: center; gap: 0.625rem; min-width: 0; }
 .mcp-client-details { margin-top: 0.25rem; font-size: 0.6875rem; color: var(--text-muted); }
+/* F-03: trust row — untrusted (default) means every tool call prompts. */
+.mcp-client-trust { display: flex; align-items: center; gap: 0.375rem; margin-top: 0.375rem; font-size: 0.6875rem; color: var(--text-muted); }
+.mcp-client-trust.trusted { color: var(--el-color-success, #67c23a); }
+.mcp-client-confirm-hint { color: var(--el-color-warning, #e6a23c); }
 .mcp-client-name, .mcp-client-endpoint, .mcp-client-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-client-name { min-width: 0; }
 .mcp-client-transport { flex-shrink: 0; padding: 0.0625rem 0.375rem; border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-secondary); font-size: 0.625rem; line-height: 1.5; white-space: nowrap; }

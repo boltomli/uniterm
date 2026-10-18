@@ -37,6 +37,10 @@ type DiscoveredTool struct {
 	QualifiedName string `json:"qualifiedName"`
 	Description   string `json:"description"`
 	InputSchema   any    `json:"inputSchema,omitempty"`
+	// Trusted mirrors MCPClientConfig.Trusted of the owning server: the agent
+	// only skips its per-call confirmation for explicitly trusted servers
+	// (F-03). False/absent = confirm every call.
+	Trusted bool `json:"trusted"`
 }
 
 // Conn is one live external server connection.
@@ -227,7 +231,7 @@ func (m *Manager) ensureConn(ctx context.Context, cfg store.MCPClientConfig) {
 		log.Writef("mcpclient: connect %q: %v", cfg.Name, err)
 		return
 	}
-	tools, err := listTools(connectCtx, session, cfg.Name)
+	tools, err := listTools(connectCtx, session, cfg)
 	if err != nil {
 		_ = session.Close()
 		m.mu.Lock()
@@ -260,7 +264,7 @@ func (m *Manager) closeLocked(c *Conn) {
 	}
 }
 
-func listTools(ctx context.Context, s Session, server string) ([]DiscoveredTool, error) {
+func listTools(ctx context.Context, s Session, cfg store.MCPClientConfig) ([]DiscoveredTool, error) {
 	res, err := s.ListTools(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -271,11 +275,12 @@ func listTools(ctx context.Context, s Session, server string) ([]DiscoveredTool,
 			continue
 		}
 		out = append(out, DiscoveredTool{
-			Server:        server,
+			Server:        cfg.Name,
 			Name:          t.Name,
-			QualifiedName: QualifiedName(server, t.Name),
+			QualifiedName: QualifiedName(cfg.Name, t.Name),
 			Description:   t.Description,
 			InputSchema:   t.InputSchema,
+			Trusted:       cfg.Trusted, // F-03: surfaced so the agent can gate on it
 		})
 	}
 	return out, nil
@@ -370,7 +375,7 @@ func (m *Manager) TestConnection(ctx context.Context, cfg store.MCPClientConfig)
 		return nil, err
 	}
 	defer session.Close()
-	return listTools(dialCtx, session, cfg.Name)
+	return listTools(dialCtx, session, cfg)
 }
 
 // CloseAll tears down every connection on app shutdown.

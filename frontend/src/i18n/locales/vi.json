@@ -1921,6 +1921,8 @@
   "settings.mcpClient": "Máy khách MCP",
   "settings.mcpClientSection": "Máy khách MCP",
   "settings.mcpClientSectionDesc": "Kết nối các máy chủ MCP bên ngoài để mở rộng khả năng của AI.",
+  "settings.mcpClientConfirmHint": "Công cụ MCP bên ngoài tác động trực tiếp lên hệ thống thật (tệp, lệnh, mạng). Mỗi lời gọi công cụ mặc định đều hỏi xác nhận; chỉ máy chủ được đánh dấu tin cậy mới bỏ qua.",
+  "settings.mcpClientTrust": "Tin cậy (bỏ qua xác nhận)",
   "settings.mcpClientOnline": "Đã kết nối · {tools} công cụ",
   "settings.mcpClientOffline": "Đã ngắt kết nối",
   "settings.mcpClientTest": "Kiểm tra",

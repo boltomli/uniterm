@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "MCP 用戶端",
   "settings.mcpClientSection": "MCP 用戶端",
   "settings.mcpClientSectionDesc": "連線至外部 MCP 伺服器，擴充 AI 的功能。",
+  "settings.mcpClientConfirmHint": "外部 MCP 工具會直接操作真實系統（檔案、命令、網路）。工具調用預設每次都要求確認；只有顯式標記為信任的伺服器才會略過確認。",
+  "settings.mcpClientTrust": "信任（免確認調用）",
   "settings.mcpClientOnline": "已連線 · {tools} 個工具",
   "settings.mcpClientOffline": "未連線",
   "settings.mcpClientTest": "測試",

@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "MCP クライアント",
   "settings.mcpClientSection": "MCP クライアント",
   "settings.mcpClientSectionDesc": "外部 MCP サーバーに接続して AI の機能を拡張します。",
+  "settings.mcpClientConfirmHint": "外部 MCP ツールは実際のシステム（ファイル・コマンド・ネットワーク）に直接作用します。ツールの呼び出しはデフォルトで毎回確認されます。明示的に信頼したサーバーのみ確認を省略します。",
+  "settings.mcpClientTrust": "信頼（確認をスキップ）",
   "settings.mcpClientOnline": "接続済み · {tools} 個のツール",
   "settings.mcpClientOffline": "未接続",
   "settings.mcpClientTest": "テスト",

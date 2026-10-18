@@ -1931,6 +1931,8 @@
   "settings.mcpClient": "MCP-Client",
   "settings.mcpClientSection": "MCP-Client",
   "settings.mcpClientSectionDesc": "Externe MCP-Server verbinden, um die KI-Funktionen zu erweitern.",
+  "settings.mcpClientConfirmHint": "Externe MCP-Tools wirken direkt auf echte Systeme (Dateien, Befehle, Netzwerk). Jeder Tool-Aufruf fragt standardmäßig nach; nur als vertraut markierte Server überspringen die Rückfrage.",
+  "settings.mcpClientTrust": "Vertraut (keine Rückfrage)",
   "settings.mcpClientOnline": "Verbunden · {tools} Werkzeuge",
   "settings.mcpClientOffline": "Nicht verbunden",
   "settings.mcpClientTest": "Testen",

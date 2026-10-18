@@ -39,6 +39,13 @@ type MCPClientConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 	// Enabled toggles the connection without deleting it.
 	Enabled bool `json:"enabled"`
+	// Trusted marks this server's tools as pre-approved: the built-in agent
+	// invokes them without the per-call confirmation dialog (F-03). Defaults
+	// to false — every external tool call asks first, because prompt-injected
+	// arguments reach a real filesystem / shell / network on the far side.
+	// Plain (non-sensitive) field; mcp_clients.json is already in the
+	// encrypted SecretFiles set, so no file-list changes are needed.
+	Trusted bool `json:"trusted,omitempty"`
 }
 
 // Validate returns a readable error when the config cannot be connected.

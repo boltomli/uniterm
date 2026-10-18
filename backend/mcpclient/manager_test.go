@@ -150,3 +150,34 @@ func TestInMemoryRoundTrip(t *testing.T) {
 		t.Fatalf("out=%q", out)
 	}
 }
+
+// F-03: DiscoveredTool.Trusted mirrors the owning server's config so the
+// built-in agent can gate its per-call confirmation on it. Untrusted (the
+// default) must stay false — every external tool call then prompts.
+func TestManagerPropagatesTrustedFlag(t *testing.T) {
+	fs := &fakeSession{tools: []*mcp.Tool{{Name: "write_file"}}}
+	m := NewManager(store.NewMCPClientStore(t.TempDir()))
+	m.dial = func(ctx context.Context, cfg store.MCPClientConfig) (Session, error) { return fs, nil }
+
+	ctx := context.Background()
+	m.ensureConn(ctx, store.MCPClientConfig{
+		Name: "plain", Transport: store.MCPTransportStdio, Command: "x", Enabled: true,
+	})
+	m.ensureConn(ctx, store.MCPClientConfig{
+		Name: "trusted", Transport: store.MCPTransportStdio, Command: "x", Enabled: true, Trusted: true,
+	})
+
+	byServer := map[string]bool{}
+	for _, tl := range m.ListTools() {
+		byServer[tl.Server] = tl.Trusted
+	}
+	if len(byServer) != 2 {
+		t.Fatalf("want tools from 2 servers, got %v", byServer)
+	}
+	if byServer["plain"] {
+		t.Error("untrusted server must not surface trusted tools (F-03)")
+	}
+	if !byServer["trusted"] {
+		t.Error("trusted server must surface trusted tools (F-03)")
+	}
+}
