@@ -23,10 +23,13 @@ import (
 // approval bridge (Wails events ↔ dialog component), audit logging, and the
 // Env glue between backend/mcp and the session/connection stores.
 
-// MCPTokenRecord is one persisted token (hash only).
+// MCPTokenRecord is one persisted token (hash only). Scope (optional,
+// comma-separated: exec / files / readonly / full) restricts which tool
+// groups the token may call; empty = full access (F-06).
 type MCPTokenRecord struct {
-	Name string `json:"name"`
-	Hash string `json:"hash"`
+	Name  string `json:"name"`
+	Hash  string `json:"hash"`
+	Scope string `json:"scope,omitempty"`
 }
 
 // MCPTokensFile is the on-disk shape of mcp.json.
@@ -191,6 +194,9 @@ func (a *App) mcpSaveToken(rec MCPTokenRecord) error {
 	// Replace a token with the same name (regenerate = rotate).
 	for i, t := range data.Tokens {
 		if t.Name == rec.Name {
+			// F-06: rotating the secret must not silently widen a restricted
+			// token — carry its scope over to the new record.
+			rec.Scope = t.Scope
 			data.Tokens[i] = rec
 			return a.mcpWriteTokens(data)
 		}
@@ -228,10 +234,24 @@ func (a *App) mcpWriteTokens(f MCPTokensFile) error {
 	if err := os.WriteFile(a.mcpTokensPath(), buf, 0600); err != nil {
 		return err
 	}
-	// Hot-reload the live server's token set.
+	// Hot-reload BOTH the live server token set and the resolver cache in one
+	// pass (F-06): a revoked token must 401 on the very next request instead
+	// of whenever the file's mtime happens to tick (same-second writes with
+	// equal mtime granularity used to leave the stale entry cached).
+	tokens := a.mcpLoadTokens()
 	if a.mcpServer != nil {
-		a.mcpServer.SetTokens(a.mcpLoadTokens())
+		a.mcpServer.SetTokens(tokens)
 	}
+	a.mcpTokenCacheMu.Lock()
+	a.mcpTokenCache = tokens
+	if fi, err := os.Stat(a.mcpTokensPath()); err == nil {
+		a.mcpTokenCacheMtime = fi.ModTime()
+		a.mcpTokenCacheSize = fi.Size()
+	} else {
+		a.mcpTokenCacheMtime = time.Time{}
+		a.mcpTokenCacheSize = -1
+	}
+	a.mcpTokenCacheMu.Unlock()
 	return nil
 }
 
@@ -244,34 +264,39 @@ func (a *App) mcpLoadTokens() map[string]mcp.TokenInfo {
 	}
 	out := make(map[string]mcp.TokenInfo, len(data.Tokens))
 	for _, t := range data.Tokens {
-		out[t.Hash] = mcp.TokenInfo{Name: t.Name}
+		out[t.Hash] = mcp.TokenInfo{Name: t.Name, Scope: t.Scope}
 	}
 	return out
 }
 
-// mcpResolveToken backs Env.ResolveToken: resolves a token hash to its name,
-// re-reading mcp.json when its mtime changed (tokens generated/revoked from
-// the UI hot-reload; the file is also authoritative for external writers).
-func (a *App) mcpResolveToken(hash string) string {
+// mcpResolveToken backs Env.ResolveToken: resolves a token hash to its name
+// and scope, re-reading mcp.json when its mtime OR size changed (tokens
+// generated/revoked from the UI also reset the cache directly in
+// mcpWriteTokens, so a revoke takes effect on the very next request; the
+// stat check only covers external writers).
+func (a *App) mcpResolveToken(hash string) (string, string) {
 	a.mcpTokenCacheMu.Lock()
 	defer a.mcpTokenCacheMu.Unlock()
-	// Stat may fail (mcp.json not created yet): use the zero time so a
-	// missing file never dereferences a nil FileInfo, and the cache is only
-	// re-read when the file's mtime actually changes (including appearing).
+	// Stat may fail (mcp.json not created yet): use the zero time / -1 size so
+	// a missing file never dereferences a nil FileInfo, and the cache is only
+	// re-read when the file actually changed (including appearing).
 	var mod time.Time
+	var size int64 = -1
 	if fi, err := os.Stat(a.mcpTokensPath()); err == nil {
 		mod = fi.ModTime()
+		size = fi.Size()
 	}
-	if mod != a.mcpTokenCacheMtime {
-		// Reload (also resets the mtime on failure so we don't hammer the
+	if mod != a.mcpTokenCacheMtime || size != a.mcpTokenCacheSize {
+		// Reload (also resets the stamp on failure so we don't hammer the
 		// disk on every request when the file is unreadable).
 		a.mcpTokenCache = a.mcpLoadTokens()
 		a.mcpTokenCacheMtime = mod
+		a.mcpTokenCacheSize = size
 	}
 	if info, ok := a.mcpTokenCache[hash]; ok {
-		return info.Name
+		return info.Name, info.Scope
 	}
-	return ""
+	return "", ""
 }
 
 // ── Env glue ─────────────────────────────────────────────────────
@@ -843,13 +868,23 @@ func (a *App) ResolveMCPApproval(requestID string, approved bool, reason string)
 
 var mcpAuditMu sync.Mutex
 
+// maxAuditBytes bounds mcp-audit.log (F-06 / F-12.1): the file used to grow
+// without bound while recording full command lines. Past the cap it rotates
+// to mcp-audit.log.1 (one previous generation kept). var for tests.
+var maxAuditBytes int64 = 8 << 20
+
 func (a *App) mcpAudit(entry mcp.AuditEntry) {
 	if a.dataDir == "" {
 		return
 	}
 	mcpAuditMu.Lock()
 	defer mcpAuditMu.Unlock()
-	f, err := os.OpenFile(filepath.Join(a.dataDir, mcpAuditFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	path := filepath.Join(a.dataDir, mcpAuditFileName)
+	if fi, err := os.Stat(path); err == nil && fi.Size() >= maxAuditBytes {
+		_ = os.Remove(path + ".1")
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}

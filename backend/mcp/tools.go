@@ -36,12 +36,12 @@ func (s *Server) registerTools(srv *mcp.Server) {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "connect",
 			Description: "Open a visible terminal from connection_id in list_connections (SSH, local, WSL, telnet, mosh, serial or TCP). Without a saved profile, set type=local or wsl and optionally shell_path. Returns session_id; wait for connected status in list_sessions before executing.",
-		}, s.toolConnectTerminal)
+		}, scoped(ScopeExec, s.toolConnectTerminal))
 	} else {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "connect",
 			Description: "Open a visible SSH terminal from a saved connectionId in list_connections.",
-		}, s.toolConnect)
+		}, scoped(ScopeExec, s.toolConnect))
 	}
 
 	if s.execMode() != ModeForeground {
@@ -50,7 +50,7 @@ func (s *Server) registerTools(srv *mcp.Server) {
 			Description: "Run a shell command on a remote host over an existing connected uniTerm SSH session (non-interactive; separate stdout/stderr; real exit code). " +
 				"Prefer this over writing into the user's terminal. Long-running commands (longer than ~20s) return a commandId you can poll with get_command_output. " +
 				"Each command may require user approval in the uniTerm window.",
-		}, s.toolExecCommand)
+		}, scoped(ScopeExec, s.toolExecCommand))
 
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "get_command_output",
@@ -60,7 +60,7 @@ func (s *Server) registerTools(srv *mcp.Server) {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "interrupt_command",
 			Description: "Send a signal (SIGINT/SIGTERM/SIGKILL) to a still-running command started via exec_command.",
-		}, s.toolInterruptCommand)
+		}, scoped(ScopeExec, s.toolInterruptCommand))
 	}
 
 	// ── Files group (SFTP over the session's connection) ─────────────
@@ -341,6 +341,11 @@ func (s *Server) requestApproval(ctx context.Context, req *mcp.CallToolRequest, 
 		Command:    command,
 		CreatedAt:  time.Now().UnixMilli(),
 	}
+	// F-06: a client that spams dialogs wears the user down until an approval
+	// slips through (social engineering), and each prompt blocks the queue.
+	if err := s.allowApproval(areq.Client); err != nil {
+		return err
+	}
 	err := s.env.Approve(areq)
 	approved := err == nil
 	s.auditApproval(req, areq, approved)
@@ -350,11 +355,37 @@ func (s *Server) requestApproval(ctx context.Context, req *mcp.CallToolRequest, 
 	return nil
 }
 
+// allowApproval records one approval prompt for client inside the sliding
+// window and refuses with a rate-limit error once approvalRateMax prompts
+// happened within approvalRateWindow (F-06). The window is pruned on every
+// call, so the per-client slice stays bounded.
+func (s *Server) allowApproval(client string) error {
+	now := time.Now()
+	cut := now.Add(-approvalRateWindow)
+	s.approvalMu.Lock()
+	defer s.approvalMu.Unlock()
+	if s.approvalSeen == nil {
+		s.approvalSeen = map[string][]time.Time{}
+	}
+	recent := make([]time.Time, 0, len(s.approvalSeen[client])+1)
+	for _, ts := range s.approvalSeen[client] {
+		if ts.After(cut) {
+			recent = append(recent, ts)
+		}
+	}
+	if len(recent) >= approvalRateMax {
+		s.approvalSeen[client] = recent
+		return fmt.Errorf("approval rate limit exceeded for %q (max %d prompts per minute)", client, approvalRateMax)
+	}
+	s.approvalSeen[client] = append(recent, now)
+	return nil
+}
+
 // clientLabel names the calling agent for dialogs: the token name injected by
 // the auth middleware, or the MCP clientInfo as fallback.
 func (s *Server) clientLabel(ctx context.Context, req *mcp.CallToolRequest) string {
-	if name, _ := ctx.Value(tokenNameContextKey{}).(string); name != "" {
-		return name
+	if tk := tokenFromContext(ctx); tk.Name != "" {
+		return tk.Name
 	}
 	if sess := req.Session; sess != nil {
 		if init := sess.InitializeParams(); init != nil && init.ClientInfo != nil {

@@ -156,23 +156,61 @@ func TestMcpDispatchIgnoresProgressEvents(t *testing.T) {
 // dereference) and the client saw a dropped connection instead of a 401.
 func TestMcpResolveTokenWithoutFile(t *testing.T) {
 	a := &App{dataDir: t.TempDir()} // no mcp.json yet
-	if got := a.mcpResolveToken("deadbeef"); got != "" {
-		t.Fatalf("resolve without mcp.json = %q, want empty", got)
+	if name, scope := a.mcpResolveToken("deadbeef"); name != "" || scope != "" {
+		t.Fatalf("resolve without mcp.json = %q/%q, want empty", name, scope)
 	}
 }
 
 func TestMcpResolveTokenHotReload(t *testing.T) {
 	dir := t.TempDir()
 	a := &App{dataDir: dir}
-	if got := a.mcpResolveToken("h1"); got != "" {
-		t.Fatalf("unknown hash = %q, want empty", got)
+	if name, _ := a.mcpResolveToken("h1"); name != "" {
+		t.Fatalf("unknown hash = %q, want empty", name)
 	}
-	buf := []byte(`{"tokens":[{"name":"claude","hash":"h1"}]}`)
+	buf := []byte(`{"tokens":[{"name":"claude","hash":"h1","scope":"files"}]}`)
 	if err := os.WriteFile(filepath.Join(dir, mcpTokensFileName), buf, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.mcpResolveToken("h1"); got != "claude" {
-		t.Fatalf("after writing mcp.json: resolve = %q, want claude", got)
+	if name, scope := a.mcpResolveToken("h1"); name != "claude" || scope != "files" {
+		t.Fatalf("after writing mcp.json: resolve = %q/%q, want claude/files", name, scope)
+	}
+
+	// F-06: an external rewrite is picked up on the next resolve even when
+	// the mtime cannot move (same-second write) — the size participates in
+	// the cache key.
+	buf2 := []byte(`{"tokens":[{"name":"other","hash":"h2"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, mcpTokensFileName), buf2, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if name, _ := a.mcpResolveToken("h1"); name != "" {
+		t.Fatalf("revoked h1 still resolves to %q", name)
+	}
+}
+
+// F-06: revocation must take effect on the very next resolve — no sleep, no
+// mtime luck — because mcpWriteTokens (the UI revocation path) resets the
+// cache directly after the file write.
+func TestMcpResolveTokenRevocationIsImmediate(t *testing.T) {
+	a := &App{dataDir: t.TempDir()}
+	write := func(recs ...MCPTokenRecord) {
+		t.Helper()
+		if err := a.mcpWriteTokens(MCPTokensFile{Tokens: recs}); err != nil {
+			t.Fatalf("write tokens: %v", err)
+		}
+	}
+	write(MCPTokenRecord{Name: "agent", Hash: "hx", Scope: "exec"})
+	if name, scope := a.mcpResolveToken("hx"); name != "agent" || scope != "exec" {
+		t.Fatalf("resolve = %q/%q, want agent/exec", name, scope)
+	}
+	write() // revoke
+	if name, _ := a.mcpResolveToken("hx"); name != "" {
+		t.Fatalf("revoked token still resolves to %q", name)
+	}
+	// Same-size rewrite (rename only) must also invalidate: mcpWriteTokens
+	// re-stamps the cache from the written file.
+	write(MCPTokenRecord{Name: "agent2", Hash: "hx"})
+	if name, _ := a.mcpResolveToken("hx"); name != "agent2" {
+		t.Fatalf("re-minted token resolves to %q, want agent2", name)
 	}
 }
 
@@ -370,5 +408,37 @@ func TestSaveLocalStateStopsMCPWhenDisabled(t *testing.T) {
 	}
 	if !a.GetMCPStatus().Running {
 		t.Fatal("endpoint must start again when MCP is re-enabled")
+	}
+}
+
+// F-06 / F-12.1: mcp-audit.log must not grow without bound — it records full
+// command lines and lives for as long as the data dir. Size-based rotation
+// keeps the current file under the cap and preserves one generation.
+func TestMCPAuditRotatesBySize(t *testing.T) {
+	old := maxAuditBytes
+	maxAuditBytes = 2048
+	t.Cleanup(func() { maxAuditBytes = old })
+
+	a := &App{dataDir: t.TempDir()}
+	entry := mcp.AuditEntry{
+		Time:    time.Now().Format(time.RFC3339),
+		Token:   "agent",
+		Tool:    "exec_command",
+		Command: strings.Repeat("x", 128),
+	}
+	for i := 0; i < 200; i++ {
+		a.mcpAudit(entry)
+	}
+
+	cur := filepath.Join(a.dataDir, mcpAuditFileName)
+	fi, err := os.Stat(cur)
+	if err != nil {
+		t.Fatalf("stat current log: %v", err)
+	}
+	if fi.Size() >= maxAuditBytes+512 {
+		t.Fatalf("current log grew to %d without rotating (cap %d)", fi.Size(), maxAuditBytes)
+	}
+	if _, err := os.Stat(cur + ".1"); err != nil {
+		t.Fatalf("rotated generation missing: %v", err)
 	}
 }

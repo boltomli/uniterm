@@ -142,10 +142,13 @@ type App struct {
 	// shown to the user at a time, so a newer request can never replace the
 	// dialog (and its countdown/reason) the user is already reading.
 	mcpApprovalSerial stdsync.Mutex
-	// Token hot-reload cache: mcp.json mtime → parsed token map.
+	// Token hot-reload cache: mcp.json (mtime,size) → parsed token map. The
+	// size participates so an external write that keeps mtime (same second)
+	// still invalidates; UI-driven writes reset the cache directly.
 	mcpTokenCacheMu    stdsync.Mutex
 	mcpTokenCache      map[string]mcp.TokenInfo
 	mcpTokenCacheMtime time.Time
+	mcpTokenCacheSize  int64
 
 	// MCP client (uniTerm connects to external MCP servers). Separate from the
 	// mcpServer above: that one exposes uniTerm to external agents; this one

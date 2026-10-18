@@ -17,7 +17,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +46,19 @@ const DefaultCommandTimeout = 5 * time.Minute
 // DefaultMaxOutputBytes caps the output carried back in one tool result;
 // larger output is truncated with a marker.
 const DefaultMaxOutputBytes = 64 * 1024
+
+// maxMCPRequestBody caps one request body (F-06): the SDK handler does not
+// limit reads, so an unbounded body from any local process could park
+// gigabytes in memory.
+const maxMCPRequestBody = 8 << 20 // 8 MiB
+
+// Approval-dialog rate limiting (F-06): a malicious client could otherwise
+// spam dialogs until the user approves out of fatigue (social engineering).
+// Sliding window per resolved client (token name / client label).
+const (
+	approvalRateMax    = 10
+	approvalRateWindow = time.Minute
+)
 
 // SessionFunc resolves a live session id to its SSH executor. Injected by the
 // App layer (backend/session imports are kept out of this package's API so
@@ -87,11 +102,12 @@ type Env struct {
 	Audit func(entry AuditEntry)
 	// Policy returns the active approval policy.
 	Policy func() Policy
-	// ResolveToken resolves a token hash to its client name, re-reading
-	// persisted tokens when the file changed (so tokens written elsewhere
-	// take effect without a restart). "" = unknown token. When nil, the
+	// ResolveToken resolves a token hash to its client name and scope
+	// (comma-separated capability list; "" = full access), re-reading
+	// persisted tokens when mcp.json changed (so tokens written elsewhere
+	// take effect without a restart). "" name = unknown token. When nil, the
 	// in-memory map from SetTokens is authoritative.
-	ResolveToken func(hash string) (name string)
+	ResolveToken func(hash string) (name string, scope string)
 	// FileSession resolves a live session id to its companion file-transfer
 	// executor (created lazily per the connection's file protocol); an
 	// error when the session is gone, not SSH, or the transfer session
@@ -243,11 +259,20 @@ type Server struct {
 	// uniterm_exec_result poll path (keyed by bg- jobId).
 	finishedBg       map[string]finishedBackground
 	foregroundOutput map[string]terminalOutputOptions
+
+	// approvalSeen is the per-client sliding window of approval prompts (F-06).
+	approvalMu   sync.Mutex
+	approvalSeen map[string][]time.Time
 }
 
 // TokenInfo is the stored form of one client token.
 type TokenInfo struct {
-	Name  string `json:"name"`
+	Name string `json:"name"`
+	// Scope is the token's capability list (F-06): comma-separated subset of
+	// "exec" (connect/exec/interrupt/send-key/capture tools), "files" (the SFTP
+	// file tools) and "readonly" (discovery + output polling only).
+	// "" / "full" keeps every tool — tokens minted before scopes existed stay
+	// fully usable.
 	Scope string `json:"scope,omitempty"`
 }
 
@@ -307,8 +332,17 @@ func (s *Server) Start(port int) error {
 		return fmt.Errorf("mcp: listen: %w", err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.authMiddleware(handler))
-	httpSrv := &http.Server{Handler: mux}
+	mux.Handle("/mcp", s.guardMiddleware(s.authMiddleware(handler)))
+	httpSrv := &http.Server{
+		Handler: mux,
+		// F-06: without timeouts any local process could Slowloris the
+		// listener or park a connection forever. WriteTimeout stays 0 on
+		// purpose — streamable-HTTP/SSE responses are long-lived; the read
+		// side is bounded above and idle keep-alives are reaped.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	s.mu.Lock()
 	s.handler = handler
@@ -342,23 +376,144 @@ func (s *Server) Stop() {
 	}
 }
 
-// tokenNameContextKey carries the resolved token name from the auth
+// tokenContextKey carries the resolved token identity from the auth
 // middleware into tool handlers (the SDK passes req.Context() through).
-type tokenNameContextKey struct{}
+type tokenContextKey struct{}
+
+type tokenContext struct {
+	Name  string
+	Scope string
+}
+
+// tokenFromContext returns the identity stashed by authMiddleware (zero value
+// when absent, e.g. handlers invoked directly in tests → full access).
+func tokenFromContext(ctx context.Context) tokenContext {
+	tk, _ := ctx.Value(tokenContextKey{}).(tokenContext)
+	return tk
+}
+
+// requireScope rejects a tool call whose token lacks the needed capability
+// class (F-06). Empty/full scope keeps every tool (backward compatible);
+// otherwise the scope must list the class or "full".
+func requireScope(ctx context.Context, class Scope) error {
+	tk := tokenFromContext(ctx)
+	if scopeAllows(tk.Scope, class) {
+		return nil
+	}
+	return fmt.Errorf("forbidden: token %q has scope %q and may not use %s tools", tk.Name, tk.Scope, class)
+}
+
+func scopeAllows(scope string, class Scope) bool {
+	s := strings.TrimSpace(scope)
+	if s == "" || strings.EqualFold(s, "full") {
+		return true
+	}
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if strings.EqualFold(p, "full") || strings.EqualFold(p, string(class)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Scope is a token capability class (F-06).
+type Scope string
+
+const (
+	// ScopeExec covers the execution side: connect, exec_command,
+	// interrupt_command and the foreground uniterm_* action tools.
+	ScopeExec Scope = "exec"
+	// ScopeFiles covers the SFTP file tools (list/upload/download).
+	ScopeFiles Scope = "files"
+)
+
+// scoped wraps a tool handler with its capability check (F-06). The error
+// surfaces as an MCP tool error, so a files-scoped token calling exec_command
+// gets a clear refusal instead of execution.
+func scoped[I any, O any](class Scope, h func(context.Context, *mcp.CallToolRequest, I) (*mcp.CallToolResult, O, error)) func(context.Context, *mcp.CallToolRequest, I) (*mcp.CallToolResult, O, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in I) (*mcp.CallToolResult, O, error) {
+		if err := requireScope(ctx, class); err != nil {
+			var zero O
+			return nil, zero, err
+		}
+		return h(ctx, req, in)
+	}
+}
+
+// guardMiddleware is the pre-auth depth-of-defense layer (F-06):
+//   - browser Origins are rejected — a web page must never reach the endpoint
+//     even if it learned the port (DNS-rebinding / CSRF style abuse);
+//   - the Host header must name a loopback address (DNS-rebinding defense);
+//   - request bodies are capped so no local process can park unbounded
+//     memory in the SDK handler.
+func (s *Server) guardMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !isLoopbackOrigin(origin) {
+			http.Error(w, "cross-origin requests rejected", http.StatusForbidden)
+			return
+		}
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBody)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isLoopbackOrigin reports whether Origin is an http(s) origin on a loopback
+// host (127.0.0.1 / localhost / ::1). Anything else — including "null" and
+// file: origins — is refused.
+func isLoopbackOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return isLoopbackHostname(u.Hostname())
+}
+
+// isLoopbackHost validates a request Host header (host[:port]).
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	} else {
+		host = strings.Trim(hostport, "[]")
+	}
+	return isLoopbackHostname(host)
+}
+
+func isLoopbackHostname(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.Trim(h, "[]")
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
 
 // authMiddleware rejects requests without a valid bearer token. Loopback
 // binding alone is not trust: browser pages and local processes can reach
 // 127.0.0.1 unauthenticated. Token resolution prefers Env.ResolveToken
 // (file-backed, hot-reloaded); the in-memory map is the fallback. The
-// resolved token name is stashed in the request context so tool handlers can
-// label approvals/audit entries.
+// resolved token name + scope are stashed in the request context so tool
+// handlers can label approvals/audit entries and enforce their scope.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		key := HashToken(token)
-		name := ""
+		name, scope := "", ""
 		if s.env.ResolveToken != nil {
-			name = s.env.ResolveToken(key)
+			name, scope = s.env.ResolveToken(key)
 		}
 		if name == "" {
 			s.mu.Lock()
@@ -369,9 +524,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				http.Error(w, "invalid or missing token", http.StatusUnauthorized)
 				return
 			}
-			name = info.Name
+			name, scope = info.Name, info.Scope
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tokenNameContextKey{}, name)))
+		ctx := context.WithValue(r.Context(), tokenContextKey{}, tokenContext{Name: name, Scope: scope})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

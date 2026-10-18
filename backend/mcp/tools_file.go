@@ -109,17 +109,17 @@ func (s *Server) registerFileTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_remote_dir",
 		Description: "List one remote directory (name, size, isDir, mtime, mode) on a connected SSH session, using the connection's file transfer protocol (SFTP or SCP). Bounded to 500 entries.",
-	}, s.toolListRemoteDir)
+	}, scoped(ScopeFiles, s.toolListRemoteDir))
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "upload_file",
 		Description: "Upload a local file to a remote host over the connection's file transfer protocol (SFTP or SCP, per the connection's fileTransferProto setting). Streams disk to disk — content never passes through the model. The local path must be inside a directory allowed in uniTerm's SFTP bookmarks. Requires user approval.",
-	}, s.toolUploadFile)
+	}, scoped(ScopeFiles, s.toolUploadFile))
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "download_file",
 		Description: "Download a remote file to a local directory over the connection's file transfer protocol (SFTP or SCP, per the connection's fileTransferProto setting). Streams disk to disk. The local path must be inside a directory allowed in uniTerm's SFTP bookmarks.",
-	}, s.toolDownloadFile)
+	}, scoped(ScopeFiles, s.toolDownloadFile))
 }
 
 func (s *Server) toolListRemoteDir(ctx context.Context, req *mcp.CallToolRequest, in listDirIn) (*mcp.CallToolResult, listDirOut, error) {

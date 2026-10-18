@@ -205,7 +205,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 				"Completion is detected when the terminal goes quiet (idle_ms, default 800) or the session closes — there is no exit code. " +
 				"Set timeout_ms from the expected duration (see its schema). Returns a job_id; poll with uniterm_exec_result(job_id), stop with uniterm_interrupt(job_id). " +
 				"Check the screen with uniterm_capture first when the command may hit an interactive prompt, and answer prompts with uniterm_send_key.",
-		}, s.toolUnitermExecFg)
+		}, scoped(ScopeExec, s.toolUnitermExecFg))
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "uniterm_exec_result",
 			Description: "Fetch output (and status) of a job started by uniterm_exec, by job_id. Supports paging via offset. Output is the screen-resolved terminal text — no escape sequences, no duplicated redraw lines.",
@@ -213,13 +213,13 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "uniterm_interrupt",
 			Description: "Stop a still-running job started by uniterm_exec (detaches the job watcher; the command itself may need ctrl_c via uniterm_send_key).",
-		}, s.toolUnitermInterrupt)
+		}, scoped(ScopeExec, s.toolUnitermInterrupt))
 		mcp.AddTool(srv, &mcp.Tool{
 			Name: "uniterm_capture",
 			Description: "Take an instant snapshot of a live session's terminal screen — what the user currently sees, redraw-resolved, no escape sequences. " +
 				"Read-only. Use to check the current state, to SEE an interactive prompt (password, y/n, confirmation) before answering it with uniterm_send_key, " +
 				"or to inspect a still-running command's progress.",
-		}, s.toolUnitermCapture)
+		}, scoped(ScopeExec, s.toolUnitermCapture))
 		mcp.AddTool(srv, &mcp.Tool{
 			Name: "uniterm_collect_output",
 			Description: "Wait for further output from a live terminal without sending a command. " +
@@ -229,7 +229,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 			Name: "uniterm_send_key",
 			Description: "Type text or send a control key into a live session's terminal. ONLY send keys when you can SEE the prompt via uniterm_capture first — never blind-type. " +
 				"control=ctrl_c interrupts the running command; ctrl_d sends EOF; enter presses Enter alone. With input, send_enter (default true) appends Enter.",
-		}, s.toolUnitermSendKey)
+		}, scoped(ScopeExec, s.toolUnitermSendKey))
 		return
 	}
 
@@ -237,7 +237,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 		Name: "uniterm_exec",
 		Description: "Run a command on a connected SSH session over a separate non-PTY exec channel: real exit code, separate stdout/stderr, the user's terminal is untouched. " +
 			"SSH sessions only. Waits up to timeoutMs, then returns an async job_id to poll. Poll with uniterm_exec_result(job_id), stop with uniterm_interrupt(job_id).",
-	}, s.toolUnitermExecBg)
+	}, scoped(ScopeExec, s.toolUnitermExecBg))
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "uniterm_exec_result",
 		Description: "Fetch output (and status/exit code) of a job started by uniterm_exec, by job_id. Supports paging via offset.",
@@ -245,7 +245,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "uniterm_interrupt",
 		Description: "Stop a still-running job started by uniterm_exec (SIGINT/SIGTERM/SIGKILL for background jobs).",
-	}, s.toolUnitermInterrupt)
+	}, scoped(ScopeExec, s.toolUnitermInterrupt))
 }
 
 // validateExec checks the fields shared by both modes' uniterm_exec inputs.
