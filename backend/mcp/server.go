@@ -184,7 +184,9 @@ type FileExecutor interface {
 //   - "confirm_write": only risk≥write commands (default)
 //   - "confirm_all": every command needs approval
 //   - "confirm_dangerous": only dangerous commands
-//   - "bypass": no dialogs (dangerous commands still require approval)
+//   - "bypass": no dialogs at all, including dangerous commands — the same
+//     "全部免确认" semantics as the built-in AI panel (see gateExec). Users
+//     picking bypass are explicitly opting out of every confirmation.
 type Policy string
 
 const (
