@@ -1,5 +1,12 @@
 export type ExecutionMode = 'confirm_all' | 'confirm_write' | 'confirm_dangerous' | 'bypass'
 
+/** Every valid ExecutionMode value — used to validate persisted settings. */
+export const EXECUTION_MODES: readonly ExecutionMode[] = ['confirm_all', 'confirm_write', 'confirm_dangerous', 'bypass']
+
+export function isExecutionMode(v: unknown): v is ExecutionMode {
+  return typeof v === 'string' && (EXECUTION_MODES as readonly string[]).includes(v)
+}
+
 export type AIAgentStatus = 'thinking' | 'outputting' | 'executing' | 'confirming'
 
 export interface ToolCall {

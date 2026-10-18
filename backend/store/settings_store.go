@@ -128,6 +128,14 @@ type AISettings struct {
 	MaxTurns      *int            `json:"maxTurns"`
 	Models        []AIModelConfig `json:"models"`
 	ActiveModelID string          `json:"activeModelId"`
+	// ExecutionMode is the AI panel's confirmation policy:
+	// confirm_write (default) / confirm_all / confirm_dangerous / bypass.
+	// F-02: default confirm_write to match the MCP server's policy — the
+	// previous UI default (confirm_dangerous) never persisted and re-applied
+	// the loosest useful policy on every launch. Pointer + omitempty so older
+	// settings.json files load; nil or unknown values backfill to
+	// confirm_write in Load.
+	ExecutionMode *string `json:"executionMode,omitempty"`
 }
 
 // MCPSettings configures the external-agent MCP server endpoint. Pointer on
@@ -343,6 +351,12 @@ func (s *SettingsStore) Load() (AppSettings, error) {
 		settings.AI.MaxTurns = intPtr(defaultMaxTurns)
 		needsSave = true
 	}
+	// F-02: a missing or hand-edited execution mode falls back to the safe
+	// default (confirm_write), mirroring MCPSettings.Policy.
+	if settings.AI.ExecutionMode == nil || !validExecutionMode(*settings.AI.ExecutionMode) {
+		settings.AI.ExecutionMode = strPtr(defaultExecutionMode)
+		needsSave = true
+	}
 	if settings.UiFontSize == nil {
 		n := defaultUiFontSize()
 		settings.UiFontSize = &n
@@ -407,6 +421,22 @@ func defaultUiFontSize() int {
 
 const defaultMaxTurns = 20
 
+// defaultExecutionMode is the AI panel's confirmation policy for fresh and
+// legacy settings.json files; keep it aligned with DefaultMCPSettings().Policy
+// so the AI panel and the MCP server gate commands identically. (F-02)
+const defaultExecutionMode = "confirm_write"
+
+// validExecutionMode guards settings.json input: anything outside the known
+// policy set is replaced with the default instead of silently disabling
+// confirmations.
+func validExecutionMode(m string) bool {
+	switch m {
+	case "confirm_all", "confirm_write", "confirm_dangerous", "bypass":
+		return true
+	}
+	return false
+}
+
 // defaultAISettings is the seed AI block for a fresh settings.json. Shared
 // with AIConfigStore so the settings and ai.json defaults can never drift.
 func defaultAISettings() AISettings {
@@ -423,6 +453,7 @@ func defaultAISettings() AISettings {
 			},
 		},
 		ActiveModelID: "model-default",
+		ExecutionMode: strPtr(defaultExecutionMode),
 	}
 }
 

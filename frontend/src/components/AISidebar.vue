@@ -327,7 +327,8 @@ import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { runAgent, approveTool, rejectTool, continueAgent, answerQuestion, dismissQuestion } from '../services/agent'
 import { CancelChatStream, SaveFileDialogFiltered, WriteFileBase64, ReadLocalAttachmentFile } from '../../bindings/github.com/ys-ll/uniterm/app'
-import type { AIAttachment, ExecutionMode } from '../types/ai'
+import type { AIAttachment } from '../types/ai'
+import { isExecutionMode } from '../types/ai'
 import {
   ATTACHMENT_FILE_ACCEPT,
   ATTACHMENT_LIMITS,
@@ -354,6 +355,19 @@ import { useLocalStateStore } from '../stores/localStateStore'
 
 const aiStore = useAIStore()
 const settingsStore = useSettingsStore()
+
+// F-02: the execution policy is persisted in settings.ai.executionMode
+// (default confirm_write, matching the MCP server). Push every settings
+// load/change into the AI store so restarts and cross-window syncs can never
+// silently fall back to a looser policy than the user picked.
+watch(
+  () => settingsStore.settings.ai.executionMode,
+  v => {
+    const next = isExecutionMode(v) ? v : 'confirm_write'
+    if (aiStore.mode !== next) aiStore.mode = next
+  },
+  { immediate: true }
+)
 const tabStore = useTabStore()
 const panelStore = usePanelStore()
 const skillStore = useSkillStore()
@@ -1464,7 +1478,13 @@ function onEscHashDropdown() {
 }
 
 function onModeChange(mode: string) {
-  aiStore.mode = mode as ExecutionMode
+  const next = isExecutionMode(mode) ? mode : 'confirm_write'
+  aiStore.mode = next
+  // F-02: persist the choice (settings.json round-trips through the Go
+  // AISettings struct) so the confirmation policy survives restarts — the
+  // mode previously reset to the loose default on every launch.
+  settingsStore.settings.ai.executionMode = next
+  void settingsStore.save()
 }
 
 const emit = defineEmits<{

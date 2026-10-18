@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { AppSettings, AIModelConfig, CustomTerminalTheme } from '../types/settings'
 import { DEFAULT_SETTINGS, normalizeKeyBindings } from '../types/settings'
+import { isExecutionMode } from '../types/ai'
 import { SaveSettings, LoadSettings, GetAvailableShells, SetDefaultSessionLogDir } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import { setLocale } from '../i18n'
@@ -66,7 +67,12 @@ export const useSettingsStore = defineStore('settings', () => {
       models,
       activeModelId: models.some(m => m.id === settings.value.ai.activeModelId)
         ? settings.value.ai.activeModelId
-        : (models[0]?.id ?? DEFAULT_SETTINGS.ai.activeModelId)
+        : (models[0]?.id ?? DEFAULT_SETTINGS.ai.activeModelId),
+      // executionMode is device-local (settings.json only — ai.json carries
+      // maxTurns + models), so recomposing the synced slice must not drop it.
+      executionMode: isExecutionMode(settings.value.ai.executionMode)
+        ? settings.value.ai.executionMode
+        : DEFAULT_SETTINGS.ai.executionMode
     }
   }
 
@@ -397,7 +403,12 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     ai: {
       maxTurns: loaded.ai?.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns,
       models: loaded.ai?.models?.length ? loaded.ai.models : structuredClone(DEFAULT_SETTINGS.ai.models),
-      activeModelId: loaded.ai?.activeModelId || DEFAULT_SETTINGS.ai.activeModelId
+      activeModelId: loaded.ai?.activeModelId || DEFAULT_SETTINGS.ai.activeModelId,
+      // F-02: an unknown/hand-edited value falls back to the safe default
+      // instead of being trusted (the Go side validates too).
+      executionMode: isExecutionMode(loaded.ai?.executionMode)
+        ? loaded.ai.executionMode
+        : DEFAULT_SETTINGS.ai.executionMode
     },
     keyboard: normalizeKeyBindings(loaded.keyboard || {}),
     autoCheckUpdate: loaded.autoCheckUpdate ?? DEFAULT_SETTINGS.autoCheckUpdate,

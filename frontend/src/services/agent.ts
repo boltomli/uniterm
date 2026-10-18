@@ -84,44 +84,52 @@ export const VALID_RISK: readonly RiskLevel[] = ['read', 'write', 'dangerous']
 // ── 规则说明（前后端共用，必须与 backend/mcp/risk.go 以及
 //    backend/mcp/risk_test.go / 本文件测试的注释保持逐条一致）──────────────────
 //
-// RISK RULES v1 — backend/mcp/risk.go == frontend/src/services/agent.ts
+// RISK RULES v2 — backend/mcp/risk.go == frontend/src/services/agent.ts
 //
-// 0. 空命令/缺失命令 → dangerous（默认关闭）。
-// 1. 整行包含 ":|:" 或 "|:&"（小写）→ dangerous（fork bomb，先于分割判断）。
-// 2. 整行按 `;`、换行、`|`、`&` 分割为若干段；重定向内部的 `&` 不是分隔符
-//    （`2>&1`、`>&2`、`&>file` 不切割）。
-// 3. 每段（匹配时小写；head 逐 token 归一）：
-//    a. 剥 wrapper（始终保留 ≥1 个 token，绝不越界）：环境变量赋值（token 含
-//       `=`）、sudo/doas 及其选项词（-u/-g/-p/-C/-U/-r/-t/-h/-D 与
-//       --user/--group/--prompt/--host/--role/--type/--chdir，带单独参数的
-//       选项连同参数一起跳过）、nohup、time、nice、env、command、exec。
-//       仅剩一个赋值 token 时判 read（不执行任何命令）。
-//    b. head 归一：去引号、去前导 `\`、`\`→`/`、取 basename、小写、去 `.exe`
-//       （覆盖 `/bin/rm -rf /`、`\rm -rf`、`command rm -rf`、C:\...\rm.exe）。
-//    c. 嵌套 shell 代码 —— `$( … )`、反引号、`eval …`、`<shell> -c/-e …`
-//       （sh/bash/zsh/dash/ash/ksh/csh/tsh/fish/cmd/powershell/pwsh/python/
-//       node/perl/ruby）、`xargs <cmd>`、`find -exec/-execdir <cmd>` —— 递归按
-//       本规则分类，结果至少 write；内层 dangerous 直接判 dangerous。
-//    d. dangerous：`rm` 带递归+强制（-rf/-fr 或 -r 与 -f 分写）、mkfs*、
-//       `dd of=/dev/*`、shutdown/reboot/halt/poweroff/init/fdisk/parted/wipefs/
-//       shred、`find -delete`、重定向目标位于 /etc /boot /sys /dev /proc/sys
-//       之下（/dev/null 豁免）、cp/mv/tee/install/rsync/dd/truncate 的文件
-//       参数位于上述危险路径。
-//    e. 每个重定向目标单独判定：`/dev/null` 忽略，其余目标至少 write
-//       （`echo k >> ~/.ssh/authorized_keys 2>/dev/null` 必须非 read）。
-//    f. 只读放行：head 在 READ_HEADS 中，或 head 在 READ_SUBS 中且第二个
-//       token 是列出的只读子命令（git status、kubectl get、systemctl
-//       status…），且没有其它 write 信号 → read；**其它任何命令默认至少
-//       write**。
-// 4. 整行 `curl|wget|fetch … | sh|bash|zsh|sudo sh|sudo bash` → dangerous
-//    （classifyDownloadPipe，由调用方叠加）。
+//  0. 空命令/缺失命令 → dangerous（默认关闭）。
+//  1. 整行包含 ":|:" 或 "|:&"（小写）→ dangerous（fork bomb，先于分割判断）。
+//  2. 整行按 `;`、换行、`|`、`&` 分割为若干段；重定向内部的 `&` 不是分隔符
+//     （`2>&1`、`>&2`、`&>file` 不切割）。
+//  3. 每段（匹配时小写；head 逐 token 归一）：
+//     a. 剥 wrapper（始终保留 ≥1 个 token，绝不越界）：环境变量赋值（token 含
+//     `=`）、sudo/doas/nohup/time/nice/env/command/exec。wrapper 识别走
+//     normalizeHead，所以 `/usr/bin/sudo`、`C:\x\sudo.exe` 同样被识别。每个
+//     wrapper 用自己的选项表解析前导选项（带单独参数的选项连同参数一起跳过；
+//     `--` 终止选项）。**表中没有的 wrapper 选项 → dangerous（F-02：未知选项
+//     可能携带 payload，如 nice/time/env 的隐藏参数）**；
+//     `env -S/--split-string` → dangerous（直接执行任意命令串）。
+//     仅剩一个赋值 token 时判 read（不执行任何命令）。
+//     b. head 归一：去引号、去前导 `\`、`\`→`/`、取 path.Base、小写、去 `.exe`
+//     （覆盖 `/bin/rm -rf /`、`\rm -rf`、`command rm -rf`、C:\...\rm.exe）。
+//     c. 嵌套 shell 代码分两档（F-02）：
+//     - 隐藏执行体 —— 解释器 `-c/-e/--eval`（sh/bash/zsh/dash/ash/ksh/csh/
+//     tsh/fish/cmd/powershell/pwsh/python/node/perl/ruby）、`eval …`、
+//     `xargs …` —— payload 无法静态判断，**一律 dangerous**；
+//     - `$( … )`、反引号、`find -exec/-execdir <cmd>` —— 递归按本规则分类，
+//     结果至少 write；内层 dangerous 直接判 dangerous。
+//     d. dangerous：`rm` 带递归+强制（-rf/-fr 或 -r 与 -f 分写）、mkfs*、
+//     `dd of=/dev/*`、shutdown/reboot/halt/poweroff/init/fdisk/parted/wipefs/
+//     shred、`find -delete`、重定向目标位于 /etc /boot /sys /dev /proc/sys
+//     之下（/dev/null 豁免）、cp/mv/tee/install/rsync/dd/truncate 的文件
+//     参数位于上述危险路径。
+//     e. 每个重定向目标单独判定：`/dev/null` 忽略，其余目标至少 write
+//     （`echo k >> ~/.ssh/authorized_keys 2>/dev/null` 必须非 read）。
+//     f. 只读放行：head 在 READ_HEADS 中，或 head 在 READ_SUBS 中且第二个
+//     token 是列出的只读子命令（git status、kubectl get、systemctl
+//     status…），且没有其它 write 信号 → read；只读命令带写选项/写参数
+//     （F-02：sort -o/--output、date -s/--set、find -fprint/-fprint0/-fprintf/
+//     -fls/-ok/-okdir、git --output、hostname 带参数）→ 至少 write；
+//     交互式分页器（less/more/man/top）已移出只读表（可执行子命令）；
+//     **其它任何命令默认至少 write**。
+//  4. 整行 `curl|wget|fetch … | sh|bash|zsh|sudo sh|sudo bash` → dangerous
+//     （classifyDownloadPipe，由调用方叠加）。
 //
 // The model is untrusted: its self-reported `risk` may only RAISE the local
 // grade, never lower it (see getRisk).
 
 const RISK_ORDER: Record<RiskLevel, number> = { read: 0, write: 1, dangerous: 2 }
 
-/** classifyCommand grades a shell command line (RISK RULES v1). */
+/** classifyCommand grades a shell command line (RISK RULES v2). */
 export function classifyCommand(cmd: string): RiskLevel {
   if (!cmd.trim()) return 'dangerous' // default closed
   const low = cmd.toLowerCase()
@@ -163,20 +171,50 @@ const WRAPPERS: Record<string, true> = {
   command: true, exec: true,
 }
 
-// sudo/doas options that take a separate argument: the argument is skipped
-// together with the option ("sudo -u root rm" must judge "rm", not "-u").
-const PRIV_OPTION_ARGS: Record<string, true> = {
-  '-u': true, '-g': true, '-p': true, '-C': true, '-U': true, '-r': true,
-  '-t': true, '-h': true, '-D': true, '--user': true, '--group': true,
-  '--prompt': true, '--host': true, '--role': true, '--type': true,
-  '--chdir': true,
-}
+// F-02: each wrapper's option vocabulary — `flags` take no argument,
+// `argOpts` consume the following word. Anything outside the table is
+// unknown → dangerous (default closed). Keys are lowercase because matching
+// runs on normalizeHead/toLowerCase output ("-C"/"-c" and "-U"/"-u"
+// collapse — both spellings take an argument either way). Keep in sync with
+// wrapperSpecs in backend/mcp/risk.go.
+interface WrapperSpec { flags: string[]; argOpts: string[] }
 
-const XARGS_OPTION_ARGS: Record<string, true> = {
-  '-n': true, '-P': true, '-d': true, '-a': true, '-L': true, '-s': true,
-  '-I': true, '-E': true, '--max-args': true, '--max-procs': true,
-  '--delimiter': true, '--arg-file': true, '--max-chars': true,
-  '--replace': true, '--initial': true,
+const WRAPPER_SPECS: Record<string, WrapperSpec> = {
+  sudo: {
+    flags: [
+      '-a', '-b', '-e', '-h', '-i', '-k', '-l', '-n', '-s', '-v',
+      '--askpass', '--background', '--edit', '--help', '--list',
+      '--login', '--non-interactive', '--preserve-env', '--reset-timestamp',
+      '--shell', '--stdin', '--validate', '--version',
+    ],
+    argOpts: [
+      '-c', '-d', '-g', '-p', '-r', '-t', '-T', '-u',
+      '--chdir', '--close-from', '--command-timeout', '--group',
+      '--host', '--other-user', '--prompt', '--role', '--type', '--user',
+    ],
+  },
+  doas: {
+    flags: ['-a', '-b', '-s', '--help', '--version'],
+    argOpts: [
+      '-c', '-d', '-g', '-p', '-r', '-t', '-u',
+      '--group', '--prompt', '--role', '--type', '--user',
+    ],
+  },
+  nohup: { flags: ['--help', '--version'], argOpts: [] },
+  time: {
+    flags: ['-a', '-p', '-v', '--append', '--portability', '--verbose', '--help', '--version'],
+    argOpts: ['-f', '-o', '--format', '--output'],
+  },
+  nice: {
+    flags: ['--help', '--version'],
+    argOpts: ['-n', '--adjustment'],
+  },
+  env: {
+    flags: ['-i', '--debug', '--help', '--ignore-environment', '--version'],
+    argOpts: ['-c', '-p', '-s', '--chdir', '--path', '--split-string', '--unset', '-u'],
+  },
+  command: { flags: ['-p', '-v'], argOpts: [] },
+  exec: { flags: ['-c', '-i', '-l'], argOpts: ['-a'] },
 }
 
 /** Interpreters that execute a code string passed through an option. */
@@ -200,30 +238,72 @@ const REDIRECT_SEP: Record<string, true> = {
   '<': true, '>': true, '(': true, ')': true,
 }
 
-/** Drop leading option words, consuming their separate arguments. */
-function skipOptions(words: string[], argTakers: Record<string, true>): string[] {
-  const out = words.slice()
-  while (out.length > 1 && out[0].startsWith('-')) {
-    const w = out[0].toLowerCase()
-    out.shift()
-    if (!w.includes('=') && argTakers[w]) out.shift()
-  }
-  return out
+/** A token carrying an env assignment ("FOO=1"), not a redirection. */
+function isAssignmentToken(word: string): boolean {
+  return word.includes('=') && !word.includes('<') && !word.includes('>')
 }
 
 /**
  * Strip env assignments and privileged/nohup wrappers so "sudo -u root rm" is
- * judged as "rm". Always keeps at least one token: a bare wrapper word can
- * never run past the end of the list.
+ * judged as "rm". Wrapper detection goes through normalizeHead, so
+ * "/usr/bin/sudo" and "C:\\x\\sudo.exe" are recognised too. Each wrapper
+ * consumes its own leading options via its option table. Always keeps at
+ * least one token: a bare wrapper word can never run past the end of the
+ * list.
+ *
+ * F-02: an option the wrapper's table does not know grades 'dangerous' —
+ * unknown wrapper options may carry a payload ("nice -n 5 rm -rf …" and
+ * "env -S 'rm -rf …'" previously fell through to 'write' and skipped the
+ * confirmation dialog). env -S/--split-string always grades dangerous.
  */
-function stripWrappers(words: string[]): string[] {
+function stripWrappers(words: string[]): { head: string; rest: string[]; risk: RiskLevel } {
+  let risk: RiskLevel = 'read'
   let rest = words.slice()
-  while (rest.length > 1 && (WRAPPERS[rest[0].toLowerCase()] || (rest[0].includes('=') && !/[<>]/.test(rest[0])))) {
-    const w = rest[0].toLowerCase()
-    rest.shift()
-    if (w === 'sudo' || w === 'doas') rest = skipOptions(rest, PRIV_OPTION_ARGS)
+  while (rest.length > 1 && (WRAPPERS[normalizeHead(rest[0])] || isAssignmentToken(rest[0]))) {
+    const w = normalizeHead(rest[0])
+    rest = rest.slice(1)
+    if (WRAPPERS[w]) {
+      const r = stripWrapperOptions(w, rest)
+      if (RISK_ORDER[r.risk] > RISK_ORDER[risk]) risk = r.risk
+      rest = r.rest
+    }
   }
-  return rest
+  if (rest.length === 0) return { head: '', rest, risk }
+  return { head: rest[0], rest, risk }
+}
+
+/**
+ * Consume a wrapper's leading options using its table. "--" ends option
+ * parsing (the next token is the command) and assignment tokens are skipped.
+ * An option the table does not know, or env's -S/--split-string, grades
+ * 'dangerous' (F-02: default closed).
+ */
+function stripWrapperOptions(wrapper: string, words: string[]): { risk: RiskLevel; rest: string[] } {
+  const spec = WRAPPER_SPECS[wrapper]
+  if (!spec) {
+    // WRAPPERS only admits wrappers listed in WRAPPER_SPECS; treat a table
+    // gap as unknown instead of silently passing options through.
+    return { risk: 'dangerous', rest: words }
+  }
+  const flags = new Set(spec.flags)
+  const argOpts = new Set(spec.argOpts)
+  let out = words.slice()
+  while (out.length > 1 && (out[0].startsWith('-') || isAssignmentToken(out[0]))) {
+    const w = out[0].toLowerCase()
+    out = out.slice(1)
+    if (isAssignmentToken(w)) continue
+    if (w === '--') break // end of options: the remaining words are the command
+    let name = w
+    const eq = w.indexOf('=')
+    if (eq >= 0) name = w.slice(0, eq)
+    if (wrapper === 'env' && (name === '-s' || name === '--split-string')) {
+      // "env -S 'cmd'" executes its argument as a command line.
+      return { risk: 'dangerous', rest: out }
+    }
+    if (!flags.has(name) && !argOpts.has(name)) return { risk: 'dangerous', rest: out }
+    if (!w.includes('=') && argOpts.has(name) && out.length > 1) out = out.slice(1)
+  }
+  return { risk: 'read', rest: out }
 }
 
 /** Quotes dropped, '\' folded to '/', basename, lowercase, ".exe" stripped. */
@@ -266,9 +346,33 @@ function substitutions(seg: string): string[] {
   return out
 }
 
-/** Embedded shell code: substitutions, interpreter -c, eval, xargs, find -exec. */
+/**
+ * Recursively judged embedded shell code: substitutions, backticks and
+ * find -exec bodies. These grade at least write (they hide the inner command
+ * from the head-based rules). Hard execution bodies — interpreter -c/-e,
+ * eval, xargs — are handled by hardNestedSnippets and grade dangerous.
+ */
 function nestedSnippets(seg: string, head: string, words: string[]): string[] {
   const out: string[] = substitutions(seg)
+  if (head === 'find') {
+    for (let i = 0; i < words.length; i++) {
+      if ((words[i] === '-exec' || words[i] === '-execdir') && i + 1 < words.length) {
+        out.push(words.slice(i + 1).join(' '))
+        break
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Hidden *execution bodies* whose payload cannot be judged statically:
+ * interpreter -c/-e/--eval strings, eval arguments and xargs command tails
+ * (F-02). Any hit grades dangerous — mirror of hardNestedSnippets in
+ * backend/mcp/risk.go.
+ */
+function hardNestedSnippets(head: string, words: string[]): string[] {
+  const out: string[] = []
   const flags = EVAL_FLAG_HEADS[head]
   if (flags) {
     for (let i = 1; i < words.length; i++) {
@@ -279,18 +383,7 @@ function nestedSnippets(seg: string, head: string, words: string[]): string[] {
     }
   }
   if (head === 'eval' && words.length > 1) out.push(words.slice(1).join(' '))
-  if (head === 'xargs') {
-    const rest = skipOptions(words.slice(1), XARGS_OPTION_ARGS)
-    if (rest.length > 0) out.push(rest.join(' '))
-  }
-  if (head === 'find') {
-    for (let i = 0; i < words.length; i++) {
-      if ((words[i] === '-exec' || words[i] === '-execdir') && i + 1 < words.length) {
-        out.push(words.slice(i + 1).join(' '))
-        break
-      }
-    }
-  }
+  if (head === 'xargs' && words.length > 1) out.push(words.slice(1).join(' '))
   return out
 }
 
@@ -326,21 +419,25 @@ function redirectTargets(seg: string): string[] {
 }
 
 const READ_HEADS: Record<string, true> = {
-  // POSIX / Unix-like inspection
+  // POSIX / Unix-like inspection.
+  // F-02: interactive pagers (less/more/man/top) were removed — they accept
+  // shell escapes ("!sh") / spawn child processes. jq stays: every jq option
+  // only reads files, none writes or execs. Mirror of readOnlyHeads in
+  // backend/mcp/risk.go.
   ag: true, ack: true, basename: true, cat: true, cd: true, cmp: true,
   column: true, cut: true, date: true, df: true, diff: true, dirname: true,
   dig: true, du: true, echo: true, egrep: true, env: true, false: true,
   file: true, find: true, fgrep: true, free: true, grep: true, groups: true,
   head: true, hexdump: true, history: true, host: true, hostname: true,
-  id: true, journalctl: true, jq: true, jobs: true, less: true, ls: true,
-  lscpu: true, lsof: true, lsblk: true, man: true, md5sum: true, more: true,
+  id: true, journalctl: true, jq: true, jobs: true, ls: true,
+  lscpu: true, lsof: true, lsblk: true, md5sum: true,
   netstat: true, nproc: true, nslookup: true, od: true, ping: true,
   printenv: true, printf: true, ps: true, pwd: true, readlink: true,
   realpath: true, rg: true, seq: true, sha1sum: true, sha256sum: true,
   shasum: true, sleep: true, sort: true, ss: true, stat: true, strings: true,
-  tail: true, test: true, top: true, traceroute: true, tr: true, tree: true,
+  tail: true, test: true, traceroute: true, tr: true, tree: true,
   true: true, tty: true, type: true, uname: true, uniq: true, uptime: true,
-  wc: true, who: true, whereis: true, whoami: true, xxd: true,
+  wc: true, which: true, who: true, whereis: true, whoami: true, xxd: true,
   // Windows / PowerShell inspection
   dir: true, 'format-list': true, 'format-table': true,
   'get-childitem': true, 'get-command': true, 'get-computerinfo': true,
@@ -377,20 +474,28 @@ function classifySegment(seg: string): RiskLevel {
   const s = seg.trim()
   if (!s) return 'read'
   const words = s.split(/\s+/)
-  const rest = stripWrappers(words)
+  const { head: rawHead, rest, risk: wrapRisk } = stripWrappers(words)
+  if (wrapRisk === 'dangerous') {
+    // F-02: an unknown wrapper option or env -S hides the executed payload —
+    // default closed.
+    return 'dangerous'
+  }
   // A lone assignment ("FOO=1") runs no command.
-  if (rest.length === 0 || (rest[0].includes('=') && !/[<>]/.test(rest[0]))) return 'read'
-  const head = normalizeHead(rest[0])
+  if (rest.length === 0 || isAssignmentToken(rawHead)) return 'read'
+  const head = normalizeHead(rawHead)
   const joined = s.toLowerCase()
   if (joined.includes(':|:') || joined.includes('|:&')) return 'dangerous'
+
+  // F-02: hidden execution bodies (interpreter -c/-e, eval, xargs) grade
+  // dangerous outright — their payload cannot be judged statically.
+  if (hardNestedSnippets(head, words).length > 0) return 'dangerous'
 
   // Nested shell code grades at least write; a dangerous inner grade wins.
   let risk: RiskLevel = 'read'
   for (const inner of nestedSnippets(s, head, words)) {
     if (!inner.trim()) { risk = 'write'; continue }
-    const r = classifyCommand(inner)
-    if (r === 'dangerous') return 'dangerous'
-    if (RISK_ORDER[r] > RISK_ORDER[risk]) risk = r
+    if (classifyCommand(inner) === 'dangerous') return 'dangerous'
+    risk = 'write' // floor: a nested snippet is at least a write (Go classifyNested)
   }
 
   // rm -rf / mkfs* / dd of=/dev/* / system-kill heads / find -delete
@@ -421,10 +526,59 @@ function classifySegment(seg: string): RiskLevel {
 
   // Default closed: only the read allowlist (heads and known read-only
   // subcommands) may grade read; every other command is at least a write.
-  const subs = READ_SUBS[head]
-  const readOnly = READ_HEADS[head] || (subs !== undefined && words.length >= 2 && subs.includes(words[1].toLowerCase()))
-  if (risk === 'read' && !readOnly) risk = 'write'
+  if (risk === 'read') {
+    if (!isReadOnly(head, words)) risk = 'write'
+    else if (hasUnsafeReadOption(head, rest)) {
+      // F-02: a "read" command carrying a write option (sort -o,
+      // git log --output, find -fprint, date -s …) must not grade read.
+      risk = 'write'
+    } else if (head === 'hostname' && hasPositionalArg(rest)) {
+      // F-02: "hostname <name>" sets the hostname.
+      risk = 'write'
+    }
+  }
   return risk
+}
+
+/** Read allowlist lookup: pure read heads, or listed read-only subcommands. */
+function isReadOnly(head: string, words: string[]): boolean {
+  if (READ_HEADS[head]) return true
+  const subs = READ_SUBS[head]
+  if (subs === undefined || words.length < 2) return false
+  return subs.includes(words[1].toLowerCase())
+}
+
+// F-02: options that turn an otherwise read-only head into at least a write:
+// the command still looks like an inspection tool but now writes a file or
+// mutates state (appendix A of the audit doc). Matching is on the lowercased
+// option name up to "=". Mirror of readUnsafeOptions in backend/mcp/risk.go.
+const READ_UNSAFE_OPTIONS: Record<string, string[]> = {
+  sort: ['-o', '--output'],
+  date: ['-s', '--set'],
+  find: ['-fprint', '-fprint0', '-fprintf', '-fls', '-ok', '-okdir'],
+  git: ['--output'],
+}
+
+function hasUnsafeReadOption(head: string, words: string[]): boolean {
+  const opts = READ_UNSAFE_OPTIONS[head]
+  if (!opts) return false
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i]
+    if (!w.startsWith('-')) continue
+    const lw = w.toLowerCase()
+    const eq = lw.indexOf('=')
+    const name = eq >= 0 ? lw.slice(0, eq) : lw
+    if (opts.includes(name)) return true
+  }
+  return false
+}
+
+/** Non-option operand after head — e.g. "hostname myhost" sets the name. */
+function hasPositionalArg(words: string[]): boolean {
+  for (let i = 1; i < words.length; i++) {
+    if (!words[i].startsWith('-')) return true
+  }
+  return false
 }
 
 /** "curl … | sh" upgrades the whole line to dangerous. */
@@ -441,7 +595,7 @@ function classifyDownloadPipe(cmd: string): boolean {
 }
 
 /**
- * getRisk grades a tool call locally (RISK RULES v1, mirrored from
+ * getRisk grades a tool call locally (RISK RULES v2, mirrored from
  * backend/mcp/risk.go). The model's self-reported `risk` may only raise the
  * level — an injected model labeling `rm -rf ~` as "read" no longer skips the
  * confirmation dialog.

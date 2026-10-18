@@ -8,7 +8,7 @@ import (
 // ── 规则说明（前后端共用，必须与 frontend/src/services/agent.ts 的 classifyCommand
 // 以及对应前端测试的注释保持逐条一致）────────────────────────────────────────
 //
-// RISK RULES v1 — backend/mcp/risk.go == frontend/src/services/agent.ts
+// RISK RULES v2 — backend/mcp/risk.go == frontend/src/services/agent.ts
 //
 //  0. 空命令/缺失命令 → dangerous（默认关闭）。
 //  1. 整行包含 ":|:" 或 "|:&"（小写）→ dangerous（fork bomb，先于分割判断）。
@@ -16,16 +16,21 @@ import (
 //     （`2>&1`、`>&2`、`&>file` 不切割）。
 //  3. 每段（匹配时小写；head 逐 token 归一）：
 //     a. 剥 wrapper（始终保留 ≥1 个 token，绝不越界）：环境变量赋值（token 含
-//     `=`）、sudo/doas 及其选项词（-u/-g/-p/-C/-U/-r/-t/-h/-D 与
-//     --user/--group/--prompt/--host/--role/--type/--chdir，带单独参数的
-//     选项连同参数一起跳过）、nohup、time、nice、env、command、exec。
+//     `=`）、sudo/doas/nohup/time/nice/env/command/exec。wrapper 识别走
+//     normalizeHead，所以 `/usr/bin/sudo`、`C:\x\sudo.exe` 同样被识别。每个
+//     wrapper 用自己的选项表解析前导选项（带单独参数的选项连同参数一起跳过；
+//     `--` 终止选项）。**表中没有的 wrapper 选项 → dangerous（F-02：未知选项
+//     可能携带 payload，如 nice/time/env 的隐藏参数）**；
+//     `env -S/--split-string` → dangerous（直接执行任意命令串）。
 //     仅剩一个赋值 token 时判 read（不执行任何命令）。
 //     b. head 归一：去引号、去前导 `\`、`\`→`/`、取 path.Base、小写、去 `.exe`
 //     （覆盖 `/bin/rm -rf /`、`\rm -rf`、`command rm -rf`、C:\...\rm.exe）。
-//     c. 嵌套 shell 代码 —— `$( … )`、反引号、`eval …`、`<shell> -c/-e …`
-//     （sh/bash/zsh/dash/ash/ksh/csh/tsh/fish/cmd/powershell/pwsh/python/node/
-//     perl/ruby）、`xargs <cmd>`、`find -exec/-execdir <cmd>` —— 递归按本
-//     规则分类，结果至少 write；内层 dangerous 直接判 dangerous。
+//     c. 嵌套 shell 代码分两档（F-02）：
+//     - 隐藏执行体 —— 解释器 `-c/-e/--eval`（sh/bash/zsh/dash/ash/ksh/csh/
+//     tsh/fish/cmd/powershell/pwsh/python/node/perl/ruby）、`eval …`、
+//     `xargs …` —— payload 无法静态判断，**一律 dangerous**；
+//     - `$( … )`、反引号、`find -exec/-execdir <cmd>` —— 递归按本规则分类，
+//     结果至少 write；内层 dangerous 直接判 dangerous。
 //     d. dangerous：`rm` 带递归+强制（-rf/-fr 或 -r 与 -f 分写）、mkfs*、
 //     `dd of=/dev/*`、shutdown/reboot/halt/poweroff/init/fdisk/parted/wipefs/
 //     shred、`find -delete`、重定向目标位于 /etc /boot /sys /dev /proc/sys
@@ -35,8 +40,11 @@ import (
 //     （`echo k >> ~/.ssh/authorized_keys 2>/dev/null` 必须非 read）。
 //     f. 只读放行：head 在 READ_HEADS 中，或 head 在 READ_SUBS 中且第二个
 //     token 是列出的只读子命令（git status、kubectl get、systemctl
-//     status…），且没有其它 write 信号 → read；**其它任何命令默认至少
-//     write**。
+//     status…），且没有其它 write 信号 → read；只读命令带写选项/写参数
+//     （F-02：sort -o/--output、date -s/--set、find -fprint/-fprint0/-fprintf/
+//     -fls/-ok/-okdir、git --output、hostname 带参数）→ 至少 write；
+//     交互式分页器（less/more/man/top）已移出只读表（可执行子命令）；
+//     **其它任何命令默认至少 write**。
 //  4. 整行 `curl|wget|fetch … | sh|bash|zsh|sudo sh|sudo bash` → dangerous
 //     （classifyDownloadPipe，由调用方叠加）。
 //
@@ -104,7 +112,12 @@ func classifySegment(seg string) RiskClass {
 		return RiskRead
 	}
 	words := strings.Fields(seg)
-	head, rest := stripWrappers(words)
+	head, rest, wrapRisk := stripWrappers(words)
+	if wrapRisk == RiskDangerous {
+		// F-02: an unknown wrapper option or env -S hides the executed
+		// payload — default closed.
+		return RiskDangerous
+	}
 	if len(rest) == 0 || isAssignment(head) {
 		// A lone assignment ("FOO=1") runs no command.
 		return RiskRead
@@ -114,6 +127,12 @@ func classifySegment(seg string) RiskClass {
 
 	// Fork bombs: a segment that pipes a self-invocation into the background.
 	if strings.Contains(joined, ":|:") || strings.Contains(joined, "|:&") {
+		return RiskDangerous
+	}
+
+	// F-02: hidden execution bodies (interpreter -c/-e, eval, xargs) grade
+	// dangerous outright — their payload cannot be judged statically.
+	if len(hardNestedSnippets(head, words)) > 0 {
 		return RiskDangerous
 	}
 
@@ -156,8 +175,18 @@ func classifySegment(seg string) RiskClass {
 
 	// Default closed: only the read allowlist (heads and known read-only
 	// subcommands) may grade read; every other command is at least a write.
-	if risk == RiskRead && !isReadOnly(head, words) {
-		risk = RiskWrite
+	if risk == RiskRead {
+		switch {
+		case !isReadOnly(head, words):
+			risk = RiskWrite
+		case hasUnsafeReadOption(head, rest):
+			// F-02: a "read" command carrying a write option (sort -o,
+			// git log --output, find -fprint, date -s …) must not grade read.
+			risk = RiskWrite
+		case head == "hostname" && hasPositionalArg(rest):
+			// F-02: "hostname <name>" sets the hostname.
+			risk = RiskWrite
+		}
 	}
 	return risk
 }
@@ -175,6 +204,50 @@ func isReadOnly(head string, words []string) bool {
 	return inList(subs, strings.ToLower(words[1]))
 }
 
+// readUnsafeOptions lists the options that turn an otherwise read-only head
+// into at least a write: the command still looks like an inspection tool but
+// now writes a file or mutates state (F-02 / appendix A of the audit doc).
+// Matching is on the lowercased option name up to "=".
+var readUnsafeOptions = map[string][]string{
+	"sort": {"-o", "--output"},
+	"date": {"-s", "--set"},
+	"find": {"-fprint", "-fprint0", "-fprintf", "-fls", "-ok", "-okdir"},
+	"git":  {"--output"},
+}
+
+// hasUnsafeReadOption reports whether any option of words (after head) is a
+// write-capable option for this read head.
+func hasUnsafeReadOption(head string, words []string) bool {
+	opts := readUnsafeOptions[head]
+	if len(opts) == 0 {
+		return false
+	}
+	for _, w := range words[1:] {
+		if !strings.HasPrefix(w, "-") {
+			continue
+		}
+		name := strings.ToLower(w)
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if inList(opts, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPositionalArg reports whether words (after head) carry a non-option
+// operand — e.g. "hostname myhost" sets the name instead of printing it.
+func hasPositionalArg(words []string) bool {
+	for _, w := range words[1:] {
+		if !strings.HasPrefix(w, "-") {
+			return true
+		}
+	}
+	return false
+}
+
 // isAssignment reports whether the token is an environment assignment
 // ("FOO=1"). Tokens carrying a redirection are not assignments.
 func isAssignment(word string) bool {
@@ -182,21 +255,125 @@ func isAssignment(word string) bool {
 }
 
 // stripWrappers removes env assignments and privileged/nohup wrappers so
-// "sudo -u root rm" is judged as "rm". It always keeps at least one token, so
-// a bare wrapper word ("env", "sudo") can never run past the slice end.
-func stripWrappers(words []string) (head string, rest []string) {
+// "sudo -u root rm" is judged as "rm". Wrapper detection goes through
+// normalizeHead, so "/usr/bin/sudo" and "C:\\x\\sudo.exe" are recognised too.
+// Each wrapper consumes its own leading options via its option table. It
+// always keeps at least one token, so a bare wrapper word ("env", "sudo")
+// can never run past the slice end.
+//
+// F-02: an option the wrapper's table does not know grades RiskDangerous —
+// unknown wrapper options may carry a payload ("nice -n 5 rm -rf …" and
+// "env -S 'rm -rf …'" previously fell through to RiskWrite and skipped the
+// confirmation dialog). env -S/--split-string always grades dangerous.
+func stripWrappers(words []string) (head string, rest []string, wr RiskClass) {
+	wr = RiskRead
 	rest = words
-	for len(rest) > 1 && (isWrapper(rest[0]) || isAssignment(rest[0])) {
-		w := strings.ToLower(rest[0])
+	for len(rest) > 1 && (isWrapper(normalizeHead(rest[0])) || isAssignment(rest[0])) {
+		w := normalizeHead(rest[0])
 		rest = rest[1:]
-		if w == "sudo" || w == "doas" {
-			rest = skipOptions(rest, privOptionArgs)
+		if isWrapper(w) {
+			r, remaining := stripWrapperOptions(w, rest)
+			if r > wr {
+				wr = r
+			}
+			rest = remaining
 		}
 	}
 	if len(rest) == 0 {
-		return "", nil
+		return "", nil, wr
 	}
-	return rest[0], rest
+	return rest[0], rest, wr
+}
+
+// wrapperSpec is one wrapper's option vocabulary: the options it accepts
+// and which of those consume the following word. Anything outside the table
+// is unknown → dangerous (default closed). Keys are lowercase because
+// matching runs on normalizeHead/ToLower output ("-C" and "-c" collapse,
+// "-U" and "-u" collapse — both spellings take an argument either way).
+type wrapperSpec struct {
+	flags   []string // options with no separate argument
+	argOpts []string // options consuming the next word as an argument
+}
+
+// wrapperSpecs keeps the option vocabulary of every wrapper stripWrappers
+// can peel (sudo/doas share a table: doas is sudo-shaped and the previous
+// privOptionArgs list was shared as well).
+var wrapperSpecs = map[string]wrapperSpec{
+	"sudo": {
+		flags: []string{
+			"-a", "-b", "-e", "-h", "-i", "-k", "-l", "-n", "-s", "-v",
+			"--askpass", "--background", "--edit", "--help", "--list",
+			"--login", "--non-interactive", "--preserve-env", "--reset-timestamp",
+			"--shell", "--stdin", "--validate", "--version",
+		},
+		argOpts: []string{
+			"-c", "-d", "-g", "-p", "-r", "-t", "-T", "-u",
+			"--chdir", "--close-from", "--command-timeout", "--group",
+			"--host", "--other-user", "--prompt", "--role", "--type", "--user",
+		},
+	},
+	"doas": {
+		flags: []string{
+			"-a", "-b", "-s", "--help", "--version",
+		},
+		argOpts: []string{
+			"-c", "-d", "-g", "-p", "-r", "-t", "-u",
+			"--group", "--prompt", "--role", "--type", "--user",
+		},
+	},
+	"nohup": {flags: []string{"--help", "--version"}},
+	"time": {
+		flags:   []string{"-a", "-p", "-v", "--append", "--portability", "--verbose", "--help", "--version"},
+		argOpts: []string{"-f", "-o", "--format", "--output"},
+	},
+	"nice": {
+		flags:   []string{"--help", "--version"},
+		argOpts: []string{"-n", "--adjustment"},
+	},
+	"env": {
+		flags:   []string{"-i", "--debug", "--help", "--ignore-environment", "--version"},
+		argOpts: []string{"-c", "-p", "-s", "--chdir", "--path", "--split-string", "--unset", "-u"},
+	},
+	"command": {flags: []string{"-p", "-v"}},
+	"exec":    {flags: []string{"-c", "-i", "-l"}, argOpts: []string{"-a"}},
+}
+
+// stripWrapperOptions consumes a wrapper's leading options using its table.
+// "--" ends option parsing (the next token is the command) and assignment
+// tokens are skipped. An option the table does not know, or env's
+// -S/--split-string, grades RiskDangerous (F-02: default closed).
+func stripWrapperOptions(wrapper string, words []string) (RiskClass, []string) {
+	spec, ok := wrapperSpecs[wrapper]
+	if !ok {
+		// isWrapper() only admits wrappers listed above; treat a table gap
+		// as unknown instead of silently passing options through.
+		return RiskDangerous, words
+	}
+	for len(words) > 1 && (strings.HasPrefix(words[0], "-") || isAssignment(words[0])) {
+		w := strings.ToLower(words[0])
+		words = words[1:]
+		if isAssignment(w) {
+			continue
+		}
+		if w == "--" {
+			break // end of options: the remaining words are the command
+		}
+		name := w
+		if i := strings.IndexByte(w, '='); i >= 0 {
+			name = w[:i]
+		}
+		if wrapper == "env" && (name == "-s" || name == "--split-string") {
+			// "env -S 'cmd'" executes its argument as a command line.
+			return RiskDangerous, words
+		}
+		if !inList(spec.argOpts, name) && !inList(spec.flags, name) {
+			return RiskDangerous, words // unknown wrapper option
+		}
+		if !strings.Contains(w, "=") && inList(spec.argOpts, name) && len(words) > 1 {
+			words = words[1:] // skip the option's separate argument
+		}
+	}
+	return RiskRead, words
 }
 
 // normalizeHead reduces a command word to a comparable base name: quotes and
@@ -213,28 +390,11 @@ func normalizeHead(head string) string {
 	return h
 }
 
-// skipOptions drops leading option words, consuming the following word for
-// the options that take a separate argument.
-func skipOptions(words []string, argTakers []string) []string {
-	for len(words) > 1 && strings.HasPrefix(words[0], "-") {
-		w := strings.ToLower(words[0])
-		words = words[1:]
-		if !strings.Contains(w, "=") && inList(argTakers, w) {
-			words = words[1:]
-		}
-	}
-	return words
-}
-
-var privOptionArgs = []string{
-	"-u", "-g", "-p", "-C", "-U", "-r", "-t", "-h", "-D",
-	"--user", "--group", "--prompt", "--host", "--role", "--type", "--chdir",
-}
-
 // classifyNested grades embedded shell code. The mere presence of the
 // construct is already a write (it hides the real command from the caller's
-// eyes); the inner text is classified recursively so e.g. bash -c "rm -rf /"
-// still lands on dangerous.
+// eyes); the inner text is classified recursively so e.g. `echo $(rm -rf /)`
+// still lands on dangerous. Hard execution bodies (interpreter -c/-e, eval,
+// xargs) are handled by hardNestedSnippets and grade dangerous outright (F-02).
 func classifyNested(text string) RiskClass {
 	if strings.TrimSpace(text) == "" {
 		return RiskWrite
@@ -245,13 +405,30 @@ func classifyNested(text string) RiskClass {
 	return RiskWrite
 }
 
-// nestedSnippets extracts the embedded shell code of one segment: command
-// substitutions, backticks, eval, interpreter -c/-e payloads, xargs command
-// tails and find -exec bodies.
+// nestedSnippets extracts the recursively judged embedded shell code of one
+// segment: command substitutions, backticks and find -exec bodies. These
+// grade at least write (classifyNested) because they hide the inner command
+// from the head-based rules.
 func nestedSnippets(seg, head string, words []string) []string {
 	var out []string
 	out = append(out, substitutions(seg)...)
 
+	if head == "find" {
+		for i, w := range words {
+			if (w == "-exec" || w == "-execdir") && i+1 < len(words) {
+				out = append(out, strings.Join(words[i+1:], " "))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// hardNestedSnippets returns the hidden *execution bodies* whose payload
+// cannot be judged statically: interpreter -c/-e/--eval strings, eval
+// arguments and xargs command tails (F-02). Any hit grades dangerous.
+func hardNestedSnippets(head string, words []string) []string {
+	var out []string
 	if flags, ok := evalFlagHeads[head]; ok {
 		for i, w := range words[1:] {
 			if inList(flags, strings.ToLower(w)) && i+2 <= len(words)-1 {
@@ -263,18 +440,8 @@ func nestedSnippets(seg, head string, words []string) []string {
 	if head == "eval" && len(words) > 1 {
 		out = append(out, strings.Join(words[1:], " "))
 	}
-	if head == "xargs" {
-		if rest := skipOptions(words[1:], xargsOptionArgs); len(rest) > 0 {
-			out = append(out, strings.Join(rest, " "))
-		}
-	}
-	if head == "find" {
-		for i, w := range words {
-			if (w == "-exec" || w == "-execdir") && i+1 < len(words) {
-				out = append(out, strings.Join(words[i+1:], " "))
-				break
-			}
-		}
+	if head == "xargs" && len(words) > 1 {
+		out = append(out, strings.Join(words[1:], " "))
 	}
 	return out
 }
@@ -287,12 +454,6 @@ var evalFlagHeads = map[string][]string{
 	"fish": {"-c"}, "cmd": {"/c", "-c"}, "powershell": {"-c", "-command"},
 	"pwsh": {"-c", "-command"}, "python": {"-c"}, "python3": {"-c"},
 	"node": {"-e", "--eval"}, "perl": {"-e"}, "ruby": {"-e"},
-}
-
-var xargsOptionArgs = []string{
-	"-n", "-P", "-d", "-a", "-L", "-s", "-I", "-E",
-	"--max-args", "--max-procs", "--delimiter", "--arg-file",
-	"--max-chars", "--replace", "--initial",
 }
 
 // substitutions extracts the bodies of $( … ) and ` … ` spans. An unbalanced
@@ -459,6 +620,9 @@ func classifyDownloadPipe(cmd string) bool {
 
 // readOnlyHeads lists commands that only inspect state. Anything not listed
 // here (or in readOnlySubs) is graded at least write.
+// F-02: interactive pagers (less/more/man/top) were removed — they accept
+// shell escapes ("!sh") / spawn child processes. jq stays: every jq option
+// only reads files, none writes or execs.
 var readOnlyHeads = map[string]bool{
 	// POSIX / Unix-like inspection
 	"ag": true, "ack": true, "basename": true, "cat": true, "cd": true,
@@ -466,14 +630,14 @@ var readOnlyHeads = map[string]bool{
 	"dirname": true, "dig": true, "du": true, "echo": true, "egrep": true,
 	"env": true, "file": true, "find": true, "fgrep": true, "free": true,
 	"groups": true, "grep": true, "head": true, "history": true, "hostname": true,
-	"host": true, "id": true, "journalctl": true, "jq": true, "less": true,
-	"lscpu": true, "lsof": true, "lsblk": true, "ls": true, "man": true,
-	"md5sum": true, "more": true, "netstat": true, "nproc": true,
+	"host": true, "id": true, "journalctl": true, "jq": true,
+	"lscpu": true, "lsof": true, "lsblk": true, "ls": true,
+	"md5sum": true, "netstat": true, "nproc": true,
 	"nslookup": true, "od": true, "ping": true, "printenv": true,
 	"printf": true, "ps": true, "pwd": true, "readlink": true, "realpath": true,
 	"rg": true, "seq": true, "sha1sum": true, "sha256sum": true,
 	"shasum": true, "sleep": true, "sort": true, "ss": true, "stat": true,
-	"strings": true, "tail": true, "test": true, "top": true,
+	"strings": true, "tail": true, "test": true,
 	"traceroute": true, "tree": true, "true": true, "false": true,
 	"tty": true, "type": true, "uname": true, "uniq": true, "uptime": true,
 	"wc": true, "which": true, "whereis": true, "who": true, "whoami": true,

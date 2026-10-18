@@ -1,4 +1,6 @@
 
+import type { ExecutionMode } from './ai'
+
 export const SUPPORTED_LOCALES = [
   'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'de', 'es', 'fr', 'ru', 'pt', 'vi'
 ] as const
@@ -142,6 +144,10 @@ export interface AISettings {
   maxTurns: number
   models: AIModelConfig[]
   activeModelId: string
+  // F-02: the AI panel's confirmation policy. Defaults to confirm_write —
+  // the same policy the MCP server uses — and is persisted so the user's
+  // choice survives restarts (it previously reset to confirm_dangerous).
+  executionMode: ExecutionMode
 }
 
 export type ShortcutAction =
@@ -401,7 +407,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         protocol: 'anthropic' as const
       }
     ],
-    activeModelId: 'model-default'
+    activeModelId: 'model-default',
+    executionMode: 'confirm_write'
   },
   keyboard: { ...DEFAULT_KEYBOARD },
   autoCheckUpdate: true,

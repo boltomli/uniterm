@@ -211,7 +211,11 @@ function serializeSession(s: AISession): SerializedSession {
 export const useAIStore = defineStore('ai', () => {
   const visible = ref(false)
   const messages = ref<AIMessage[]>([])
-  const mode = ref<ExecutionMode>('confirm_dangerous')
+  // F-02: default closed — the AI panel starts at confirm_write (the same
+  // policy as the MCP server). The persisted choice lives in
+  // settings.ai.executionMode and is pushed into this ref by AISidebar's
+  // sync watcher whenever settings load or change.
+  const mode = ref<ExecutionMode>('confirm_write')
   const isRunning = ref(false)
   const status = ref<AIAgentStatus>('thinking')
   // Live thinking/reasoning text streamed during the current run, shown in
