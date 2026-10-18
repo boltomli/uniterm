@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -53,8 +54,12 @@ func NewDB(dbType, dsn string) (*sql.DB, error) {
 }
 
 // queryStrings executes a SQL query and returns all rows as []map[string]string.
+// F-12.4: runs under queryTimeout — schema/metadata probes against a slow or
+// hung server must not pin a goroutine (and its connection) forever.
 func queryStrings(db *sql.DB, query string, args ...any) ([]map[string]string, error) {
-	rows, err := db.Query(query, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +91,12 @@ func queryStrings(db *sql.DB, query string, args ...any) ([]map[string]string, e
 }
 
 // queryAny is like queryStrings but preserves nil values for proper NULL handling.
-// Returns rows, column names in SQL order, and error.
+// Returns rows, column names in SQL order, and error. Bounded by queryTimeout
+// for the same reason as queryStrings. (F-12.4)
 func queryAny(db *sql.DB, query string, args ...any) ([]map[string]any, []string, error) {
-	rows, err := db.Query(query, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
