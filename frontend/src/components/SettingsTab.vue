@@ -607,6 +607,22 @@
             </div>
           </div>
 
+          <!-- F-12.5: OSC 52 lets the REMOTE side choose what lands in the
+               local clipboard — gate it (default: ask). -->
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.osc52Clipboard') }}</div>
+              <div class="setting-desc">{{ t('settings.osc52ClipboardDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.terminal.osc52Clipboard" @change="settingsStore.save()">
+                <el-option :label="t('settings.osc52Ask')" value="ask" />
+                <el-option :label="t('settings.osc52Allow')" value="allow" />
+                <el-option :label="t('settings.osc52Deny')" value="deny" />
+              </el-select>
+            </div>
+          </div>
+
           <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.middleClick') }}</div>

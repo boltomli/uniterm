@@ -20,6 +20,10 @@ type TerminalSettings struct {
 	FontSize          int    `json:"fontSize"`
 	SelectionAction   string `json:"selectionAction"`
 	RightClickAction  string `json:"rightClickAction"`
+	// Osc52Clipboard gates remote OSC-52 clipboard writes: ask (default) /
+	// allow / deny. F-12.5: an unfiltered write lets a prompt-injected
+	// sequence plant commands into the local clipboard for a later paste.
+	Osc52Clipboard string `json:"osc52Clipboard,omitempty"`
 	MiddleClickAction string `json:"middleClickAction"`
 	MaxHistoryLines   int    `json:"maxHistoryLines"`
 	SmartCompletion   *bool  `json:"smartCompletion"`
@@ -398,6 +402,7 @@ func defaultSettings() AppSettings {
 			FontSize:         14,
 			SelectionAction:  "none",
 			RightClickAction: "menu",
+			Osc52Clipboard:   "ask",
 			MaxHistoryLines:  5000,
 		},
 		AI:              defaultAISettings(),

