@@ -121,14 +121,7 @@ public class MainActivity extends AppCompatActivity {
         bridge.setWebView(webView);
 
         // Configure WebView settings
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        configureWebViewSettings(webView.getSettings());
 
         // Enable debugging in debug builds
         if (DEBUG) {
@@ -216,6 +209,17 @@ public class MainActivity extends AppCompatActivity {
 
         // Add JavaScript interface for Go communication
         webView.addJavascriptInterface(new WailsJSBridge(bridge, webView), "wails");
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    static void configureWebViewSettings(WebSettings settings) {
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
     }
 
     private void loadApplication() {
