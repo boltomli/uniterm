@@ -7,8 +7,18 @@ import (
 	"github.com/ys-ll/uniterm/backend/session"
 )
 
-var mobaTypeToType = map[string]string{
-	"109": "ssh", "98": "telnet", "91": "rdp", "128": "vnc", "131": "serial",
+// MobaXterm bookmark values look like `#<icon>#<subtype>%<field>%...`. The
+// leading icon number changes between releases, so the session type is read
+// from the subtype — the first payload field — which follows MobaXterm's own
+// session-type enum.
+var mobaSubtypeToType = map[string]string{
+	"0": "ssh", "1": "telnet", "4": "rdp", "5": "vnc", "6": "ftp", "7": "sftp",
+	"8": "serial", "10": "local", "12": "mosh", "13": "s3", "14": "wsl",
+}
+
+// MobaXterm session types with no uniTerm equivalent.
+var mobaSubtypeNames = map[string]string{
+	"2": "Rsh", "3": "Xdmcp", "9": "File", "11": "Browser",
 }
 
 func parseMobaXterm(data []byte) (*ImportResult, error) {
@@ -45,44 +55,70 @@ func parseMobaXterm(data []byte) (*ImportResult, error) {
 		if typeEnd < 0 {
 			continue
 		}
-		code := rest[:typeEnd]
-		typ, ok := mobaTypeToType[code]
+		payload := rest[typeEnd+1:]
+		fields := strings.Split(payload, "%")
+		subtype := ""
+		if len(fields) > 0 {
+			subtype = strings.TrimSpace(fields[0])
+		}
+		typ, ok := mobaSubtypeToType[subtype]
 		if !ok {
-			res.Warnings = append(res.Warnings, "skipped MobaXterm type "+code)
+			skipped := subtype
+			if skipped == "" {
+				skipped = "unknown"
+			}
+			if label, ok := mobaSubtypeNames[subtype]; ok {
+				skipped += " (" + label + ")"
+			}
+			res.Warnings = append(res.Warnings, "skipped MobaXterm type "+skipped)
 			continue
 		}
-		payload := rest[typeEnd+1:]
-		// payload is `<subtype>%<host>%<port>%<username>%...`; subtype sits at fields[0].
-		fields := strings.Split(payload, "%")
-		host, portStr, user := "", "", ""
-		if len(fields) > 1 && fields[1] != "-1" {
-			host = fields[1]
+		field := func(i int) string {
+			if i >= len(fields) {
+				return ""
+			}
+			v := strings.TrimSpace(fields[i])
+			if v == "-1" || v == "<none>" {
+				return ""
+			}
+			return v
 		}
-		if len(fields) > 2 {
-			portStr = fields[2]
-		}
-		if len(fields) > 3 && fields[3] != "-1" {
-			user = fields[3]
-		}
-		port, _ := strconv.Atoi(portStr)
-		if port == 0 {
+		host, user := field(1), field(3)
+		port, _ := strconv.Atoi(field(2))
+		if port < 1 || port > 65535 {
 			port = defaultPort(typ)
 		}
 		conn := session.ConnectionConfig{
 			ID: newConnectionID(), Name: name, Type: typ, Host: host, Port: port, User: user,
 		}
-		if typ == "ssh" {
+		switch typ {
+		case "ssh", "sftp", "mosh":
 			conn.AuthType = "password"
 			if conn.User == "" {
 				conn.User = "root"
 			}
 			// fields[14] is the private key file ("Use private key"); MobaXterm
 			// typically stores a PuTTY .ppk, which the SSH layer reads directly.
-			if len(fields) > 14 {
-				if kp := strings.TrimSpace(fields[14]); kp != "" && kp != "-1" && kp != "<none>" {
-					conn.AuthType = "key"
-					conn.KeyPath = kp
-				}
+			if kp := field(14); kp != "" {
+				conn.AuthType = "key"
+				conn.KeyPath = kp
+			}
+		case "ftp":
+			conn.AuthType = "password"
+		case "serial":
+			conn.Host, conn.Port, conn.User = host, 0, ""
+			conn.SerialPort = host
+			baud, err := strconv.Atoi(field(2))
+			if err != nil || baud <= 0 {
+				baud = 115200
+			}
+			conn.SerialBaudRate = baud
+		case "local":
+			conn.Host, conn.Port, conn.User = "", 0, ""
+		case "wsl":
+			conn.Host, conn.Port, conn.User = "", 0, ""
+			if host != "" {
+				conn.ShellPath = "wsl://" + host
 			}
 		}
 		segs := splitNonEmpty(strings.ReplaceAll(subRep, "\\", "/"), "/")

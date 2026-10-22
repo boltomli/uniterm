@@ -579,6 +579,7 @@
   "settings.providerGroupModels": "Model providers",
   "settings.providerGroupLocal": "Local",
   "settings.endpointPayAsYouGo": "Pay-as-you-go",
+  "settings.cancel": "Cancelar",
   "settings.save": "Guardar",
   "settings.historySearchPlaceholder": "Buscar comandos del historial...",
   "settings.historyEmpty": "No hay registros del historial",

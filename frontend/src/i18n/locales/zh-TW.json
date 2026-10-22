@@ -582,6 +582,7 @@
   "settings.providerGroupModels": "模型廠商",
   "settings.providerGroupLocal": "本地部署",
   "settings.endpointPayAsYouGo": "按量付費",
+  "settings.cancel": "取消",
   "settings.save": "儲存",
   "settings.historySearchPlaceholder": "搜尋歷史命令...",
   "settings.historyEmpty": "暫無歷史記錄",

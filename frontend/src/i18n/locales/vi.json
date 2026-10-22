@@ -579,6 +579,7 @@
   "settings.providerGroupModels": "Model providers",
   "settings.providerGroupLocal": "Local",
   "settings.endpointPayAsYouGo": "Pay-as-you-go",
+  "settings.cancel": "Hủy",
   "settings.save": "Lưu",
   "settings.historySearchPlaceholder": "Tìm kiếm lệnh trong lịch sử...",
   "settings.historyEmpty": "Không có bản ghi lịch sử",

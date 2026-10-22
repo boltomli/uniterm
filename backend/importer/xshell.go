@@ -143,7 +143,7 @@ func parseXshellXSH(name string, text string) (session.ConnectionConfig, bool) {
 
 func defaultPort(typ string) int {
 	switch typ {
-	case "ssh", "sftp":
+	case "ssh", "sftp", "mosh":
 		return 22
 	case "telnet":
 		return 23
@@ -151,6 +151,8 @@ func defaultPort(typ string) int {
 		return 3389
 	case "vnc":
 		return 5900
+	case "ftp":
+		return 21
 	}
 	return 0
 }

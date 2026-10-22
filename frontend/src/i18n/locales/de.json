@@ -579,6 +579,7 @@
   "settings.providerGroupModels": "Model providers",
   "settings.providerGroupLocal": "Local",
   "settings.endpointPayAsYouGo": "Pay-as-you-go",
+  "settings.cancel": "Abbrechen",
   "settings.save": "Speichern",
   "settings.historySearchPlaceholder": "Befehlsverlauf durchsuchen...",
   "settings.historyEmpty": "Keine Verlaufseinträge",

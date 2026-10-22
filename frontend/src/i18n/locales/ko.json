@@ -579,6 +579,7 @@
   "settings.providerGroupModels": "Model providers",
   "settings.providerGroupLocal": "Local",
   "settings.endpointPayAsYouGo": "Pay-as-you-go",
+  "settings.cancel": "취소",
   "settings.save": "저장",
   "settings.historySearchPlaceholder": "기록 명령어 검색...",
   "settings.historyEmpty": "기록이 없습니다",
