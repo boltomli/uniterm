@@ -1,5 +1,89 @@
 # Changelog
 
+## v1.11.0-alpha
+
+### What's Changed
+
+**New Features**
+
+- Remote desktop: RDP is rebuilt on the IronRDP engine, replacing the previous ActiveX approach — RDP remote desktops can now be reached from macOS and Linux as well, not just Windows, and credentials can be saved for NLA authentication.
+- Remote desktop: RDP / VNC / SPICE share one unified set of desktop controls (fullscreen, shortcut capture, aligned status bars), render at physical pixels for a sharper picture, and support bidirectional clipboard sync.
+- Remote desktop: SPICE gains SSH tunnel support, and the session reports success only after the desktop channels are actually ready.
+- Database: the result grid supports cell copy — click to select a cell and press Ctrl/Cmd+C, or use the context menu's Copy Cell / Copy Row (TSV, pastes into Excel with columns) / Copy Column Name. (@laigcss)
+- Database: the Oracle object browser lists every schema the account can access alongside the login schema, and opens the first schema automatically when the service name matches no schema; the connection field is now labeled "service name", required and validated on save.
+- Database: the tree panel shows all databases the account can access, not only the default set. (@laigcss)
+- AI: reasoning effort (thinking intensity) is selectable and persisted per device.
+- AI: long conversations are compacted automatically — context summaries are persisted alongside the full history.
+- Cloud sync: skills can sync across devices via an opt-in skills.json scope — a new device pulls complete skills including their enabled / locked / sort preferences; hand-copied skill directories are picked up without a restart, and remote deletions never propagate, protecting local skills. (@surenwuyuwuqiu)
+
+**Improvements**
+
+- AI: a preset dropdown in the model configuration dialog pre-fills the protocol and base URL for common providers, so only the API key needs to be entered. (@laigcss)
+- AI: terminal command output capture now waits for reliable shell completion signals.
+- AI: a model card can be duplicated with one click, and each model can define an extra HTTP header (e.g. a session ID header) sent on every request — for gateways that key prompt caching or sticky routing on it. (@surenwuyuwuqiu)
+- AI: a new session is named after the terminal connection it was started from (connection name, falling back to user@host) instead of the generic "New Session". (@surenwuyuwuqiu)
+- Import: MobaXterm session importing now covers the session types uniTerm supports that were previously skipped. (@Merrcurys)
+- Shortcuts: configurable shortcuts for toggling the file panel and the system monitor. (@laigcss)
+- Database: MongoDB / Elasticsearch / Redis result views are virtualized, keeping large result sets responsive. (@laigcss)
+
+**Bug Fixes**
+
+- Terminal: fixes a batch of input and rendering bugs — clear-screen behaving inverted, CJK characters truncated at the right screen edge, backspace eating into the shell prompt on shells whose stty erase doesn't match, and the backspace that deletes the last typed character never reaching the shell. (@laigcss)
+- UI: fixes the database tree panel staying empty on first connect and ignoring refresh (panel state reactivity), and a blank window at startup caused by a missing import. (@laigcss)
+- MCP client: after an external server's long connection drops, tool calls now redial automatically and the pending call replays transparently, instead of failing with "connection closed" until an app restart. (@surenwuyuwuqiu)
+- Remote desktop: fixes macOS fullscreen, keyboard capture on Unix systems, and Android connections (loopback WebSocket permission, application ID).
+- SSH: fixes agent authentication failing when the configured key path points at a public key — the agent key matching that public key is now used. (@lutzr400)
+- AI: fixes requests to the current OpenCode Go inference endpoint missing the conversation session header. (@zhongqian97)
+- i18n: fixes the missing settings.cancel translations in all locales. (@Merrcurys)
+
+**Notes**
+
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+- Android: the application ID is now the uniterm-domain-based `net.uniterm.app` — if the old 1.10.x version is installed, uninstall it first before installing this release.
+
+Thanks to @laigcss, @surenwuyuwuqiu, @Merrcurys, @lutzr400 and @zhongqian97 for their contributions to this release.
+
+### 更新内容
+
+**新功能**
+
+- 远程桌面：RDP 改用 IronRDP 引擎重构，替换原有 ActiveX 方案——macOS、Linux 也可连接 RDP 远程桌面（不再限于 Windows），NLA 认证模式下支持保存密码。
+- 远程桌面：RDP / VNC / SPICE 统一为一套桌面控制（全屏、快捷键捕获、一致的状态栏），按物理像素渲染，画面更加清晰，并支持双向剪贴板同步。
+- 远程桌面：SPICE 支持 SSH 隧道，且仅在桌面通道就绪后才报告连接成功。
+- 数据库：结果网格支持单元格复制——点击选中单元格后 Ctrl/Cmd+C 复制，或通过右键菜单复制单元格 / 复制整行（TSV 格式，可带列粘贴进 Excel）/ 复制列名。(@laigcss)
+- 数据库：Oracle 对象浏览器列出账号可访问的全部 schema（登录 schema 之外的授权 schema 一并展示），服务名匹配不到 schema 时自动展开并打开第一个；连接字段更名为「服务名」，必填并在保存时校验。
+- 数据库：树形面板展示账号可访问的全部数据库，不再局限于默认集合。(@laigcss)
+- AI：支持选择思考强度（reasoning effort），并按设备本地持久化。
+- AI：长会话自动压缩上下文——上下文摘要与完整历史一同持久化。
+- 云同步：技能可通过可选的 skills.json 同步项跨设备同步——新设备一次拉取完整技能（含启用 / 锁定 / 排序偏好）；手工拷入的技能目录无需重启即可识别，远端删除不会传播，保护本地技能。(@surenwuyuwuqiu)
+
+**改进**
+
+- AI：模型配置弹窗新增预设下拉，可预填常用提供商的协议、Base URL，只需填写 API Key。(@laigcss)
+- AI：终端命令输出采集等待可靠的 shell 完成信号。
+- AI：模型卡片支持一键复制，每个模型可配置额外的 HTTP 请求头（如会话 ID 头）随每个请求发送——适用于按该头做提示缓存或粘性路由的网关。(@surenwuyuwuqiu)
+- AI：新建会话默认以其来源终端连接命名（连接名，缺省回退 user@host），不再显示通用的「新会话」。(@surenwuyuwuqiu)
+- 导入：MobaXterm 会话导入补充了之前不支持、而 uniTerm 已支持的会话类型。(@Merrcurys)
+- 快捷键：新增文件面板和系统监视器开关的可配置快捷键。(@laigcss)
+- 数据库：MongoDB / Elasticsearch / Redis 结果视图虚拟化渲染，大数据量结果集保持流畅。(@laigcss)
+
+**问题修复**
+
+- 终端：修复一批输入与渲染问题——清屏行为反转、中日韩字符在屏幕右边界被截断、stty erase 不匹配的 shell（如 Euler OS）上退格键吞掉提示符、以及删除最后一个字符的退格键被拦截无法到达 shell。(@laigcss)
+- 界面：修复首次连接时数据库树形面板一直为空、刷新无效（面板状态响应式问题），以及启动时因缺少导入导致的白屏。(@laigcss)
+- MCP 客户端：外部服务器长连接断开后自动重连并透明重放未完成的调用，不再出现「connection closed」报错直到重启应用。(@surenwuyuwuqiu)
+- 远程桌面：修复 macOS 全屏、Unix 系统键盘捕获以及 Android 连接（回环 WebSocket 权限、应用 ID）。
+- SSH：修复配置的密钥路径指向公钥时 agent 认证失败的问题——现在会选用 agent 中与该公钥匹配的密钥。(@lutzr400)
+- AI：修复当前 OpenCode Go 推理端点的请求缺少会话头的问题。(@zhongqian97)
+- 国际化：补齐所有语言缺失的 settings.cancel 翻译。(@Merrcurys)
+
+**说明**
+
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+- 安卓：应用 ID 更换为基于 uniterm 域名的 `net.uniterm.app`——如果安装了 1.10.x 的旧版本，需先卸载旧版后才能安装新版。
+
+感谢 @laigcss、@surenwuyuwuqiu、@Merrcurys、@lutzr400 和 @zhongqian97 对本版本发布的贡献。
+
 ## v1.10.1
 
 ### What's Changed
