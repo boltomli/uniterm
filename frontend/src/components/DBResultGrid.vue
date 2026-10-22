@@ -5,26 +5,6 @@
     tabindex="0"
     @keydown="onGridKeydown"
   >
-    <!-- 只读模式：el-table-v2 虚拟滚动（P1） -->
-    <template v-if="!canEdit && rows.length > 0">
-      <el-auto-resizer>
-        <template #default="{ height, width }">
-          <el-table-v2
-            :columns="v2Columns"
-            :data="rows"
-            :width="width"
-            :height="height"
-            :row-height="28"
-            fixed
-            @column-sort="onV2SortChange"
-          />
-        </template>
-      </el-auto-resizer>
-    </template>
-    <div v-else-if="!canEdit" class="db-empty">{{ emptyText || t('db.noData') }}</div>
-
-    <!-- 编辑模式：el-table + 分页（单元格编辑与虚拟滚动冲突，保留原方案） -->
-    <template v-else>
     <el-table
       :key="tableKey"
       ref="tableRef"
@@ -120,7 +100,6 @@
         </template>
       </el-table-column>
     </el-table>
-    </template>
 
     <!-- 单元格右键菜单：复制单元格 / 复制整行 / 复制列名 -->
     <Menu ref="cellMenuRef" v-model:visible="cellMenuVisible">
@@ -138,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Pencil, Trash2 } from '@lucide/vue'
 import type { QueryResultColumn, ColumnInfo } from '../types/database'
 import { useI18n } from '../i18n'
@@ -148,7 +127,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const props = defineProps<{
   rows: Record<string, any>[]
@@ -194,7 +173,7 @@ function isCellSelected(row: Record<string, any>, field: string): boolean {
   return !!sel && sel.row === row && sel.field === field
 }
 
-/** el-table（编辑模式）单元格点击/右键：选中该格。 */
+/** el-table 单元格点击：选中该格。 */
 function onCellClick(row: Record<string, any>, column?: { property?: string }) {
   const field = column?.property
   if (!field || !props.columns.some(c => c.name === field)) return
@@ -223,7 +202,7 @@ function openCellMenu(x: number, y: number) {
   cellMenuRef.value?.openAt(x, y)
 }
 
-/** 编辑模式 el-table 的选中高亮（v2 只读模式在 cellRenderer 里判断）。 */
+/** 单元格选中高亮（cellClassName 挂在 el-table 的 td 上）。 */
 function cellClassName({ row, columnIndex }: { row: Record<string, any>; columnIndex: number }) {
   const col = props.columns[columnIndex]
   if (col && isCellSelected(row, col.name)) return 'db-cell-selected'
@@ -267,45 +246,6 @@ function onGridKeydown(e: KeyboardEvent) {
   if (!sel) return
   e.preventDefault()
   writeClipboard(formatCell(sel.row[sel.field]))
-}
-
-// P1: el-table-v2 虚拟滚动列配置（只读模式）。cellRenderer 用 h() 渲染单元格，
-// 保持 null/value 格式与编辑模式 el-table 一致。只读模式下无 pending 高亮。
-// 单击选中 + 右键菜单：闭包直接引用 row/col，比事件冒泡命中检测可靠。
-const v2Columns = computed(() => {
-  return props.columns.map((col) => ({
-    key: col.name,
-    dataKey: col.name,
-    title: colTitle(col),
-    width: 150,
-    flexGrow: 1,
-    sortable: true,
-    cellRenderer: ({ cellData, rowData }: { cellData: any; rowData: Record<string, any> }) => {
-      const content = cellData === null
-        ? h('span', { class: 'cell-null' }, t('db.null'))
-        : h('span', { class: 'cell-value' }, formatCell(cellData))
-      return h(
-        'div',
-        {
-          class: ['db-cell', { 'db-cell-selected': isCellSelected(rowData, col.name) }],
-          onClick: () => selectCell(rowData, col.name),
-          onContextmenu: (e: MouseEvent) => {
-            e.preventDefault()
-            e.stopPropagation()
-            selectCell(rowData, col.name)
-            openCellMenu(e.clientX, e.clientY)
-          },
-        },
-        [content],
-      )
-    },
-  }))
-})
-
-function onV2SortChange({ key, order }: { key: string; order?: string }) {
-  const ord: 'asc' | 'desc' | null =
-    order === 'asc' ? 'asc' : order === 'desc' ? 'desc' : null
-  emit('sort-change', { field: key, order: ord })
 }
 
 /** Currently edited cell (row + column name). */
@@ -545,12 +485,8 @@ defineExpose({
   width: 100%;
   overflow: hidden;
   outline: none;
-  display: flex;
-  flex-direction: column;
 }
 .db-result-table {
-  flex: 1;
-  min-height: 0;
   --el-table-header-bg-color: var(--bg-elevated, var(--bg-surface));
   --el-table-tr-bg-color: var(--bg-surface);
   --el-table-row-hover-bg-color: var(--bg-hover);
@@ -559,14 +495,6 @@ defineExpose({
   --el-table-text-color: var(--text-primary);
   --el-table-bg-color: var(--bg-surface);
   font-size: 0.75rem;
-}
-.db-empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
-  font-size: 13px;
 }
 .row-actions {
   display: inline-flex;
@@ -582,12 +510,7 @@ defineExpose({
   font-family: var(--font-mono, monospace);
   font-size: 0.75rem;
 }
-/* 单元格选中态（编辑模式 el-table 经 cellClassName 挂载；v2 只读模式在
-   cellRenderer 的 db-cell div 上挂载）。 */
-.db-cell {
-  cursor: default;
-}
-.db-cell-selected,
+/* 单元格选中态（经 cellClassName 挂在 el-table 生成的 td 上，需 :deep）。 */
 .db-result-table :deep(.db-cell-selected) {
   background-color: var(--accent-subtle, rgba(64, 128, 255, 0.15));
   box-shadow: inset 0 0 0 1px var(--accent);
