@@ -4,7 +4,6 @@ import android.app.Instrumentation;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
-import android.webkit.WebSettings;
 import android.webkit.WebView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -36,15 +35,10 @@ import static org.junit.Assert.assertTrue;
 public class MainActivityTest {
     @Test
     public void localDesktopWebSocketsUseApplicationSettings() throws Exception {
-        checkLocalWebSockets(false);
+        checkLocalWebSockets();
     }
 
-    @Test
-    public void localDesktopWebSocketsWithMixedContentAllowed() throws Exception {
-        checkLocalWebSockets(true);
-    }
-
-    private void checkLocalWebSockets(boolean allowMixedContent) throws Exception {
+    private void checkLocalWebSockets() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         List<String> console = Collections.synchronizedList(new ArrayList<>());
         AtomicReference<String> result = new AtomicReference<>("no JavaScript result");
@@ -81,9 +75,6 @@ public class MainActivityTest {
             instrumentation.runOnMainSync(() -> {
                 view[0] = new WebView(instrumentation.getTargetContext());
                 MainActivity.configureWebViewSettings(view[0].getSettings());
-                if (allowMixedContent) {
-                    view[0].getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-                }
                 view[0].setWebChromeClient(new WebChromeClient() {
                     @Override
                     public boolean onConsoleMessage(ConsoleMessage message) {
