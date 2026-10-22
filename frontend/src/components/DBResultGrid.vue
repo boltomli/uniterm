@@ -1,5 +1,10 @@
 <template>
-  <div class="db-result-grid" tabindex="0">
+  <div
+    ref="gridRootEl"
+    class="db-result-grid"
+    tabindex="0"
+    @keydown="onGridKeydown"
+  >
     <el-table
       :key="tableKey"
       ref="tableRef"
@@ -10,8 +15,11 @@
       style="width: 100%"
       class="db-result-table"
       :empty-text="emptyText"
+      :cell-class-name="cellClassName"
       @sort-change="onSortChange"
       @cell-dblclick="onCellDblClick"
+      @cell-click="onCellClick"
+      @cell-contextmenu="onCellContextMenu"
     >
       <el-table-column
         v-for="col in columns"
@@ -92,6 +100,19 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- 单元格右键菜单：复制单元格 / 复制整行 / 复制列名 -->
+    <Menu ref="cellMenuRef" v-model:visible="cellMenuVisible">
+      <MenuItem :class="{ disabled: !selectedCell }" @click="copySelectedCell">
+        {{ t('db.copyCell') }}
+      </MenuItem>
+      <MenuItem :class="{ disabled: !selectedCell }" @click="copySelectedRow">
+        {{ t('db.copyRow') }}
+      </MenuItem>
+      <MenuItem :class="{ disabled: !selectedCell }" @click="copySelectedColumnName">
+        {{ t('db.copyColumnName') }}
+      </MenuItem>
+    </Menu>
   </div>
 </template>
 
@@ -101,6 +122,10 @@ import { Pencil, Trash2 } from '@lucide/vue'
 import type { QueryResultColumn, ColumnInfo } from '../types/database'
 import { useI18n } from '../i18n'
 import { uiPx } from '../utils/uiScale'
+import { writeClipboard } from '../composables/useClipboardWrite'
+import Menu from './Menu.vue'
+import MenuItem from './MenuItem.vue'
+
 
 const { t } = useI18n()
 
@@ -127,7 +152,101 @@ const emit = defineEmits<{
 const tableRef = ref<any>(null)
 const cellInputEl = ref<HTMLInputElement | null>(null)
 
+
 const tableKey = computed(() => `edit-${props.canEdit ? 1 : 0}-cols-${props.columns.map(c => c.name).join('|')}`)
+
+// ── 单元格选中与复制 ──
+// 数据库结果网格的单元格是 div 渲染，浏览器原生 Ctrl+C 只对文本拖选生效。
+// 这里补齐桌面数据库客户端（DBeaver/Navicat）的标准交互：
+//   单击选中 → Ctrl/Cmd+C 复制该格 → 右键菜单提供格/行/列名复制。
+const gridRootEl = ref<HTMLElement | null>(null)
+const selectedCell = ref<{ row: Record<string, any>; field: string } | null>(null)
+
+function selectCell(row: Record<string, any>, field: string) {
+  selectedCell.value = { row, field }
+  // 容器获得焦点，keydown（Ctrl+C）才能路由到这里；不抢编辑态 input 的焦点。
+  if (!editingRow.value) gridRootEl.value?.focus({ preventScroll: true })
+}
+
+function isCellSelected(row: Record<string, any>, field: string): boolean {
+  const sel = selectedCell.value
+  return !!sel && sel.row === row && sel.field === field
+}
+
+/** el-table 单元格点击：选中该格。 */
+function onCellClick(row: Record<string, any>, column?: { property?: string }) {
+  const field = column?.property
+  if (!field || !props.columns.some(c => c.name === field)) return
+  selectCell(row, field)
+}
+
+/** el-table 单元格右键：选中并打开菜单（element-plus 传参 row/column/cell/event）。 */
+function onCellContextMenu(
+  row: Record<string, any>,
+  column: { property?: string },
+  _cell: HTMLElement,
+  event: MouseEvent,
+) {
+  const field = column?.property
+  if (!field || !props.columns.some(c => c.name === field)) return
+  event.preventDefault()
+  event.stopPropagation()
+  selectCell(row, field)
+  openCellMenu(event.clientX, event.clientY)
+}
+
+const cellMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const cellMenuVisible = ref(false)
+function openCellMenu(x: number, y: number) {
+  cellMenuVisible.value = true
+  cellMenuRef.value?.openAt(x, y)
+}
+
+/** 单元格选中高亮（cellClassName 挂在 el-table 的 td 上）。 */
+function cellClassName({ row, columnIndex }: { row: Record<string, any>; columnIndex: number }) {
+  const col = props.columns[columnIndex]
+  if (col && isCellSelected(row, col.name)) return 'db-cell-selected'
+  return ''
+}
+
+function copySelectedCell() {
+  const sel = selectedCell.value
+  if (sel) writeClipboard(formatCell(sel.row[sel.field]))
+  cellMenuVisible.value = false
+}
+
+/** 整行复制为 TSV（Tab 分隔），可直接粘贴进 Excel/Numbers 分列。 */
+function copySelectedRow() {
+  const sel = selectedCell.value
+  if (sel) {
+    const line = props.columns.map(c => formatCell(sel.row[c.name])).join('\t')
+    writeClipboard(line)
+  }
+  cellMenuVisible.value = false
+}
+
+function copySelectedColumnName() {
+  const sel = selectedCell.value
+  if (sel) writeClipboard(sel.field)
+  cellMenuVisible.value = false
+}
+
+/**
+ * 网格容器 keydown：Ctrl/Cmd+C 复制选中单元格。用户用鼠标拖选了真实文本时
+ * 放行默认复制（尊重手动选区），与终端"有选区才复制"的语义一致。
+ */
+function onGridKeydown(e: KeyboardEvent) {
+  if (e.type !== 'keydown' || (e.key !== 'c' && e.key !== 'C')) return
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return
+  // 正在编辑单元格时，input 的默认复制优先。
+  if (editingRow.value) return
+  const text = window.getSelection()?.toString() ?? ''
+  if (text) return // 用户拖选了文本，走浏览器默认复制
+  const sel = selectedCell.value
+  if (!sel) return
+  e.preventDefault()
+  writeClipboard(formatCell(sel.row[sel.field]))
+}
 
 /** Currently edited cell (row + column name). */
 const editingRow = ref<Record<string, any> | null>(null)
@@ -344,6 +463,8 @@ watch(() => props.rows, () => {
     pending.clear()
     bumpPending()
   }
+  // 新结果集到达：旧选中单元格已失效。
+  selectedCell.value = null
 })
 
 defineExpose({
@@ -388,6 +509,12 @@ defineExpose({
 .cell-value {
   font-family: var(--font-mono, monospace);
   font-size: 0.75rem;
+}
+/* 单元格选中态（经 cellClassName 挂在 el-table 生成的 td 上，需 :deep）。 */
+.db-result-table :deep(.db-cell-selected) {
+  background-color: var(--accent-subtle, rgba(64, 128, 255, 0.15));
+  box-shadow: inset 0 0 0 1px var(--accent);
+  outline: none;
 }
 .cell-pending {
   background-color: var(--accent-subtle, rgba(64, 128, 255, 0.12));
