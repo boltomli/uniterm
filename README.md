@@ -305,6 +305,7 @@ Thanks to the following people for contributing code and improvements, and to ev
 - [@zhongqian97](https://github.com/zhongqian97)
 - [@laigcss](https://github.com/laigcss)
 - [@lutzr400](https://github.com/lutzr400)
+- [@Merrcurys](https://github.com/Merrcurys)
 
 ## License
 

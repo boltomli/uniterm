@@ -305,6 +305,7 @@ uniTerm/
 - [@zhongqian97](https://github.com/zhongqian97)
 - [@laigcss](https://github.com/laigcss)
 - [@lutzr400](https://github.com/lutzr400)
+- [@Merrcurys](https://github.com/Merrcurys)
 
 ## 开源协议
 
