@@ -187,6 +187,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import type { TableInfo } from '../types/database'
+import { tryAndroidSave } from '../utils/androidSave'
 
 const { t } = useI18n()
 
@@ -481,9 +482,17 @@ async function exportTable(withStructure: boolean, withData: boolean) {
   const tableName = ctxTableName.value
   try {
     const sql = await DumpTable(props.sessionId, dbName, tableName, withStructure, withData)
+    const b64 = encodeBase64(sql)
+    // Android: save through the system "save to" picker instead of the
+    // (unsupported) native save dialog.
+    const androidOutcome = await tryAndroidSave(tableName + '.sql', 'text/plain', b64)
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') msg.success(t('db.exportDone', { name: tableName }))
+      return
+    }
     const path = await SaveFileDialogFiltered(t('db.exportSQL'), tableName + '.sql', 'SQL File', '*.sql')
     if (!path) return
-    await WriteFileBase64(path, encodeBase64(sql))
+    await WriteFileBase64(path, b64)
     msg.success(t('db.exportDone', { name: tableName }))
   } catch (e: any) {
     msg.error(e?.message || String(e))

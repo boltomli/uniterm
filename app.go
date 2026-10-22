@@ -2106,6 +2106,25 @@ func (a *App) GetDesktopPath() (string, error) {
 	return filepath.Join(homeDir, "Desktop"), nil
 }
 
+// GetSaveTempPath stages a file under the app's temp dir for the Android
+// "save to" flow: Android has no save dialog that returns a filesystem path
+// (the system picker yields a SAF URI), so exports are written here first and
+// the Android layer streams the staged file into the user-chosen destination,
+// deleting it afterwards. Only used on Android; desktop flows pick a real
+// destination via the save dialog instead. The returned name is uniquified so
+// concurrent exports never collide on the same staged file.
+func (a *App) GetSaveTempPath(fileName string) (string, error) {
+	name := filepath.Base(strings.ReplaceAll(fileName, "\\", "/"))
+	if name == "" || name == "." || name == ".." {
+		name = "export.bin"
+	}
+	dir := filepath.Join(os.TempDir(), "save")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), name)), nil
+}
+
 // GetDefaultSSHKeyPaths returns the local default SSH private-key paths for
 // the connection form's "use default" button. The standard OpenSSH names under
 // ~/.ssh are listed in preference order (id_ed25519, id_rsa, id_ecdsa,

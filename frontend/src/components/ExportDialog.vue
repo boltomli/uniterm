@@ -25,6 +25,7 @@ import { ref, watch } from 'vue'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { ExportConnections, SaveFileDialogFiltered } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { androidSaveAvailable, finishAndroidSave, stageAndroidSave } from '../utils/androidSave'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ (e: 'update:visible', v: boolean): void; (e: 'done'): void }>()
@@ -43,11 +44,23 @@ function onCancel() { emit('update:visible', false) }
 async function onExport() {
   if (!password.value) { msg.error(t('importExport.configPassword')); return }
   if (password.value !== confirmPassword.value) { msg.error(t('importExport.passwordMismatch')); return }
-  const dest = await SaveFileDialogFiltered(t('importExport.exportTitle'), 'uniterm-connections.utm', 'uniTerm (*.utm)', '*.utm')
-  if (!dest) return
+  // Android has no save dialog — stage the export in the sandbox and hand it
+  // to the system "save to" picker (see androidSave.ts).
+  const viaAndroid = androidSaveAvailable()
   exporting.value = true
   try {
+    let dest: string
+    if (viaAndroid) {
+      dest = await stageAndroidSave('uniterm-connections.utm')
+    } else {
+      dest = await SaveFileDialogFiltered(t('importExport.exportTitle'), 'uniterm-connections.utm', 'uniTerm (*.utm)', '*.utm')
+      if (!dest) return
+    }
     await ExportConnections(dest, password.value)
+    if (viaAndroid) {
+      const outcome = await finishAndroidSave(dest, 'uniterm-connections.utm', 'application/octet-stream')
+      if (outcome !== 'saved') return
+    }
     msg.success(t('importExport.exported'))
     emit('done')
     emit('update:visible', false)

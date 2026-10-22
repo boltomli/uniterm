@@ -357,6 +357,7 @@ import {
 } from '../services/attachments'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { isMobilePlatform } from '../utils/platform'
+import { tryAndroidSave } from '../utils/androidSave'
 import AIMessage from './AIMessage.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -929,12 +930,20 @@ async function onMsgCtxExport() {
   try {
     const md = aiStore.exportSessionMarkdown(id)
     const safe = s.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
-    const path = await SaveFileDialogFiltered(t('ai.exportMd'), `${safe}.md`, 'Markdown File', '*.md')
-    if (!path) return
     const bytes = new TextEncoder().encode(md)
     let bin = ''
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-    await WriteFileBase64(path, btoa(bin))
+    const b64 = btoa(bin)
+    // Android: save through the system "save to" picker instead of the
+    // (unsupported) native save dialog.
+    const androidOutcome = await tryAndroidSave(`${safe}.md`, 'text/markdown', b64)
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') ElMessage.success(t('ai.exportDone', { name: s.name }))
+      return
+    }
+    const path = await SaveFileDialogFiltered(t('ai.exportMd'), `${safe}.md`, 'Markdown File', '*.md')
+    if (!path) return
+    await WriteFileBase64(path, b64)
     ElMessage.success(t('ai.exportDone', { name: s.name }))
   } catch (e: any) {
     ElMessage.error(e?.message || String(e))
