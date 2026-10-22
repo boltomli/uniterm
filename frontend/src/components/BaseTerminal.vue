@@ -145,6 +145,7 @@ import { WriteFileBase64, SaveFileDialog, FrontendLog, EnableSessionOutputLog, D
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
 import { isMobilePlatform } from '../utils/platform'
+import { tryAndroidSave } from '../utils/androidSave'
 import { applyMobileCtrl } from '../utils/mobileCtrlKey'
 import { msg } from '../services/message'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -801,9 +802,14 @@ async function exportContent() {
       return
     }
     try {
+      const b64 = toBase64(content)
+      // Android: save through the system "save to" picker instead of the
+      // (unsupported) native save dialog.
+      const androidOutcome = await tryAndroidSave('terminal.txt', 'text/plain', b64)
+      if (androidOutcome !== 'fallback') return
       const filePath = await SaveFileDialog('terminal.txt')
       if (!filePath) return
-      await WriteFileBase64(filePath, toBase64(content))
+      await WriteFileBase64(filePath, b64)
     } catch (e) {
       console.error('Export failed:', e)
     }

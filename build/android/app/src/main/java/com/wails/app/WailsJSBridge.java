@@ -122,6 +122,18 @@ public class WailsJSBridge {
     }
 
     /**
+     * Launch the system "save to" document picker (ACTION_CREATE_DOCUMENT) and
+     * stream a staged temp file into the user-chosen destination.
+     * optionsJson: {"tempPath","name","mime"}. Result → "common:saveDocument"
+     * event with {"saved":true} | {"cancelled":true} | {"error":"..."}.
+     * Called from JavaScript: wails.saveDocument(json)
+     */
+    @JavascriptInterface
+    public void saveDocument(final String optionsJson) {
+        bridge.saveDocument(optionsJson);
+    }
+
+    /**
      * Check if we're running in debug mode
      * Called from JavaScript: wails.isDebug()
      *

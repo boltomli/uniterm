@@ -222,6 +222,7 @@ import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
 import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry } from '../types/database'
 import { ScriptResult } from '../../bindings/github.com/ys-ll/uniterm/backend/database/models'
+import { tryAndroidSave } from '../utils/androidSave'
 
 const { t } = useI18n()
 
@@ -345,10 +346,19 @@ async function onExportResults(format: 'csv' | 'txt' | 'json') {
   try {
     const ext = format === 'json' ? 'json' : format === 'txt' ? 'txt' : 'csv'
     const label = format === 'json' ? 'JSON File' : format === 'txt' ? 'Text File' : 'CSV File'
+    const mime = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/plain'
     const defaultName = `${props.tableName || 'query_result'}_${new Date().toISOString().slice(0, 10)}.${ext}`
+    const b64 = encodeBase64(buildExportText(format))
+    // Android: save through the system "save to" picker instead of the
+    // (unsupported) native save dialog.
+    const androidOutcome = await tryAndroidSave(defaultName, mime, b64)
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') msg.success(t('db.exportDone', { name: defaultName }))
+      return
+    }
     const path = await SaveFileDialogFiltered(t('db.exportResults'), defaultName, label, `*.${ext}`)
     if (!path) return
-    await WriteFileBase64(path, encodeBase64(buildExportText(format)))
+    await WriteFileBase64(path, b64)
     msg.success(t('db.exportDone', { name: path.split('/').pop() || defaultName }))
   } catch (e: any) {
     msg.error(e?.message || String(e))
