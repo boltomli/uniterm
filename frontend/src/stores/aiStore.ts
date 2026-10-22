@@ -6,6 +6,7 @@ import { SaveAISessions, LoadAISessions } from '../../bindings/github.com/ys-ll/
 import { buildUserContent, redactAttachmentsForLog } from '../services/attachments'
 import { useLocalStateStore } from './localStateStore'
 import { useTabStore } from './tabStore'
+import { usePanelStore } from './panelStore'
 import { isMobilePlatform } from '../utils/platform'
 import { t } from '../i18n'
 
@@ -414,6 +415,22 @@ export const useAIStore = defineStore('ai', () => {
     }
   }
 
+  // Default name for a new session (issue #1036): the active terminal's
+  // connection — the AI-locked panel first, then the active tab's panel —
+  // named after its connection name (falling back to user@host). Without an
+  // identifiable terminal the generic label stays. The first-message
+  // auto-naming only replaces the generic label, so a host-derived name
+  // survives untouched; manual rename keeps working as before.
+  function hostLabelForActiveTerminal(): string | null {
+    const tabStore = useTabStore()
+    const panelId = tabStore.getAILockedPanel() || tabStore.getActivePanelId()
+    const cfg = panelId ? usePanelStore().getPanel(panelId)?.config : null
+    if (!cfg) return null
+    if (cfg.name) return cfg.name
+    if (cfg.host) return cfg.user ? `${cfg.user}@${cfg.host}` : cfg.host
+    return null
+  }
+
   function createSession(name?: string) {
     contextRevision.value++
     contextNotice.value = ''
@@ -421,7 +438,7 @@ export const useAIStore = defineStore('ai', () => {
     const now = Date.now()
     const session: AISession = {
       id: `session-${now}`,
-      name: name || t('ai.newSession'),
+      name: name || hostLabelForActiveTerminal() || t('ai.newSession'),
       createdAt: now,
       updatedAt: now,
       messages: []
