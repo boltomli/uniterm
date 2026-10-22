@@ -53,7 +53,7 @@ const panelState = shallowReactive<{
 }>({
   panels: shallowReactive(new Map()),
   transferTasks: new Map(),
-  proxyAddrs: new Map(),
+  proxyAddrs: shallowReactive(new Map()),
   vncCaches: new Map(),
   spiceCaches: new Map()
 })

@@ -14,6 +14,7 @@ android {
         applicationId "net.uniterm.app"
         minSdk 21
         targetSdk 35
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // App version comes from the build chain (Taskfile passes -P
         // properties derived from the release tag); dev builds keep 1.0.
         versionCode project.findProperty("appVersionCode")?.toInteger() ?: 1
@@ -77,6 +78,8 @@ android {
 }
 
 dependencies {
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.webkit:webkit:1.9.0'
     implementation 'com.google.android.material:material:1.11.0'
