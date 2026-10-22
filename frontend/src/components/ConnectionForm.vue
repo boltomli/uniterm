@@ -186,8 +186,8 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
-            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
-              <el-input v-model="form.dbName" :placeholder="t('db.databases')" />
+            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceName') : t('db.databases')" :required="form.dbType === 'postgres' || (form.type === 'database' && form.dbType === 'oracle')">
+              <el-input v-model="form.dbName" :placeholder="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceNamePlaceholder') : t('db.databases')" />
             </el-form-item>
             <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.shell')">
               <el-select v-model="form.shellPath" filterable allow-create clearable>
@@ -1795,6 +1795,9 @@ function normalizeForm(): ConnectionConfig {
   }
   if (normalized.type === 'database' && normalized.dbType === 'postgres' && !normalized.dbName?.trim()) {
     throw new Error(t('db.pgDbNameRequired'))
+  }
+  if (normalized.type === 'database' && normalized.dbType === 'oracle' && !normalized.dbName?.trim()) {
+    throw new Error(t('db.serviceNameRequired'))
   }
   if (normalized.type === 'elasticsearch' && normalized.authType === 'apikey' && !normalized.password?.trim()) {
     throw new Error(t('conn.esApiKeyRequired'))
