@@ -129,8 +129,6 @@ export const useCompanionStore = defineStore('companion', () => {
     return sessionStore.getStatus(panel.sessionId) === 'connected'
   })
 
-  const canToggle = computed(() => filesConnected.value)
-
   const currentSftpSessionId = computed(() => {
     const pid = activeFilesPanelId.value
     if (!pid) return null
@@ -305,30 +303,6 @@ export const useCompanionStore = defineStore('companion', () => {
     }
   }
 
-  async function toggleFiles() {
-    if (!canToggle.value && !filesVisible.value) return
-    if (filesVisible.value) {
-      filesVisible.value = false
-      return
-    }
-    const pid = getActiveFilesPanelId()
-    if (!pid) return
-    filesVisible.value = true
-    await ensureSftp(pid)
-  }
-
-  async function toggleMonitor() {
-    if (!canToggle.value && !monitorVisible.value) return
-    if (monitorVisible.value) {
-      monitorVisible.value = false
-      return
-    }
-    const pid = getActiveSshPanelId()
-    if (!pid) return
-    monitorVisible.value = true
-    await ensureMonitor(pid)
-  }
-
   // Follow-terminal-path is DEFAULT-OFF: the record only ever stores an
   // explicit `true` (user turned it on); absence means disabled.
   function toggleFollowPath(panelId: string) {
@@ -403,15 +377,12 @@ export const useCompanionStore = defineStore('companion', () => {
     activeFilesPanelId,
     sshConnected,
     filesConnected,
-    canToggle,
     currentSftpSessionId,
     currentMonitorSessionId,
     transferKey,
     sftpTransferKeyOf,
     ensureSftp,
     ensureMonitor,
-    toggleFiles,
-    toggleMonitor,
     disposeForPanel,
     disposeForPanels,
     setFilesWidth,

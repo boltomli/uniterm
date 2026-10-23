@@ -961,28 +961,44 @@ function createNewTab() {
 }
 
 // ── Keyboard shortcut handlers (module-level so watch can access them) ──
+
+// Shared semantics for the three sidebar shortcuts (connections/files/monitor):
+// when the target view is not in the foreground (sidebar hidden, or open on a
+// different view) open the sidebar on it; when it already is, collapse the
+// whole sidebar and hand focus back to the terminal. Foreground detection
+// reads the sidebar's real activeView, not the companionStore flags — those
+// only control whether the files/monitor content is loaded and can drift from
+// the view actually shown.
+type SidebarTabView = 'connections' | 'files' | 'monitor'
+
+// Collapse the left sidebar and hand focus back to the current panel's
+// terminal. The files/monitor load flags are left to Sidebar's own view logic.
+function closeSidebar() {
+  sidebarVisible.value = false
+  const pid = tabStore.getActivePanelId()
+  if (pid) nextTick(() => focusPanelTerminal(pid))
+}
+
+// Open the left sidebar with its visible tab switched to the given view,
+// exactly like clicking that tab (Sidebar.openTab routes to each tab's own
+// open logic).
+function openSidebarToTab(view: SidebarTabView) {
+  sidebarVisible.value = true
+  nextTick(() => sidebarRef.value?.openTab(view))
+}
+
+function sidebarViewShortcut(view: SidebarTabView) {
+  if (sidebarVisible.value && sidebarRef.value?.activeView === view) closeSidebar()
+  else openSidebarToTab(view)
+}
+
 const actionHandlers: Record<ShortcutAction, () => void> = {
   nextTab: () => tabStore.nextTab(),
   prevTab: () => tabStore.prevTab(),
   newConnection: () => { createNewTab() },
-  toggleSidebar: () => {
-    if (sidebarVisible.value) {
-      sidebarVisible.value = false
-      const pid = tabStore.getActivePanelId()
-      if (pid) nextTick(() => focusPanelTerminal(pid))
-    } else {
-      sidebarVisible.value = true
-      nextTick(() => sidebarRef.value?.focusSearch())
-    }
-  },
-  toggleFilePanel: () => {
-    // 切换文件边栏（需当前面板支持，如 SSH/WSL/容器 exec 终端）
-    companionStore.toggleFiles()
-  },
-  toggleMonitor: () => {
-    // 切换资源监控边栏（需当前面板支持，如 SSH 终端）
-    companionStore.toggleMonitor()
-  },
+  toggleSidebar: () => sidebarViewShortcut('connections'),
+  toggleFilePanel: () => sidebarViewShortcut('files'),
+  toggleMonitor: () => sidebarViewShortcut('monitor'),
   openQuickCommands: () => {
     sidebarVisible.value = true
     nextTick(() => sidebarRef.value?.openQuickCommands())
