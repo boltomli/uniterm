@@ -1312,12 +1312,23 @@
               <div class="setting-desc">{{ t('settings.mcpPolicyDesc') }}</div>
             </div>
             <div class="setting-control">
-              <el-select v-model="mcp.policy" @change="saveMcp()">
-                <!-- Same option set and labels as the AI panel's mode menu (ai.*) so both fronts read identically. -->
-                <el-option :label="t('ai.confirmAll')" value="confirm_all" />
-                <el-option :label="t('ai.confirmWrite')" value="confirm_write" />
-                <el-option :label="t('ai.confirmDangerous')" value="confirm_dangerous" />
-                <el-option :label="t('ai.bypass')" value="bypass" />
+              <el-select v-model="mcp.policy" popper-class="policy-select-popper" @change="saveMcp()">
+                <!-- Same option set and labels as the AI panel's mode menu (ai.*)
+                     so both fronts read identically; the colors mirror that menu's
+                     mode-option classes (dropdown-only — the selected label in the
+                     input stays default-colored). -->
+                <el-option :label="t('ai.confirmAll')" value="confirm_all">
+                  <span class="policy-option policy-confirm">{{ t('ai.confirmAll') }}</span>
+                </el-option>
+                <el-option :label="t('ai.confirmWrite')" value="confirm_write">
+                  <span class="policy-option policy-write">{{ t('ai.confirmWrite') }}</span>
+                </el-option>
+                <el-option :label="t('ai.confirmDangerous')" value="confirm_dangerous">
+                  <span class="policy-option policy-warning">{{ t('ai.confirmDangerous') }}</span>
+                </el-option>
+                <el-option :label="t('ai.bypass')" value="bypass">
+                  <span class="policy-option policy-auto">{{ t('ai.bypass') }}</span>
+                </el-option>
               </el-select>
             </div>
           </div>
