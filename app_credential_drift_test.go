@@ -97,6 +97,23 @@ func TestConnectPathsUseSharedSecretResolver(t *testing.T) {
 		}
 	}
 
+	// SessionStart owns the actual dial for terminal types (ssh/local/telnet/
+	// mosh/serial): CreateSession defers Connect until the frontend measured
+	// the real cols/rows, and the config arriving here is a FRESH redacted
+	// one from the webview. CreateSession's fill covers only its own discarded
+	// copy — without a fill here a saved-list connect / tab restore /
+	// reconnect dials with an empty password (SSH then prompts in the
+	// terminal for a secret that is already stored). Regression introduced
+	// by the EnsurePassword removal (19747633) and reported as "SSH 保存的
+	// 密码无用".
+	sessionStart := funcBody(t, "app_terminal.go", "(a *App) SessionStart")
+	if strings.Contains(sessionStart, "EnsurePassword(") {
+		t.Errorf("SessionStart must resolve secrets via fillStoredSecrets, not an unguarded EnsurePassword fallback")
+	}
+	if !strings.Contains(sessionStart, "fillStoredSecrets(") {
+		t.Errorf("SessionStart must call fillStoredSecrets (terminal types dial here with a fresh redacted config)")
+	}
+
 	// The companion file-transfer session (SFTP/SCP for MCP file tools) used
 	// to rely on the caller's config being materialized; channel clones pass
 	// a redacted frontend config, so it must resolve through the same guarded

@@ -503,7 +503,14 @@ func (a *App) SessionStart(sessionID string, config session.ConnectionConfig) er
 		return nil
 	}
 	// Terminal session types defer Connect() until SessionStart, and the
-	// frontend passes a fresh config here.
+	// frontend passes a fresh config here. That config arrives REDACTED
+	// (LoadConnections blanks every secret; the presence flags live on the
+	// panel), so the stored password/key text must be resolved Go-side by
+	// connection ID here too — CreateSession's own fill only covered its
+	// discarded local copy. Without this an SSH connect from the saved list,
+	// a tab restore or a reconnect dials with an empty password and the user
+	// is prompted for a secret that is already stored.
+	a.fillStoredSecrets(&config)
 	// Resolve an identity reference into a concrete password/key config
 	// before launching the connect goroutine.
 	if config.AuthType == "identity" {

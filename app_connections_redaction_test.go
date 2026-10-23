@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/session"
@@ -303,6 +304,51 @@ func TestFillStoredSecrets(t *testing.T) {
 			a.fillStoredSecrets(&cfg)
 			tc.expect(t, cfg)
 		})
+	}
+}
+
+// TestSessionStartResolvesRedactedSecrets: terminal session types (ssh,
+// local, telnet, mosh, serial) dial from SessionStart with a FRESH config
+// that the webview rebuilt from the REDACTED connection list — CreateSession's
+// fill only covered its own discarded copy. Without a fill in SessionStart a
+// saved-list connect / tab restore / reconnect reaches the SSH handshake with
+// an empty password and prompts in the terminal for a secret that is already
+// stored (reported as "SSH 连接保存的密码无用"); the old EnsurePassword
+// fallback there was removed with the password cache (19747633).
+func TestSessionStartResolvesRedactedSecrets(t *testing.T) {
+	a := newRedactionTestApp(t)
+	a.sessionManager = session.NewSessionManager()
+	seedConnections(t, a, []session.ConnectionConfig{
+		{ID: "c-pw", Name: "pw", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "u", AuthType: "password", Password: "pw-secret"},
+	})
+
+	s, err := a.sessionManager.Create("ssh", session.ConnectionConfig{Type: "ssh"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The config as the webview holds it for the saved connection: every
+	// secret blanked, the connection ID present.
+	redacted := session.ConnectionConfig{ID: "c-pw", Type: "ssh", Host: "127.0.0.1", Port: 1, User: "u", AuthType: "password"}
+	if err := a.SessionStart(s.ID(), redacted); err != nil {
+		t.Fatalf("SessionStart: %v", err)
+	}
+	defer func() { _ = a.CloseSession(s.ID()) }()
+
+	sshSess, ok := s.(*session.SSHSession)
+	if !ok {
+		t.Fatalf("session is %T, want *session.SSHSession", s)
+	}
+	// Connect runs async and stores the materialized config before dialing;
+	// poll for the resolved password instead of waiting on the dial.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got := sshSess.ConnectionConfig().Password; got == "pw-secret" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("SessionStart dial password = %q, want the stored %q", sshSess.ConnectionConfig().Password, "pw-secret")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
