@@ -12,6 +12,7 @@
           ref="treeRef"
           :session-id="sessionId"
           :default-db-name="defaultDbName"
+          :db-type="dbType"
           :active-db="activeDb"
           :active-table="activeTable"
           @select-table="onSelectTable"

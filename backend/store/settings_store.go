@@ -126,12 +126,18 @@ type AIModelConfig struct {
 	// ProxyId references a saved outbound proxy (proxies.json) used for all
 	// HTTP traffic to this model's BaseURL. Empty = direct connection.
 	ProxyID string `json:"proxyId,omitempty"`
+	// SessionHeader names an HTTP header that each request to this model's
+	// BaseURL carries with the current chat session's ID as the value —
+	// for gateways that do prompt caching / sticky routing per session
+	// (issue #1170). Empty = no such header.
+	SessionHeader string `json:"sessionHeader,omitempty"`
 }
 
 type AISettings struct {
-	MaxTurns      *int            `json:"maxTurns"`
-	Models        []AIModelConfig `json:"models"`
-	ActiveModelID string          `json:"activeModelId"`
+	MaxTurns *int            `json:"maxTurns"`
+	Models   []AIModelConfig `json:"models"`
+	// Read only for migration to local_state.json. New clients omit this field.
+	ActiveModelID string `json:"activeModelId,omitempty"`
 	// ExecutionMode is the AI panel's confirmation policy:
 	// confirm_write (default) / confirm_all / confirm_dangerous / bypass.
 	// F-02: default confirm_write to match the MCP server's policy — the
@@ -462,7 +468,6 @@ func defaultAISettings() AISettings {
 				Protocol: "anthropic",
 			},
 		},
-		ActiveModelID: "model-default",
 		ExecutionMode: strPtr(defaultExecutionMode),
 	}
 }

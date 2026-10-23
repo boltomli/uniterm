@@ -284,27 +284,42 @@ uniTerm/
 
 感谢以下朋友为 uniTerm 贡献代码与改进，以及每一位提交 issue 和建议的朋友，是你们让 uniTerm 变得更好 ❤️
 
-- [@yuwei5380](https://github.com/yuwei5380)
-- [@surenwuyuwuqiu](https://github.com/surenwuyuwuqiu)
-- [@wangxufeng](https://github.com/wangxufeng)
-- [@coderstory](https://github.com/coderstory)
-- [@jiayunora](https://github.com/jiayunora)
-- [@iCarrear](https://github.com/iCarrear)
-- [@boltomli](https://github.com/boltomli)
-- [@kxn](https://github.com/kxn)
-- [@windtear](https://github.com/windtear)
-- [@Sunshow](https://github.com/Sunshow)
-- [@feuvan](https://github.com/feuvan)
-- [@zhangsir1211](https://github.com/zhangsir1211)
-- [@sonnartliao](https://github.com/sonnartliao)
-- [@Teejer](https://github.com/Teejer)
-- [@IBRAHIMELAMRABET](https://github.com/IBRAHIMELAMRABET)
-- [@chris-edstrom](https://github.com/chris-edstrom)
-- [@andreafunicelli](https://github.com/andreafunicelli)
-- [@dungvv](https://github.com/dungvv)
-- [@zhongqian97](https://github.com/zhongqian97)
-- [@laigcss](https://github.com/laigcss)
-- [@lutzr400](https://github.com/lutzr400)
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/yuwei5380">@yuwei5380</a></td>
+    <td align="center"><a href="https://github.com/surenwuyuwuqiu">@surenwuyuwuqiu</a></td>
+    <td align="center"><a href="https://github.com/wangxufeng">@wangxufeng</a></td>
+    <td align="center"><a href="https://github.com/coderstory">@coderstory</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/jiayunora">@jiayunora</a></td>
+    <td align="center"><a href="https://github.com/iCarrear">@iCarrear</a></td>
+    <td align="center"><a href="https://github.com/boltomli">@boltomli</a></td>
+    <td align="center"><a href="https://github.com/kxn">@kxn</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/windtear">@windtear</a></td>
+    <td align="center"><a href="https://github.com/Sunshow">@Sunshow</a></td>
+    <td align="center"><a href="https://github.com/feuvan">@feuvan</a></td>
+    <td align="center"><a href="https://github.com/zhangsir1211">@zhangsir1211</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/sonnartliao">@sonnartliao</a></td>
+    <td align="center"><a href="https://github.com/Teejer">@Teejer</a></td>
+    <td align="center"><a href="https://github.com/IBRAHIMELAMRABET">@IBRAHIMELAMRABET</a></td>
+    <td align="center"><a href="https://github.com/chris-edstrom">@chris-edstrom</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/andreafunicelli">@andreafunicelli</a></td>
+    <td align="center"><a href="https://github.com/dungvv">@dungvv</a></td>
+    <td align="center"><a href="https://github.com/zhongqian97">@zhongqian97</a></td>
+    <td align="center"><a href="https://github.com/laigcss">@laigcss</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/lutzr400">@lutzr400</a></td>
+    <td align="center"><a href="https://github.com/Merrcurys">@Merrcurys</a></td>
+  </tr>
+</table>
 
 ## 开源协议
 

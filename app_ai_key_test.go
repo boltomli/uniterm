@@ -219,7 +219,7 @@ func TestResolveAPIKey(t *testing.T) {
 	}
 
 	// ChatCompletion refuses before dialing when nothing is stored.
-	if _, err := a.ChatCompletion("nope", MaskedAPIKey, "https://api.openai.com/v1", "m", "{}", "openai", "", "", ""); err == nil || !strings.Contains(err.Error(), "API key not configured") {
+	if _, err := a.ChatCompletion("nope", MaskedAPIKey, "https://api.openai.com/v1", "m", "{}", "openai", "", "", "", ""); err == nil || !strings.Contains(err.Error(), "API key not configured") {
 		t.Fatalf("ChatCompletion without a key: %v", err)
 	}
 	if _, err := a.FetchModels("nope", MaskedAPIKey, "https://api.openai.com/v1", "openai", ""); err == nil || !strings.Contains(err.Error(), "API key not configured") {

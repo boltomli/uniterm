@@ -84,3 +84,31 @@ func TestLocalStateSftpHiddenColumns(t *testing.T) {
 		t.Fatalf("legacy config should yield nil SftpHiddenColumns, got %v", legacy.SftpHiddenColumns)
 	}
 }
+
+func TestLocalStateAIPreferencesRoundtrip(t *testing.T) {
+	s := NewLocalStateStore(t.TempDir())
+	state, err := s.Load()
+	if err != nil || state.AI != nil {
+		t.Fatalf("legacy/default state should not invent an AI selection: %v, %v", state.AI, err)
+	}
+	state.AI = &AILocalState{ActiveModelID: "second", ModelPreferences: map[string]AIReasoningPreference{
+		"first":  {ReasoningEffort: "high"},
+		"second": {ReasoningEffort: "low"},
+	}}
+	if err := s.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewLocalStateStore(s.configDir)
+	got, err := restarted.Load()
+	if err != nil || got.AI == nil || got.AI.ActiveModelID != "second" || got.AI.ModelPreferences["first"].ReasoningEffort != "high" || got.AI.ModelPreferences["second"].ReasoningEffort != "low" {
+		t.Fatalf("lost local AI preferences: %+v, %v", got.AI, err)
+	}
+	got.SidebarVisible = false
+	if err := restarted.Save(got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := restarted.Load()
+	if again.AI == nil || len(again.AI.ModelPreferences) != 2 {
+		t.Fatal("unrelated local state save discarded AI preferences")
+	}
+}

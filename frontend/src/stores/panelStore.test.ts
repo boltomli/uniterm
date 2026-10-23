@@ -1,23 +1,13 @@
-// panelStore's TransferTaskUI.files contract (security.md finding 17):
-// per-task file detail is a Map<path, entry> whose entries are markRaw'd,
-// so a large directory transfer does not become thousands of deep-reactive
-// proxies inside the panelState, and removeTransferTasks drops the task
-// together with its file map — natural GC, transferTaskCenter keeps no
-// residual per-task map of its own.
-//
-// Tasks are only ever created by transferTaskCenter's event flow, so these
-// tests drive the store through it (same harness as
-// services/transferTaskCenter.test.ts).
-
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
-import { setActivePinia, createPinia } from 'pinia'
-import { isReactive, toRaw } from 'vue'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { isReactive, nextTick, toRaw, watch, type WatchStopHandle } from 'vue'
 
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   DisableSessionOutputLog: vi.fn(async () => {}),
   RegisterSessionForPanel: vi.fn(async () => {}),
   UnregisterSession: vi.fn(async () => {}),
 }))
+
 vi.mock('@wailsio/runtime', () => ({
   Events: { On: vi.fn(() => () => {}), Off: vi.fn() },
 }))
@@ -26,6 +16,65 @@ import { Events } from '@wailsio/runtime'
 import { registerTransferRoute } from '../services/transferTaskCenter'
 import { usePanelStore } from './panelStore'
 
+
+const watchers: WatchStopHandle[] = []
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  usePanelStore().proxyAddrs.clear()
+})
+
+afterEach(() => {
+  watchers.splice(0).forEach(stop => stop())
+})
+
+describe('remote desktop proxy readiness', () => {
+  it('starts a waiting RDP client when the proxy address arrives after mount', async () => {
+    const store = usePanelStore()
+    const startClient = vi.fn()
+    watchers.push(watch(() => store.getProxyAddr('rdp-panel'), address => {
+      if (address) startClient(address)
+    }, { immediate: true }))
+    await nextTick()
+    expect(startClient).not.toHaveBeenCalled()
+
+    store.setProxyAddr('rdp-panel', 'ws://127.0.0.1:41000/rdp-token')
+    await nextTick()
+    expect(startClient).toHaveBeenCalledExactlyOnceWith('ws://127.0.0.1:41000/rdp-token')
+  })
+
+  it('updates only the owning panel when a proxy is replaced or removed', async () => {
+    const store = usePanelStore()
+    store.setProxyAddr('rdp-panel', 'ws://127.0.0.1:41000/old-token')
+    const changed = vi.fn()
+    watchers.push(watch(() => store.getProxyAddr('rdp-panel'), changed))
+
+    store.setProxyAddr('other-panel', 'ws://127.0.0.1:42000/other-token')
+    await nextTick()
+    expect(changed).not.toHaveBeenCalled()
+
+    store.setProxyAddr('rdp-panel', 'ws://127.0.0.1:43000/new-token')
+    await nextTick()
+    expect(changed).toHaveBeenCalledTimes(1)
+    expect(changed.mock.calls[0]?.[0]).toBe('ws://127.0.0.1:43000/new-token')
+
+    store.removeProxyAddr('rdp-panel')
+    await nextTick()
+    expect(changed).toHaveBeenCalledTimes(2)
+    expect(changed.mock.calls[1]?.[0]).toBeUndefined()
+  })
+})
+
+// ── TransferTaskUI.files contract (security.md finding 17) ──
+// Per-task file detail is a Map<path, entry> whose entries are markRaw'd,
+// so a large directory transfer does not become thousands of deep-reactive
+// proxies inside the panelState, and removeTransferTasks drops the task
+// together with its file map — natural GC, transferTaskCenter keeps no
+// residual per-task map of its own.
+//
+// Tasks are only ever created by transferTaskCenter's event flow, so these
+// tests drive the store through it (same harness as
+// services/transferTaskCenter.test.ts).
 type EventMsg = Record<string, unknown>
 
 let handler: (ev: { data?: EventMsg }) => void

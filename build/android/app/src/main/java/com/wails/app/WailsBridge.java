@@ -1232,6 +1232,22 @@ public class WailsBridge {
     }
 
     /**
+     * Launch the system "save to" document picker. optionsJson:
+     * {"tempPath","name","mime"} — tempPath is a staged file inside the app
+     * sandbox that gets streamed into the user-chosen destination.
+     * Result → "common:saveDocument" event.
+     */
+    public void saveDocument(final String optionsJson) {
+        mainHandler.post(() -> {
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).launchSaveDocument(optionsJson);
+            } else {
+                emitEvent("common:saveDocument", "{\"error\":\"activity unavailable\"}");
+            }
+        });
+    }
+
+    /**
      * Start a foreground service that keeps the process alive for long-running
      * background work (with an ongoing notification). json: {"title","text"}.
      */

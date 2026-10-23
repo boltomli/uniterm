@@ -1,6 +1,7 @@
 <template>
   <div class="db-tree-panel">
 
+
     <div class="search-wrap">
       <input
         v-model="searchQuery"
@@ -187,6 +188,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import type { TableInfo } from '../types/database'
+import { tryAndroidSave } from '../utils/androidSave'
 
 const { t } = useI18n()
 
@@ -199,6 +201,7 @@ interface DbEntry {
 const props = defineProps<{
   sessionId: string
   defaultDbName?: string
+  dbType?: string
   activeDb?: string
   activeTable?: string
 }>()
@@ -240,13 +243,18 @@ async function loadTree() {
   try {
     const dbs = await GetDatabases(props.sessionId)
     // Auto-expand the connection's default db only when it's actually a real
-    // entry in the list. For databases where the configured "dbName" is not a
-    // browsable namespace (e.g. Oracle's service name), it won't match and we
-    // just list the available schemas collapsed.
+    // entry in the list. Oracle's dbName is the service name and never
+    // matches — that case falls through to the oracle branch below.
     let autoOpen = ''
     if (props.defaultDbName && dbs.includes(props.defaultDbName)) {
       const tables = await GetTables(props.sessionId, props.defaultDbName)
-      databases.value = [{ name: props.defaultDbName, tables, loaded: true }]
+      // 默认库置顶并展开（已加载表），其余可访问的数据库折叠显示，
+      // 点击展开时再懒加载表（见 ensureDbExpanded）。
+      const otherDbs = dbs.filter(d => d !== props.defaultDbName)
+      databases.value = [
+        { name: props.defaultDbName, tables, loaded: true },
+        ...otherDbs.map(d => ({ name: d, tables: [] as TableInfo[], loaded: false }))
+      ]
       expandedDbs.value = new Set([props.defaultDbName])
       autoOpen = props.defaultDbName
     } else if (dbs.length === 1) {
@@ -256,6 +264,19 @@ async function loadTree() {
       databases.value = [{ name: only, tables, loaded: true }]
       expandedDbs.value = new Set([only])
       autoOpen = only
+    } else if (dbs.length > 0 && props.dbType === 'oracle') {
+      // Oracle's dbName is the service name (e.g. FREEPDB1), which never
+      // matches a schema name — without this the tree would stay fully
+      // collapsed. Expand and open the first schema (the login user's
+      // default) and lazy-load the rest.
+      const first = dbs[0]
+      const tables = await GetTables(props.sessionId, first)
+      databases.value = [
+        { name: first, tables, loaded: true },
+        ...dbs.slice(1).map((d: string) => ({ name: d, tables: [] as TableInfo[], loaded: false }))
+      ]
+      expandedDbs.value = new Set([first])
+      autoOpen = first
     } else {
       databases.value = dbs.map((db: string) => ({ name: db, tables: [], loaded: false }))
       expandedDbs.value = new Set()
@@ -273,6 +294,7 @@ async function loadTree() {
 }
 
 watch(() => props.sessionId, (newId) => {
+
   if (newId) loadTree()
 }, { immediate: true })
 
@@ -465,9 +487,17 @@ async function exportTable(withStructure: boolean, withData: boolean) {
   const tableName = ctxTableName.value
   try {
     const sql = await DumpTable(props.sessionId, dbName, tableName, withStructure, withData)
+    const b64 = encodeBase64(sql)
+    // Android: save through the system "save to" picker instead of the
+    // (unsupported) native save dialog.
+    const androidOutcome = await tryAndroidSave(tableName + '.sql', 'text/plain', b64)
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') msg.success(t('db.exportDone', { name: tableName }))
+      return
+    }
     const path = await SaveFileDialogFiltered(t('db.exportSQL'), tableName + '.sql', 'SQL File', '*.sql')
     if (!path) return
-    await WriteFileBase64(path, encodeBase64(sql))
+    await WriteFileBase64(path, b64)
     msg.success(t('db.exportDone', { name: tableName }))
   } catch (e: any) {
     msg.error(e?.message || String(e))

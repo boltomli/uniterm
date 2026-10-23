@@ -21,7 +21,7 @@ import androidx.core.app.NotificationCompat;
  * {@link WailsBridge#stopForegroundService()}.
  */
 public class WailsForegroundService extends android.app.Service {
-    public static final String ACTION_START = "com.wails.app.FGS_START";
+    public static final String ACTION_START = BuildConfig.APPLICATION_ID + ".FGS_START";
     private static final String CHANNEL_ID = "wails_foreground";
     private static final int NOTIFICATION_ID = 0x57A1; // "WAI"
 

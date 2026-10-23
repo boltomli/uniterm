@@ -12,11 +12,21 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/ys-ll/uniterm/backend/log"
 )
 
-func (a *App) findMainWindow() uintptr { return 0 }
+func (a *App) findMainWindow() uintptr {
+	if a.win() == nil {
+		return 0
+	}
+	return uintptr(a.win().NativeWindow())
+}
+
+func additionalWindowOptions(options application.WebviewWindowOptions) application.WebviewWindowOptions {
+	options.Mac.WebviewPreferences.FullscreenEnabled.Set(true)
+	return options
+}
 
 // hideProcWindow is a no-op on non-Windows platforms: the console-flash issue
 // is Windows-specific (batch-file shims spawning cmd.exe). See app_windows.go.
@@ -206,4 +216,24 @@ func applyTrayIcon(tray *application.SystemTray) {
 // app_windows.go for the Windows exact-size scaling).
 func trayIconPNG() []byte {
 	return appIconTrayPNG
+}
+
+// Non-Windows stubs: reading the local clipboard's file list (CF_HDROP) has
+// no portable implementation, so the IronRDP engine's local→remote file paste
+// stays Windows-only; text clipboard is unaffected.
+
+func (a *App) ClipboardGetFiles() []ClipboardFileInfo {
+	return []ClipboardFileInfo{}
+}
+
+func (a *App) ClipboardReadFileChunk(index int, offset int64, size int) (string, error) {
+	return "", fmt.Errorf("clipboard file transfer is only supported on Windows")
+}
+
+func (a *App) setClipboardFiles(paths []string) error {
+	return fmt.Errorf("clipboard file transfer is only supported on Windows")
+}
+
+func (a *App) ClipboardReadFileChunkByID(id string, offset int64, size int) (string, error) {
+	return "", fmt.Errorf("clipboard file transfer is only supported on Windows")
 }

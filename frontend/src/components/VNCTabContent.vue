@@ -1,5 +1,14 @@
 <template>
-  <div class="vnc-tab-content">
+  <div
+    ref="container"
+    class="vnc-tab-content"
+    :class="{ 'is-fullscreen': isFullscreen }"
+    :data-remote-keyboard="keyboardFocused && !viewOnly ? 'true' : undefined"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
+    @keydown.capture="onLocalKey"
+    @keyup.capture="onLocalKey"
+  >
     <!-- Connecting state -->
     <div v-if="status === 'connecting'" class="vnc-overlay">
       <el-icon class="is-loading" :size="'2rem'"><Loader /></el-icon>
@@ -24,12 +33,13 @@
       v-show="status === 'connected'"
       ref="vncContainer"
       class="vnc-area"
+      :class="{ 'is-unscaled': !scaleViewport }"
       tabindex="0"
       @paste="onPaste"
     />
 
     <!-- Status bar -->
-    <div v-show="status === 'connected'" class="vnc-statusbar">
+    <div v-show="status === 'connected' && !isFullscreen" class="vnc-statusbar">
       <span class="vnc-status-dot" />
       <span>{{ t('vnc.connected') }}</span>
       <span class="vnc-status-sep">|</span>
@@ -61,19 +71,40 @@
         :inactive-text="t('vnc.scaleOff')"
         style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
       />
+      <span class="vnc-status-spacer" />
+      <button class="vnc-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
     </div>
+    <RemoteDesktopToolbar
+      v-if="isFullscreen"
+      v-model:scale-viewport="scaleViewport"
+      :host="config?.host || ''"
+      :port="config?.port || 5900"
+      :disabled="status !== 'connected'"
+      @restore="toggleFullscreen"
+      @focus-desktop="focusDesktop"
+      @minimize="blurDesktop"
+      @error="onToolbarError"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
+import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { ConnectionConfig } from '../types/session'
-import { Clipboard, Events } from '@wailsio/runtime'
-import { CreateSession, CloseSession, ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { Events } from '@wailsio/runtime'
+import { CreateSession, CloseSession, ResolveConnectionSecret, SetVNCKeyboardCapture, EncodeVNCClipboardText } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { createVncClipboard } from '../utils/vncClipboard'
+import { installVncPixelScaling } from '../utils/vncScaling'
+import { VncNativeKeyboard } from '../utils/vncKeyboard'
+import { queueRemoteKeyboardChange } from '../utils/remoteKeyboard'
+import type { NativeRdpKey } from '../utils/remoteKeyboard'
+import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
+import { readClipboardText, writeClipboard } from '../composables/useClipboardWrite'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -87,11 +118,24 @@ const props = defineProps<{
 const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
 const lastError = ref<string>('')
 const currentSessionId = ref<string | null>(props.sessionId)
+const container = ref<HTMLDivElement | null>(null)
+const isFullscreen = ref(false)
 const vncContainer = ref<HTMLDivElement | null>(null)
 const savedPassword = ref<string>('')
-const scaleViewport = ref(true)
+const scaleViewport = ref(false)
 const viewOnly = ref(false)
 const showDotCursor = ref(false)
+const keyboardFocused = ref(false)
+let keyboardCaptureId = ''
+let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
+let clipboardPoll: ReturnType<typeof setInterval> | null = null
+let clipboardSync: RdpClipboardSync | null = null
+let nativeKeyboard: VncNativeKeyboard | null = null
+let restoreDesktopInput: (() => void) | null = null
+let unsubKeyboard: (() => void) | null = null
+const inputKeys = new Set<string>()
+const sentKeys = new Map<string, number>()
+const inputQueue = new RdpInputQueue(error => console.error('VNC input/clipboard error:', error))
 
 function readThemeBackground(): string {
   // Pull the resolved --bg-base CSS variable, which the global theme
@@ -119,6 +163,28 @@ function watchThemeBackground() {
 let rfb: any = null
 let unsubStatus: (() => void) | null = null
 let isIniting = false
+let restorePixelScaling: (() => void) | null = null
+let pixelRatioQuery: MediaQueryList | null = null
+
+function onPixelRatioChange() {
+  pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
+  pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+  pixelRatioQuery.addEventListener('change', onPixelRatioChange)
+  rfb?._updateScale()
+}
+
+// LoadConnections 脱敏后渲染层不再持有连接密码；noVNC 的 RFB 握手需要明文，
+// 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
+async function resolvePassword(): Promise<string> {
+  if (!props.config) return ''
+  if (props.config.password) return props.config.password
+  try {
+    const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }
+    return secret.password || ''
+  } catch {
+    return ''
+  }
+}
 
 async function connect() {
   if (!props.config) return
@@ -148,20 +214,12 @@ async function connect() {
   }
 }
 
-// LoadConnections 脱敏后渲染层不再持有连接密码；noVNC 的 RFB 握手需要明文，
-// 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
-async function resolvePassword(): Promise<string> {
-  if (!props.config) return ''
-  if (props.config.password) return props.config.password
-  try {
-    const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }
-    return secret.password || ''
-  } catch {
-    return ''
-  }
-}
-
 async function reconnect() {
+  onFocusOut()
+  restoreDesktopInput?.()
+  restoreDesktopInput = null
+  restorePixelScaling?.()
+  restorePixelScaling = null
   if (currentSessionId.value) {
     try { await CloseSession(currentSessionId.value) } catch (_) {}
     currentSessionId.value = null
@@ -176,6 +234,11 @@ async function reconnect() {
 function initRFB(proxyAddr: string, password: string) {
   if (isIniting) return
   isIniting = true
+  onFocusOut()
+  restoreDesktopInput?.()
+  restoreDesktopInput = null
+  restorePixelScaling?.()
+  restorePixelScaling = null
 
   if (rfb) {
     try { rfb.disconnect() } catch (_) {}
@@ -205,67 +268,143 @@ function initRFB(proxyAddr: string, password: string) {
 
 function applyRFBOptions() {
   if (!rfb) return
+  restorePixelScaling?.()
+  restorePixelScaling = installVncPixelScaling(rfb)
   rfb.viewOnly = viewOnly.value
   rfb.scaleViewport = scaleViewport.value
   rfb.showDotCursor = showDotCursor.value
   rfb.background = readThemeBackground()
+  setupDesktopInput()
 }
 
-// RFB event handlers are named instance-scope functions so they can be
-// re-bound: the cache-restore path hands this component the previous
-// instance's rfb, whose listeners still point at that dead instance's refs.
-function onRfbConnect() {
-  // issue #95: only flip to 'connected' on the noVNC connect event.
-  // Previously status='connected' was set as soon as the local proxy was
-  // up, well before the RFB handshake completed, producing a black
-  // screen with no error on security failure or wrong password.
-  lastError.value = ''
-  status.value = 'connected'
+function ownsRemoteKeyboard(): boolean {
+  return status.value === 'connected' && !viewOnly.value && document.hasFocus() &&
+    document.activeElement === vncContainer.value?.querySelector('canvas')
 }
 
-function onRfbSecurityFailure(e: any) {
-  const reason = e.detail?.reason ?? e.detail?.status
-  lastError.value = t('vnc.errorSecurity', { reason: String(reason ?? '') })
-  status.value = 'error'
+function onLocalKey(event: KeyboardEvent) {
+  if (event.code === 'F12') event.stopPropagation()
 }
 
-function onRfbCredentialsRequired(e: any) {
-  const types = (e.detail?.types || []).join(', ')
-  lastError.value = t('vnc.errorCredentials', { types })
-  status.value = 'error'
+function syncLocalClipboard(text?: string): Promise<void> {
+  return ownsRemoteKeyboard() ? clipboardSync?.sync(false, text) ?? Promise.resolve() : Promise.resolve()
 }
 
-function onRfbDisconnect(e: any) {
-  if (!e.detail.clean) {
-    if (!lastError.value) lastError.value = t('vnc.errorClosed')
-    status.value = 'error'
-  } else {
-    status.value = 'disconnected'
+function queueVncKey(keysym: number, code: string, down: boolean, send: () => void) {
+  const repeat = inputKeys.has(code)
+  const paste = down && !repeat && ((code === 'KeyV' &&
+    ['ControlLeft', 'ControlRight', 'MetaLeft', 'MetaRight'].some(key => inputKeys.has(key))) ||
+    (code === 'Insert' && ['ShiftLeft', 'ShiftRight'].some(key => inputKeys.has(key))))
+  if (down) inputKeys.add(code)
+  else inputKeys.delete(code)
+  if (paste) inputQueue.enqueue(() => syncLocalClipboard())
+  inputQueue.enqueue(() => {
+    send()
+    if (down) sentKeys.set(code, keysym)
+    else sentKeys.delete(code)
+  })
+}
+
+function setupDesktopInput() {
+  restoreDesktopInput?.()
+  const target = rfb
+  const clipboard = createVncClipboard(target, props.config?.vncClipboardEncoding, EncodeVNCClipboardText,
+    () => ownsRemoteKeyboard() && rfb === target)
+  const sync = new RdpClipboardSync({
+    read: async () => {
+      const text = await readClipboardText()
+      return ownsRemoteKeyboard() ? { kind: 'text', text } : null
+    },
+    publish: async content => {
+      if (content.kind === 'text') await clipboard.publish(content.text)
+    },
+    writeText: writeClipboard,
+  }, true)
+  clipboardSync = sync
+  nativeKeyboard = new VncNativeKeyboard((keysym, code, down) => {
+    queueVncKey(keysym, code, down, () => target.sendKey(keysym, code, down))
+  })
+  const keyboard = target._keyboard
+  const original = keyboard.onkeyevent
+  const handler = (keysym: number, code: string, down: boolean, numlock: boolean, capslock: boolean) => {
+    queueVncKey(keysym, code, down, () => original(keysym, code, down, numlock, capslock))
+  }
+  keyboard.onkeyevent = handler
+  const onClipboard = (event: any) => {
+    try {
+      sync.receiveText(clipboard.decode(event.detail.text)).catch(error => console.error('VNC clipboard write error:', error))
+    } catch (error) {
+      console.error('VNC clipboard decode error:', error)
+    }
+  }
+  target.addEventListener('clipboard', onClipboard)
+  restoreDesktopInput = () => {
+    sync.dispose()
+    clipboard.dispose()
+    target.removeEventListener('clipboard', onClipboard)
+    if (keyboard.onkeyevent === handler) keyboard.onkeyevent = original
+    inputQueue.clear()
+    nativeKeyboard = null
+    clipboardSync = null
+    inputKeys.clear()
+    sentKeys.clear()
   }
 }
 
-function onRfbClipboard(e: any) {
-  const text = e.detail.text
-  Clipboard.SetText(text).catch(() => {})
+function onFocusIn() {
+  if (!ownsRemoteKeyboard()) return
+  keyboardFocused.value = true
+  syncLocalClipboard().catch(error => console.error('VNC clipboard sync error:', error))
+  if (keyboardCaptureId || !currentSessionId.value) return
+  const captureID = crypto.randomUUID()
+  const sessionID = currentSessionId.value
+  keyboardCaptureId = captureID
+  queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true))
+    .then(enabled => {
+      if (!enabled || keyboardCaptureId !== captureID) return
+      let pending = false
+      keyboardHeartbeat = setInterval(() => {
+        if (!ownsRemoteKeyboard()) { onFocusOut(); return }
+        if (pending) return
+        pending = true
+        queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true))
+          .catch(error => {
+            console.error('VNC keyboard capture error:', error)
+            if (keyboardCaptureId === captureID) onFocusOut()
+          })
+          .finally(() => { pending = false })
+      }, 1000)
+    })
+    .catch(error => console.error('VNC keyboard capture error:', error))
 }
 
-// Attach this instance's RFB handlers to `target`. Any pairs a previous
-// component instance left on the rfb (cache restore) are removed first —
-// the bound pairs are recorded on the rfb itself so the next binder can
-// drop them by reference — so handlers never stack and the restored tab
-// reacts to connect/securityfailure/credentials/disconnect/clipboard again.
-function bindRFBHandlers(target: any) {
-  const stale: Array<[string, (e: any) => void]> | undefined = target.__unitermHandlers
-  if (stale) stale.forEach(([type, fn]) => target.removeEventListener(type, fn))
-  const bound: Array<[string, (e: any) => void]> = [
-    ['connect', onRfbConnect],
-    ['securityfailure', onRfbSecurityFailure],
-    ['credentialsrequired', onRfbCredentialsRequired],
-    ['disconnect', onRfbDisconnect],
-    ['clipboard', onRfbClipboard],
-  ]
-  bound.forEach(([type, fn]) => target.addEventListener(type, fn))
-  target.__unitermHandlers = bound
+function onFocusOut() {
+  if (keyboardHeartbeat !== null) clearInterval(keyboardHeartbeat)
+  keyboardHeartbeat = null
+  keyboardFocused.value = false
+  const captureID = keyboardCaptureId
+  keyboardCaptureId = ''
+  if (captureID) {
+    const sessionID = currentSessionId.value || ''
+    queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, false))
+      .catch(error => console.error('VNC keyboard release error:', error))
+  }
+  inputQueue.clear()
+  nativeKeyboard?.release()
+  for (const [code, keysym] of Array.from(sentKeys).reverse()) rfb?.sendKey(keysym, code, false)
+  sentKeys.clear()
+  inputKeys.clear()
+}
+
+function onNativeKey(data: NativeRdpKey) {
+  if (data.captureID !== keyboardCaptureId || !ownsRemoteKeyboard()) return
+  if (data.reset) { onFocusOut(); onFocusIn(); return }
+  nativeKeyboard?.key(data)
+}
+
+function onVisibilityChange() {
+  if (document.hidden) onFocusOut()
+  else onFocusIn()
 }
 
 function createRFB(RFB: any, proxyAddr: string, password: string) {
@@ -303,11 +442,67 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
   isIniting = false
 }
 
+// Named RFB event handlers so they can be re-bound: the cache-restore path
+// hands this component the previous instance's rfb, whose listeners still
+// point at that dead instance's refs. The bound pairs are recorded on the rfb
+// itself (`__unitermHandlers`) so the next binder can drop them by reference
+// — handlers never stack and the restored tab reacts to
+// connect/securityfailure/credentials/disconnect again (security.md #14).
+function onRfbConnect() {
+  // issue #95: only flip to 'connected' on the noVNC connect event.
+  // Previously status='connected' was set as soon as the local proxy was
+  // up, well before the RFB handshake completed, producing a black
+  // screen with no error on security failure or wrong password.
+  lastError.value = ''
+  status.value = 'connected'
+}
+
+function onRfbSecurityFailure(e: any) {
+  const reason = e.detail?.reason ?? e.detail?.status
+  lastError.value = t('vnc.errorSecurity', { reason: String(reason ?? '') })
+  status.value = 'error'
+}
+
+function onRfbCredentialsRequired(e: any) {
+  const types = (e.detail?.types || []).join(', ')
+  lastError.value = t('vnc.errorCredentials', { types })
+  status.value = 'error'
+}
+
+function onRfbDisconnect(e: any) {
+  if (!e.detail.clean) {
+    if (!lastError.value) lastError.value = t('vnc.errorClosed')
+    status.value = 'error'
+  } else {
+    status.value = 'disconnected'
+  }
+}
+
+function bindRFBHandlers(target: any) {
+  const stale: Array<[string, EventListener]> = target.__unitermHandlers ?? []
+  for (const [type, fn] of stale) target.removeEventListener(type, fn)
+  const pairs: Array<[string, EventListener]> = [
+    ['connect', onRfbConnect as EventListener],
+    ['securityfailure', onRfbSecurityFailure as EventListener],
+    ['credentialsrequired', onRfbCredentialsRequired as EventListener],
+    ['disconnect', onRfbDisconnect as EventListener],
+  ]
+  for (const [type, fn] of pairs) target.addEventListener(type, fn)
+  target.__unitermHandlers = pairs
+}
+
 function onPaste(e: ClipboardEvent) {
   const text = e.clipboardData?.getData('text')
-  if (text && rfb) {
-    rfb.clipboardPasteFrom(text)
-  }
+  if (!text || !rfb || !ownsRemoteKeyboard()) return
+  e.preventDefault()
+  const target = rfb
+  inputQueue.enqueue(() => syncLocalClipboard(text))
+  inputQueue.enqueue(() => {
+    target.sendKey(0xffe3, 'ControlLeft', true)
+    target.sendKey(0x76, 'KeyV', true)
+    target.sendKey(0x76, 'KeyV', false)
+    target.sendKey(0xffe3, 'ControlLeft', false)
+  })
 }
 
 function onReconnectEvent(e: Event) {
@@ -315,17 +510,63 @@ function onReconnectEvent(e: Event) {
   if (panelId && panelId === props.panelId) reconnect()
 }
 
+function focusDesktop() {
+  if (status.value === 'connected') rfb?.focus({ preventScroll: true })
+}
+
+function blurDesktop() {
+  onFocusOut()
+  rfb?.blur()
+}
+
+function onToolbarError(error: unknown) {
+  console.error('VNC minimize error:', error)
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement === container.value
+}
+
+async function toggleFullscreen() {
+  const el = container.value
+  if (!el) return
+  try {
+    if (document.fullscreenElement === el) await document.exitFullscreen()
+    else await el.requestFullscreen()
+    focusDesktop()
+  } catch (error) {
+    console.error('VNC fullscreen error:', error)
+  }
+}
+
+function onFullscreenEvent(event: Event) {
+  if ((event as CustomEvent<{ panelId: string }>).detail?.panelId === props.panelId) void toggleFullscreen()
+}
+
 onMounted(() => {
+  unsubKeyboard = Events.On('remote-desktop:keyboard', event => onNativeKey(event.data as NativeRdpKey))
+  window.addEventListener('blur', onFocusOut)
+  window.addEventListener('focus', onFocusIn)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  clipboardPoll = setInterval(() => {
+    syncLocalClipboard().catch(error => console.error('VNC clipboard sync error:', error))
+  }, 1000)
+  onPixelRatioChange()
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('vnc:fullscreen', onFullscreenEvent)
   if (props.sessionId) {
     currentSessionId.value = props.sessionId
   }
 
-  // Register BEFORE connect() and before the cache-restore branch below:
-  // with synchronous VNC/SPICE connect the session:status event is emitted
-  // during CreateSession and would arrive before the listener if we
-  // registered it after — and a restored tab must keep the same wiring as a
-  // fresh one (security.md #14: restore used to skip both listeners, so
-  // disconnects showed no error overlay and Reconnect did nothing).
+  // Register event listeners BEFORE the cache-restore branch: a restored tab
+  // must keep the same wiring as a fresh one — session:status (error/
+  // disconnect handling), the tab right-click 重连 menu (security.md #14:
+  // restore used to return early, so disconnects showed no overlay and
+  // Reconnect did nothing).
+  //
+  // session:status registers BEFORE connect() too — with synchronous VNC
+  // connect the event is emitted during CreateSession and would arrive before
+  // a later listener.
   unsubStatus = Events.On('session:status', (ev) => { const data: any = ev.data; 
     if (data.id !== currentSessionId.value) return
     switch (data.status) {
@@ -333,10 +574,10 @@ onMounted(() => {
         if (data.proxyAddr) {
           panelStore.setProxyAddr(props.panelId, data.proxyAddr)
         }
-        if (data.proxyAddr && props.config) {
-          void resolvePassword().then((pw) => {
-            savedPassword.value = pw
-            initRFB(data.proxyAddr, pw)
+        if (props.config && data.proxyAddr) {
+          void resolvePassword().then((password) => {
+            savedPassword.value = password
+            initRFB(data.proxyAddr, password)
           })
         } else {
           const proxy = panelStore.getProxyAddr(props.panelId)
@@ -363,23 +604,22 @@ onMounted(() => {
     const children = Array.from(cached.container.children)
     children.forEach(child => vncContainer.value!.appendChild(child))
     rfb = cached.rfb
-    // The cached rfb still carries the previous component instance's
-    // handlers (they write to that dead instance's refs); bindRFBHandlers
-    // drops them first and attaches this instance's, so handlers never
-    // stack and the restored tab reacts to connect/disconnect again.
-    bindRFBHandlers(rfb)
     panelStore.removeVNCCache(props.panelId)
     status.value = 'connected'
     applyRFBOptions()
+    // Rebind the handlers: the cached rfb still carries the previous
+    // component instance's listeners, which write to that dead instance's
+    // refs (security.md #14).
+    bindRFBHandlers(rfb)
     watchThemeBackground()
     return
   }
 
   const storedProxy = panelStore.getProxyAddr(props.panelId)
   if (storedProxy && props.config) {
-    void resolvePassword().then((pw) => {
-      savedPassword.value = pw
-      initRFB(storedProxy, pw)
+    void resolvePassword().then((password) => {
+      savedPassword.value = password
+      initRFB(storedProxy, password)
     })
   } else {
     connect()
@@ -389,6 +629,21 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  onFocusOut()
+  restoreDesktopInput?.()
+  restoreDesktopInput = null
+  unsubKeyboard?.()
+  if (clipboardPoll !== null) clearInterval(clipboardPoll)
+  clipboardPoll = null
+  window.removeEventListener('blur', onFocusOut)
+  window.removeEventListener('focus', onFocusIn)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
+  pixelRatioQuery = null
+  restorePixelScaling?.()
+  restorePixelScaling = null
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  window.removeEventListener('vnc:fullscreen', onFullscreenEvent)
   themeObserver?.disconnect()
   themeObserver = null
   unsubStatus?.()
@@ -417,11 +672,16 @@ watch(scaleViewport, (val) => {
   if (rfb) rfb.scaleViewport = val
 })
 watch(viewOnly, (val) => {
+  if (val) onFocusOut()
   if (rfb) rfb.viewOnly = val
+  if (!val) onFocusIn()
 })
 watch(showDotCursor, (val) => {
   if (rfb) rfb.showDotCursor = val
 })
+watch(status, value => value === 'connected' ? nextTick(onFocusIn) : onFocusOut())
+onDeactivated(onFocusOut)
+onActivated(onFocusIn)
 </script>
 
 <style scoped>
@@ -444,6 +704,13 @@ watch(showDotCursor, (val) => {
 .vnc-area :deep(canvas) {
   display: block;
   flex-shrink: 0;
+}
+.vnc-area.is-unscaled :deep(canvas) {
+  image-rendering: pixelated;
+}
+.vnc-tab-content.is-fullscreen .vnc-area,
+.vnc-tab-content.is-fullscreen .vnc-overlay {
+  bottom: 0;
 }
 .vnc-overlay {
   position: absolute;
@@ -489,4 +756,17 @@ watch(showDotCursor, (val) => {
 }
 .vnc-status-sep { color: var(--text-disabled); }
 .vnc-status-label { font-size: 0.6875rem; }
+.vnc-status-spacer { flex: 1; }
+.vnc-fullscreen-btn {
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 1px 0.625rem;
+  border-radius: var(--radius-sm);
+}
+.vnc-fullscreen-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
 </style>

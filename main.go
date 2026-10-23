@@ -301,7 +301,7 @@ func main() {
 		w3app.Menu.SetApplicationMenu(appMenu)
 	}
 
-	window = w3app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window = w3app.Window.NewWithOptions(additionalWindowOptions(application.WebviewWindowOptions{
 		Title:           "uniTerm",
 		Width:           winW,
 		Height:          winH,
@@ -325,7 +325,7 @@ func main() {
 		// (Deliberately NOT a window KeyBinding for F12: that would be
 		// window-global and could swallow F12 from TUI apps.)
 		OpenInspectorOnStartup: true,
-	})
+	}))
 
 	// Win11 rounded corners: Wails only extends the DWM frame from its
 	// WM_ACTIVATE handler, whose first firing (inside CreateWindowEx, before

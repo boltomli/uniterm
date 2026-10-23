@@ -197,12 +197,12 @@ describe('executeCommand', () => {
     const result = await executeCommand('echo hello')
 
     expect(mockStartForeground).toHaveBeenCalledOnce()
-    const [sid, cmd, idleMs, hardLimitMs] = mockStartForeground.mock.calls[0]
+    const [sid, cmd, hardLimitMs] = mockStartForeground.mock.calls[0]
     expect(sid).toBe('test-session-id')
     expect(cmd).toContain('echo hello')
     expect(cmd).not.toContain('__AI_DONE_')
     expect(cmd).not.toContain('echo "')
-    expect(idleMs).toBe(800)
+    expect(mockStartForeground.mock.calls[0]).toHaveLength(3)
     expect(hardLimitMs).toBe(60000)
     expect(result.exitCode).toBe(0)
     expect(result.timedOut).toBe(false)
@@ -279,13 +279,31 @@ describe('executeCommand', () => {
 
   it('does not report a closed session as success', async () => {
     mockPollForeground.mockResolvedValueOnce(['partial', '', -1, 'session_closed'])
-    expect((await executeCommand('cmd')).exitCode).toBe(-1)
+    const result = await executeCommand('cmd')
+    expect(result.exitCode).toBe(-1)
+    expect(result.completed).toBe(false)
   })
 
-  it('passes custom idle_ms through to the shared engine', async () => {
-    mockPollForeground.mockResolvedValueOnce(['done', '', 0, 'exited'])
-    await executeCommand('ls', 5000, 50, 300, undefined, undefined, 1750)
-    expect(mockStartForeground).toHaveBeenCalledWith('test-session-id', expect.any(String), 1750, 5000)
+  it('resumes unread output from the original job after timeout', async () => {
+    mockStartForeground.mockResolvedValueOnce('fg-resume')
+    mockStartForegroundCapture.mockResolvedValueOnce('fg-resume')
+    mockPollForeground.mockResolvedValueOnce(['中文 first\n', '', -1, 'timeout'])
+      .mockResolvedValueOnce(['late replies\nstatistics\n', '', 0, 'exited'])
+    const first = await executeCommand('ping', 1000)
+    expect(first.timedOut).toBe(true)
+    expect(first.completed).toBe(false)
+    const next = await collectOutput(1000)
+    expect(next).toEqual({ output: 'late replies\nstatistics\n', completed: true, timedOut: false })
+    expect(mockPollForeground).toHaveBeenLastCalledWith('fg-resume', new TextEncoder().encode('中文 first\n').length, 65536)
+    expect(mockStartForeground).toHaveBeenCalledTimes(1)
+    expect(mockInterruptForeground).not.toHaveBeenCalled()
+  })
+
+  it('recognizes a completed command with a nonzero exit code', async () => {
+    mockPollForeground.mockResolvedValueOnce(['failed', '', 7, 'exited'])
+    const result = await executeCommand('false')
+    expect(result.completed).toBe(true)
+    expect(result.exitCode).toBe(7)
   })
 
   it('truncates long output on success path', async () => {
@@ -392,7 +410,7 @@ describe('shared backend terminal tools', () => {
 
   it('collects using a read-only backend job without sending a command', async () => {
     expect(await collectOutput(5000)).toEqual({ output: 'collected', completed: true, timedOut: false })
-    expect(mockStartForegroundCapture).toHaveBeenCalledWith('test-session-id', 800, 5000)
+    expect(mockStartForegroundCapture).toHaveBeenCalledWith('test-session-id', 5000)
     expect(mockPollForeground).toHaveBeenCalledWith('fg-observer', 0, 65536)
     expect(mockStartForeground).not.toHaveBeenCalled()
     expect(mockSessionWrite).not.toHaveBeenCalled()
@@ -439,13 +457,13 @@ describe('resolveActiveSession explicit-panel restriction', () => {
 
   it('allows the active panel when nothing is locked', async () => {
     await expect(executeCommand('ls', 10, 1, 1, undefined, 'Panel A')).resolves.toBeDefined()
-    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-1', expect.stringContaining('ls'), 800, 10)
+    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-1', expect.stringContaining('ls'), 10)
   })
 
   it('allows an explicitly locked panel', async () => {
     vi.mocked(mockGetAILockedPanels).mockReturnValue(['panel-2'])
     await expect(executeCommand('ls', 10, 1, 1, undefined, 'Prod DB')).resolves.toBeDefined()
-    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-2', expect.stringContaining('ls'), 800, 10)
+    expect(mockStartForeground).toHaveBeenCalledWith('sess-panel-2', expect.stringContaining('ls'), 10)
   })
 
   it('rejects another panel when a different one is locked', async () => {

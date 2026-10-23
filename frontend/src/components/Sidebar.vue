@@ -184,6 +184,8 @@
             </span>
           </div>
           <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
+          <button v-if="showHostRowButtons" class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="lucideSize('0.75rem')" /></button>
+          <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
         </div>
       </template>
 
@@ -579,10 +581,6 @@ function openThemeEditor(sourceThemeId?: string) {
   themeEditorVisible.value = true
 }
 
-// Notify App.vue to hide native RDP window when edit dialog opens
-watch(showForm, (val) => {
-  window.dispatchEvent(new CustomEvent(val ? 'rdp:overlay-push' : 'rdp:overlay-pop'))
-})
 
 const searchQuery = ref('')
 const searchInputRef = ref<any>(null)
@@ -2009,6 +2007,7 @@ defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGro
 .conn-details {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 0.125rem;
   min-width: 0;
 }

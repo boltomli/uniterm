@@ -5,7 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"sync"
 	"strings"
 	"testing"
 	"time"
@@ -440,5 +442,84 @@ func TestMCPAuditRotatesBySize(t *testing.T) {
 	}
 	if _, err := os.Stat(cur + ".1"); err != nil {
 		t.Fatalf("rotated generation missing: %v", err)
+	}
+}
+
+// Opt in because this starts a real ConPTY shell. This checks the exact path
+// used by the built-in assistant, including terminal control-sequence handling.
+func TestForegroundCompletionOnRealWindowsTerminal(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows ConPTY")
+	}
+	if os.Getenv("UNITERM_TEST_PTY") != "1" {
+		t.Skip("set UNITERM_TEST_PTY=1 to test real local terminals")
+	}
+	for _, tc := range []struct{ name, path, command, check string }{
+		{"git-bash", `C:\Program Files\Git\bin\bash.exe`, `__ut_keep=kept; printf 'first\n'; sleep 1.1; printf 'last\n'; (exit 7)`, `printf '%s\n' "$__ut_keep"`},
+		{"powershell", "powershell.exe", `$__ut_keep='kept'; Write-Output 'first'; Start-Sleep -Milliseconds 1100; Get-Item .; Write-Output 'last'; cmd /c exit 7`, `Write-Output $__ut_keep`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := session.NewLocalSession("test-" + tc.name)
+			if err := s.Connect(session.ConnectionConfig{ShellPath: tc.path}); err != nil {
+				t.Fatal(err)
+			}
+			defer s.Disconnect()
+			var rawMu sync.Mutex
+			var raw strings.Builder
+			// A headless test has no xterm.js to answer cursor-position probes.
+			off := s.AddDataTap(func(data []byte) {
+				rawMu.Lock()
+				raw.Write(data)
+				if strings.Contains(string(data), "\x1b[6n") {
+					_ = s.Write([]byte("\x1b[1;1R"))
+				}
+				rawMu.Unlock()
+			})
+			defer off()
+			pty := ptyAdapter{s: s, taps: s}
+			r := mcp.NewRegistry()
+			started := time.Now()
+			job, err := r.StartWithScreen(pty, s.ID(), tc.command, newlineFor(s), 8*time.Second, 0, screenCols, screenRows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wait := func(job *mcp.Job, wanted int, text string) {
+				t.Helper()
+				defer r.Interrupt(job.ID)
+				deadline := time.Now().Add(10 * time.Second)
+				for time.Now().Before(deadline) {
+					out, _, code, state, err := job.Snapshot()
+					if state != mcp.StateRunning {
+						found := false
+						for _, line := range strings.Split(string(out), "\n") {
+							found = found || strings.TrimSpace(line) == text
+						}
+						if state != mcp.StateExited || code != wanted || !found {
+							rawMu.Lock()
+							rawText := raw.String()
+							if len(rawText) > 2000 {
+								rawText = rawText[len(rawText)-2000:]
+							}
+							t.Logf("raw tail=%q", rawText)
+							rawMu.Unlock()
+							t.Fatalf("state=%s code=%d err=%v output=%q", state, code, err, out)
+						}
+						return
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				t.Fatal("completion not received")
+			}
+			wait(job, 7, "last")
+			if time.Since(started) < time.Second {
+				t.Fatal("returned during command pause")
+			}
+			// Dot/eval must preserve variables in the user's current shell.
+			next, err := r.StartWithScreen(pty, s.ID(), tc.check, newlineFor(s), 8*time.Second, 0, screenCols, screenRows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wait(next, 0, "kept")
+		})
 	}
 }

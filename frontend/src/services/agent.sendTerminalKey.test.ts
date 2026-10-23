@@ -46,6 +46,7 @@ vi.mock('./llm', () => ({
   AVAILABLE_TOOLS: [],
   ChatCancelledError: class extends Error {},
   ChatTimeoutError: class extends Error {},
+  captureChatConfiguration: () => undefined,
 }))
 
 vi.mock('../stores/settingsStore', () => ({

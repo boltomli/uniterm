@@ -1,5 +1,5 @@
 <template>
-  <MenuItem iconic class="submenu-wrap" @mouseenter="onEnter" @click="onTap">
+  <MenuItem iconic class="submenu-wrap" :class="{ disabled }" :aria-disabled="disabled || undefined" @mouseenter="onEnter" @click="onTap">
     {{ label }}
     <el-icon class="menu-icon-trailing"><ChevronRight :size="lucideSize('0.8125rem')" /></el-icon>
     <!-- Teleported to <body>: a fixed-positioned flyout can never be clipped by
@@ -36,8 +36,9 @@ import MenuItem from './MenuItem.vue'
 // flyout shows only when this instance's auto-generated key matches. Hides the
 // .submenu-wrap / arrow / .menu-submenu / mouseenter-leave boilerplate that
 // hosts used to hand-write.
-defineProps<{
+const props = defineProps<{
   label: string
+  disabled?: boolean
 }>()
 
 // Stable per instance; globally unique is safe because the single-open
@@ -59,6 +60,7 @@ const isTouch =
   window.matchMedia('(pointer: coarse)').matches
 
 function onTap(e: MouseEvent) {
+  if (props.disabled) return
   rowEl.value = (e.currentTarget as HTMLElement) || rowEl.value
   // Hover already covers mouse users; tap toggles for touch.
   if (isTouch) submenu.active = submenu.active === name ? '' : name
@@ -68,9 +70,12 @@ function onTap(e: MouseEvent) {
 // fires before click: opening here would make onTap's toggle immediately
 // close the flyout. Guard it to real (non-touch) pointers.
 function onEnter(e: MouseEvent) {
+  if (props.disabled) return
   rowEl.value = (e.currentTarget as HTMLElement) || rowEl.value
   if (!isTouch) submenu.active = name
 }
+
+watch(() => props.disabled, disabled => { if (disabled && submenu.active === name) submenu.active = '' })
 
 // Place the flyout beside its row against the window edges whenever it opens:
 // fly RIGHT by default, mirror LEFT only when the right can't fit it but the

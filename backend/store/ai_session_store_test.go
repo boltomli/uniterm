@@ -68,6 +68,29 @@ func TestAISessionStore_SaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAISessionStore_ContextCheckpointRoundTrip(t *testing.T) {
+	s := newAISessionStoreAt(t, t.TempDir())
+	want := sampleAISessions()
+	want.Sessions[0].ContextSummary = &AIContextSummary{Version: 1, Content: "Goal: fix terminal", ThroughMessageID: "m1", CreatedAt: 123}
+	want.Sessions[0].Messages[0].ContextHeader = "PowerShell; C:/work"
+	if err := s.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sessions[0].ContextSummary == nil || *got.Sessions[0].ContextSummary != *want.Sessions[0].ContextSummary {
+		t.Fatalf("checkpoint lost: %#v", got.Sessions[0].ContextSummary)
+	}
+	if got.Sessions[0].Messages[0].ContextHeader != "PowerShell; C:/work" {
+		t.Fatal("environment header lost")
+	}
+	if got.Sessions[1].ContextSummary != nil {
+		t.Fatal("legacy session must not gain a checkpoint")
+	}
+}
+
 func TestAISessionStore_LoadNoDirReturnsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	s := newAISessionStoreAt(t, dir)

@@ -55,6 +55,21 @@ func (p *oracleProvider) PrepareExec(db execer, dbName string) error {
 	if dbName == "" {
 		return nil
 	}
+	// dbName holds the connection's service name (e.g. FREEPDB1), which is
+	// not necessarily a schema. Only switch CURRENT_SCHEMA when the name
+	// really exists as a user; otherwise keep the session on the login
+	// user's default schema instead of failing every query with ORA-01435.
+	if rows, err := db.QueryContext(context.Background(),
+		"SELECT COUNT(*) FROM all_users WHERE username = :1", strings.ToUpper(dbName)); err == nil {
+		var n int
+		if rows.Next() {
+			_ = rows.Scan(&n)
+		}
+		rows.Close()
+		if n == 0 {
+			return nil
+		}
+	}
 	_, err := db.ExecContext(context.Background(), fmt.Sprintf("ALTER SESSION SET CURRENT_SCHEMA = %s", p.Quote(dbName)))
 	return err
 }
@@ -197,15 +212,42 @@ func (p *oracleProvider) GetCapabilities() DBCapabilities {
 
 // ── Schema discovery ──
 
+// GetDatabases returns the schemas the login user can browse: the current
+// schema first, then every other owner owning at least one table or view
+// visible through all_objects. All schema/table queries are owner-filtered
+// and data queries resolve names through ALTER SESSION SET CURRENT_SCHEMA,
+// so any listed schema is fully browsable without extra privileges beyond
+// what the grants already allow.
 func (p *oracleProvider) GetDatabases(db *sql.DB) ([]string, error) {
 	results, err := queryStrings(db, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AS CURRENT_SCHEMA FROM DUAL")
 	if err != nil {
 		return nil, err
 	}
-	if len(results) == 0 || results[0]["CURRENT_SCHEMA"] == "" {
-		return []string{}, nil
+	current := ""
+	if len(results) > 0 {
+		current = results[0]["CURRENT_SCHEMA"]
 	}
-	return []string{results[0]["CURRENT_SCHEMA"]}, nil
+
+	owners, err := queryStrings(db, `SELECT DISTINCT owner FROM all_objects
+		WHERE object_type IN ('TABLE', 'VIEW')
+		  AND owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y')
+		ORDER BY owner`)
+	if err != nil {
+		return nil, fmt.Errorf("list schemas: %w", err)
+	}
+
+	// Keep the current schema first: resolveSchema falls back to the first
+	// entry and the tree panel pins it to the top.
+	schemas := make([]string, 0, len(owners)+1)
+	if current != "" {
+		schemas = append(schemas, current)
+	}
+	for _, row := range owners {
+		if o := row["OWNER"]; o != "" && !strings.EqualFold(o, current) {
+			schemas = append(schemas, o)
+		}
+	}
+	return schemas, nil
 }
 
 func (p *oracleProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {

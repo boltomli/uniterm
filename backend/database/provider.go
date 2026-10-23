@@ -21,6 +21,7 @@ func sortedKeys(m map[string]any) []string {
 // execer is the common interface for sql.DB, sql.Conn, and sql.Tx.
 type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // DumpOptions controls what a DumpTable export includes.

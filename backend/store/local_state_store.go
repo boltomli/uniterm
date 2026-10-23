@@ -8,8 +8,9 @@ import (
 const localStateFileName = "local_state.json"
 
 type LocalState struct {
-	SidebarVisible   bool `json:"sidebarVisible"`
-	AISidebarVisible bool `json:"aiSidebarVisible"`
+	AI               *AILocalState `json:"ai,omitempty"`
+	SidebarVisible   bool          `json:"sidebarVisible"`
+	AISidebarVisible bool          `json:"aiSidebarVisible"`
 	// Sidebar widths in px. Local-only UI state, never synced; 0 means an
 	// older config without the key and keeps the component default.
 	SidebarWidth      int      `json:"sidebarWidth"`
@@ -50,6 +51,16 @@ type LocalState struct {
 	// (types/tabSnapshot.ts); local-only, never synced, and holds no
 	// secrets — host references are connectionIds re-resolved at restore.
 	LastTabsSnapshot json.RawMessage `json:"lastTabsSnapshot,omitempty"`
+}
+
+// AILocalState holds device-local selections, separate from the synced model catalog.
+type AILocalState struct {
+	ActiveModelID    string                           `json:"activeModelId"`
+	ModelPreferences map[string]AIReasoningPreference `json:"modelPreferences"`
+}
+
+type AIReasoningPreference struct {
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type LocalStateStore struct {

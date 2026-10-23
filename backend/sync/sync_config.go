@@ -19,14 +19,23 @@ import (
 // one of these, and the sync layer moves a store's canonical plaintext in
 // and out without knowing what any file contains.
 //
-// ai-sessions.json and skills.json are intentionally absent — they are
-// local-only data and must never be committed to the sync repo (a stray
-// ai-sessions.json left in the repo dir from an old build stays untracked).
+// ai-sessions.json is intentionally absent — it is local-only data and must
+// never be committed to the sync repo (a stray ai-sessions.json left in the
+// repo dir from an old build stays untracked). skills.json is absent from
+// the default set but offered opt-in in the scope picker (see
+// syncableFiles).
 //
-// settings.json is intentionally absent: it is device-local (theme,
-// paths, shells, keybindings, UI state) and changes too often to sync
-// well. The syncable AI slice (model catalog + maxTurns) lives in
-// ai.json instead; see AIConfigStore.
+// settings.json is intentionally absent from the default set: it is
+// device-local (theme, paths, shells, keybindings, UI state) and changes too
+// often to sync well. The syncable AI slice (model catalog + maxTurns) lives
+// in ai.json instead; see AIConfigStore. A user who wants SFTP bookmarks or
+// custom terminal themes on another machine can tick it in the scope picker.
+//
+// skills.json carries the skill preference layer (enabled/locked/sortOrder/
+// origin). It is opt-in like settings.json: skill bodies live in the
+// skills/ tree (potentially large, multi-file), so sync exchanges only the
+// preference layer — the other device copies the skill directories once via
+// its own import (issue #1180).
 var defaultSyncedFiles = []string{
 	"connections.json",
 	"favorites.json",
@@ -38,11 +47,9 @@ var defaultSyncedFiles = []string{
 }
 
 // syncableFiles is the full menu offered by the sync-scope picker: the
-// always-on legacy set plus settings.json. settings.json is the only opt-in
-// entry — it is device-leaning (theme, shells, absolute paths, keybindings,
-// UI state) and changes too often to sync by default, but a user who wants
-// SFTP bookmarks or custom terminal themes on another machine can tick it.
-var syncableFiles = append(append([]string{}, defaultSyncedFiles...), "settings.json")
+// always-on legacy set plus the two opt-in entries (settings.json,
+// skills.json).
+var syncableFiles = append(append([]string{}, defaultSyncedFiles...), "settings.json", "skills.json")
 
 // EffectiveSyncFiles resolves the user's scope against syncableFiles.
 // A nil/empty scope returns the default set. Unknown names are dropped so a

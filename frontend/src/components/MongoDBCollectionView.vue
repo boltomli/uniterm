@@ -70,41 +70,19 @@
 
         <div v-if="filteredTableData.length > 0" class="result-grid">
           <div class="result-table-wrap">
-            <el-table
-              :data="filteredTableData"
-              border
-              size="small"
-              style="width:100%"
-              class="db-result-table"
-              :empty-text="t('db.noData')"
-              @row-dblclick="onRowDblClick"
-            >
-              <el-table-column
-                v-for="col in columns"
-                :key="col"
-                :prop="col"
-                :label="col"
-                :min-width="uiPx(120)"
-                show-overflow-tooltip
-              >
-                <template #default="{ row }">
-                  <span
-                    class="cell-value"
-                    :class="{ 'cell-null': row[col] === null || row[col] === undefined }"
-                  >{{ formatCellValue(row[col]) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column :width="uiPx(80)" fixed="right">
-                <template #default="{ row }">
-                  <button class="btn btn-ghost btn-icon btn-sm" @click.stop="onRowDblClick(row)">
-                    <Pencil :size="lucideSize('0.875rem')" />
-                  </button>
-                  <button class="btn btn-ghost btn-icon btn-sm danger" @click.stop="deleteDocument(row)">
-                    <Trash2 :size="lucideSize('0.875rem')" />
-                  </button>
-                </template>
-              </el-table-column>
-            </el-table>
+            <!-- P1: el-table-v2 虚拟滚动，避免大结果集全量渲染 DOM -->
+            <el-auto-resizer>
+              <template #default="{ height, width }">
+                <el-table-v2
+                  :columns="v2Columns"
+                  :data="filteredTableData"
+                  :width="width"
+                  :height="height"
+                  :row-height="28"
+                  fixed
+                />
+              </template>
+            </el-auto-resizer>
           </div>
           <div class="result-footer">
             <span class="result-count">
@@ -208,8 +186,8 @@
 </template>
 
 <script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, h } from 'vue'
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Pencil, Trash2, Sparkles, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
@@ -309,6 +287,45 @@ const columns = computed(() => {
     cols.splice(idIdx, 1)
     cols.unshift('_id')
   }
+  return cols
+})
+
+// P1: el-table-v2 虚拟滚动列配置。cellRenderer 用 h() 渲染单元格，保持 null/value
+// 格式与双击编辑、行内操作按钮等交互。onRowDblClick/deleteDocument 为函数声明，
+// 在 computed 惰性求值时已可用。
+const v2Columns = computed(() => {
+  const cols = columns.value.map((col) => ({
+    key: col,
+    dataKey: col,
+    title: col,
+    width: 150,
+    flexGrow: 1,
+    cellRenderer: ({ cellData, rowData }: { cellData: any; rowData: any }) => {
+      const isNull = cellData === null || cellData === undefined
+      return h('span', {
+        class: { 'cell-value': true, 'cell-null': isNull },
+        onDblclick: () => onRowDblClick(rowData),
+      }, formatCellValue(cellData))
+    },
+  }))
+  // 操作列：编辑 / 删除按钮
+  cols.push({
+    key: '__actions',
+    title: '',
+    width: 80,
+    cellRenderer: ({ rowData }: { rowData: any }) => {
+      return h('div', { class: 'v2-row-actions' }, [
+        h('button', {
+          class: 'btn btn-ghost btn-icon btn-sm',
+          onClick: (e: Event) => { e.stopPropagation(); onRowDblClick(rowData) },
+        }, h(Pencil, { size: '0.875rem' })),
+        h('button', {
+          class: 'btn btn-ghost btn-icon btn-sm danger',
+          onClick: (e: Event) => { e.stopPropagation(); deleteDocument(rowData) },
+        }, h(Trash2, { size: '0.875rem' })),
+      ])
+    },
+  })
   return cols
 })
 
@@ -735,9 +752,16 @@ watch(() => [props.dbName, props.collectionName], () => {
 }
 .result-table-wrap {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
 }
+/* P1: el-table-v2 行内操作按钮容器 */
+.v2-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+.v2-row-actions :deep(svg) { pointer-events: none; }
 /* 结果表格主题变量与 DBResultGrid 保持一致 */
 .db-result-table {
   --el-table-header-bg-color: var(--bg-elevated, var(--bg-surface));

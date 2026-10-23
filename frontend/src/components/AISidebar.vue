@@ -76,6 +76,7 @@
           @dismiss="onDismiss"
         />
       </div>
+      <div v-if="aiStore.contextNotice" class="ai-context-notice" role="status">{{ aiStore.contextNotice }}</div>
       <div v-if="aiStore.isRunning || aiStore.pendingCommand || aiStore.pendingQuestion" class="ai-thinking">
         <div class="thinking-row" :title="t('ai.thinkingToggleHint')" @click="toggleThinking">
           <div class="thinking-text">{{ statusText }}</div>
@@ -256,16 +257,29 @@
               <span class="hash-btn-icon">/</span>
             </button>
             <template v-if="settingsStore.settings.ai.models.length > 0">
-              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="toggleMenu(modelMenuRef, $event)">{{ currentModelName }}</button>
+              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="modelMenuRef?.toggle($event.currentTarget)">
+                <span>{{ currentModelName }}</span>
+                <span v-if="reasoningPreference.reasoningEffort !== 'default'" class="model-effort">{{ reasoningLabel(reasoningPreference.reasoningEffort) }}</span>
+                <ChevronDown :size="12" />
+              </button>
               <Menu ref="modelMenuRef" v-model:visible="modelMenuVisible">
                 <MenuItem
                   v-for="m in settingsStore.settings.ai.models"
                   :key="m.id"
-                  :class="{ active: m.id === settingsStore.settings.ai.activeModelId }"
+                  :class="{ active: m.id === settingsStore.activeModelId }"
                   @click="onModelSelect(m.id)"
                 >
                   <span>{{ m.name }}</span>
                 </MenuItem>
+                <MenuDivider />
+                <MenuSubmenu :label="`${t('ai.reasoningEffort')}: ${reasoningLabel(reasoningPreference.reasoningEffort)}`"
+                  :disabled="!settingsStore.activeModel || !!aiStore.pendingCommand || !!aiStore.pendingQuestion">
+                  <MenuItem v-for="effort in REASONING_EFFORTS" :key="effort"
+                    :class="{ active: reasoningPreference.reasoningEffort === effort }"
+                    @click.stop="selectReasoning({ reasoningEffort: effort as AIReasoningEffort })">
+                    {{ reasoningLabel(effort) }}
+                  </MenuItem>
+                </MenuSubmenu>
                 <MenuDivider />
                 <MenuItem iconic :icon="Plus" @click="onModelSelect('__add_model__')">
                   {{ t('settings.addModel') }}
@@ -326,9 +340,10 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { runAgent, approveTool, rejectTool, continueAgent, answerQuestion, dismissQuestion } from '../services/agent'
-import { CancelChatStream, SaveFileDialogFiltered, WriteFileBase64, ReadLocalAttachmentFile } from '../../bindings/github.com/ys-ll/uniterm/app'
-import type { AIAttachment } from '../types/ai'
+import { CancelChatStream, CancelAICompaction, SaveFileDialogFiltered, WriteFileBase64, ReadLocalAttachmentFile } from '../../bindings/github.com/ys-ll/uniterm/app'
+import type { AIAttachment, AIReasoningPreference, AIReasoningEffort } from '../types/ai'
 import { isExecutionMode } from '../types/ai'
+import { REASONING_EFFORTS, normalizeReasoning } from '../services/aiReasoning'
 import {
   ATTACHMENT_FILE_ACCEPT,
   ATTACHMENT_LIMITS,
@@ -344,9 +359,11 @@ import {
 } from '../services/attachments'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { isMobilePlatform } from '../utils/platform'
+import { tryAndroidSave } from '../utils/androidSave'
 import AIMessage from './AIMessage.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
 import { Clipboard } from '@wailsio/runtime'
 import MenuDivider from './MenuDivider.vue'
 import { writeClipboard } from '../composables/useClipboardWrite'
@@ -868,11 +885,11 @@ function toggleMaximize() {
   if (isMaximized.value) {
     sidebarWidth.value = preMaxWidth.value
     isMaximized.value = false
-    window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
+
   } else {
     preMaxWidth.value = sidebarWidth.value
     isMaximized.value = true
-    window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
+
   }
 }
 
@@ -880,7 +897,7 @@ function onClose() {
   if (isMaximized.value) {
     isMaximized.value = false
     sidebarWidth.value = preMaxWidth.value
-    window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
+
   }
   aiStore.toggle()
 }
@@ -935,12 +952,20 @@ async function onMsgCtxExport() {
   try {
     const md = aiStore.exportSessionMarkdown(id)
     const safe = s.name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
-    const path = await SaveFileDialogFiltered(t('ai.exportMd'), `${safe}.md`, 'Markdown File', '*.md')
-    if (!path) return
     const bytes = new TextEncoder().encode(md)
     let bin = ''
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-    await WriteFileBase64(path, btoa(bin))
+    const b64 = btoa(bin)
+    // Android: save through the system "save to" picker instead of the
+    // (unsupported) native save dialog.
+    const androidOutcome = await tryAndroidSave(`${safe}.md`, 'text/markdown', b64)
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') ElMessage.success(t('ai.exportDone', { name: s.name }))
+      return
+    }
+    const path = await SaveFileDialogFiltered(t('ai.exportMd'), `${safe}.md`, 'Markdown File', '*.md')
+    if (!path) return
+    await WriteFileBase64(path, b64)
     ElMessage.success(t('ai.exportDone', { name: s.name }))
   } catch (e: any) {
     ElMessage.error(e?.message || String(e))
@@ -990,9 +1015,25 @@ const modeLabel = computed(() => {
 })
 
 const currentModelName = computed(() => {
-  const m = settingsStore.settings.ai.models.find(m => m.id === settingsStore.settings.ai.activeModelId)
+  const m = settingsStore.activeModel
   return m?.name || 'Model'
 })
+
+const reasoningPreference = computed(() => {
+  const model = settingsStore.activeModel
+  return normalizeReasoning(model ? useLocalStateStore().state.ai?.modelPreferences?.[model.id] : undefined)
+})
+function reasoningLabel(value: string) { return t(`ai.reasoning.${value}`) }
+async function selectReasoning(patch: Partial<AIReasoningPreference>) {
+  const model = settingsStore.activeModel
+  if (!model || aiStore.pendingCommand || aiStore.pendingQuestion) return
+  closeMenus()
+  try {
+    await useLocalStateStore().setAIReasoning(model.id, normalizeReasoning({ ...reasoningPreference.value, ...patch }))
+  } catch {
+    ElMessage.error(t('ai.reasoningSaveFailed'))
+  }
+}
 
 const busy = computed(() => aiStore.isRunning || !!aiStore.pendingCommand || !!aiStore.pendingQuestion)
 
@@ -1499,7 +1540,7 @@ function onModelChange(modelId: string) {
     })
     return
   }
-  settingsStore.setActiveModel(modelId)
+  settingsStore.setActiveModel(modelId)?.catch(() => ElMessage.error(t('ai.reasoningSaveFailed')))
 }
 
 function formatRelativeTime(timestamp: number): string {
@@ -1594,7 +1635,7 @@ watch(() => aiStore.visible, (visible) => {
   if (!visible && isMaximized.value) {
     isMaximized.value = false
     sidebarWidth.value = preMaxWidth.value
-    window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
+
   }
 })
 
@@ -1802,6 +1843,7 @@ function onStop() {
     return
   }
   CancelChatStream().catch(() => { /* ignore */ })
+  if (aiStore.compactionRequestId) CancelAICompaction(aiStore.compactionRequestId).catch(() => { /* ignore */ })
   aiStore.stop()
 }
 
@@ -2094,6 +2136,13 @@ defineExpose({ focusInput })
   user-select: text;
   -webkit-user-select: text;
 }
+.ai-context-notice {
+  padding: 0.5rem 0.75rem;
+  color: var(--el-color-warning);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
 .ai-thinking {
   display: flex;
   flex-direction: column;
@@ -2337,11 +2386,13 @@ defineExpose({ focusInput })
   display: flex;
   gap: 0.125rem;
   align-items: center;
+  min-width: 0;
 }
 .input-actions-right {
   display: flex;
   gap: 0.375rem;
   align-items: center;
+  flex-shrink: 0;
 }
 /* Ghost buttons: no border/background by default, reveal on hover */
 .ghost-btn {
@@ -2371,7 +2422,25 @@ defineExpose({ focusInput })
   opacity: 0.4;
 }
 .model-btn {
-  max-width: 6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 10rem;
+}
+.model-btn > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-btn > svg,
+.model-effort {
+  flex-shrink: 0;
+}
+.model-effort {
+  margin-left: 0.25rem;
+  color: var(--text-disabled);
+  font-size: 0.625rem;
 }
 .add-model-btn {
   display: inline-flex;

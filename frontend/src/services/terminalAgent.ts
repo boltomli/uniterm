@@ -42,7 +42,12 @@ export interface ExecuteResult {
   exitCode: number
   timedOut?: boolean
   cancelled?: boolean
+  completed?: boolean
 }
+
+// One cursor per terminal. Repeated collection reads the original job buffer,
+// including output that arrived between tool calls.
+const foregroundCursors = new Map<string, { jobId: string; offset: number }>()
 
 export function truncateOutput(
   text: string,
@@ -151,8 +156,7 @@ export async function executeCommand(
   headLines: number = 50,
   tailLines: number = 300,
   shouldCancel?: () => boolean,
-  panelTitle?: string,
-  idleMs: number = 800
+  panelTitle?: string
 ): Promise<ExecuteResult> {
   const { sessionId, shellPath, remoteOS } = resolveActiveSession(panelTitle)
   // Single execution engine: the backend MCP foreground job registry types the command
@@ -164,24 +168,27 @@ export async function executeCommand(
   // the built-in AI's timedOut + collect_output flow.
   let jobId: string
   try {
-    jobId = await StartForeground(sessionId, buildCommand(command, shellPath, remoteOS), idleMs, timeoutMs)
+    jobId = await StartForeground(sessionId, buildCommand(command, shellPath, remoteOS), timeoutMs)
   } catch (e: any) {
     throw new Error(e?.message ?? String(e))
   }
 
-  return waitForForeground(jobId, timeoutMs, headLines, tailLines, shouldCancel)
+  const cursor = { jobId, offset: 0 }
+  foregroundCursors.set(sessionId, cursor)
+  return waitForForeground(jobId, timeoutMs, headLines, tailLines, shouldCancel, cursor)
 }
 
 async function waitForForeground(
   jobId: string, timeoutMs: number, headLines: number, tailLines: number,
-  shouldCancel?: () => boolean
+  shouldCancel?: () => boolean,
+  cursor = { jobId, offset: 0 }
 ): Promise<ExecuteResult> {
   const dec = new TextDecoder()
   const POLL_MS = 150
   const PAGE = 64 * 1024
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-  let offset = 0
+  let offset = cursor.offset
   let acc = ''
   let state = 'running'
   let exitCode = -1
@@ -198,6 +205,7 @@ async function waitForForeground(
       const bytes = foregroundBytes(out)
       acc += dec.decode(bytes, { stream: true })
       offset += bytes.length
+      cursor.offset = offset
       exitCode = code
       if (st !== 'running' && bytes.length < PAGE) {
         state = st
@@ -210,7 +218,6 @@ async function waitForForeground(
     }
     // Safety net; the engine itself moves the job to "timeout" at hardLimit.
     if (Date.now() - start >= timeoutMs + 5000) {
-      await InterruptForeground(jobId, 'SIGINT').catch(() => {})
       state = 'timeout'
       break
     }
@@ -221,6 +228,7 @@ async function waitForForeground(
     output: truncateOutput(acc + dec.decode(), headLines, tailLines),
     exitCode: state === 'exited' ? exitCode : -1,
     timedOut: state === 'timeout',
+    completed: state === 'exited',
   }
 }
 
@@ -237,19 +245,22 @@ export async function startCommand(command: string, panelTitle?: string): Promis
   const { sessionId, shellPath, remoteOS } = resolveActiveSession(panelTitle)
   // Same engine as executeCommand; start_command just samples the job's
   // screen-resolved output after a short window and returns while the
-  // command keeps running (the job watcher detaches at its idle/timeout).
-  const idleMs = 1200
+  // command and output capture keep running until shell completion or retention expiry.
   let jobId: string
   try {
-    jobId = await StartForeground(sessionId, buildCommand(command, shellPath, remoteOS), idleMs, 5 * 60_000)
+    jobId = await StartForeground(sessionId, buildCommand(command, shellPath, remoteOS), 5 * 60_000)
   } catch (e: any) {
     throw new Error(e?.message ?? String(e))
   }
 
+  const cursor = { jobId, offset: 0 }
+  foregroundCursors.set(sessionId, cursor)
   await new Promise((r) => setTimeout(r, 3000))
   try {
     const [out] = await PollForeground(jobId, 0, 64 * 1024)
-    const output = new TextDecoder().decode(foregroundBytes(out)).trim()
+    const bytes = foregroundBytes(out)
+    cursor.offset = bytes.length
+    const output = new TextDecoder().decode(bytes).trim()
     return { output: output || '(no output yet)', started: true }
   } catch (e: any) {
     return { output: '(output unavailable)', started: true }
@@ -277,16 +288,20 @@ export async function collectOutput(
   headLines: number = 100,
   tailLines: number = 300,
   shouldCancel?: () => boolean,
-  panelTitle?: string,
-  idleMs: number = 800
+  panelTitle?: string
 ): Promise<CollectResult> {
   const { sessionId } = resolveActiveSession(panelTitle)
-  const jobId = await StartForegroundCapture(sessionId, idleMs, timeoutMs)
-  const result = await waitForForeground(jobId, timeoutMs, headLines, tailLines, shouldCancel)
+  const jobId = await StartForegroundCapture(sessionId, timeoutMs)
+  let cursor = foregroundCursors.get(sessionId)
+  if (!cursor || cursor.jobId !== jobId) {
+    cursor = { jobId, offset: 0 }
+    foregroundCursors.set(sessionId, cursor)
+  }
+  const result = await waitForForeground(jobId, timeoutMs, headLines, tailLines, shouldCancel, cursor)
   return {
     output: result.output,
     timedOut: !!result.timedOut,
-    completed: !result.cancelled && result.exitCode === 0 && !result.timedOut,
+    completed: !!result.completed,
   }
 }
 

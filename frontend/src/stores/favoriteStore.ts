@@ -16,7 +16,7 @@ export const useFavoriteStore = defineStore('favorite', () => {
 
   async function load() {
     try {
-      favoriteIds.value = (await GetFavoriteConnections()) || []
+      const result = await GetFavoriteConnections(); favoriteIds.value = Array.isArray(result) ? result : []
       loaded.value = true
     } catch (e) {
       console.error('Failed to load favorites:', e)

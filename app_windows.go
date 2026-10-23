@@ -4,15 +4,21 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -22,6 +28,10 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
+
+func additionalWindowOptions(options application.WebviewWindowOptions) application.WebviewWindowOptions {
+	return options
+}
 
 func (a *App) GetAvailableShells() []string {
 	var shells []string
@@ -336,11 +346,14 @@ const (
 	GWLP_WNDPROC     = ^uintptr(3)
 	WM_ENTERSIZEMOVE = 0x0231
 	WM_EXITSIZEMOVE  = 0x0232
-	WM_SYSCOMMAND    = 0x0112
 	WM_SIZE          = 0x0005
-	SC_MAXIMIZE      = 0xF030
-	SC_MINIMIZE      = 0xF020
-	SC_RESTORE       = 0xF120
+	WM_SYSCOMMAND    = 0x0112
+	// SC_* are wParam values of WM_SYSCOMMAND for the system menu commands
+	// that resize the window outside the size/move loop (maximise from the
+	// title-bar button, minimise, restore).
+	SC_MAXIMIZE = 0xF030
+	SC_MINIMIZE = 0xF020
+	SC_RESTORE  = 0xF120
 )
 
 func (a *App) findMainWindow() uintptr {
@@ -436,7 +449,7 @@ func (a *App) subclassMainWindow() {
 			}
 		case WM_SIZE:
 			if !a.inSizeMove {
-				a.emitMoveResize("rdp:move-resize-end")
+				a.emitMoveResize("window:resize-end")
 			}
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
@@ -769,4 +782,254 @@ func scalePNG(data []byte, w, h int) []byte {
 		return data
 	}
 	return buf.Bytes()
+}
+
+// Clipboard file bindings for the IronRDP engine's local→remote file paste:
+// the frontend polls ClipboardGetFiles to detect an CF_HDROP clipboard, and
+// the WASM client's cliprdr layer translates the advertised list into a
+// FileGroupDescriptorW format list; the remote then fetches chunks through
+// ClipboardReadFileChunk (via the client's FileContentsRequest flow).
+
+// setClipboardFiles publishes completed downloads as CF_HDROP so Explorer
+// and other native applications can paste them with the ordinary Ctrl+V.
+func (a *App) setClipboardFiles(paths []string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	var names []uint16
+	for _, path := range paths {
+		names = append(names, utf16.Encode([]rune(path))...)
+		names = append(names, 0)
+	}
+	names = append(names, 0)
+	data := make([]byte, 20+len(names)*2)
+	binary.LittleEndian.PutUint32(data, 20)
+	binary.LittleEndian.PutUint32(data[16:], 1) // DROPFILES.fWide
+	for i, c := range names {
+		binary.LittleEndian.PutUint16(data[20+i*2:], c)
+	}
+	handle, _, err := kernel32.NewProc("GlobalAlloc").Call(0x42, uintptr(len(data))) // MOVEABLE | ZEROINIT
+	if handle == 0 {
+		return fmt.Errorf("GlobalAlloc: %w", err)
+	}
+	defer func() {
+		if handle != 0 {
+			kernel32.NewProc("GlobalFree").Call(handle)
+		}
+	}()
+	ptr, _, err := kernel32.NewProc("GlobalLock").Call(handle)
+	if ptr == 0 {
+		return fmt.Errorf("GlobalLock: %w", err)
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
+	kernel32.NewProc("GlobalUnlock").Call(handle)
+	deadline := time.Now().Add(time.Second)
+	for {
+		opened, _, err := user32.NewProc("OpenClipboard").Call(a.mainHwnd)
+		if opened != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("OpenClipboard: %w", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer user32.NewProc("CloseClipboard").Call()
+	if ok, _, err := user32.NewProc("EmptyClipboard").Call(); ok == 0 {
+		return fmt.Errorf("EmptyClipboard: %w", err)
+	}
+	if ok, _, err := user32.NewProc("SetClipboardData").Call(15, handle); ok == 0 {
+		return fmt.Errorf("SetClipboardData: %w", err)
+	}
+	handle = 0 // Ownership transferred to Windows.
+	return nil
+}
+
+var (
+	clipboardFilesMu    sync.Mutex
+	clipboardFilesPaths []string // full paths of the last advertised list, indexed by lindex
+	clipboardFilesByID  = make(map[string]string)
+)
+
+// ClipboardGetFiles returns the files currently on the clipboard (CF_HDROP)
+// and remembers their full paths for ClipboardReadFileChunk. Directories are
+// skipped in v1.
+func (a *App) ClipboardGetFiles() []ClipboardFileInfo {
+	clipboardFilesMu.Lock()
+	defer clipboardFilesMu.Unlock()
+
+	paths, err := readClipboardHDROP()
+	if err != nil {
+		// Most common case: the clipboard holds no file list (or another
+		// process holds it open). Not worth logging at volume.
+		return []ClipboardFileInfo{}
+	}
+
+	out := make([]ClipboardFileInfo, 0, len(paths))
+	var advertisedPaths []string
+	for _, p := range paths {
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		out = append(out, ClipboardFileInfo{
+			ID:           fmt.Sprintf("%x", sha256.Sum256([]byte(p))),
+			Name:         filepath.Base(p),
+			Size:         st.Size(),
+			LastModified: st.ModTime().UnixMilli(),
+		})
+		advertisedPaths = append(advertisedPaths, p)
+		clipboardFilesByID[out[len(out)-1].ID] = p
+	}
+	clipboardFilesPaths = advertisedPaths
+	return out
+}
+
+// ClipboardReadFileChunk reads up to `size` bytes of the advertised file at
+// `index` starting at `offset` (the remote's FileContentsRequest flow) and
+// returns it base64-encoded.
+func (a *App) ClipboardReadFileChunk(index int, offset int64, size int) (string, error) {
+	clipboardFilesMu.Lock()
+	if index < 0 || index >= len(clipboardFilesPaths) {
+		count := len(clipboardFilesPaths)
+		clipboardFilesMu.Unlock()
+		return "", fmt.Errorf("clipboard file index %d out of range (%d advertised)", index, count)
+	}
+	path := clipboardFilesPaths[index]
+	clipboardFilesMu.Unlock()
+	return readClipboardFileChunk(path, offset, size)
+}
+
+// ClipboardReadFileChunkByID keeps an advertised file bound to its original
+// path even when polling discovers a new CF_HDROP list during a transfer.
+func (a *App) ClipboardReadFileChunkByID(id string, offset int64, size int) (string, error) {
+	clipboardFilesMu.Lock()
+	path, ok := clipboardFilesByID[id]
+	clipboardFilesMu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("unknown clipboard file")
+	}
+	return readClipboardFileChunk(path, offset, size)
+}
+
+func readClipboardFileChunk(path string, offset int64, size int) (string, error) {
+	if offset < 0 || size < 0 || size > 8*1024*1024 {
+		return "", fmt.Errorf("invalid clipboard file range")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open clipboard file: %w", err)
+	}
+	defer f.Close()
+
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return "", fmt.Errorf("seek clipboard file: %w", err)
+		}
+	}
+	buf := make([]byte, size)
+	n, err := io.ReadFull(f, buf)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		buf = buf[:n]
+	} else if err != nil {
+		return "", fmt.Errorf("read clipboard file: %w", err)
+	} else {
+		buf = buf[:n]
+	}
+	return base64.StdEncoding.EncodeToString(buf), nil
+}
+
+// readClipboardHDROP enumerates the CF_HDROP file list on the clipboard.
+func readClipboardHDROP() ([]string, error) {
+	// OpenClipboard/CloseClipboard belong to an OS thread, not a goroutine.
+	// Migration between these calls can leave the clipboard locked for every app.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	const CF_HDROP = 15
+
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	openClipboard := user32.NewProc("OpenClipboard")
+	closeClipboard := user32.NewProc("CloseClipboard")
+	getClipboardData := user32.NewProc("GetClipboardData")
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	globalLock := kernel32.NewProc("GlobalLock")
+	globalUnlock := kernel32.NewProc("GlobalUnlock")
+	globalSize := kernel32.NewProc("GlobalSize")
+
+	if err := openClipboard.Find(); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for {
+		r, _, _ := openClipboard.Call(0)
+		if r != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("OpenClipboard failed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer closeClipboard.Call()
+
+	r2, _, _ := getClipboardData.Call(CF_HDROP)
+	if r2 == 0 {
+		return nil, fmt.Errorf("clipboard holds no CF_HDROP")
+	}
+	hmem := windows.Handle(r2)
+
+	locked, _, _ := globalLock.Call(r2)
+	if locked == 0 {
+		return nil, fmt.Errorf("GlobalLock failed")
+	}
+	defer globalUnlock.Call(uintptr(hmem))
+
+	total, _, _ := globalSize.Call(r2)
+	if total == 0 || total > 64*1024*1024 {
+		return nil, fmt.Errorf("bad clipboard block size %d", total)
+	}
+	base := unsafe.Pointer(locked)
+
+	// DROPFILES: pFiles (offset to the file list, DWORD), POINT pt (8),
+	// fNC (4), fWide (4).
+	if total < 20 {
+		return nil, fmt.Errorf("DROPFILES header too small")
+	}
+	pFiles := *(*uint32)(unsafe.Pointer(base))
+	fWide := *(*uint32)(unsafe.Pointer(uintptr(base) + 16))
+	if pFiles == 0 || uintptr(pFiles) >= total {
+		return nil, fmt.Errorf("bad DROPFILES pFiles offset %d", pFiles)
+	}
+	if fWide == 0 {
+		return nil, fmt.Errorf("ANSI CF_HDROP is not supported")
+	}
+
+	wide := unsafe.Slice((*uint16)(unsafe.Pointer(uintptr(base)+uintptr(pFiles))), (total-uintptr(pFiles))/2)
+
+	var names []string
+	start := -1
+	for i, c := range wide {
+		if c == 0 {
+			if start >= 0 {
+				if i > start {
+					names = append(names, windows.UTF16ToString(wide[start:i]))
+				}
+				start = -1
+				// The list is double-null terminated: an empty entry ends it.
+				if i+1 < len(wide) && wide[i+1] == 0 {
+					break
+				}
+			} else {
+				break // leading empty string = end of list
+			}
+		} else if start < 0 {
+			start = i
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("CF_HDROP holds no files")
+	}
+	return names, nil
 }

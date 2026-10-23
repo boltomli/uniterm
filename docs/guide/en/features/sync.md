@@ -72,7 +72,7 @@ When auto-sync is enabled:
 
 ## Sync Contents
 
-The following data is synchronized (stored encrypted):
+The following data is synchronized by default (stored encrypted):
 
 - Connection list and groups
 - Connection favorites
@@ -82,12 +82,22 @@ The following data is synchronized (stored encrypted):
 - Keystore identities
 - Proxies
 
+Additional opt-in entries in the sync scope (off by default):
+
+- **Skills** (skills.json): a complete bundle — skill directories (SKILL.md, references/, scripts/) plus preferences (enabled/locked/sort order) — so a new device gets the full set with one pull. Off by default because skills can carry multiple, larger files. Limits: 256KB per file, 4MB per bundle
+- **Basic settings** (settings.json): theme, paths, shell, shortcuts, interface layout
+
 Data that is NOT synchronized:
 
-- Application personalization settings (theme, paths, shell, shortcuts, interface layout, etc. — effective only on the local machine)
-- AI sessions and skills (local only)
+- Application personalization settings (when "Basic settings" is not ticked — local only)
+- AI sessions (local only)
 - Cloud sync configuration itself (configured independently per device)
 - Terminal history
+
+::: warning Skills sync notes
+- Deleting a skill on another device never removes it from this machine — deletes do not propagate, protecting skills copied into the directory by hand
+- System skills shipped with the app (`.system`) are not synced; they follow the app build on each device
+:::
 
 ## Conflict Handling
 

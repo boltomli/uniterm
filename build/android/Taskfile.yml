@@ -4,7 +4,7 @@ includes:
   common: ../Taskfile.yml
 
 vars:
-  APP_ID: '{{.APP_ID | default "com.wails.app"}}'
+  APP_ID: '{{.APP_ID | default "net.uniterm.app"}}'
   MIN_SDK: '21'
   TARGET_SDK: '35'
   # Release version injected into the binary via -ldflags "-X main.Version=...".

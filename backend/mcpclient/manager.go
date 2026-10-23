@@ -3,8 +3,10 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/ys-ll/uniterm/backend/store"
+	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -51,6 +53,10 @@ type Conn struct {
 	// err records the last connect/list failure for status display; a conn
 	// with a non-nil err is skipped by ListTools/CallTool.
 	err error
+
+	// reconnectMu serializes reconnect attempts for this conn so concurrent
+	// tool calls after a dropped connection trigger exactly one redial.
+	reconnectMu sync.Mutex
 
 	closeOnce sync.Once
 	closeCh   chan struct{}
@@ -330,7 +336,11 @@ func (m *Manager) Statuses(configs []store.MCPClientConfig) []ConnStatus {
 }
 
 // CallTool invokes a remote tool by its qualified name and returns the
-// concatenated text content.
+// concatenated text content. When the call fails with a connection-level
+// error (dropped SSE stream, wedged stdio pipe, half-closed HTTP session),
+// the conn is redialed once and the call retried transparently (issue
+// #1174: previously every call after a dropped SSE connection returned a
+// bare EOF until an app restart).
 func (m *Manager) CallTool(ctx context.Context, qualified string, args map[string]any) (string, error) {
 	server, tool, ok := splitQualified(qualified)
 	if !ok {
@@ -339,18 +349,19 @@ func (m *Manager) CallTool(ctx context.Context, qualified string, args map[strin
 	m.mu.Lock()
 	c, ok := m.conns[server]
 	m.mu.Unlock()
-	if !ok || c.session == nil {
+	if !ok || c == nil {
+		return "", fmt.Errorf("mcp server %q is not connected (add or enable it in settings)", server)
+	}
+	if c.session == nil && c.err != nil {
+		return "", fmt.Errorf("mcp server %q (%s, %s): %w", server, c.cfg.URL, c.cfg.Transport, c.err)
+	}
+	if c.session == nil {
 		return "", fmt.Errorf("mcp server %q is not connected", server)
 	}
-	if c.err != nil {
-		return "", fmt.Errorf("mcp server %q: %v", server, c.err)
-	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	res, err := c.session.CallTool(callCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	res, err := m.callWithRetry(ctx, c, tool, args)
 	if err != nil {
-		return "", fmt.Errorf("call %s: %w", qualified, err)
+		return "", err
 	}
 	text := extractText(res)
 	if res.IsError {
@@ -360,6 +371,129 @@ func (m *Manager) CallTool(ctx context.Context, qualified string, args map[strin
 		text = "[mcp tool returned no text content]"
 	}
 	return text, nil
+}
+
+// callWithRetry performs the tool call and, on a connection-level failure,
+// redials the conn once and replays the call on the fresh session.
+func (m *Manager) callWithRetry(ctx context.Context, c *Conn, tool string, args map[string]any) (*mcp.CallToolResult, error) {
+	m.mu.Lock()
+	sess := c.session
+	m.mu.Unlock()
+	if sess == nil {
+		return nil, fmt.Errorf("mcp server %q is not connected", c.cfg.Name)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	res, err := sess.CallTool(callCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err == nil {
+		return res, nil
+	}
+	if !isConnError(err) {
+		return nil, fmt.Errorf("call mcp__%s__%s: %w", sanitize(c.cfg.Name), tool, err)
+	}
+
+	// The transport died mid-session (SSE stream dropped, stdio pipe
+	// closed, ...). Redial and retry once; the reconnect lock collapses a
+	// stampede of concurrent failed calls into a single redial.
+	log.Writef("mcpclient: connection lost on %q (%s), reconnecting: %v", c.cfg.Name, c.cfg.Transport, err)
+	session, rerr := m.reconnect(c, sess)
+	if rerr != nil {
+		return nil, fmt.Errorf("mcp server %q (%s, %s) connection lost and reconnect failed: %v (original call error: %w; check the server or re-enable it in settings)",
+			c.cfg.Name, c.cfg.URL, c.cfg.Transport, rerr, err)
+	}
+	retryCtx, retryCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer retryCancel()
+	res, rerr2 := session.CallTool(retryCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if rerr2 != nil {
+		// The fresh session failed too — mark the conn so ListTools stops
+		// reporting the stale tool cache and Statuses shows the server down.
+		m.mu.Lock()
+		c.err = rerr2
+		m.mu.Unlock()
+		return nil, fmt.Errorf("call mcp__%s__%s after reconnect: %w (server %q, %s, %s; check the server or re-enable it in settings)",
+			sanitize(c.cfg.Name), tool, rerr2, c.cfg.Name, c.cfg.URL, c.cfg.Transport)
+	}
+	return res, nil
+}
+
+// reconnect redials a dead conn in place: new session, fresh tool list. The
+// per-conn lock guarantees one dialer at a time; concurrent callers ride
+// whichever redial wins the lock (generation counter tells riders whether
+// the session on the conn is newer than the one they saw fail).
+func (m *Manager) reconnect(c *Conn, failed Session) (Session, error) {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+
+	// Another caller already reconnected while this goroutine waited on the
+	// lock: the conn now carries a session that is not the one this caller
+	// saw fail, so ride it instead of dialing again. Session identity (not a
+	// generation counter) is the test: a caller that failed on ANY session
+	// still served by the conn is served by the same redial it waits behind.
+	m.mu.Lock()
+	session := c.session
+	m.mu.Unlock()
+	if session != nil && session != failed {
+		return session, nil
+	}
+
+	connectCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	newSession, err := m.dial(connectCtx, c.cfg)
+	if err != nil {
+		m.mu.Lock()
+		c.err = err
+		if c.session != nil {
+			_ = c.session.Close()
+		}
+		c.session = nil
+		m.mu.Unlock()
+		return nil, err
+	}
+	newTools, err := listTools(connectCtx, newSession, c.cfg)
+	if err != nil {
+		_ = newSession.Close()
+		m.mu.Lock()
+		c.err = err
+		if c.session != nil {
+			_ = c.session.Close()
+		}
+		c.session = nil
+		m.mu.Unlock()
+		return nil, err
+	}
+
+	m.mu.Lock()
+	old := c.session
+	c.session = newSession
+	c.tools = newTools
+	c.err = nil
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	log.Writef("mcpclient: %q reconnected, %d tools", c.cfg.Name, len(newTools))
+	return newSession, nil
+}
+
+// isConnError reports whether err is a transport-level failure worth a
+// reconnect (as opposed to a tool-level error the retry cannot fix).
+// The SDK wraps dropped transports as ErrConnectionClosed ("connection
+// closed: calling ..."); the "client is closing" phrasing appears on
+// sessions whose transport goroutine has exited. io.EOF surfaces from raw
+// pipes (stdio).
+func isConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "client is closing") ||
+		strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "use of closed")
 }
 
 // TestConnection dials a one-shot connection, lists its tools, and closes. Used

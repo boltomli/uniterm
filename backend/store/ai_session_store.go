@@ -19,11 +19,20 @@ type AISessionData struct {
 }
 
 type AISessionEntry struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	CreatedAt int64            `json:"createdAt"`
-	UpdatedAt int64            `json:"updatedAt"`
-	Messages  []AIMessageEntry `json:"messages"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	CreatedAt      int64             `json:"createdAt"`
+	UpdatedAt      int64             `json:"updatedAt"`
+	Messages       []AIMessageEntry  `json:"messages"`
+	ContextSummary *AIContextSummary `json:"contextSummary,omitempty"`
+}
+
+// AIContextSummary is a checkpoint for API context only. Messages remain intact.
+type AIContextSummary struct {
+	Version          int    `json:"version"`
+	Content          string `json:"content"`
+	ThroughMessageID string `json:"throughMessageId"`
+	CreatedAt        int64  `json:"createdAt"`
 }
 
 type AIMessageEntry struct {
@@ -37,6 +46,7 @@ type AIMessageEntry struct {
 	ToolCalls     []interface{} `json:"tool_calls,omitempty"`
 	PendingTools  []interface{} `json:"pendingTools,omitempty"`
 	RawAPIMsg     string        `json:"_rawApiMsg,omitempty"`
+	ContextHeader string        `json:"_contextHeader,omitempty"`
 	// Attachments carries the user message's image / text-file attachments
 	// (see frontend AIAttachment). Omitted entirely for the overwhelming
 	// majority of messages, and absent from sessions written before the

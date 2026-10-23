@@ -23,17 +23,8 @@ const (
 	StateSessionClosed = "session_closed"
 )
 
-// Foreground completion events delivered by the tap.
-const (
-	eventIdleSettled = "idle"
-	eventEOF         = "eof"
-	eventHardTimeout = "timeout"
-	eventInterrupted = "killed"
-)
-
 // Default caps; the MCP layer can override per call.
 const (
-	DefaultIdleSettle    = 800 * time.Millisecond
 	DefaultHardLimit     = 5 * time.Minute
 	DefaultMaxOutput     = 64 * 1024
 	defaultOutputCap     = DefaultMaxOutput * 4
@@ -63,9 +54,14 @@ type Job struct {
 	// into stdout. Emission happens after each Feed: lines above the cursor
 	// are final; the cursor line flushes at completion (FlushFrom).
 	watermark int
+	partial   string
 
-	done     chan struct{}
-	finished bool
+	done       chan struct{}
+	finished   bool
+	completion *completionScanner
+	waitUntil  time.Time
+	observe    bool
+	released   bool // guarded by Registry.mu
 }
 
 // Snapshot returns a consistent copy of the current output/state.
@@ -79,11 +75,11 @@ func (j *Job) Snapshot() (stdout, stderr []byte, exitCode int, state string, err
 	return out, errOut, j.exitCode, j.state, j.err
 }
 
-func (j *Job) setState(state string, exitCode int, err error) {
+func (j *Job) setState(state string, exitCode int, err error) bool {
 	j.mu.Lock()
 	if j.finished {
 		j.mu.Unlock()
-		return
+		return false
 	}
 	j.state = state
 	j.exitCode = exitCode
@@ -93,6 +89,7 @@ func (j *Job) setState(state string, exitCode int, err error) {
 		close(j.done)
 	}
 	j.mu.Unlock()
+	return true
 }
 
 func (j *Job) appendLocked(dst *[]byte, b []byte) {
@@ -128,51 +125,44 @@ type Registry struct {
 	// the live terminal coherent (see ErrSessionBusy).
 	busy map[string]string
 	// newID is injectable for tests (deterministic ids); default uuid.
-	newID func() string
+	newID  func() string
+	latest map[string]string
 }
 
 // NewRegistry builds an empty registry with the uuid id generator.
 func NewRegistry() *Registry {
 	return &Registry{
-		jobs:  make(map[string]*Job),
-		busy:  make(map[string]string),
-		newID: func() string { return "fg-" + uuid.New().String() },
+		jobs:   make(map[string]*Job),
+		busy:   make(map[string]string),
+		latest: make(map[string]string),
+		newID:  func() string { return "fg-" + uuid.New().String() },
 	}
 }
 
-// Start types command into pty and watches for completion. It returns the job
-// immediately; the caller polls Snapshot. Completion is driven by the idle
-// timer (no output for idleSettle) or an explicit EOF (session closed) — never
-// by matching an end marker. A hard deadline moves the job to StateTimeout; it
-// stays pollable and interruptible instead of hanging the caller.
-// Start launches a raw-mode job (no screen emulator; the tap accumulates the
-// raw PTY stream, ConPTY redraw frames included). Kept for tests and callers
-// that want the pre-emulator behavior; production uses StartWithScreen.
-func (r *Registry) Start(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int) (*Job, error) {
-	return r.StartWithScreen(pty, sessionID, command, newline, idleSettle, hardLimit, maxOutput, 0, 0)
+// Start types a command into the live terminal and returns a pollable job.
+// A supported shell acknowledges command return with a per-job nonce and exit
+// code. Silence and prompt text never count as completion. On a wait timeout
+// the tap and session lock remain active so Collect can resume without loss.
+func (r *Registry) Start(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int) (*Job, error) {
+	return r.StartWithScreen(pty, sessionID, command, newline, hardLimit, maxOutput, 0, 0)
 }
 
 // StartWithScreen launches a job whose output is the redraw-resolved screen
 // text produced by a vt emulator fed by the data tap (see the screen emulator below). On
 // Windows OpenSSH/ConPTY the raw stream carries redraw frames the screen never
 // displays; the emulator resolves them the same way an xterm.js buffer does.
-// cols/rows <= 0 falls back to raw mode. Completion semantics are unchanged:
-// idle-settle or EOF, never an end marker. A hard limit moves the job to
-// StateTimeout; it stays pollable and interruptible instead of hanging.
-func (r *Registry) StartWithScreen(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int, cols, rows int) (*Job, error) {
-	return r.start(pty, sessionID, command, newline, idleSettle, hardLimit, maxOutput, cols, rows, false)
+// cols/rows <= 0 falls back to raw mode.
+func (r *Registry) StartWithScreen(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int) (*Job, error) {
+	return r.start(pty, sessionID, command, newline, hardLimit, maxOutput, cols, rows, false)
 }
 
 // ObserveWithScreen collects future terminal output without typing a command.
 // Read-only observers share the execution lifecycle but do not lock the session.
-func (r *Registry) ObserveWithScreen(pty Pty, sessionID string, idleSettle, hardLimit time.Duration, cols, rows int) (*Job, error) {
-	return r.start(pty, sessionID, "", "", idleSettle, hardLimit, DefaultMaxOutput, cols, rows, true)
+func (r *Registry) ObserveWithScreen(pty Pty, sessionID string, hardLimit time.Duration, cols, rows int) (*Job, error) {
+	return r.start(pty, sessionID, "", "", hardLimit, DefaultMaxOutput, cols, rows, true)
 }
 
-func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle, hardLimit time.Duration, maxOutput int, cols, rows int, observe bool) (*Job, error) {
-	if idleSettle <= 0 {
-		idleSettle = DefaultIdleSettle
-	}
+func (r *Registry) start(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int, observe bool) (*Job, error) {
 	if hardLimit <= 0 {
 		hardLimit = DefaultHardLimit
 	}
@@ -196,6 +186,16 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle
 		SessionID: sessionID,
 		state:     StateRunning,
 		done:      make(chan struct{}),
+		exitCode:  -1,
+		waitUntil: time.Now().Add(hardLimit),
+		observe:   observe,
+	}
+	wireCommand := command
+	if shell, ok := pty.(interface{ ForegroundShell() string }); ok && !observe {
+		if wrapped, supported := CompletionCommand(command, shell.ForegroundShell(), job.ID); supported {
+			wireCommand = wrapped
+			job.completion = &completionScanner{prefix: []byte("__UT_" + job.ID + ";")}
+		}
 	}
 	if cols > 0 && rows > 0 {
 		job.screen = NewScreen(cols, rows)
@@ -204,9 +204,9 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle
 	r.jobs[job.ID] = job
 	if !observe {
 		r.busy[sessionID] = job.ID
+		r.latest[sessionID] = job.ID
 	}
 	r.mu.Unlock()
-	r.scheduleReaper(job.ID)
 
 	if !pty.Alive() {
 		r.finish(job, StateSessionClosed, -1, ErrSessionClosed)
@@ -215,12 +215,12 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle
 	}
 
 	ready := make(chan struct{})
-	go r.watch(pty, job, idleSettle, hardLimit, maxOutput, ready)
+	go r.watch(pty, job, hardLimit, maxOutput, ready)
 	<-ready // Install taps before Write: a command may produce output immediately.
 	if observe {
 		return job, nil
 	}
-	if err := pty.Write([]byte(command + newline)); err != nil {
+	if err := pty.Write([]byte(wireCommand + newline)); err != nil {
 		r.finish(job, StateError, -1, err)
 		return job, nil
 	}
@@ -228,19 +228,22 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, idleSettle
 	return job, nil
 }
 
-func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration, maxOutput int, ready chan struct{}) {
+func (r *Registry) watch(pty Pty, job *Job, hardLimit time.Duration, maxOutput int, ready chan struct{}) {
 	defer r.release(job)
 
 	var (
-		eof      bool
-		lastData = time.Now()
-		start    = time.Now()
+		eof   bool
+		start = time.Now()
 	)
 	dataOff := pty.OnData(func(data []byte) {
 		job.mu.Lock()
-		defer job.mu.Unlock()
 		if job.finished {
+			job.mu.Unlock()
 			return
+		}
+		code, complete := -1, false
+		if job.completion != nil {
+			data, code, complete = job.completion.feed(data)
 		}
 		if job.screen != nil {
 			// Feed the emulator, then emit the logical lines that became
@@ -250,13 +253,20 @@ func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration,
 			// frames mutate the grid instead of appending bytes.
 			job.screen.Feed(data)
 			if chunk := job.screen.LinesSince(job.watermark, job.screen.CursorAbs()); chunk != "" {
-				job.appendLocked(&job.stdout, []byte(chunk))
+				job.appendScreenLocked(chunk)
+				job.partial = ""
 				job.watermark = job.screen.CursorAbs()
 			}
 		} else {
 			job.appendLocked(&job.stdout, data)
 		}
-		lastData = time.Now()
+		if complete && job.screen != nil {
+			job.flushScreenLocked()
+		}
+		job.mu.Unlock()
+		if complete {
+			r.finish(job, StateExited, code, nil)
+		}
 	})
 	statusOff := pty.OnStatusChange(func(status string) {
 		job.mu.Lock()
@@ -283,15 +293,11 @@ func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration,
 			return
 		}
 		job.mu.Lock()
-		if tail := job.screen.FlushFrom(job.watermark); tail != "" {
-			job.appendLocked(&job.stdout, []byte(tail))
-		}
+		job.flushScreenLocked()
 		job.mu.Unlock()
 	}
 
-	// Poll on a short ticker: check EOF, the idle-settle deadline and the hard
-	// limit. Completion is an event (idle gap / session close), never a marker
-	// match, so a dynamic prompt or TUI cannot make the watcher hang.
+	// Wait only for shell acknowledgement, disconnect, cancellation or deadline.
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -300,25 +306,59 @@ func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration,
 			return
 		case now := <-ticker.C:
 			job.mu.Lock()
-			closed, last := eof, lastData
+			closed, deadline := eof, job.waitUntil
 			job.mu.Unlock()
 			if closed {
 				flushTail()
 				r.finish(job, StateSessionClosed, -1, ErrSessionClosed)
 				return
 			}
-			if now.Sub(start) >= hardLimit {
+			if now.Sub(start) >= max(defaultJobTTL, hardLimit) {
 				flushTail()
 				r.finish(job, StateTimeout, -1, nil)
 				return
 			}
-			if now.Sub(last) >= idleSettle {
-				flushTail()
-				r.finish(job, StateExited, 0, nil)
-				return
+			if !deadline.IsZero() && !now.Before(deadline) {
+				if job.observe {
+					flushTail()
+					r.finish(job, StateTimeout, -1, nil)
+					return
+				}
+				// A wait timeout is not a process exit. Keep the tap, screen
+				// and session lock until real completion, cancellation or TTL.
+				job.mu.Lock()
+				changed := !job.finished && job.state != StateTimeout && job.waitUntil == deadline
+				if changed {
+					job.flushScreenLocked()
+					job.state = StateTimeout
+					job.waitUntil = time.Time{}
+				}
+				job.mu.Unlock()
 			}
 		}
 	}
+}
+
+func (j *Job) appendScreenLocked(text string) {
+	if j.partial != "" {
+		if strings.HasPrefix(text, j.partial) {
+			text = strings.TrimPrefix(text, j.partial)
+		} else {
+			// A redraw changed a partial line already returned on timeout.
+			// Keep byte offsets stable and expose the replacement on a new line.
+			text = "\n" + text
+		}
+	}
+	j.appendLocked(&j.stdout, []byte(text))
+}
+
+func (j *Job) flushScreenLocked() {
+	if j.screen == nil {
+		return
+	}
+	tail := strings.TrimSuffix(j.screen.FlushFrom(j.watermark), "\n")
+	j.appendScreenLocked(tail)
+	j.partial = tail
 }
 
 // release frees the concurrency slot and the per-session busy marker. The
@@ -326,6 +366,11 @@ func (r *Registry) watch(pty Pty, job *Job, idleSettle, hardLimit time.Duration,
 // job's slot may already have been re-used by a newer StartWithScreen.
 func (r *Registry) release(job *Job) {
 	r.mu.Lock()
+	if job.released {
+		r.mu.Unlock()
+		return
+	}
+	job.released = true
 	if r.running > 0 {
 		r.running--
 	}
@@ -345,12 +390,33 @@ func (r *Registry) Interrupt(jobID string) error {
 		return ErrUnknownJob
 	}
 	job.mu.Lock()
-	running := job.state == StateRunning
+	running := !job.finished
 	job.mu.Unlock()
 	if running {
 		r.finish(job, StateKilled, -1, ErrInterrupted)
 	}
 	return nil
+}
+
+// Collect resumes waiting on the original job, including buffered output
+// produced between tool calls. It never sends a command to the terminal.
+func (r *Registry) Collect(sessionID string, timeout time.Duration) (*Job, bool) {
+	r.mu.Lock()
+	job := r.jobs[r.latest[sessionID]]
+	r.mu.Unlock()
+	if job == nil {
+		return nil, false
+	}
+	if timeout <= 0 {
+		timeout = DefaultHardLimit
+	}
+	job.mu.Lock()
+	if !job.finished {
+		job.state = StateRunning
+		job.waitUntil = time.Now().Add(timeout)
+	}
+	job.mu.Unlock()
+	return job, true
 }
 
 // Lookup returns the job for polling.
@@ -362,7 +428,10 @@ func (r *Registry) Lookup(jobID string) (*Job, bool) {
 }
 
 func (r *Registry) finish(job *Job, state string, exitCode int, err error) {
-	job.setState(state, exitCode, err)
+	if job.setState(state, exitCode, err) {
+		r.release(job)
+		r.scheduleReaper(job.ID)
+	}
 }
 
 func (r *Registry) scheduleReaper(id string) {
@@ -374,6 +443,9 @@ func (r *Registry) scheduleReaper(id string) {
 			job.mu.Unlock()
 			if done {
 				delete(r.jobs, id)
+				if r.latest[job.SessionID] == id {
+					delete(r.latest, job.SessionID)
+				}
 			}
 		}
 		r.mu.Unlock()
@@ -473,6 +545,7 @@ type Screen struct {
 	x, y       int // cursor; x may equal cols as a "wrap pending" sentinel
 
 	savedX, savedY int
+	concealed      bool
 
 	state    parserState
 	csiBuf   []byte
@@ -707,6 +780,25 @@ func (s *Screen) csiDispatch(final byte) {
 	case 'u': // RCP
 		s.x, s.y = s.savedX, s.savedY
 		s.clampCursor()
+	case 'm': // SGR conceal affects plain-text capture as well as display.
+		for i := 0; i < len(ps); i++ {
+			p := ps[i]
+			if (p == 38 || p == 48 || p == 58) && i+1 < len(ps) {
+				// Indexed/RGB color components can themselves be 0, 8 or 28.
+				if ps[i+1] == 2 {
+					i += 4
+				} else if ps[i+1] == 5 {
+					i += 2
+				}
+				continue
+			}
+			switch p {
+			case -1, 0, 28:
+				s.concealed = false
+			case 8:
+				s.concealed = true
+			}
+		}
 	default:
 		// SGR (m), private modes (?...h/l), DSR (n), device attrs (c):
 		// parsed and ignored — no attribute model, no response channel.
@@ -805,6 +897,9 @@ func (s *Screen) writeRune(r rune) {
 	if r < 0x20 {
 		return // stray control byte that slipped through
 	}
+	if s.concealed {
+		r = ' '
+	}
 	if s.x >= s.cols {
 		// Deferred wrap: the previous printable filled the last column.
 		s.x = 0
@@ -818,6 +913,7 @@ func (s *Screen) writeRune(r rune) {
 }
 
 func (s *Screen) reset() {
+	s.concealed = false
 	for i := range s.grid {
 		s.grid[i] = s.newRow()
 	}

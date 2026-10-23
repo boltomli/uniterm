@@ -4,6 +4,9 @@
 package main
 
 import (
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,4 +96,43 @@ func TestDetectThirdPartyShells(t *testing.T) {
 			t.Errorf("got %v, want single entry", got)
 		}
 	})
+}
+
+func TestClipboardReadFileChunkRanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(path, []byte{0, 1, 2, 3, 255}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := readClipboardFileChunk(path, 2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := base64.StdEncoding.DecodeString(encoded)
+	if string(data) != string([]byte{2, 3, 255}) {
+		t.Fatalf("unexpected bytes: %v", data)
+	}
+	for _, bounds := range [][2]int64{{-1, 1}, {0, -1}, {0, 8*1024*1024 + 1}} {
+		if _, err := readClipboardFileChunk(path, bounds[0], int(bounds[1])); err == nil {
+			t.Fatalf("accepted invalid range %v", bounds)
+		}
+	}
+}
+
+func TestClipboardGetFilesLive(t *testing.T) {
+	if os.Getenv("UNITERM_CLIPBOARD_LIVE_TEST") != "1" {
+		t.Skip("UNITERM_CLIPBOARD_LIVE_TEST not enabled")
+	}
+	a := &App{}
+	files := a.ClipboardGetFiles()
+	if len(files) == 0 {
+		t.Skip("no files on the clipboard; copy a file first to run this test")
+	}
+	t.Logf("got %d files", len(files))
+	for _, f := range files {
+		t.Logf("file: %+v", f)
+		if f.Size > 0 {
+			b64, err := a.ClipboardReadFileChunk(0, 0, 16)
+			t.Logf("chunk: %d bytes err=%v", len(b64), err)
+		}
+	}
 }

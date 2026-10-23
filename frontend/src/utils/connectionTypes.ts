@@ -33,7 +33,7 @@ export interface ConnectionTypeInfo {
   // with their family; they are excluded from form/filter projections.
   category: ConnectionCategory
   defaultPort?: number
-  // Offered only on Windows (WSL, RDP, WSLC).
+  // Offered only on Windows (WSL, WSLC).
   windowsOnly?: boolean
   // i18n key for the connection's connect-X context-menu entry.
   connectMenuKey?: string
@@ -67,7 +67,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   // Container file browser — a runtime view over docker exec/cp, never persisted
   { type: 'container-file', label: 'Container Files', icon: FileBox, category: 'filetransfer', formHidden: true },
   // Remote desktop
-  { type: 'rdp', label: 'RDP', icon: Monitor, category: 'remote', defaultPort: 3389, windowsOnly: true, connectMenuKey: 'sidebar.connectRDP' },
+  { type: 'rdp', label: 'RDP', icon: Monitor, category: 'remote', defaultPort: 3389, connectMenuKey: 'sidebar.connectRDP' },
   { type: 'vnc', label: 'VNC', icon: MonitorSmartphone, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectVNC' },
   { type: 'spice', label: 'SPICE', icon: MonitorCloud, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectSPICE' },
   { type: 'x11-desktop', label: 'X11 Desktop', icon: AppWindow, category: 'remote', defaultPort: 22, connectMenuKey: 'sidebar.connectX11Desktop' },

@@ -18,8 +18,8 @@ import (
 // once per server Start — the agent never picks a mode at call time:
 //   - background: non-PTY SSH exec (real exit code, separate stdout/stderr).
 //   - foreground: the command is typed into the user's live terminal and
-//     completes on an idle-settle event or explicit EOF — never on an injected
-//     end marker. Output is redraw-resolved screen text (see the foreground job registry), and the
+//     completes on a per-job shell acknowledgement. Output is redraw-resolved
+//     screen text (see the foreground job registry), and the
 //     set additionally ships uniterm_capture / uniterm_send_key so the agent
 //     can see interactive prompts before answering them.
 //
@@ -66,13 +66,11 @@ type bgExecIn struct {
 // fgExecIn is the foreground-mode uniterm_exec input. Timeout semantics mirror
 // the built-in AI panel's execute_command: the caller sets timeoutMs based on
 // expected duration; on expiry the job moves to the pollable "timeout" state
-// instead of being killed, and idleMs is how much terminal silence counts as
-// completion.
+// instead of being killed. Silence never counts as completion.
 type fgExecIn struct {
 	SessionID string `json:"session_id" jsonschema:"session id from list_sessions"`
 	Command   string `json:"command" jsonschema:"shell command to execute"`
 	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"maximum output collection time in milliseconds (default 60000); does not terminate the command"`
-	IdleMs    int    `json:"idle_ms,omitempty" jsonschema:"silence that completes collection in milliseconds (default 800)"`
 	HeadLines *int   `json:"head_lines,omitempty" jsonschema:"head lines to keep when truncating output (default 50; zero allowed)"`
 	TailLines *int   `json:"tail_lines,omitempty" jsonschema:"tail lines to keep when truncating output (default 300; zero allowed)"`
 }
@@ -202,7 +200,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name: "uniterm_exec",
 			Description: "Run a command by typing it into the user's live terminal. Works on any connected terminal (SSH, local, telnet, serial). " +
-				"Completion is detected when the terminal goes quiet (idle_ms, default 800) or the session closes — there is no exit code. " +
+				"Completion requires a shell completion signal with exit code. Silence never means completion; unsupported shells wait for timeout. " +
 				"Set timeout_ms from the expected duration (see its schema). Returns a job_id; poll with uniterm_exec_result(job_id), stop with uniterm_interrupt(job_id). " +
 				"Check the screen with uniterm_capture first when the command may hit an interactive prompt, and answer prompts with uniterm_send_key.",
 		}, scoped(ScopeExec, s.toolUnitermExecFg))
@@ -223,7 +221,7 @@ func (s *Server) registerJobTools(srv *mcp.Server) {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name: "uniterm_collect_output",
 			Description: "Wait for further output from a live terminal without sending a command. " +
-				"Returns a job_id to poll with uniterm_exec_result. Uses the same idle and timeout rules as uniterm_exec.",
+				"Returns the original job_id when available, preserving buffered output. Waits for completion or timeout, never silence.",
 		}, s.toolUnitermCollect)
 		mcp.AddTool(srv, &mcp.Tool{
 			Name: "uniterm_send_key",
@@ -287,7 +285,7 @@ func (s *Server) toolUnitermExecFg(ctx context.Context, req *mcp.CallToolRequest
 	if err := validateLineLimits(in.HeadLines, in.TailLines); err != nil {
 		return nil, unitermExecOut{}, err
 	}
-	_, out, err := s.execForeground(ctx, req, in.SessionID, in.Command, in.TimeoutMs, in.IdleMs)
+	_, out, err := s.execForeground(ctx, req, in.SessionID, in.Command, in.TimeoutMs)
 	if err == nil {
 		s.rememberOutputOptions(out.JobID, in.HeadLines, in.TailLines, 50)
 	}
@@ -336,11 +334,11 @@ func (s *Server) execBackground(ctx context.Context, req *mcp.CallToolRequest, s
 	return nil, out, err
 }
 
-// execForeground starts a live-PTY tap job; completion is an idle/EOF event.
+// execForeground starts a live-PTY job and waits for shell acknowledgement or timeout.
 // timeoutMs mirrors the built-in AI panel's timeout: it is the max wait; on
 // expiry the job moves to the pollable "timeout" state rather than being
 // killed, so the agent can keep polling or interrupt explicitly.
-func (s *Server) execForeground(ctx context.Context, req *mcp.CallToolRequest, sessionID, command string, timeoutMs, idleMs int) (*mcp.CallToolResult, unitermExecOut, error) {
+func (s *Server) execForeground(ctx context.Context, req *mcp.CallToolRequest, sessionID, command string, timeoutMs int) (*mcp.CallToolResult, unitermExecOut, error) {
 	if s.env.Foreground == nil {
 		return nil, unitermExecOut{Mode: ModeForeground}, fmt.Errorf("foreground mode is not available on this build")
 	}
@@ -348,10 +346,7 @@ func (s *Server) execForeground(ctx context.Context, req *mcp.CallToolRequest, s
 	if wait <= 0 {
 		wait = int(DefaultFgTimeout / time.Millisecond)
 	}
-	if idleMs <= 0 {
-		idleMs = int(DefaultIdleSettle / time.Millisecond)
-	}
-	jobID, err := s.env.Foreground.StartForeground(sessionID, command, idleMs, wait)
+	jobID, err := s.env.Foreground.StartForeground(sessionID, command, wait)
 	out := unitermExecOut{Mode: ModeForeground, JobID: jobID, Async: true, State: "running"}
 	s.audit(ctx, req, "uniterm_exec", sessionID, command, nil, err)
 	if err != nil {
@@ -501,7 +496,6 @@ func (s *Server) toolUnitermSendKey(ctx context.Context, req *mcp.CallToolReques
 type unitermCollectIn struct {
 	SessionID string `json:"session_id" jsonschema:"live terminal session id"`
 	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"maximum output collection time in milliseconds (default 30000)"`
-	IdleMs    int    `json:"idle_ms,omitempty" jsonschema:"silence that completes collection in milliseconds (default 800)"`
 	HeadLines *int   `json:"head_lines,omitempty" jsonschema:"head lines to keep when truncating output (default 100)"`
 	TailLines *int   `json:"tail_lines,omitempty" jsonschema:"tail lines to keep when truncating output (default 300)"`
 }
@@ -519,13 +513,10 @@ func (s *Server) toolUnitermCollect(ctx context.Context, req *mcp.CallToolReques
 	if in.TimeoutMs <= 0 {
 		in.TimeoutMs = 30000
 	}
-	if in.IdleMs <= 0 {
-		in.IdleMs = int(DefaultIdleSettle / time.Millisecond)
-	}
 	if err := validateLineLimits(in.HeadLines, in.TailLines); err != nil {
 		return nil, unitermExecOut{}, err
 	}
-	id, err := s.env.Collect(in.SessionID, in.IdleMs, in.TimeoutMs)
+	id, err := s.env.Collect(in.SessionID, in.TimeoutMs)
 	s.audit(ctx, req, "uniterm_collect_output", in.SessionID, "", nil, err)
 	if err != nil {
 		return nil, unitermExecOut{}, err

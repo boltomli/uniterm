@@ -75,7 +75,7 @@ func TestValidateLLMBaseURL(t *testing.T) {
 	}
 
 	// E2E: ChatCompletion refuses before dialing anything.
-	if _, err := deny.ChatCompletion("", "sk-secret", "http://evil.example/v1", "m", "{}", "openai", "", "", ""); err == nil {
+	if _, err := deny.ChatCompletion("", "sk-secret", "http://evil.example/v1", "m", "{}", "openai", "", "", "", ""); err == nil {
 		t.Fatal("ChatCompletion must refuse an insecure endpoint")
 	} else if !strings.Contains(err.Error(), "insecure") {
 		t.Fatalf("unexpected error: %v", err)

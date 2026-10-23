@@ -65,6 +65,7 @@ export const SYNC_FILE_ITEMS: { file: string; label: string }[] = [
   { file: 'tunnels.json', label: 'settings.tunnels' },
   { file: 'identities.json', label: 'settings.identities' },
   { file: 'proxies.json', label: 'settings.proxies' },
+  { file: 'skills.json', label: 'settings.skills' },
   { file: 'settings.json', label: 'settings.basic' },
 ]
 

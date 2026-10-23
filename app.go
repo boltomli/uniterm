@@ -68,6 +68,8 @@ type App struct {
 	tunnelsClosed        bool
 	mainHwnd             uintptr
 	mainWindowAttach     stdsync.Once
+	rdpKeyboardMu        stdsync.Mutex
+	rdpKeyboard          *platform.RDPKeyboardCapture
 	originalWndProc      uintptr
 	wndProcCb            uintptr // keep alive to prevent GC
 	inSizeMove           bool
@@ -90,10 +92,11 @@ type App struct {
 	// CheckForUpdate. DownloadUpdate derives its asset list from here (never
 	// from a webview argument) so a compromised renderer cannot pick the URL
 	// that gets downloaded and executed. updateInfoMu guards it.
-	updateInfoMu   stdsync.Mutex
-	lastUpdateInfo *update.UpdateInfo
-	chatCancel     atomic.Pointer[context.CancelFunc] // F-308: active stream cancellation, per-call swap so overlap is safe
-	moveResizeCh   chan string                        // defer EventsEmit from WndProc
+	updateInfoMu      stdsync.Mutex
+	lastUpdateInfo    *update.UpdateInfo
+	chatCancel        atomic.Pointer[context.CancelFunc] // F-308: active stream cancellation, per-call swap so overlap is safe
+	compactionCancels stdsync.Map                        // request ID -> context.CancelFunc; independent of chat streams
+	moveResizeCh      chan string                        // defer EventsEmit from WndProc
 	// The WndProc forwarder goroutine (startMoveResizePump) exits on
 	// moveResizeQuit and closes moveResizeDone. moveResizeCh itself is never
 	// closed: a late WndProc send must be dropped by the buffer, not panic
@@ -355,6 +358,11 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 
 	// Defer EventsEmit from WndProc to avoid blocking the modal resize/move loop.
 	a.startMoveResizePump()
+	
+	// On Windows, main.go calls attachMainWindow once the window is shown
+	// (services start before the window exists); it records the HWND and
+	// installs the WndProc subclass used for native keyboard capture and
+	// window state tracking.
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
 	// defers all store init until the frontend calls SetDataDir.
@@ -968,6 +976,7 @@ func (a *App) watchForeground(ctx context.Context) {
 // streams run on context.Background(), so without Close those goroutines
 // (and the HTTP bodies they block on) would outlive the app.
 func (a *App) shutdown() {
+	a.closeRDPKeyboard()
 	a.unsubclassMainWindow()
 	a.disableAllPanelLogs()
 	a.CancelChatStream()
@@ -2063,6 +2072,9 @@ func (a *App) syncableStores() []sync.SyncableStore {
 	if a.settingsStore != nil {
 		stores = append(stores, a.settingsStore)
 	}
+	if a.skillsStore != nil {
+		stores = append(stores, a.skillsStore)
+	}
 	return stores
 }
 
@@ -2108,6 +2120,9 @@ func (a *App) reloadStoresAfterSync() {
 		if data, err := a.tunnelStore.Load(); err == nil {
 			a.emit("store:tunnels:changed", data)
 		}
+	}
+	if a.skillsStore != nil {
+		a.emit("store:skills:changed", nil)
 	}
 }
 
@@ -2759,6 +2774,25 @@ func (a *App) GetDesktopPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(homeDir, "Desktop"), nil
+}
+
+// GetSaveTempPath stages a file under the app's temp dir for the Android
+// "save to" flow: Android has no save dialog that returns a filesystem path
+// (the system picker yields a SAF URI), so exports are written here first and
+// the Android layer streams the staged file into the user-chosen destination,
+// deleting it afterwards. Only used on Android; desktop flows pick a real
+// destination via the save dialog instead. The returned name is uniquified so
+// concurrent exports never collide on the same staged file.
+func (a *App) GetSaveTempPath(fileName string) (string, error) {
+	name := filepath.Base(strings.ReplaceAll(fileName, "\\", "/"))
+	if name == "" || name == "." || name == ".." {
+		name = "export.bin"
+	}
+	dir := filepath.Join(os.TempDir(), "save")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), name)), nil
 }
 
 // GetDefaultSSHKeyPaths returns the local default SSH private-key paths for

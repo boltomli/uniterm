@@ -64,7 +64,7 @@ import { MoreHorizontal } from '@lucide/vue'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
-import { SftpCancelTransfer, CloseSession, RDPHide } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SftpCancelTransfer, CloseSession } from '../../bindings/github.com/ys-ll/uniterm/app'
 import TabItem from './TabItem.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -90,10 +90,6 @@ function onWheel(e: WheelEvent) {
 
 const tabMoreRef = ref<InstanceType<typeof Menu> | null>(null)
 const tabMoreVisible = ref(false)
-watch(tabMoreVisible, (v) => {
-  if (v) window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
-  else window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
-})
 
 function onTabMoreToggle(e: MouseEvent) {
   if (e.currentTarget instanceof HTMLElement) tabMoreRef.value?.toggle(e.currentTarget)
@@ -155,11 +151,10 @@ async function closeTab(id: string) {
     }
   }
 
-  // Clean up RDP session: hide window first, then close Go-side resources
+  // Close the RDP proxy session.
   if (tab && tab.type === 'rdp') {
     const rdpPanel = panelStore.getPanel(tab.panelId)
     if (rdpPanel?.sessionId) {
-      await RDPHide(rdpPanel.sessionId)
       try { await CloseSession(rdpPanel.sessionId) } catch (_) {}
     }
   }

@@ -49,17 +49,17 @@ type SSHSession struct {
 	// outputRouteMu makes the binary/text routing decision atomic with
 	// EndZmodem. Without it, readLoop could observe binary mode, get paused,
 	// then emit post-transfer shell output as binary after EndZmodem returned.
-	outputRouteMu       sync.Mutex
-	client              *ssh.Client
-	session             *ssh.Session
-	stdin               io.WriteCloser
-	stdout              io.Reader
-	stderr              io.Reader
-	quit                chan struct{}
-	quitOnce            sync.Once
-	authAnswerCh        chan []byte
-	expectOutput        *postLoginOutputBuffer
-	x11Forwarder        *x11Forwarder
+	outputRouteMu sync.Mutex
+	client        *ssh.Client
+	session       *ssh.Session
+	stdin         io.WriteCloser
+	stdout        io.Reader
+	stderr        io.Reader
+	quit          chan struct{}
+	quitOnce      sync.Once
+	authAnswerCh  chan []byte
+	expectOutput  *postLoginOutputBuffer
+	x11Forwarder  *x11Forwarder
 
 	// osc7 extracts OSC-7 cwd reports emitted by the remote shell or tools.
 	// Only used from the readLoop goroutine.
@@ -282,6 +282,15 @@ func (s *SSHSession) IsChannelClone() bool {
 // (undetermined). Read-only and set once during Connect.
 func (s *SSHSession) RemoteOS() string {
 	return s.remoteOS
+}
+
+// ForegroundShell reports the detected login shell for command completion detection.
+// Unknown shells wait for the execution deadline instead of guessing from output.
+func (s *SSHSession) ForegroundShell() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	shell := strings.ReplaceAll(s.detectedShell, `\`, "/")
+	return strings.TrimSuffix(strings.ToLower(shellBasename(shell)), ".exe")
 }
 
 func shouldPromptForSSHPassword(config ConnectionConfig) bool {

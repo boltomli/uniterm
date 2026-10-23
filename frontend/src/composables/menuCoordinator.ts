@@ -1,14 +1,16 @@
-// Global single-open menu coordinator + RDP overlay ref-count.
+// Global single-open menu coordinator.
 //
 // This must live in a REAL module (module scope, shared across every <Menu>).
 // The previous copy of this state sat in Menu.vue's <script setup>, where
-// `active` / `docBound` / `menuOpenCount` are per INSTANCE and the window
-// listener was added once per mounted menu and never removed — every closed
-// tab with menus left listeners holding the dead instance's state
-// (security.md component chapter #12).
+// `active` / `docBound` are per INSTANCE and the window listener was added once
+// per mounted menu and never removed — every closed tab with menus left
+// listeners holding the dead instance's state (security.md component chapter
+// #12).
 //
 // The coordinator binds its shared dismiss listeners once, on the first
 // retained (mounted) menu, and removes them when the last one releases.
+
+import { releaseRemoteKeyboardFocus } from '../utils/remoteKeyboard'
 
 /** A mounted menu the coordinator can locate and close. */
 export interface ActiveMenu {
@@ -33,19 +35,16 @@ export interface MenuCoordinator {
   deactivate(menu: ActiveMenu): void
   isActive(menu: ActiveMenu): boolean
   listenersBound(): boolean
-  /** Number of open-menu transitions currently pushing the RDP overlay down. */
-  openCount(): number
 }
 
 export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget): MenuCoordinator {
   let active: ActiveMenu | null = null
   let retained = 0
   let bound = false
-  let menuOpenCount = 0
 
   // Closing the active menu when any surface broadcasts the legacy
-  // global:close-context-menus event (opening a dialog, RDP overlay push,
-  // keyboard nav, main.ts dispatches it on every contextmenu). Single-open +
+  // global:close-context-menus event (opening a dialog, keyboard nav,
+  // main.ts dispatches it on every contextmenu). Single-open +
   // this event is the whole close story — hosts never re-subscribe.
   const onGlobalClose = () => {
     active?.close()
@@ -81,17 +80,9 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
     doc.removeEventListener('keydown', onDocKeydown)
   }
 
-  // Hide the native RDP window so menus aren't occluded (first open only);
-  // restore it once the last open-menu transition is popped. A reference
-  // counter handles overlapping transitions (one menu closing as another
-  // opens).
-  function pushOverlay() {
-    if (menuOpenCount === 0) win.dispatchEvent(new CustomEvent('rdp:overlay-push'))
-  }
-  function popOverlay() {
-    menuOpenCount = Math.max(0, menuOpenCount - 1)
-    if (menuOpenCount === 0) win.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
-  }
+  // The RDP ActiveX overlay push/pop (rdp:overlay-push/pop) is gone with the
+  // IronRDP WASM client: the desktop renders inside the webview, so an open
+  // menu is never occluded by a native window.
 
   return {
     retain() {
@@ -100,15 +91,15 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
     },
 
     release(menu) {
-      if (active === menu) {
-        active = null
-        popOverlay()
-      }
+      if (active === menu) active = null
       retained = Math.max(0, retained - 1)
       if (retained === 0) unbindListeners()
     },
 
     activate(menu) {
+      // Release the remote-desktop keyboard grab first so menu keys are not
+      // swallowed by the native capture path.
+      releaseRemoteKeyboardFocus()
       // Right-click menus close each other because main.ts dispatches the
       // global close signal on every `contextmenu` (capture) before the new
       // menu opens. Broadcasting here covers button-triggered opens too.
@@ -116,25 +107,19 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
       // previous menu, not this one.
       //
       // Re-activating the SAME menu (open()/openAt() emit update:visible true
-      // and the visible-prop watcher ALSO calls activate) must NOT push /
-      // ref-count again, otherwise menuOpenCount never returns to 0 and the
-      // pop that restores the RDP window never fires.
+      // and the visible-prop watcher ALSO calls activate) is a no-op.
       if (active === menu) return
       win.dispatchEvent(new Event('global:close-context-menus'))
       active?.close()
       active = menu
-      pushOverlay()
-      menuOpenCount += 1
     },
 
     deactivate(menu) {
       if (active === menu) active = null
-      popOverlay()
     },
 
     isActive: (menu) => active === menu,
     listenersBound: () => bound,
-    openCount: () => menuOpenCount,
   }
 }
 

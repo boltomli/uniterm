@@ -107,18 +107,8 @@
             <el-form-item v-if="(form.authType !== 'identity' || isSSHAlgoType) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
               <el-input v-model="form.user" :placeholder="form.authType === 'identity' ? t('conn.identityUserOverrideHint') : (form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder'))" />
             </el-form-item>
-            <el-form-item v-if="form.type === 'rdp' && isWindows && form.authType !== 'identity'" :label="t('conn.rdpDomain')">
-              <el-input v-model="form.rdpDomain" placeholder="e.g. WORKGROUP or WIN-ABC123" />
-            </el-form-item>
-            <template v-if="form.type === 'rdp' && isWindows">
-              <el-form-item :label="t('conn.rdpEnableNLA')">
-                <el-select v-model="form.rdpEnableNLA" style="width: 100%">
-                  <el-option :value="true" :label="t('conn.rdpEnableNLAOn')" />
-                  <el-option :value="false" :label="t('conn.rdpEnableNLAOff')" />
-                </el-select>
-              </el-form-item>
-            </template>
-            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password' && form.type !== 'rdp') || (form.type === 'rdp' && !form.rdpEnableNLA) || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
+
+            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password') || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : savedSecretPlaceholder)" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
@@ -197,8 +187,8 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
-            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="t('db.databases')" :required="form.dbType === 'postgres'">
-              <el-input v-model="form.dbName" :placeholder="t('db.databases')" />
+            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceName') : t('db.databases')" :required="form.dbType === 'postgres' || (form.type === 'database' && form.dbType === 'oracle')">
+              <el-input v-model="form.dbName" :placeholder="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceNamePlaceholder') : t('db.databases')" />
             </el-form-item>
             <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.shell')">
               <el-select v-model="form.shellPath" filterable allow-create clearable>
@@ -375,25 +365,6 @@
                 <div class="field-hint">{{ t('conn.containerLocalHint') }}</div>
               </el-form-item>
             </template>
-            <template v-if="form.type === 'rdp' && isWindows">
-              <el-form-item :label="t('rdp.resolution')">
-                <el-select v-model="rdpResolution" placeholder="1280×720">
-                  <el-option
-                    v-for="r in rdpResolutionOptions"
-                    :key="r.value"
-                    :label="r.label"
-                    :value="r.value"
-                  />
-                </el-select>
-              </el-form-item>
-              <el-form-item v-if="rdpResolution === RDP_CUSTOM_RESOLUTION" :label="t('rdp.customResolution')">
-                <div class="rdp-custom-resolution">
-                  <el-input-number v-model="rdpCustomWidth" :min="320" :max="7680" :step="8" controls-position="right" />
-                  <span class="rdp-custom-resolution-x">×</span>
-                  <el-input-number v-model="rdpCustomHeight" :min="240" :max="4320" :step="8" controls-position="right" />
-                </div>
-              </el-form-item>
-            </template>
             <template v-if="form.type === 'x11-desktop'">
               <el-form-item :label="t('conn.x11DesktopDE')" required>
                 <el-select v-model="form.x11DesktopDesktopType">
@@ -442,6 +413,37 @@
                   <el-switch v-model="form.x11Forwarding" />
                   <span v-if="x11HintKey" class="field-hint hint-after-switch">{{ t(x11HintKey) }}</span>
                 </el-form-item>
+                <template v-if="form.type === 'rdp'">
+                  <el-form-item v-if="form.authType !== 'identity'" :label="t('conn.rdpDomain')">
+                    <el-input v-model="form.rdpDomain" placeholder="e.g. WORKGROUP or WIN-ABC123" />
+                  </el-form-item>
+                  <el-form-item :label="t('remoteDesktop.resolution')">
+                    <el-select v-model="rdpResolution" placeholder="1280×720">
+                      <el-option
+                        v-for="r in rdpResolutionOptions"
+                        :key="r.value"
+                        :label="r.label"
+                        :value="r.value"
+                      />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item v-if="rdpResolution === RDP_CUSTOM_RESOLUTION" :label="t('rdp.customResolution')">
+                    <div class="rdp-custom-resolution">
+                      <el-input-number v-model="rdpCustomWidth" :min="320" :max="7680" :step="8" controls-position="right" />
+                      <span class="rdp-custom-resolution-x">×</span>
+                      <el-input-number v-model="rdpCustomHeight" :min="240" :max="4320" :step="8" controls-position="right" />
+                    </div>
+                  </el-form-item>
+                  <el-form-item :label="t('conn.rdpAdminSession')">
+                    <el-select v-model="form.rdpAdminSession" style="width: 100%">
+                      <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
+                      <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item :label="t('conn.rdpEnableNLA')">
+                    <el-switch v-model="form.rdpEnableNLA" />
+                  </el-form-item>
+                </template>
                 <div class="inline-pair-row">
                   <el-form-item v-if="form.type === 'ssh'" :label="t('conn.fileTransferProto')">
                     <el-radio-group v-model="form.fileTransferProto">
@@ -485,23 +487,19 @@
                   <el-form-item :label="t('conn.vncRepeaterID')">
                     <el-input v-model="form.vncRepeaterID" :placeholder="t('conn.vncRepeaterIDPlaceholder')" />
                   </el-form-item>
-                </template>
-                <template v-if="form.type === 'rdp' && isWindows">
-                  <el-form-item :label="t('conn.rdpAdminSession')">
-                    <el-select v-model="form.rdpAdminSession" style="width: 100%">
-                      <el-option :value="false" :label="t('conn.rdpAdminSessionOff')" />
-                      <el-option :value="true" :label="t('conn.rdpAdminSessionOn')" />
+                  <el-form-item :label="t('conn.vncClipboardEncoding')">
+                    <el-select v-model="form.vncClipboardEncoding">
+                      <el-option :label="t('conn.vncClipboardEncodingDefault')" value="auto" />
+                      <el-option label="Unicode (UTF-8)" value="utf-8" />
+                      <el-option label="Simplified Chinese (GBK)" value="gbk" />
+                      <el-option label="Simplified Chinese (GB2312)" value="gb2312" />
+                      <el-option label="Simplified Chinese (GB18030)" value="gb18030" />
+                      <el-option label="Traditional Chinese (Big5)" value="big5" />
+                      <el-option label="Japanese (Shift-JIS)" value="shift-jis" />
+                      <el-option label="Japanese (EUC-JP)" value="euc-jp" />
+                      <el-option label="Korean (EUC-KR)" value="euc-kr" />
+                      <el-option label="Latin-1" value="latin1" />
                     </el-select>
-                  </el-form-item>
-                  <el-form-item :label="t('conn.rdpSmartSizing')">
-                    <el-switch v-model="form.rdpSmartSizing" />
-                  </el-form-item>
-                  <el-form-item :label="t('conn.rdpRedirectClipboard')">
-                    <el-switch v-model="form.rdpRedirectClipboard" />
-                  </el-form-item>
-                  <el-form-item :label="t('conn.rdpRedirectDrives')">
-                    <el-switch v-model="form.rdpRedirectDrives" />
-                    <span class="field-hint hint-after-switch">{{ t('conn.rdpRedirectHint') }}</span>
                   </el-form-item>
                 </template>
                 <template v-if="form.type === 'telnet'">
@@ -755,7 +753,6 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { RDP_REDIRECTION_DEFAULT, resolveRdpRedirection } from '../utils/rdpRedirection'
 import { reactive, computed, watch, ref, nextTick, onMounted } from 'vue'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1048,7 +1045,7 @@ const isSqliteDb = computed(() =>
   form.type === 'database' && form.dbType === 'sqlite'
 )
 
-const TUNNEL_UNSUPPORTED = ['spice', 'mosh', 'local', 'wsl', 'serial', 'container']
+const TUNNEL_UNSUPPORTED = ['mosh', 'local', 'wsl', 'serial', 'container']
 // SQLite is an embedded file database — an SSH tunnel forwards TCP streams,
 // which cannot reach it.
 const showTunnel = computed(() =>
@@ -1056,7 +1053,7 @@ const showTunnel = computed(() =>
 )
 const showProxy = computed(() => ['ssh', 'sftp', 'scp', 'monitor'].includes(form.type))
 const showAdvancedToggle = computed(() =>
-  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'elasticsearch' || form.type === 'x11-desktop'
+  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'elasticsearch' || form.type === 'x11-desktop' || form.type === 'rdp'
 )
 
 const isRedisSentinel = computed(() =>
@@ -1109,10 +1106,8 @@ const form = reactive<ConnectionConfig>({
   groupId: undefined,
   rdpFixedWidth: -2,
   rdpFixedHeight: -2,
-  rdpSmartSizing: false,
-  ...RDP_REDIRECTION_DEFAULT,
-  rdpEnableNLA: true,
   rdpDomain: '',
+  rdpEnableNLA: true,
   rdpAdminSession: false,
   dbType: '',
   dbName: '',
@@ -1138,6 +1133,7 @@ const form = reactive<ConnectionConfig>({
   ftpSkipVerify: false,
   vncShared: true,
   vncRepeaterID: '',
+  vncClipboardEncoding: 'auto',
   encoding: 'utf-8',
   termType: 'xterm-256color',
   backspaceKey: 'del',
@@ -1180,8 +1176,7 @@ const advGroupNetwork = computed(() =>
   showProxy.value || showTunnel.value
 )
 const advGroupProtocol = computed(() =>
-  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet'].includes(form.type) ||
-  (form.type === 'rdp' && isWindows.value) ||
+  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet', 'rdp'].includes(form.type) ||
   isSSHAlgoType.value
 )
 const sshAlgoDialogVisible = ref(false)
@@ -1233,18 +1228,19 @@ const rdpResolutions = [
 // changes; a const would freeze the language from component-mount time.
 const rdpResolutionOptions = computed(() => [
   { value: 'adaptive', label: t('rdp.adaptive') },
-  { value: 'fullscreen', label: t('rdp.fullscreen') },
+  { value: 'fullscreen', label: t('remoteDesktop.fullscreen') },
   ...rdpResolutions.map(r => ({ value: `${r.w}x${r.h}`, label: r.label })),
   { value: RDP_CUSTOM_RESOLUTION, label: t('rdp.customResolution') },
 ])
 
 function rdpResolutionKey(w?: number, h?: number): string {
-  if (w === undefined || h === undefined || w === -1 || h === -1) return 'fullscreen'
+  if (!w || !h || w === -2 || h === -2) return RDP_ADAPTIVE_RESOLUTION
+  if (w === -1 || h === -1) return 'fullscreen'
   const match = rdpResolutions.find(r => r.w === w && r.h === h)
   return match ? `${match.w}x${match.h}` : RDP_CUSTOM_RESOLUTION
 }
 
-const rdpResolution = ref('fullscreen')
+const rdpResolution = ref<string>(RDP_ADAPTIVE_RESOLUTION)
 const rdpCustomWidth = ref(1360)
 const rdpCustomHeight = ref(768)
 
@@ -1377,15 +1373,9 @@ watch(() => props.editConfig, (config) => {
         form.authType = 'password'
       }
     }
-    // Existing connections without the field default to NLA off (old behavior).
+    form.x11Forwarding = config.x11Forwarding ?? false
     form.rdpEnableNLA = config.rdpEnableNLA ?? false
     form.rdpAdminSession = config.rdpAdminSession ?? false
-    // Redirection flags: fields absent from a connection saved before they
-    // existed resolve to the shared defaults (clipboard on, drives off).
-    const rdpRedirect = resolveRdpRedirection(config)
-    form.rdpRedirectClipboard = rdpRedirect.rdpRedirectClipboard
-    form.rdpRedirectDrives = rdpRedirect.rdpRedirectDrives
-    form.x11Forwarding = config.x11Forwarding ?? false
     form.agentForwarding = config.agentForwarding ?? false
     // Old connections without the field default to startup injection.
     form.cwdHookMode = config.cwdHookMode === 'follow' ? 'follow' : 'startup'
@@ -1525,11 +1515,9 @@ function resetForm() {
   form.groupId = undefined
   form.rdpFixedWidth = -2
   form.rdpFixedHeight = -2
-  form.rdpSmartSizing = false
-  form.rdpEnableNLA = true
   form.rdpDomain = ''
+  form.rdpEnableNLA = true
   form.rdpAdminSession = false
-  Object.assign(form, RDP_REDIRECTION_DEFAULT)
   form.kerberosRealm = ''
   form.sshAlgorithms = undefined
   form.dbType = ''
@@ -1557,6 +1545,7 @@ function resetForm() {
   form.ftpSkipVerify = false
   form.vncShared = true
   form.vncRepeaterID = ''
+  form.vncClipboardEncoding = 'auto'
   form.encoding = 'utf-8'
   form.termType = 'xterm-256color'
   form.backspaceKey = 'del'
@@ -1586,7 +1575,7 @@ function resetForm() {
   k8sContexts.value = []
   k8sContextsLoading.value = false
   k8sContextsError.value = ''
-  rdpResolution.value = 'fullscreen'
+  rdpResolution.value = RDP_ADAPTIVE_RESOLUTION
   form.x11DesktopDesktopType = 'gnome'
   form.x11DesktopCustomCmd = ''
   selectedGroupId.value = undefined
@@ -1820,6 +1809,9 @@ function normalizeForm(): ConnectionConfig {
   }
   if (normalized.type === 'database' && normalized.dbType === 'postgres' && !normalized.dbName?.trim()) {
     throw new Error(t('db.pgDbNameRequired'))
+  }
+  if (normalized.type === 'database' && normalized.dbType === 'oracle' && !normalized.dbName?.trim()) {
+    throw new Error(t('db.serviceNameRequired'))
   }
   if (normalized.type === 'elasticsearch' && normalized.authType === 'apikey' && !normalized.password?.trim()) {
     throw new Error(t('conn.esApiKeyRequired'))

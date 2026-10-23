@@ -102,6 +102,7 @@ import { useI18n } from '../i18n'
 import type { CustomTerminalTheme, TerminalThemeColors } from '../types/settings'
 import { parseItermColors, buildItermColors } from '../composables/itermcolorsParser'
 import { OpenFileDialogFiltered, SaveFileDialogFiltered, ReadFileBase64, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { tryAndroidSave } from '../utils/androidSave'
 
 const props = defineProps<{
   modelValue: boolean
@@ -237,6 +238,19 @@ async function onImport() {
 
 async function onExport() {
   const defaultName = `${draft.value.name.trim() || t('theme.newDefaultName')}.itermcolors`
+  const xml = buildItermColors(draft.value.colors)
+  // Android: save through the system "save to" picker instead of the
+  // (unsupported) native save dialog.
+  try {
+    const androidOutcome = await tryAndroidSave(defaultName, 'text/xml', btoa(xml))
+    if (androidOutcome !== 'fallback') {
+      if (androidOutcome === 'saved') msg.success(t('theme.exportSuccess'))
+      return
+    }
+  } catch {
+    msg.error(t('theme.exportFailed'))
+    return
+  }
   let path: string
   try {
     path = await SaveFileDialogFiltered(t('theme.exportItermcolors'), defaultName, 'iTerm2 Color Preset', '*.itermcolors')
@@ -245,7 +259,6 @@ async function onExport() {
   }
   if (!path) return
   try {
-    const xml = buildItermColors(draft.value.colors)
     await WriteFileBase64(path, btoa(xml))
     msg.success(t('theme.exportSuccess'))
   } catch {

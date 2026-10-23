@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
+import { shallowReactive } from 'vue'
 import type { Panel, PanelStatus, ConnectionConfig } from '../types/workspace'
 import { ReleasePanel, RegisterSessionForPanel, UnregisterSession } from '../../bindings/github.com/ys-ll/uniterm/app'
 
@@ -44,16 +44,20 @@ export interface SPICECache {
   container: HTMLDivElement
 }
 
-const panelState = reactive<{
+// shallowReactive: vncCaches/spiceCaches 持有 RFB/DOM 实例，深层 reactive 代理会破坏实例方法且浪费性能。
+// panels Map is individually wrapped with shallowReactive so that
+// Map.get/set/delete have reactive tracking (shallowReactive on the
+// outer object does NOT proxy Map internals — the Map is returned as-is).
+const panelState = shallowReactive<{
   panels: Map<string, Panel>
   transferTasks: Map<string, TransferTaskUI[]>
   proxyAddrs: Map<string, string>
   vncCaches: Map<string, VNCCache>
   spiceCaches: Map<string, SPICECache>
 }>({
-  panels: new Map(),
+  panels: shallowReactive(new Map()),
   transferTasks: new Map(),
-  proxyAddrs: new Map(),
+  proxyAddrs: shallowReactive(new Map()),
   vncCaches: new Map(),
   spiceCaches: new Map()
 })
@@ -115,6 +119,15 @@ export const usePanelStore = defineStore('panel', () => {
     if (!p) return
     const prev = p.sessionId
     p.sessionId = sessionId
+    // shallowReactive does not track deep property mutations on Map values.
+    // Re-setting the same object reference is a no-op (Vue checks oldValue ===
+    // value), so we must delete + set to force the Map trigger.  Without this,
+    // the database tree panel never loads on first connect: the tab opens with
+    // sessionId='' before CreateSession completes, and bindSession's mutation
+    // is invisible to Vue's reactivity system.
+    panelState.panels.delete(panelId)
+    panelState.panels.set(panelId, p)
+
     // Tell the backend which panel this session belongs to so per-panel
     // output logging survives reconnects. The previous session's binding
     // is dropped best-effort — if it's already gone the backend no-ops.
@@ -128,23 +141,37 @@ export const usePanelStore = defineStore('panel', () => {
 
   function updateStatus(panelId: string, status: PanelStatus) {
     const p = panelState.panels.get(panelId)
-    if (p) p.status = status
+    if (p) {
+      p.status = status
+      panelState.panels.delete(panelId)
+      panelState.panels.set(panelId, p)
+    }
   }
 
   function updateTitle(panelId: string, title: string) {
     const p = panelState.panels.get(panelId)
     if (!p) return
     p.title = makeTitleUnique(title, panelId)
+    panelState.panels.delete(panelId)
+    panelState.panels.set(panelId, p)
   }
 
   function setOutputLog(panelId: string, state: { enabled: boolean; path: string }) {
     const p = panelState.panels.get(panelId)
-    if (p) p.outputLog = state
+    if (p) {
+      p.outputLog = state
+      panelState.panels.delete(panelId)
+      panelState.panels.set(panelId, p)
+    }
   }
 
   function movePanelToTab(panelId: string, tabId: string) {
     const p = panelState.panels.get(panelId)
-    if (p) p.tabId = tabId
+    if (p) {
+      p.tabId = tabId
+      panelState.panels.delete(panelId)
+      panelState.panels.set(panelId, p)
+    }
   }
 
   function getTransferTasks(panelId: string): TransferTaskUI[] {

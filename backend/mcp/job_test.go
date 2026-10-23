@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
@@ -28,10 +29,11 @@ func (f *immediatePty) Write(data []byte) error {
 func TestCaptureInstalledBeforeWrite(t *testing.T) {
 	r := NewRegistry()
 	p := &immediatePty{fakePty{alive: true}}
-	j, err := r.StartWithScreen(p, "s", "echo instant", "\n", 20*time.Millisecond, time.Second, 0, 80, 24)
+	j, err := r.StartWithScreen(p, "s", "echo instant", "\n", time.Second, 0, 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.complete(j, 0)
 	waitDone(t, j, time.Second)
 	out, _, _, _, _ := j.Snapshot()
 	if !strings.Contains(string(out), "instant output") {
@@ -42,26 +44,27 @@ func TestCaptureInstalledBeforeWrite(t *testing.T) {
 func TestPassiveCollectionSharesEngineWithoutWritingOrLocking(t *testing.T) {
 	r := NewRegistry()
 	p := &fakePty{alive: true}
-	observer, err := r.ObserveWithScreen(p, "s", 20*time.Millisecond, time.Second, 80, 24)
+	observer, err := r.ObserveWithScreen(p, "s", 80*time.Millisecond, 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(p.wrote) != 0 {
 		t.Fatal("passive collection wrote to terminal")
 	}
-	job, err := r.StartWithScreen(p, "s", "cmd", "\n", 20*time.Millisecond, time.Second, 0, 80, 24)
+	job, err := r.StartWithScreen(p, "s", "cmd", "\n", time.Second, 0, 80, 24)
 	if err != nil {
 		t.Fatalf("observer locked session: %v", err)
 	}
 	p.emit("shared output\r\n")
+	p.complete(job, 0)
 	waitDone(t, observer, time.Second)
 	waitDone(t, job, time.Second)
 	a, _, _, state, _ := observer.Snapshot()
 	b, _, _, _, _ := job.Snapshot()
-	if string(a) != string(b) || state != StateExited || !strings.Contains(string(a), "shared output") {
+	if string(a) != string(b) || state != StateTimeout || !strings.Contains(string(a), "shared output") {
 		t.Fatalf("different execution and observation output: %q / %q (%s)", a, b, state)
 	}
-	if len(p.wrote) != 1 || p.wrote[0] != "cmd\n" {
+	if len(p.wrote) != 1 || !strings.Contains(p.wrote[0], "eval 'cmd'") {
 		t.Fatalf("unexpected writes: %v", p.wrote)
 	}
 }
@@ -72,7 +75,7 @@ func TestConcurrentStartsShareSessionLock(t *testing.T) {
 	results := make(chan error, 32)
 	for range 32 {
 		wg.Go(func() {
-			_, err := r.Start(&fakePty{alive: true}, "same-session", "cmd", "\n", time.Minute, time.Minute, 0)
+			_, err := r.Start(&fakePty{alive: true}, "same-session", "cmd", "\n", time.Minute, 0)
 			results <- err
 		})
 	}
@@ -123,7 +126,11 @@ func (f *fakePty) OnStatusChange(cb func(string)) func() {
 	}
 	return func() {}
 }
-func (f *fakePty) Alive() bool { return f.alive }
+func (f *fakePty) Alive() bool             { return f.alive }
+func (f *fakePty) ForegroundShell() string { return "bash" }
+func (f *fakePty) complete(j *Job, code int) {
+	f.emit(fmt.Sprintf("\x1b[8m__UT_%s;%d__\x1b[0m", j.ID, code))
+}
 func (f *fakePty) emit(data string) {
 	for _, cb := range f.dataCbs {
 		cb([]byte(data))
@@ -136,15 +143,25 @@ func (f *fakePty) disconnect() {
 	}
 }
 
-func TestForegroundCompletesOnIdleSettle(t *testing.T) {
+func TestForegroundWaitsForCompletionAcrossQuietOutput(t *testing.T) {
 	reg := NewRegistry()
 	pty := &fakePty{alive: true}
-	job, err := reg.Start(pty, "s1", "ls -la", "\n", 60*time.Millisecond, 5*time.Second, 0)
+	job, err := reg.Start(pty, "s1", "ls -la", "\n", 5*time.Second, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pty.emit("total 12\n")
 	pty.emit("a.txt\n")
+	// Reproduce ping's one-second output gaps. Silence and prompt-shaped
+	// output must never finish the job.
+	pty.emit("$ fake prompt\n")
+	time.Sleep(1100 * time.Millisecond)
+	_, _, _, pending, _ := job.Snapshot()
+	if pending != StateRunning {
+		t.Fatalf("silence completed job: %s", pending)
+	}
+	pty.emit("last reply\nstatistics\n")
+	pty.complete(job, 7)
 
 	waitDone(t, job, 500*time.Millisecond)
 	_, _, code, state, rerr := job.Snapshot()
@@ -154,7 +171,7 @@ func TestForegroundCompletesOnIdleSettle(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("err=%v", rerr)
 	}
-	if code != 0 {
+	if code != 7 {
 		t.Fatalf("exit=%d", code)
 	}
 	if !strings.Contains(pty.wrote[0], "ls -la") {
@@ -165,7 +182,7 @@ func TestForegroundCompletesOnIdleSettle(t *testing.T) {
 func TestForegroundEOFOnDisconnect(t *testing.T) {
 	reg := NewRegistry()
 	pty := &fakePty{alive: true}
-	job, _ := reg.Start(pty, "s1", "cat big.log", "\n", 2*time.Second, 5*time.Second, 0)
+	job, _ := reg.Start(pty, "s1", "cat big.log", "\n", 5*time.Second, 0)
 	pty.emit("partial line\n")
 	pty.disconnect()
 
@@ -183,13 +200,29 @@ func TestForegroundHardTimeoutKeepsPollable(t *testing.T) {
 	reg := NewRegistry()
 	pty := &fakePty{alive: true}
 	// Very short hard limit so the job moves to timeout without hanging.
-	job, _ := reg.Start(pty, "s1", "sleep 3600", "\n", 2*time.Second, 40*time.Millisecond, 0)
+	job, _ := reg.Start(pty, "s1", "sleep 3600", "\n", 40*time.Millisecond, 0)
 	pty.emit("running...\n")
 
-	waitDone(t, job, 500*time.Millisecond)
+	waitState(t, job, StateTimeout)
 	_, _, _, state, _ := job.Snapshot()
 	if state != StateTimeout {
 		t.Fatalf("state=%s want timeout", state)
+	}
+	select {
+	case <-job.done:
+		t.Fatal("timeout detached the output tap")
+	default:
+	}
+	pty.emit("late output\n")
+	resumed, ok := reg.Collect("s1", time.Second)
+	if !ok || resumed != job {
+		t.Fatal("collection did not reuse original job")
+	}
+	pty.complete(job, 0)
+	waitDone(t, job, 500*time.Millisecond)
+	out, _, code, state, _ := job.Snapshot()
+	if state != StateExited || code != 0 || !strings.Contains(string(out), "late output") {
+		t.Fatalf("late completion lost: %q %s %d", out, state, code)
 	}
 	// Still interruptible after timeout.
 	if err := reg.Interrupt(job.ID); err != nil {
@@ -197,10 +230,23 @@ func TestForegroundHardTimeoutKeepsPollable(t *testing.T) {
 	}
 }
 
+func waitState(t *testing.T, job *Job, state string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		_, _, _, current, _ := job.Snapshot()
+		if current == state {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job did not reach state %s", state)
+}
+
 func TestInterruptKillsRunning(t *testing.T) {
 	reg := NewRegistry()
 	pty := &fakePty{alive: true}
-	job, _ := reg.Start(pty, "s1", "top", "\n", 2*time.Second, 5*time.Second, 0)
+	job, _ := reg.Start(pty, "s1", "top", "\n", 5*time.Second, 0)
 	if err := reg.Interrupt(job.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +260,7 @@ func TestInterruptKillsRunning(t *testing.T) {
 func TestStartOnDeadSession(t *testing.T) {
 	reg := NewRegistry()
 	pty := &fakePty{alive: false}
-	job, _ := reg.Start(pty, "s1", "ls", "\n", time.Second, time.Second, 0)
+	job, _ := reg.Start(pty, "s1", "ls", "\n", time.Second, 0)
 	waitDone(t, job, 200*time.Millisecond)
 	_, _, _, state, _ := job.Snapshot()
 	if state != StateSessionClosed {
@@ -366,6 +412,16 @@ func TestScreenRender(t *testing.T) {
 			name:  "SGR sequences leave no artifacts",
 			input: "\x1b[31mred\x1b[0m plain",
 			want:  "red plain",
+		},
+		{
+			name:  "concealed completion text does not appear in screen captures",
+			input: "visible\r\n\x1b[8mhidden ack\x1b[0m\r\nnext",
+			want:  "visible\n\nnext",
+		},
+		{
+			name:  "RGB components do not change conceal state",
+			input: "\x1b[38;2;8;0;28mvisible\x1b[0m",
+			want:  "visible",
 		},
 		{
 			name:  "OSC with BEL terminator is swallowed",

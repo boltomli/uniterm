@@ -3,6 +3,11 @@ package mcpclient
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -179,5 +184,168 @@ func TestManagerPropagatesTrustedFlag(t *testing.T) {
 	}
 	if !byServer["trusted"] {
 		t.Error("trusted server must surface trusted tools (F-03)")
+	}
+}
+
+// dyingSession simulates issue #1174: the session works at first, then the
+// transport drops (EOF on every call), mimicking a broken SSE long-poll.
+type dyingSession struct {
+	tools   []*mcp.Tool
+	dead    atomic.Bool
+	dials   atomic.Int32 // incremented by the dialer
+	calls   []string
+	callsMu sync.Mutex
+}
+
+func (f *dyingSession) ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	return &mcp.ListToolsResult{Tools: f.tools}, nil
+}
+
+func (f *dyingSession) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	f.callsMu.Lock()
+	f.calls = append(f.calls, params.Name)
+	f.callsMu.Unlock()
+	if f.dead.Load() {
+		return nil, fmt.Errorf("connection closed: calling %q: client is closing: EOF", params.Name)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: "echo:" + params.Name},
+	}}, nil
+}
+
+func (f *dyingSession) Close() error { return nil }
+
+func TestCallToolReconnectsAfterConnDrop(t *testing.T) {
+	s1 := &dyingSession{tools: []*mcp.Tool{{Name: "vault_list", Description: "list"}}}
+	m := NewManager(store.NewMCPClientStore(t.TempDir()))
+	var dials atomic.Int32
+	m.dial = func(ctx context.Context, cfg store.MCPClientConfig) (Session, error) {
+		dials.Add(1)
+		// First dial returns the original session; the reconnect returns a
+		// FRESH live session, like a real SDK redial would.
+		if dials.Load() == 1 {
+			return s1, nil
+		}
+		return &dyingSession{tools: s1.tools}, nil
+	}
+	ctx := context.Background()
+	m.ensureConn(ctx, store.MCPClientConfig{Name: "notes", Transport: store.MCPTransportSSE, URL: "http://x/sse", Enabled: true})
+
+	// Before the drop: works.
+	if out, err := m.CallTool(ctx, "mcp__notes__vault_list", nil); err != nil || out != "echo:vault_list" {
+		t.Fatalf("pre-drop call: out=%q err=%v", out, err)
+	}
+
+	// The SSE stream drops. Pre-fix behavior: EOF forever. Fixed: one redial
+	// and the call retries transparently.
+	s1.dead.Store(true)
+	out, err := m.CallTool(ctx, "mcp__notes__vault_list", nil)
+	if err != nil {
+		t.Fatalf("post-drop call must reconnect+retry, got: %v", err)
+	}
+	if out != "echo:vault_list" {
+		t.Fatalf("retry out=%q", out)
+	}
+	// The dialer ran exactly once more (the reconnect), not once per call.
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dials = %d, want 2 (initial + one reconnect)", got)
+	}
+}
+
+func TestCallToolReconnectFailureIsActionable(t *testing.T) {
+	s1 := &dyingSession{tools: []*mcp.Tool{{Name: "vault_list"}}}
+	dialErr := errors.New("dial tcp 1.2.3.4: connection refused")
+	m := NewManager(store.NewMCPClientStore(t.TempDir()))
+	var dials atomic.Int32
+	m.dial = func(ctx context.Context, cfg store.MCPClientConfig) (Session, error) {
+		if dials.Add(1) == 1 {
+			return s1, nil
+		}
+		return nil, dialErr
+	}
+	ctx := context.Background()
+	m.ensureConn(ctx, store.MCPClientConfig{Name: "notes", Transport: store.MCPTransportSSE, URL: "http://x/sse", Enabled: true})
+
+	s1.dead.Store(true)
+	_, err := m.CallTool(ctx, "mcp__notes__vault_list", nil)
+	if err == nil {
+		t.Fatal("want error when reconnect also fails")
+	}
+	// Actionable: names the server, URL, transport, both errors, and a hint.
+	msg := err.Error()
+	for _, want := range []string{"notes", "http://x/sse", "sse", "reconnect failed", "EOF", "settings"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q: %s", want, msg)
+		}
+	}
+	// The conn is marked failed so Statuses surfaces it and ListTools
+	// stops reporting the stale tool list.
+	if tools := m.ListTools(); len(tools) != 0 {
+		t.Errorf("failed conn must stop listing tools, got %d", len(tools))
+	}
+	st := m.Statuses([]store.MCPClientConfig{{Name: "notes", Enabled: true}})
+	if len(st) != 1 || st[0].Connected || st[0].Error == "" {
+		t.Errorf("statuses=%+v", st)
+	}
+}
+
+func TestConcurrentCallsTriggerSingleReconnect(t *testing.T) {
+	s1 := &dyingSession{tools: []*mcp.Tool{{Name: "vault_list"}}}
+	m := NewManager(store.NewMCPClientStore(t.TempDir()))
+	var dials atomic.Int32
+	m.dial = func(ctx context.Context, cfg store.MCPClientConfig) (Session, error) {
+		if dials.Add(1) == 1 {
+			return s1, nil
+		}
+		// Fresh live session for the reconnect; concurrent riders share it.
+		return &dyingSession{tools: s1.tools}, nil
+	}
+	ctx := context.Background()
+	m.ensureConn(ctx, store.MCPClientConfig{Name: "notes", Transport: store.MCPTransportSSE, URL: "http://x/sse", Enabled: true})
+
+	// 10 concurrent calls hit the dead session at once; the reconnect lock
+	// must collapse them to a single extra dial.
+	s1.dead.Store(true)
+	var wg sync.WaitGroup
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := m.CallTool(ctx, "mcp__notes__vault_list", nil)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent post-drop call failed: %v", err)
+		}
+	}
+	// The reconnect lock collapses the stampede: exactly one redial total.
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("dials = %d, want 2 (initial + single reconnect)", got)
+	}
+}
+
+func TestIsConnError(t *testing.T) {
+	if !isConnError(mcp.ErrConnectionClosed) {
+		t.Error("ErrConnectionClosed must be a conn error")
+	}
+	if !isConnError(io.EOF) {
+		t.Error("EOF must be a conn error")
+	}
+	if !isConnError(fmt.Errorf("connection closed: calling %q: client is closing: EOF", "tools/call")) {
+		t.Error("wrapped SDK close phrasing must match")
+	}
+	if !isConnError(fmt.Errorf("write tcp: broken pipe")) {
+		t.Error("broken pipe must match")
+	}
+	if isConnError(errors.New("vault not found")) {
+		t.Error("tool-level error must NOT trigger reconnect")
+	}
+	if isConnError(nil) {
+		t.Error("nil is not a conn error")
 	}
 }

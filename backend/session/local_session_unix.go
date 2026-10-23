@@ -75,6 +75,7 @@ type LocalSession struct {
 	quit                 chan struct{}
 	quitOnce             sync.Once
 	mouseTrackingEnabled atomic.Bool
+	foregroundShell      string
 
 	mu             sync.RWMutex
 	enc            encoding.Encoding
@@ -97,6 +98,15 @@ func NewLocalSession(id string) *LocalSession {
 	// the frontend sends its first Resize() with the real dimensions.
 	s.SetPendingSize(200, 60)
 	return s
+}
+
+// ForegroundShell reports the configured shell for command completion detection.
+// Unknown shells wait for the execution deadline instead of guessing from output.
+func (s *LocalSession) ForegroundShell() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	shell := strings.ReplaceAll(s.foregroundShell, `\`, "/")
+	return strings.TrimSuffix(strings.ToLower(shellBasename(shell)), ".exe")
 }
 
 func (s *LocalSession) Connect(config ConnectionConfig) error {
@@ -128,6 +138,9 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	}
 
 	s.cmd = exec.Command(shell, loginShellArgs(shell)...)
+	s.mu.Lock()
+	s.foregroundShell = shell
+	s.mu.Unlock()
 	s.cmd.Env = ensureTerminalEnv(os.Environ(), ExplicitTermType(config.TermType))
 	s.cmd.Dir = workDir
 

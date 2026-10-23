@@ -1,0 +1,199 @@
+//go:build windows
+
+package platform
+
+import (
+	"fmt"
+	"runtime"
+	"sync"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+var rdpKeyboardUser32 = windows.NewLazySystemDLL("user32.dll")
+var rdpSetKeyboardHook = rdpKeyboardUser32.NewProc("SetWindowsHookExW")
+var rdpUnhookKeyboard = rdpKeyboardUser32.NewProc("UnhookWindowsHookEx")
+var rdpNextKeyboardHook = rdpKeyboardUser32.NewProc("CallNextHookEx")
+var rdpGetMessage = rdpKeyboardUser32.NewProc("GetMessageW")
+var rdpPeekMessage = rdpKeyboardUser32.NewProc("PeekMessageW")
+var rdpPostThreadMessage = rdpKeyboardUser32.NewProc("PostThreadMessageW")
+var rdpGetForegroundWindow = rdpKeyboardUser32.NewProc("GetForegroundWindow")
+
+type rdpKeyboardData struct {
+	VKCode, ScanCode, Flags, Time uint32
+	ExtraInfo                     uintptr
+}
+
+type rdpKeyboardMessage struct {
+	Hwnd    uintptr
+	Message uint32
+	WParam  uintptr
+	LParam  uintptr
+	Time    uint32
+	X, Y    int32
+	Private uint32
+}
+
+// The hook runs on a dedicated Windows message thread. Its callback only
+// updates state and enqueues events; Wails dispatch never blocks the hook.
+type RDPKeyboardCapture struct {
+	mu            sync.Mutex
+	state         rdpKeyboardState
+	hwnd          uintptr
+	threadID      uint32
+	callback      uintptr
+	closed        bool
+	shortcutsOnly bool
+	expires       time.Time
+	queue         []RDPKeyEvent
+	wake          chan struct{}
+	done          chan struct{}
+	emit          func(RDPKeyEvent)
+}
+
+func NewRDPKeyboardCapture(emit func(RDPKeyEvent), _ ...func(func())) (*RDPKeyboardCapture, error) {
+	c := &RDPKeyboardCapture{wake: make(chan struct{}, 1), done: make(chan struct{}), emit: emit}
+	ready := make(chan error, 1)
+	go c.run(ready)
+	if err := <-ready; err != nil {
+		return nil, err
+	}
+	go c.dispatch()
+	return c, nil
+}
+
+func (c *RDPKeyboardCapture) enqueue(event RDPKeyEvent) {
+	c.queue = append(c.queue, event)
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *RDPKeyboardCapture) reset() {
+	if c.state.captureID != "" {
+		c.enqueue(RDPKeyEvent{CaptureID: c.state.captureID, Reset: true})
+	}
+	c.state.activate("")
+}
+
+func (c *RDPKeyboardCapture) SetCapture(id string, hwnd uintptr) bool {
+	return c.setCapture(id, hwnd, false)
+}
+
+func (c *RDPKeyboardCapture) SetShortcutCapture(id string, hwnd uintptr) bool {
+	return c.setCapture(id, hwnd, true)
+}
+
+func (c *RDPKeyboardCapture) setCapture(id string, hwnd uintptr, shortcutsOnly bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || hwnd == 0 {
+		return false
+	}
+	// A crashed/reloaded WebView must not keep swallowing local input.
+	c.expires = time.Now().Add(3 * time.Second)
+	if c.state.captureID == id && c.hwnd == hwnd && c.shortcutsOnly == shortcutsOnly {
+		return true
+	}
+	c.reset()
+	c.hwnd = hwnd
+	c.shortcutsOnly = shortcutsOnly
+	c.state.activate(id)
+	return true
+}
+
+func (c *RDPKeyboardCapture) Release(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state.captureID == id {
+		c.reset()
+	}
+}
+
+func (c *RDPKeyboardCapture) Close() {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
+	c.reset()
+	threadID := c.threadID
+	c.mu.Unlock()
+	rdpPostThreadMessage.Call(uintptr(threadID), 0x12, 0, 0) // WM_QUIT
+	<-c.done
+}
+
+func (c *RDPKeyboardCapture) dispatch() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-c.wake:
+		}
+		c.mu.Lock()
+		batch := c.queue
+		c.queue = nil
+		c.mu.Unlock()
+		for _, event := range batch {
+			c.emit(event)
+		}
+	}
+}
+
+func (c *RDPKeyboardCapture) run(ready chan<- error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	defer close(c.done)
+	c.threadID = windows.GetCurrentThreadId()
+	var message rdpKeyboardMessage
+	// Create the thread message queue before Close can post WM_QUIT.
+	rdpPeekMessage.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
+	c.callback = windows.NewCallback(func(code int32, wParam, lParam uintptr) uintptr {
+		if code >= 0 && (wParam == 0x100 || wParam == 0x101 || wParam == 0x104 || wParam == 0x105) {
+			data := (*rdpKeyboardData)(unsafe.Pointer(lParam))
+			scan := uint16(data.ScanCode & 0xff)
+			if scan != 0 && data.Flags&1 != 0 {
+				scan |= 0xe000
+			}
+			down := data.Flags&0x80 == 0
+			foreground, _, _ := rdpGetForegroundWindow.Call()
+			c.mu.Lock()
+			active := !c.closed && foreground == c.hwnd && time.Now().Before(c.expires)
+			if !active {
+				c.reset()
+			}
+			local := data.VKCode == 0x7b
+			if c.shortcutsOnly && !c.state.shortcutKey(scan, data.Flags&0x20 != 0) {
+				local = true
+			}
+			event, swallow := c.state.key(scan, down, active, local) // F12
+			if event.CaptureID != "" {
+				event.VirtualKey = data.VKCode
+				c.enqueue(event)
+			}
+			c.mu.Unlock()
+			if swallow {
+				return 1
+			}
+		}
+		result, _, _ := rdpNextKeyboardHook.Call(0, uintptr(code), wParam, lParam)
+		return result
+	})
+	hook, _, err := rdpSetKeyboardHook.Call(13, c.callback, 0, 0) // WH_KEYBOARD_LL
+	if hook == 0 {
+		ready <- fmt.Errorf("install RDP keyboard hook: %w", err)
+		return
+	}
+	defer rdpUnhookKeyboard.Call(hook)
+	ready <- nil
+	for {
+		result, _, _ := rdpGetMessage.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
+		if int32(result) <= 0 {
+			return
+		}
+	}
+}

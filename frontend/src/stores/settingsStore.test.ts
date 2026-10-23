@@ -32,9 +32,13 @@ vi.mock('@wailsio/runtime', () => ({
   },
 }))
 
+vi.mock('../i18n', () => ({ setLocale: vi.fn() }))
+
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   LoadSettings: mockLoadSettings,
   SaveSettings: mockSaveSettings,
+  LoadLocalState: vi.fn().mockResolvedValue({}),
+  SaveLocalState: vi.fn().mockResolvedValue(undefined),
   GetAvailableShells: vi.fn().mockResolvedValue([]),
   SetDefaultSessionLogDir: vi.fn().mockResolvedValue(undefined),
   LoadAIModels: mockLoadAIModels,
@@ -43,6 +47,8 @@ vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
 
 import { useSettingsStore } from './settingsStore'
 import { useAIConfigStore } from './aiConfigStore'
+import { useLocalStateStore } from './localStateStore'
+import { LoadLocalState, SaveLocalState, LoadSettings, SaveSettings, LoadAIModels, SaveAIModels, GetAvailableShells, SetDefaultSessionLogDir } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { DEFAULT_SETTINGS } from '../types/settings'
 import { nextTick } from 'vue'
 
@@ -126,21 +132,18 @@ describe('store:settings:changed keeps the live ai slice (security.md FE-Medium)
       { id: 'fresh', name: 'Fresh', apiKey: 'k', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o', protocol: 'anthropic' as const },
     ]
     store.settings.ai.models = liveModels
-    store.settings.ai.activeModelId = 'fresh'
 
     handlers['store:settings:changed']?.({
       data: {
         ...DEFAULT_SETTINGS,
         ai: {
           maxTurns: 5,
-          activeModelId: 'stale',
           models: [{ id: 'stale', name: 'Stale', apiKey: '', baseURL: '', model: 'old', protocol: 'anthropic' }],
         },
       },
     })
 
     expect(store.settings.ai.models.map(m => m.id)).toEqual(['fresh'])
-    expect(store.settings.ai.activeModelId).toBe('fresh')
     expect(store.settings.ai.maxTurns).toBe(20)
     // Non-ai fields still come from the sync payload.
     expect(store.settings.theme).toBe(DEFAULT_SETTINGS.theme)
@@ -177,5 +180,56 @@ describe('DEFAULT_SETTINGS is cloned, never shared (security.md FE-Medium)', () 
     expect(store.settings.terminal).not.toBe(DEFAULT_SETTINGS.terminal)
     store.settings.terminal.fontSize = 99
     expect(DEFAULT_SETTINGS.terminal.fontSize).toBe(14)
+  })
+})
+
+// ── active AI model migration (main) ──
+const MIGRATION_MODELS = ['a', 'b'].map(id => ({ id, name: id, model: id, baseURL: 'https://example.com', apiKey: '', protocol: 'responses' }))
+
+describe('active AI model migration', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.mocked(LoadSettings).mockResolvedValue({ ai: { maxTurns: 20, models: MIGRATION_MODELS, activeModelId: 'b' } } as any)
+    vi.mocked(LoadLocalState).mockResolvedValue({ sidebarVisible: false } as any)
+    vi.mocked(LoadAIModels).mockResolvedValue({ models: MIGRATION_MODELS, maxTurns: 20 } as any)
+    vi.mocked(SaveLocalState).mockResolvedValue(undefined)
+    vi.mocked(SaveSettings).mockResolvedValue(undefined)
+    vi.mocked(GetAvailableShells).mockResolvedValue([])
+    vi.mocked(SetDefaultSessionLogDir).mockResolvedValue(undefined)
+  })
+  it('saves the old choice locally before removing it from settings', async () => {
+    const store = useSettingsStore()
+    await store.init()
+    expect(store.activeModelId).toBe('b')
+    expect(useLocalStateStore().state.sidebarVisible).toBe(false)
+    expect(vi.mocked(SaveLocalState).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(SaveSettings).mock.invocationCallOrder[0])
+    expect(vi.mocked(SaveSettings).mock.calls[0][0].ai).not.toHaveProperty('activeModelId')
+    vi.mocked(SaveSettings).mockClear()
+    await store.setActiveModel('a')
+    expect(store.activeModelId).toBe('a')
+    expect(SaveSettings).not.toHaveBeenCalled()
+    expect(SaveAIModels).not.toHaveBeenCalled()
+  })
+
+  it('prefers the existing local choice', async () => {
+    vi.mocked(LoadLocalState).mockResolvedValue({ ai: { activeModelId: 'a', modelPreferences: {} } } as any)
+    await useSettingsStore().init()
+    expect(useSettingsStore().activeModelId).toBe('a')
+  })
+
+  it('preserves legacy settings when the local migration cannot be saved', async () => {
+    vi.mocked(SaveLocalState).mockRejectedValueOnce(new Error('disk full'))
+    await expect(useSettingsStore().init()).rejects.toThrow('Could not save AI selection')
+    expect(SaveSettings).not.toHaveBeenCalled()
+  })
+
+  it('defers migration when settings cannot be read until unlock', async () => {
+    vi.mocked(LoadSettings).mockRejectedValueOnce(new Error('locked'))
+    const store = useSettingsStore()
+    await store.init()
+    expect(SaveLocalState).not.toHaveBeenCalled()
+    await store.reload()
+    expect(store.activeModelId).toBe('b')
   })
 })

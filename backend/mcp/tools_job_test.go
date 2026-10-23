@@ -43,8 +43,8 @@ func TestForegroundToolSchemaUsesUnifiedParameters(t *testing.T) {
 	}
 	expected := map[string][]string{
 		"connect":                {"connection_id", "type", "shell_path"},
-		"uniterm_exec":           {"session_id", "command", "timeout_ms", "idle_ms", "head_lines", "tail_lines"},
-		"uniterm_collect_output": {"session_id", "timeout_ms", "idle_ms", "head_lines", "tail_lines"},
+		"uniterm_exec":           {"session_id", "command", "timeout_ms", "head_lines", "tail_lines"},
+		"uniterm_collect_output": {"session_id", "timeout_ms", "head_lines", "tail_lines"},
 		"uniterm_capture":        {"session_id", "tail_lines"},
 		"uniterm_send_key":       {"session_id", "input", "control", "send_enter"},
 		"uniterm_exec_result":    {"job_id", "offset", "max_bytes", "head_lines", "tail_lines"},
@@ -138,15 +138,13 @@ func (f *jobFakeExec) MCPInterrupt(commandID string, signal string) error { retu
 // fakeForeground implements ForegroundJobs.
 type fakeForeground struct {
 	started     string
-	idleMs      int
 	hardLimitMs int
 	polled      string
 	interrupted string
 }
 
-func (f *fakeForeground) StartForeground(sessionID, command string, idleMs, hardLimitMs int) (string, error) {
+func (f *fakeForeground) StartForeground(sessionID, command string, hardLimitMs int) (string, error) {
 	f.started = command
-	f.idleMs = idleMs
 	f.hardLimitMs = hardLimitMs
 	return "fg-test-1", nil
 }
@@ -220,7 +218,7 @@ func TestUnitermExecForegroundRoutesToTap(t *testing.T) {
 	srv := newJobTestServer(fg, &jobFakeExec{}, func() string { return ModeForeground })
 
 	_, out, err := srv.toolUnitermExecFg(context.Background(), nil, fgExecIn{
-		SessionID: "s1", Command: "top", IdleMs: 200,
+		SessionID: "s1", Command: "top",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -231,9 +229,9 @@ func TestUnitermExecForegroundRoutesToTap(t *testing.T) {
 	if fg.started != "top" {
 		t.Fatalf("foreground not started: %q", fg.started)
 	}
-	// timeoutMs defaults to the built-in-panel-aligned 60s; idleMs passes through.
-	if fg.hardLimitMs != int(DefaultFgTimeout/time.Millisecond) || fg.idleMs != 200 {
-		t.Fatalf("timeout mapping wrong: hardLimitMs=%d idleMs=%d", fg.hardLimitMs, fg.idleMs)
+	// timeoutMs defaults to the built-in-panel-aligned 60s.
+	if fg.hardLimitMs != int(DefaultFgTimeout/time.Millisecond) {
+		t.Fatalf("timeout mapping wrong: hardLimitMs=%d", fg.hardLimitMs)
 	}
 
 	_, result, err := srv.toolUnitermResult(context.Background(), nil, unitermResultIn{JobID: "fg-test-1"})
@@ -294,10 +292,10 @@ func TestUnitermCapture(t *testing.T) {
 func TestUnitermCollectUsesSharedObserver(t *testing.T) {
 	srv := newJobTestServer(nil, &jobFakeExec{}, func() string { return ModeForeground })
 	called := false
-	srv.env.Collect = func(sid string, idle, timeout int) (string, error) {
+	srv.env.Collect = func(sid string, timeout int) (string, error) {
 		called = true
-		if sid != "s1" || idle != 800 || timeout != 30000 {
-			t.Fatalf("observer arguments: %s %d %d", sid, idle, timeout)
+		if sid != "s1" || timeout != 30000 {
+			t.Fatalf("observer arguments: %s %d", sid, timeout)
 		}
 		return "fg-observer", nil
 	}

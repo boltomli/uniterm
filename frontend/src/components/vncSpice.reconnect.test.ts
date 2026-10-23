@@ -81,6 +81,7 @@ describe('VNCTabContent.vue restore wiring (security.md #14)', () => {
 
 describe('SPICETabContent.vue restore wiring (security.md #14)', () => {
   const src = readSrc('components/SPICETabContent.vue')
+  const script = scriptBody(src)
   const mounted = hookBody(src, 'onMounted')
   const unmount = hookBody(src, 'onBeforeUnmount')
 
@@ -97,21 +98,24 @@ describe('SPICETabContent.vue restore wiring (security.md #14)', () => {
   })
 
   it('registers the canvas MutationObserver before the cache-restore early return', () => {
-    const moIdx = mounted.indexOf('new MutationObserver(')
-    expect(moIdx, 'onMounted must create the canvas observer').toBeGreaterThanOrEqual(0)
+    // Main refactored the canvas observer into observeDisplay(); it must
+    // still run before the cache branch so a restored tab keeps auto-scale.
+    const moIdx = mounted.indexOf('observeDisplay()')
+    expect(moIdx, 'onMounted must set up the canvas observer').toBeGreaterThanOrEqual(0)
     expect(moIdx).toBeLessThan(cacheBranchIndex(mounted, 'getSPICECache'))
+    expect(script).toMatch(/function observeDisplay\(\)/)
+    expect(script).toMatch(/canvasObserver = new MutationObserver\(/)
   })
 
   it('registers each listener exactly once per mount', () => {
     expect((mounted.match(/Events\.On\('session:status'/g) ?? []).length).toBe(1)
     expect((mounted.match(/window\.addEventListener\('panel:reconnect'/g) ?? []).length).toBe(1)
-    expect((mounted.match(/new MutationObserver\(/g) ?? []).length).toBe(1)
+    expect((mounted.match(/observeDisplay\(\)/g) ?? []).length).toBe(1)
   })
 
   it('unmount still removes the listeners and disconnects the observer', () => {
-    expect(unmount).toMatch(/unsubStatus\?\.\(\)/)
+    expect(unmount).toMatch(/subStatus\?\.\(\)/)
     expect(unmount).toMatch(/window\.removeEventListener\('panel:reconnect', onReconnectEvent\)/)
-    expect(unmount).toMatch(/mo\.disconnect\(\)/)
-    expect(unmount).toMatch(/__domObserver = null/)
+    expect(unmount).toMatch(/canvasObserver\?\.disconnect\(\)/)
   })
 })

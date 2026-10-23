@@ -12,7 +12,7 @@ const aiConfigFileName = "ai.json"
 // AIStoreData is the syncable slice of the AI settings: the model catalog and
 // the agent turn limit. It lives in its own ai.json file so it can ride the
 // cloud sync while the rest of settings.json stays device-local. The active
-// model choice deliberately stays in settings.json — it is per-device
+// model choice lives in local_state.json — it is per-device
 // "current selection" state, not a shareable asset.
 type AIStoreData struct {
 	MaxTurns *int            `json:"maxTurns"`

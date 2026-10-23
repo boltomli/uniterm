@@ -4,15 +4,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
-	"time"
 
 	"go.bug.st/serial"
 
@@ -155,26 +152,6 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		}
 	}
 
-	// Set parent HWND for RDP sessions
-	if rdp, ok := s.(*session.RDPSession); ok {
-		rdp.SetParentHwnd(a.mainHwnd)
-		// Notify the frontend when the user exits native full screen so it can
-		// resume position sync.
-		rdp.SetOnFullScreenExit(func() {
-			a.emit("rdp:fullscreen-exit", s.ID())
-		})
-		// Adaptive resize lifecycle: the frontend freezes the last frame over
-		// .rdp-area ("start", snapshot included) and restores the live window
-		// afterwards ("end"), so the disconnect/reconnect cycle doesn't flash.
-		rdp.SetOnAdaptiveEvent(func(event, snapshot string) {
-			a.emit("rdp:adaptive", map[string]interface{}{
-				"id":       s.ID(),
-				"event":    event,
-				"snapshot": snapshot,
-			})
-		})
-	}
-
 	a.sessionCaptureFor(s)
 	s.SetOnDataCallback(func(data []byte) {
 		a.emitSessionData(s.ID(), string(data))
@@ -189,24 +166,18 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 			"id":     s.ID(),
 			"status": status,
 		}
-		// For RDP sessions, include client area screen coordinates so the
-		// frontend can position the overlay window without fragile browser APIs.
-		if status == session.StatusConnected {
+		if status == session.StatusError {
 			if rdp, ok := s.(*session.RDPSession); ok {
-				cx, cy, cw, ch := rdp.ClientAreaScreenRect()
-				payload["clientX"] = cx
-				payload["clientY"] = cy
-				payload["clientW"] = cw
-				payload["clientH"] = ch
-				// The RDP ActiveX (and any credential/security dialog it owns) can
-				// push uniTerm behind other windows during connect. Raise the main
-				// window once the session is up so it stays visible above unrelated
-				// windows. No-op on non-Windows; harmless if already in front.
-				a.bringMainWindowToFront()
+				payload["errorMessage"] = rdp.LastError()
 			}
+		}
+		if status == session.StatusConnected {
 			// Attach proxyAddr for VNC and SPICE sessions
 			if vnc, ok := s.(*session.VNCSession); ok {
 				payload["proxyAddr"] = vnc.ProxyAddr()
+			}
+			if ir, ok := s.(*session.RDPSession); ok {
+				payload["proxyAddr"] = ir.ProxyAddr()
 			}
 			if spice, ok := s.(*session.SPICESession); ok {
 				payload["proxyAddr"] = spice.ProxyAddr()
@@ -253,8 +224,8 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		// Without this gap Claude Code draws tables at the 80x24 default
 		// before SessionResize propagates the real width, and the borders
 		// drift across output batches.
-	} else if sessionType == "vnc" || sessionType == "spice" {
-		// VNC and SPICE start a local WebSocket↔TCP proxy synchronously
+	} else if sessionType == "vnc" || sessionType == "spice" || sessionType == "rdp" {
+		// RDP, VNC and SPICE start a local WebSocket↔TCP proxy synchronously
 		// so the proxyAddr is available when CreateSession returns.
 		// Avoids a race between the goroutine's session:status emit and
 		// the frontend's CreateSession IPC response.
@@ -270,7 +241,7 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 			return nil, fmt.Errorf("%s connect failed: %w", sessionType, err)
 		}
 	} else {
-		// Non-terminal sessions (sftp, monitor, ftp, smb, webdav, s3, rdp)
+		// Non-terminal sessions (sftp, monitor, ftp, smb, webdav, s3)
 		// connect immediately.
 		a.launchConnectGoroutine(s, sessionType, config)
 	}
@@ -281,13 +252,16 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		Title:  s.Title(),
 		Status: s.Status(),
 	}
-	// VNC and SPICE expose a local WebSocket↔TCP proxy; return its address
-	// in the CreateSession result so the frontend can mount the RFB/SPICE
+	// Remote desktop sessions expose a local WebSocket↔TCP proxy; return its
+	// address in CreateSession so the frontend can mount the protocol client
 	// client without racing the session:status event (whose 'connected'
 	// emission happens inside s.Connect, before the frontend sets the
 	// session id / stores the proxy addr — see SESSION regression).
 	if vnc, ok := s.(*session.VNCSession); ok {
 		info.ProxyAddr = vnc.ProxyAddr()
+	}
+	if ir, ok := s.(*session.RDPSession); ok {
+		info.ProxyAddr = ir.ProxyAddr()
 	}
 	if spice, ok := s.(*session.SPICESession); ok {
 		info.ProxyAddr = spice.ProxyAddr()
@@ -310,9 +284,9 @@ func (a *App) launchConnectGoroutine(s session.Session, sessionType string, conf
 		// ── SSH Tunnel (jump host) ──────────────────────────────
 		// Set up the local-port-forward through the jump host BEFORE
 		// any dial / pre-check, then point config at the local listener
-		// so the subsequent s.Connect() (and the RDP pre-check below)
-		// ride the tunnel. This block lives here — not in CreateSession —
-		// because terminal session types defer their Connect until
+		// so the subsequent s.Connect() rides the tunnel. This block lives here
+		// rather than CreateSession because terminal session types defer their
+		// Connect until
 		// SessionStart, by which point any config rewrite from
 		// CreateSession would be discarded along with the local config
 		// copy.
@@ -322,23 +296,6 @@ func (a *App) launchConnectGoroutine(s session.Session, sessionType string, conf
 		}
 		// ── End SSH Tunnel ──────────────────────────────────────
 
-		// RDP TCP pre-check: fail fast before creating the ActiveX window.
-		if sessionType == "rdp" {
-			port := config.Port
-			if port <= 0 {
-				port = 3389
-			}
-			addr := net.JoinHostPort(config.Host, strconv.Itoa(port))
-			tcpConn, tcpErr := net.DialTimeout("tcp", addr, 5*time.Second)
-			if tcpErr != nil {
-				log.Writef("[launchConnect] RDP TCP pre-check to %s failed: %v", addr, tcpErr)
-				a.failSessionConnect(s, fmt.Errorf("Cannot reach %s: %v", addr, tcpErr))
-				return
-			}
-			tcpConn.Close()
-			log.Writef("[launchConnect] RDP TCP pre-check to %s succeeded", addr)
-		}
-
 		if err := s.Connect(config); err != nil {
 			a.failSessionConnect(s, err)
 		}
@@ -346,7 +303,7 @@ func (a *App) launchConnectGoroutine(s session.Session, sessionType string, conf
 }
 
 // failSessionConnect is the shared error path inside launchConnectGoroutine
-// for tunnel setup, RDP pre-check, and s.Connect failures. It surfaces the
+// for tunnel setup and s.Connect failures. It surfaces the
 // error to both terminal (session:data) and non-terminal (session:status)
 // listeners and tears down any half-started tunnel + the session itself.
 func (a *App) failSessionConnect(s session.Session, err error) {

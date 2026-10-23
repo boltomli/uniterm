@@ -438,6 +438,11 @@ export function acquireTerminal(
     //
     // Activate Unicode 11 widths (default v6 miscounts CJK cells). Must come
     // AFTER loadAddon — the unicode property is provided by the addon.
+    // Issue #902: CJK characters were truncated at the right boundary because
+    // the default Unicode 6 width table miscounts full-width cells. Loading
+    // Unicode 11 and setting activeVersion='11' ensures both the visible
+    // terminal and the headless mirror (createMirror above) use the same
+    // WCWidth as the backend PTY, so autowap fires at the correct column.
     terminal.unicode.activeVersion = '11'
 
     // IME compatibility (macOS) is installed in attachTerminal, after open()

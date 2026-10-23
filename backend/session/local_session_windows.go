@@ -125,6 +125,7 @@ type LocalSession struct {
 	quit                 chan struct{}
 	disconnectOnce       sync.Once
 	mouseTrackingEnabled atomic.Bool
+	foregroundShell      string
 
 	// osc7 extracts injected OSC-7 cwd reports from the raw ConPTY/pipe
 	// output stream (see shell_integration.go). Only used from readLoop.
@@ -166,6 +167,15 @@ func NewLocalSession(id string) *LocalSession {
 	s.SetPendingSize(200, 60)
 	s.hook = newTypedCwdHookState()
 	return s
+}
+
+// ForegroundShell reports the configured shell for command completion detection.
+// Unknown shells wait for the execution deadline instead of guessing from output.
+func (s *LocalSession) ForegroundShell() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	shell := strings.ReplaceAll(s.foregroundShell, `\`, "/")
+	return strings.TrimSuffix(strings.ToLower(shellBasename(shell)), ".exe")
 }
 
 func (s *LocalSession) Connect(config ConnectionConfig) error {
@@ -211,6 +221,9 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	}
 
 	s.title = shellName(displayPath)
+	s.mu.Lock()
+	s.foregroundShell = shell
+	s.mu.Unlock()
 
 	var commandLine string
 	var cmd *exec.Cmd
@@ -232,6 +245,9 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		if s.cwdHookFollow {
 			log.Writef("wsl: cwd hook deferred to directory-follow toggle")
 		} else if sh, ok := wslDetectShell(distro); ok {
+			s.mu.Lock()
+			s.foregroundShell = sh
+			s.mu.Unlock()
 			if body, ok := buildShellCwdHookBody(sh); ok {
 				s.wslShellBase = shellBasename(sh)
 				s.wslCwdHookBody = body
@@ -551,6 +567,7 @@ func (s *LocalSession) InjectCwdHook() error {
 	go s.watchCwdHookConfirm()
 	return nil
 }
+
 // wslRunCommand runs a one-shot command inside the distro via wsl.exe -e
 // with a timeout, optionally feeding stdin, and returns stdout.
 func wslRunCommand(distro, command, stdin string, timeout time.Duration) (string, error) {

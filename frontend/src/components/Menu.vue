@@ -28,7 +28,7 @@ import { getMenuCoordinator, type ActiveMenu } from '../composables/menuCoordina
 // The .conn-context-menu skin lives once in style.css, reused by everything.
 //
 // The single-open coordinator (only the most recently opened menu stays open,
-// one shared document listener dismisses it on outside-click / Escape, RDP
+// one shared document listener dismisses it on outside-click / Escape,
 // overlay ref-counting) is a MODULE singleton in composables/menuCoordinator —
 // <script setup> state is per instance, so a copy here would leak window and
 // document listeners on every mount (security.md #12).

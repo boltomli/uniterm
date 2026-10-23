@@ -82,6 +82,7 @@ vi.mock('./llm', () => ({
   ],
   ChatCancelledError: class ChatCancelledError extends Error {},
   ChatTimeoutError: class ChatTimeoutError extends Error {},
+  captureChatConfiguration: vi.fn(() => undefined),
 }))
 
 vi.mock('./mcpTools', () => ({

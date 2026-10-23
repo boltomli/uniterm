@@ -6,7 +6,7 @@ import { LoadAIModels, SaveAIModels } from '../../bindings/github.com/ys-ll/unit
 
 // aiConfigStore backs ai.json — the syncable slice of the AI settings
 // (model catalog + agent turn limit). settingsStore composes this into
-// settings.ai alongside the device-local activeModelId.
+// settings.ai; the current selection is stored separately in localStateStore.
 export const useAIConfigStore = defineStore('aiConfig', () => {
   const maxTurns = ref<number>(DEFAULT_SETTINGS.ai.maxTurns)
   // structuredClone, not [...models]: the array copy still shared the model

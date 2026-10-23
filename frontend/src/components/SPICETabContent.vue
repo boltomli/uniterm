@@ -1,5 +1,14 @@
 <template>
-  <div class="spice-tab-content">
+  <div
+    ref="container"
+    class="spice-tab-content"
+    :class="{ 'is-fullscreen': isFullscreen }"
+    :data-remote-keyboard="keyboardFocused ? 'true' : undefined"
+    @focusin="onFocusIn"
+    @focusout="onFocusOut"
+    @keydown.capture="onKey"
+    @keyup.capture="onKey"
+  >
     <!-- Connecting state -->
     <div v-if="status === 'connecting'" class="spice-overlay">
       <el-icon class="is-loading" :size="'2rem'"><Loader /></el-icon>
@@ -9,6 +18,7 @@
     <!-- Error state -->
     <div v-else-if="status === 'error'" class="spice-overlay">
       <p class="spice-error-text">{{ t('spice.error') }}</p>
+      <p v-if="lastError" class="spice-error-detail">{{ lastError }}</p>
       <el-button type="primary" @click="reconnect">{{ t('spice.retry') }}</el-button>
     </div>
 
@@ -21,39 +31,68 @@
     <!-- Connected: spice-html5 Canvas mounts here -->
     <div
       v-show="status === 'connected'"
-      :id="'spice-screen-' + panelId"
-      ref="spiceContainer"
+      ref="viewport"
       class="spice-area"
+      :class="{ 'is-unscaled': !scaleViewport }"
       tabindex="0"
       @paste="onPaste"
-    />
+    >
+      <div ref="desktop" class="spice-desktop">
+        <div :id="'spice-screen-' + panelId" ref="spiceContainer" class="spice-screen" />
+      </div>
+    </div>
 
     <!-- Status bar -->
-    <div v-show="status === 'connected'" class="spice-statusbar">
+    <div v-show="status === 'connected' && !isFullscreen" class="spice-statusbar">
       <span class="spice-status-dot" />
       <span>{{ t('spice.connected') }}</span>
       <span class="spice-status-sep">|</span>
       <span>{{ config?.host }}:{{ config?.port || 5900 }}</span>
       <span class="spice-status-sep">|</span>
-      <span class="spice-scale-label">{{ t('spice.scale') }}</span>
+      <span class="spice-status-label">{{ t('spice.scale') }}</span>
       <el-switch
         v-model="scaleViewport"
-       
+        inline-prompt
+        :active-text="t('vnc.scaleOn')"
+        :inactive-text="t('vnc.scaleOff')"
         style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
       />
+      <span class="spice-status-spacer" />
+      <button class="spice-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
     </div>
+    <RemoteDesktopToolbar
+      v-if="isFullscreen"
+      v-model:scale-viewport="scaleViewport"
+      :host="config?.host || ''"
+      :port="config?.port || 5900"
+      :resolution="resolution || undefined"
+      :disabled="status !== 'connected'"
+      @restore="toggleFullscreen"
+      @focus-desktop="focusDesktop"
+      @minimize="blurDesktop"
+      @error="onToolbarError"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
+import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import { spiceDesktopGeometry } from '../utils/spiceGeometry'
+import { SpiceKeyboard } from '../utils/spiceKeyboard'
+import { createSpiceClipboard } from '../utils/spiceClipboard'
+import { getSpiceConnectionMonitor } from '../utils/spiceConnection'
+import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
+import { readClipboardText, writeClipboard } from '../composables/useClipboardWrite'
+import { queueRemoteKeyboardChange, REMOTE_KEY_SCANCODES } from '../utils/remoteKeyboard'
+import type { NativeRdpKey } from '../utils/remoteKeyboard'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import type { ConnectionConfig } from '../types/session'
 import { Events } from '@wailsio/runtime'
-import { CreateSession, CloseSession, ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, ResolveConnectionSecret, SetSPICEKeyboardCapture } from '../../bindings/github.com/ys-ll/uniterm/app'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -64,37 +103,42 @@ const props = defineProps<{
   sessionId: string | null
 }>()
 
-const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
+const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
+const lastError = ref('')
 const currentSessionId = ref<string | null>(props.sessionId)
+const container = ref<HTMLDivElement | null>(null)
+const viewport = ref<HTMLDivElement | null>(null)
+const desktop = ref<HTMLDivElement | null>(null)
 const spiceContainer = ref<HTMLDivElement | null>(null)
 const scaleViewport = ref(false)
+const isFullscreen = ref(false)
+const resolution = ref('')
+const keyboardFocused = ref(false)
+let keyboardCaptureId = ''
+let keyboardGeneration = 0
+let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
+let unsubKeyboard: (() => void) | null = null
+let clipboard: ReturnType<typeof createSpiceClipboard> | null = null
+let clipboardSync: RdpClipboardSync | null = null
+let clipboardPoll: ReturnType<typeof setInterval> | null = null
+let restoreClipboard: (() => void) | null = null
+const inputKeys = new Set<number>()
+const inputQueue = new RdpInputQueue(error => console.error('SPICE input/clipboard error:', error))
+const keyboard = new SpiceKeyboard(packet => {
+  if (sc?.inputs?.state !== 'ready' || sc.inputs.ws?.readyState !== 1) return false
+  sc.inputs.ws.send(packet)
+  return true
+})
 
 let sc: any = null
 let unsubStatus: (() => void) | null = null
-let isIniting = false
-
-async function connect() {
-  if (!props.config) return
-  if (status.value === 'connecting' || status.value === 'connected') return
-  status.value = 'connecting'
-  try {
-    const info = await CreateSession('spice', props.config)
-    currentSessionId.value = info.id
-    // Bind the session to the panel so tab-close cleanup resolves to this
-    // id, and drive the SPICE client from the proxy address returned by
-    // CreateSession (the synchronous SPICE connect makes it available
-    // here) rather than the racy session:status 'connected' event.
-    panelStore.bindSession(props.panelId, info.id)
-    sessionStore.initSession(info.id)
-    if (info.proxyAddr) {
-      panelStore.setProxyAddr(props.panelId, info.proxyAddr)
-      initSpice(info.proxyAddr, await resolvePassword())
-    }
-  } catch (e: any) {
-    console.error('SPICE connect error:', e)
-    status.value = 'error'
-  }
-}
+let unsubConnection: (() => void) | null = null
+let clientGeneration = 0
+let disposed = false
+let reconnecting = false
+let resizeObserver: ResizeObserver | null = null
+let canvasObserver: MutationObserver | null = null
+let pixelRatioQuery: MediaQueryList | null = null
 
 // LoadConnections 脱敏后渲染层不再持有连接密码；SPICE 客户端握手需要明文，
 // 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
@@ -109,37 +153,108 @@ async function resolvePassword(): Promise<string> {
   }
 }
 
-async function reconnect() {
-  if (currentSessionId.value) {
-    try { await CloseSession(currentSessionId.value) } catch (_) {}
-    currentSessionId.value = null
+async function connect() {
+  if (!props.config) return
+  if (status.value === 'connecting' || status.value === 'connected') return
+  const generation = ++clientGeneration
+  lastError.value = ''
+  status.value = 'connecting'
+  try {
+    const info = await CreateSession('spice', props.config)
+    if (disposed || generation !== clientGeneration) {
+      await CloseSession(info.id)
+      return
+    }
+    currentSessionId.value = info.id
+    // Bind the session to the panel so tab-close cleanup resolves to this
+    // id, and drive the SPICE client from the proxy address returned by
+    // CreateSession (the synchronous SPICE connect makes it available
+    // here) rather than the racy session:status 'connected' event.
+    panelStore.bindSession(props.panelId, info.id)
+    sessionStore.initSession(info.id)
+    if (info.proxyAddr) {
+      panelStore.setProxyAddr(props.panelId, info.proxyAddr)
+      await initSpice(info.proxyAddr, await resolvePassword())
+    } else throw new Error('SPICE proxy address is unavailable.')
+  } catch (e: any) {
+    if (disposed || generation !== clientGeneration) return
+    console.error('SPICE connect error:', e)
+    lastError.value = e?.message || String(e)
+    status.value = 'error'
   }
+}
+
+async function reconnect() {
+  if (reconnecting) return
+  reconnecting = true
+  ++clientGeneration
+  blurDesktop()
+  stopSpiceClient()
+  const sessionID = currentSessionId.value
+  currentSessionId.value = null
+  status.value = 'connecting'
+  try {
+    if (sessionID) {
+      try { await CloseSession(sessionID) } catch (_) {}
+    }
+    if (disposed) return
+    status.value = 'disconnected'
+    await connect()
+  } finally {
+    reconnecting = false
+  }
+}
+
+function stopSpiceClient() {
+  onFocusOut()
+  unsubConnection?.()
+  unsubConnection = null
+  restoreClipboard?.()
+  restoreClipboard = null
   if (sc) {
-    try { sc.stop() } catch (_) {}
+    getSpiceConnectionMonitor(sc).stop()
     sc = null
   }
-  await connect()
+  resolution.value = ''
+}
+
+function syncSessionStatus() {
+  panelStore.updateStatus(props.panelId, status.value)
+  if (currentSessionId.value) sessionStore.updateStatus(currentSessionId.value, status.value)
+}
+
+function observeConnection() {
+  unsubConnection?.()
+  const target = sc
+  unsubConnection = getSpiceConnectionMonitor(target).subscribe(state => {
+    if (disposed || sc !== target) return
+    lastError.value = state.error
+    status.value = state.status
+    syncSessionStatus()
+    if (state.status === 'connected') void nextTick(() => {
+      if (disposed || sc !== target) return
+      applyScale()
+      focusDesktop()
+    })
+  })
 }
 
 async function initSpice(proxyAddr: string, password: string) {
-  if (isIniting) return
-  isIniting = true
-
-  if (sc) {
-    try { sc.stop() } catch (_) {}
-    sc = null
-  }
+  const generation = ++clientGeneration
+  stopSpiceClient()
+  status.value = 'connecting'
+  lastError.value = ''
   if (spiceContainer.value) {
     spiceContainer.value.innerHTML = ''
   }
 
   if (!spiceContainer.value || spiceContainer.value.childElementCount > 0) {
-    isIniting = false
     return
   }
 
   try {
     const { SpiceMainConn } = await import('../vendor/spice-html5.js')
+    if (disposed || generation !== clientGeneration) return
     sc = new SpiceMainConn({
       uri: proxyAddr,
       password: password || '',
@@ -151,59 +266,235 @@ async function initSpice(proxyAddr: string, password: string) {
         // Connected successfully
       },
     })
+    observeConnection()
+    if (sc.state !== 'closing' && sc.state !== 'error') setupClipboard()
   } catch (e: any) {
+    if (disposed || generation !== clientGeneration) return
     console.error('Failed to create SpiceMainConn:', e)
+    stopSpiceClient()
+    lastError.value = e?.message || String(e)
     status.value = 'error'
   }
-
-  isIniting = false
 }
 
 // Paste into the SPICE remote via the native paste event (Ctrl+V / context menu).
 // SPICE handles clipboard through the agent channel.
 function onPaste(e: ClipboardEvent) {
   e.preventDefault()
-  if (!sc || status.value !== 'connected') return
+  if (!ownsRemoteKeyboard()) return
   const text = e.clipboardData?.getData('text')
-  if (text && sc) {
-    try { sc.sendClipboard(text) } catch (_) {}
+  if (text !== undefined) {
+    const generation = keyboardGeneration
+    inputQueue.enqueue(async () => {
+      await syncLocalClipboard(text)
+      if (generation === keyboardGeneration && ownsRemoteKeyboard()) keyboard.paste()
+    })
+  }
+}
+
+function syncLocalClipboard(text?: string): Promise<void> {
+  return ownsRemoteKeyboard() && clipboard?.ready ? clipboardSync?.sync(false, text) ?? Promise.resolve() : Promise.resolve()
+}
+
+function setupClipboard() {
+  restoreClipboard?.()
+  const target = sc
+  const sync = new RdpClipboardSync({
+    read: async () => {
+      const generation = keyboardGeneration
+      const text = await readClipboardText()
+      return generation === keyboardGeneration && ownsRemoteKeyboard() && clipboard?.ready && sc === target ? { kind: 'text', text } : null
+    },
+    publish: async content => {
+      if (content.kind === 'text' && ownsRemoteKeyboard() && sc === target) clipboard?.publish(content.text)
+    },
+    writeText: writeClipboard,
+  }, true)
+  clipboardSync = sync
+  const agent = createSpiceClipboard(target, {
+    canReceive: ownsRemoteKeyboard,
+    onText: text => sync.receiveText(text),
+    onReady: () => {
+      sync.invalidateLocal()
+      syncLocalClipboard().catch(error => console.error('SPICE clipboard sync error:', error))
+    },
+    onError: error => console.error('SPICE clipboard error:', error),
+  })
+  clipboard = agent
+  restoreClipboard = () => {
+    sync.dispose()
+    agent.dispose()
+    if (clipboard === agent) {
+      clipboard = null
+      clipboardSync = null
+    }
   }
 }
 
 function applyScale() {
-  if (!spiceContainer.value) return
-  const container = spiceContainer.value
-  const canvases = container.querySelectorAll('canvas')
-  canvases.forEach((canvas: HTMLCanvasElement) => {
-    if (scaleViewport.value) {
-      const cw = container.clientWidth
-      const ch = container.clientHeight
-      const iw = canvas.width || canvas.clientWidth
-      const ih = canvas.height || canvas.clientHeight
-      const scale = Math.min(cw / iw, ch / ih, 1)
-      const tx = (cw - iw * scale) / 2
-      const ty = (ch - ih * scale) / 2
-      canvas.style.transformOrigin = '0 0'
-      canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`
-    } else {
-      canvas.style.transform = ''
-    }
-  })
-  container.style.overflow = scaleViewport.value ? 'hidden' : 'auto'
+  const screen = spiceContainer.value
+  const area = viewport.value
+  const bounds = desktop.value
+  if (!screen || !area || !bounds) return
+  area.style.overflow = scaleViewport.value ? 'hidden' : 'auto'
+  const primary = sc?.display?.surfaces?.[sc.display.primary_surface]?.canvas as HTMLCanvasElement | undefined
+  const canvas = primary && screen.contains(primary) ? primary : screen.querySelector('canvas')
+  const geometry = canvas && spiceDesktopGeometry(canvas.width, canvas.height,
+    area.clientWidth, area.clientHeight, scaleViewport.value, window.devicePixelRatio)
+  if (!geometry || !canvas) {
+    resolution.value = ''
+    bounds.style.width = bounds.style.height = ''
+    return
+  }
+  resolution.value = `${canvas.width} × ${canvas.height}`
+  bounds.style.width = `${geometry.width}px`
+  bounds.style.height = `${geometry.height}px`
+  screen.style.width = `${canvas.width}px`
+  screen.style.height = `${canvas.height}px`
+  screen.style.transform = `scale(${geometry.scale})`
 }
 
-watch(scaleViewport, () => {
+watch(scaleViewport, applyScale, { flush: 'post' })
+
+function onPixelRatioChange() {
+  pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
+  pixelRatioQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+  pixelRatioQuery.addEventListener('change', onPixelRatioChange)
   applyScale()
-  // ResizeObserver to reapply on container size changes
-  if (scaleViewport.value && spiceContainer.value) {
-    const ro = new ResizeObserver(() => applyScale())
-    ro.observe(spiceContainer.value)
-    ;(spiceContainer.value as any).__scaleObserver = ro
-  } else if (spiceContainer.value) {
-    const ro = (spiceContainer.value as any).__scaleObserver
-    if (ro) { ro.disconnect(); (spiceContainer.value as any).__scaleObserver = null }
+}
+
+function focusDesktop() {
+  if (status.value === 'connected') spiceContainer.value?.querySelector('canvas')?.focus({ preventScroll: true })
+}
+
+function blurDesktop() {
+  onFocusOut()
+  const active = document.activeElement
+  if (active instanceof HTMLElement && spiceContainer.value?.contains(active)) active.blur()
+}
+
+function ownsRemoteKeyboard(): boolean {
+  return status.value === 'connected' && document.hasFocus() && document.activeElement instanceof HTMLCanvasElement &&
+    !!spiceContainer.value?.contains(document.activeElement)
+}
+
+function onKey(event: KeyboardEvent) {
+  if (!ownsRemoteKeyboard()) return
+  if (event.code === 'F12' || event.isComposing) {
+    event.stopPropagation()
+    return
   }
-})
+  const scancode = REMOTE_KEY_SCANCODES[event.code]
+  if (scancode === undefined) return
+  queueKey(scancode, event.type === 'keydown')
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function queueKey(scancode: number, down: boolean) {
+  const paste = down && !inputKeys.has(scancode) && ((scancode === 0x2f &&
+    [0x1d, 0xe01d, 0xe05b, 0xe05c].some(scan => inputKeys.has(scan))) ||
+    (scancode === 0xe052 && [0x2a, 0x36].some(scan => inputKeys.has(scan))))
+  if (down) inputKeys.add(scancode)
+  else inputKeys.delete(scancode)
+  if (paste) inputQueue.enqueue(() => syncLocalClipboard())
+  inputQueue.enqueue(() => { keyboard.key(scancode, down) })
+}
+
+function onFocusIn() {
+  if (!ownsRemoteKeyboard()) return
+  if (!keyboardFocused.value) clipboardSync?.invalidateLocal()
+  keyboardFocused.value = true
+  syncLocalClipboard().catch(error => console.error('SPICE clipboard sync error:', error))
+  if (keyboardCaptureId || !currentSessionId.value) return
+  const captureID = crypto.randomUUID()
+  const sessionID = currentSessionId.value
+  keyboardCaptureId = captureID
+  queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true))
+    .then(enabled => {
+      if (!enabled || keyboardCaptureId !== captureID) return
+      let pending = false
+      keyboardHeartbeat = setInterval(() => {
+        if (!ownsRemoteKeyboard()) { onFocusOut(); return }
+        if (pending) return
+        pending = true
+        queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true))
+          .catch(error => {
+            console.error('SPICE keyboard capture error:', error)
+            if (keyboardCaptureId === captureID) onFocusOut()
+          })
+          .finally(() => { pending = false })
+      }, 1000)
+    })
+    .catch(error => console.error('SPICE keyboard capture error:', error))
+}
+
+function onFocusOut() {
+  ++keyboardGeneration
+  if (keyboardHeartbeat !== null) clearInterval(keyboardHeartbeat)
+  keyboardHeartbeat = null
+  keyboardFocused.value = false
+  const captureID = keyboardCaptureId
+  keyboardCaptureId = ''
+  if (captureID) {
+    const sessionID = currentSessionId.value || ''
+    queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, false))
+      .catch(error => console.error('SPICE keyboard release error:', error))
+  }
+  inputQueue.clear()
+  inputKeys.clear()
+  keyboard.release()
+}
+
+function onNativeKey(data: NativeRdpKey) {
+  if (data.captureID !== keyboardCaptureId || !ownsRemoteKeyboard()) return
+  if (data.reset) { onFocusOut(); onFocusIn(); return }
+  queueKey(data.scancode, data.down)
+}
+
+function onVisibilityChange() {
+  if (document.hidden) onFocusOut()
+  else onFocusIn()
+}
+
+function onToolbarError(error: unknown) {
+  console.error('SPICE minimize error:', error)
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement === container.value
+  void nextTick(applyScale)
+}
+
+async function toggleFullscreen() {
+  const el = container.value
+  if (!el) return
+  try {
+    if (document.fullscreenElement === el) await document.exitFullscreen()
+    else await el.requestFullscreen()
+    focusDesktop()
+  } catch (error) {
+    console.error('SPICE fullscreen error:', error)
+  }
+}
+
+function onFullscreenEvent(event: Event) {
+  if ((event as CustomEvent<{ panelId: string }>).detail?.panelId === props.panelId) void toggleFullscreen()
+}
+
+function observeDisplay() {
+  // ResizeObserver to reapply on container size changes
+  if (viewport.value) {
+    resizeObserver = new ResizeObserver(applyScale)
+    resizeObserver.observe(viewport.value)
+  }
+  // Observe canvas creation for auto-scale
+  if (spiceContainer.value) {
+    canvasObserver = new MutationObserver(applyScale)
+    canvasObserver.observe(spiceContainer.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['width', 'height'] })
+  }
+  onPixelRatioChange()
+}
 
 function onReconnectEvent(e: Event) {
   const panelId = (e as CustomEvent)?.detail?.panelId
@@ -211,52 +502,56 @@ function onReconnectEvent(e: Event) {
 }
 
 onMounted(() => {
+  unsubKeyboard = Events.On('remote-desktop:keyboard', event => onNativeKey(event.data as NativeRdpKey))
+  window.addEventListener('blur', onFocusOut)
+  window.addEventListener('focus', onFocusIn)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  clipboardPoll = setInterval(() => {
+    syncLocalClipboard().catch(error => console.error('SPICE clipboard sync error:', error))
+  }, 1000)
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('spice:fullscreen', onFullscreenEvent)
+  // Tab right-click 「重连」(Reconnect) menu → forced reconnect of this panel.
+  window.addEventListener('panel:reconnect', onReconnectEvent)
+  observeDisplay()
   if (props.sessionId) {
     currentSessionId.value = props.sessionId
   }
 
-  // Register BEFORE connect() and before the cache-restore branch below:
-  // a restored tab must keep the same wiring as a fresh one — session:status
-  // (error/disconnect handling), the tab right-click 重连 menu and the
-  // canvas auto-scale observer (security.md #14: restore used to skip all
-  // three, so disconnects showed no overlay and Reconnect did nothing).
-  unsubStatus =Events.On('session:status', (ev) => { const data: any = ev.data;
+  // Register session:status BEFORE the cache-restore branch — a restored tab
+  // must keep the same wiring as a fresh one: disconnects and remote errors
+  // must reach the overlay even on a zero-delay tab switch (security.md #14:
+  // restore used to return before this listener, so the overlay never
+  // appeared). It also registers before connect(): with a synchronous SPICE
+  // connect the event is emitted during CreateSession.
+  unsubStatus =Events.On('session:status', (ev) => { const data: any = ev.data; 
     if (data.id !== currentSessionId.value) return
     switch (data.status) {
       case 'connected':
-        status.value = 'connected'
         if (data.proxyAddr) {
           panelStore.setProxyAddr(props.panelId, data.proxyAddr)
         }
-        if (data.proxyAddr && props.config) {
-          void resolvePassword().then((pw) => initSpice(data.proxyAddr, pw))
-        } else {
-          const proxy = panelStore.getProxyAddr(props.panelId)
-          if (proxy) {
-            void resolvePassword().then((pw) => initSpice(proxy, pw))
-          }
+        if (!sc && status.value === 'connecting') {
+          const proxy = data.proxyAddr || panelStore.getProxyAddr(props.panelId)
+          if (proxy) void resolvePassword().then((pw) => initSpice(proxy, pw))
         }
+        syncSessionStatus()
         break
       case 'disconnected':
+        ++clientGeneration
+        stopSpiceClient()
         if (status.value !== 'error') status.value = 'disconnected'
+        syncSessionStatus()
         break
       case 'error':
+        ++clientGeneration
+        stopSpiceClient()
+        lastError.value = data.errorMessage || lastError.value || t('spice.error')
         status.value = 'error'
+        syncSessionStatus()
         break
     }
    })
-
-  // Tab right-click 「重连」(Reconnect) menu → forced reconnect of this panel.
-  window.addEventListener('panel:reconnect', onReconnectEvent)
-
-  // Observe canvas creation for auto-scale
-  if (spiceContainer.value) {
-    const mo = new MutationObserver(() => {
-      if (scaleViewport.value) applyScale()
-    })
-    mo.observe(spiceContainer.value, { childList: true, subtree: true, attributes: true, attributeFilter: ['width', 'height'] })
-    ;(spiceContainer.value as any).__domObserver = mo
-  }
 
   // Restore cached DOM + SPICE if available (zero-delay tab switch)
   const cached = panelStore.getSPICECache(props.panelId)
@@ -264,33 +559,42 @@ onMounted(() => {
     const children = Array.from(cached.container.children)
     children.forEach(child => spiceContainer.value!.appendChild(child))
     sc = cached.sc
+    observeConnection()
+    if (sc.state !== 'closing' && sc.state !== 'error') setupClipboard()
     panelStore.removeSPICECache(props.panelId)
-    status.value = 'connected'
-    return
+    void nextTick(applyScale)
+  } else {
+    const storedProxy = panelStore.getProxyAddr(props.panelId)
+    if (storedProxy && props.config) {
+      void resolvePassword().then((pw) => initSpice(storedProxy, pw))
+    } else {
+      connect()
+    }
   }
 
-  const storedProxy = panelStore.getProxyAddr(props.panelId)
-  if (storedProxy && props.config) {
-    status.value = 'connected'
-    void resolvePassword().then((pw) => initSpice(storedProxy, pw))
-  } else if (currentSessionId.value) {
-    status.value = 'connected'
-    connect()
-  } else {
-    connect()
-  }
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  ++clientGeneration
+  onFocusOut()
+  unsubConnection?.()
+  unsubConnection = null
+  if (clipboardPoll !== null) clearInterval(clipboardPoll)
+  clipboardPoll = null
+  restoreClipboard?.()
+  restoreClipboard = null
+  unsubKeyboard?.()
+  window.removeEventListener('blur', onFocusOut)
+  window.removeEventListener('focus', onFocusIn)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   unsubStatus?.()
   window.removeEventListener('panel:reconnect', onReconnectEvent)
-
-  if (spiceContainer.value) {
-    const ro = (spiceContainer.value as any).__scaleObserver
-    if (ro) { ro.disconnect(); (spiceContainer.value as any).__scaleObserver = null }
-    const mo = (spiceContainer.value as any).__domObserver
-    if (mo) { mo.disconnect(); (spiceContainer.value as any).__domObserver = null }
-  }
+  window.removeEventListener('spice:fullscreen', onFullscreenEvent)
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  resizeObserver?.disconnect()
+  canvasObserver?.disconnect()
+  pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
 
   // Cache DOM + SPICE so switching back is instant
   if (sc && spiceContainer.value && spiceContainer.value.childElementCount > 0) {
@@ -301,7 +605,7 @@ onBeforeUnmount(() => {
     document.body.appendChild(container)
     panelStore.setSPICECache(props.panelId, { sc, container })
   } else if (sc) {
-    try { sc.stop() } catch (_) {}
+    getSpiceConnectionMonitor(sc).stop()
     sc = null
   }
 })
@@ -311,30 +615,59 @@ watch(() => props.sessionId, (newId) => {
     currentSessionId.value = newId
   }
 })
+onActivated(() => { void nextTick(applyScale) })
+onActivated(onFocusIn)
+onDeactivated(blurDesktop)
+watch(status, value => {
+  syncSessionStatus()
+  if (value === 'connected') void nextTick(onFocusIn)
+  else onFocusOut()
+}, { flush: 'sync' })
 </script>
 
 <style scoped>
 .spice-tab-content {
-  display: flex;
-  flex-direction: column;
+  position: relative;
   width: 100%;
   height: 100%;
   background: #000;
 }
 .spice-area {
-  flex: 1;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 1.5rem;
+  display: flex;
   overflow: auto;
   background: #000;
   outline: none;
+}
+.spice-desktop {
   position: relative;
-  min-height: 0;
+  flex: none;
+  margin: auto;
+}
+.spice-screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
 }
 .spice-area :deep(canvas) {
   display: block;
 }
+.spice-area.is-unscaled :deep(canvas) {
+  image-rendering: pixelated;
+}
+.spice-tab-content.is-fullscreen .spice-area,
+.spice-tab-content.is-fullscreen .spice-overlay {
+  bottom: 0;
+}
 .spice-overlay {
   position: absolute;
   inset: 0;
+  bottom: 1.5rem;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -344,8 +677,18 @@ watch(() => props.sessionId, (newId) => {
   z-index: 10;
 }
 .spice-error-text { color: var(--error); }
+.spice-error-detail {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  max-width: 80%;
+  text-align: center;
+  word-break: break-word;
+}
 .spice-statusbar {
-  flex-shrink: 0;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   height: 1.5rem;
   display: flex;
   align-items: center;
@@ -364,8 +707,18 @@ watch(() => props.sessionId, (newId) => {
   flex-shrink: 0;
 }
 .spice-status-sep { color: var(--text-disabled); }
-.spice-scale-label {
-  margin-left: auto;
-  font-size: 0.6875rem;
+.spice-status-label { font-size: 0.6875rem; }
+.spice-status-spacer { flex: 1; }
+.spice-fullscreen-btn {
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 1px 0.625rem;
+  border-radius: var(--radius-sm);
+}
+.spice-fullscreen-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 </style>

@@ -7,6 +7,7 @@ import { SaveSettings, LoadSettings, GetAvailableShells, SetDefaultSessionLogDir
 import { Events } from '@wailsio/runtime'
 import { setLocale } from '../i18n'
 import { useAIConfigStore } from './aiConfigStore'
+import { useLocalStateStore } from './localStateStore'
 
 // Module-level un-subscriber for the cross-window store:settings:changed listener.
 // Tracked at module scope so re-imports under HMR can detach the previous
@@ -45,8 +46,9 @@ export const useSettingsStore = defineStore('settings', () => {
   })
 
   const activeModel = computed(() =>
-    settings.value.ai.models.find(m => m.id === settings.value.ai.activeModelId) || settings.value.ai.models[0]
+    settings.value.ai.models.find(m => m.id === useLocalStateStore().state.ai?.activeModelId) || settings.value.ai.models[0]
   )
+  const activeModelId = computed(() => activeModel.value?.id || '')
 
   // Current active category in the settings page (persisted across tab switches)
   const activeCategory = ref('basic')
@@ -56,18 +58,16 @@ export const useSettingsStore = defineStore('settings', () => {
   // Tracks the last ai.json payload pushed from this store so unrelated
   // settings saves don't rewrite the AI config file needlessly.
   let lastSavedAiJson = ''
+  let applyingLoadedSettings = false
+  let settingsReadyToSave = false
 
-  // Overlay the syncable AI slice (ai.json) onto the settings blob and
-  // validate the device-local activeModelId against the synced catalog.
+  // Overlay the syncable AI slice (ai.json); selection stays device-local.
   function recomposeAi() {
     const aiCfg = useAIConfigStore()
     const models = aiCfg.models.length ? aiCfg.models : settings.value.ai.models
     settings.value.ai = {
       maxTurns: aiCfg.maxTurns,
       models,
-      activeModelId: models.some(m => m.id === settings.value.ai.activeModelId)
-        ? settings.value.ai.activeModelId
-        : (models[0]?.id ?? DEFAULT_SETTINGS.ai.activeModelId),
       // executionMode is device-local (settings.json only — ai.json carries
       // maxTurns + models), so recomposing the synced slice must not drop it.
       executionMode: isExecutionMode(settings.value.ai.executionMode)
@@ -118,9 +118,24 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   async function init() {
+    applyingLoadedSettings = true
+    settingsReadyToSave = false
+    try {
+      await initSettings()
+    } finally {
+      applyingLoadedSettings = false
+    }
+  }
+
+  async function initSettings() {
+    await useLocalStateStore().init()
+    let legacyModelId = ''
+    let settingsRead = false
     try {
       const loadedSettings = await LoadSettings()
       if (loadedSettings) {
+        settingsRead = true
+        legacyModelId = (loadedSettings.ai as { activeModelId?: string })?.activeModelId || ''
         settings.value = mergeSettings(loadedSettings)
       }
       loadFailed.value = false
@@ -137,6 +152,12 @@ export const useSettingsStore = defineStore('settings', () => {
     applyTheme()
     await useAIConfigStore().load()
     recomposeAi()
+    if (settingsRead) {
+      await useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id), legacyModelId)
+      // Save only after the local migration succeeds; never discard the old selection first.
+      if (legacyModelId) await SaveSettings(settings.value)
+      settingsReadyToSave = true
+    }
     lastSavedAiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
     applyUiFontSize()
     try {
@@ -156,9 +177,23 @@ export const useSettingsStore = defineStore('settings', () => {
   // decrypted once the store is unlocked; re-running LoadSettings re-fetches
   // them instead of leaving the initial load's empty fallback in place.
   async function reload() {
+    applyingLoadedSettings = true
+    settingsReadyToSave = false
+    try {
+      await reloadSettings()
+    } finally {
+      applyingLoadedSettings = false
+    }
+  }
+
+  async function reloadSettings() {
+    let legacyModelId = ''
+    let settingsRead = false
     try {
       const loadedSettings = await LoadSettings()
       if (loadedSettings) {
+        settingsRead = true
+        legacyModelId = (loadedSettings.ai as { activeModelId?: string })?.activeModelId || ''
         settings.value = mergeSettings(loadedSettings)
         loaded.value = true
       }
@@ -169,6 +204,11 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     await useAIConfigStore().load()
     recomposeAi()
+    if (settingsRead) {
+      await useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id), legacyModelId)
+      if (legacyModelId) await SaveSettings(settings.value)
+      settingsReadyToSave = true
+    }
     applyUiFontSize()
     applyTheme()
     setLocale(settings.value.language)
@@ -187,6 +227,7 @@ export const useSettingsStore = defineStore('settings', () => {
     // them would replace the user's real settings.json. Block until a later
     // LoadSettings succeeds.
     if (loadFailed.value) return
+    if (applyingLoadedSettings || !settingsReadyToSave) return
     try {
       await SaveSettings(settings.value)
       // Mirror the syncable AI slice into ai.json (skipped when unchanged).
@@ -253,16 +294,14 @@ export const useSettingsStore = defineStore('settings', () => {
     const idx = settings.value.ai.models.findIndex(m => m.id === id)
     if (idx >= 0) {
       settings.value.ai.models.splice(idx, 1)
-      if (settings.value.ai.activeModelId === id && settings.value.ai.models.length > 0) {
-        settings.value.ai.activeModelId = settings.value.ai.models[0].id
-      }
+      void useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id)).catch(() => {})
       save()
     }
   }
 
   function setActiveModel(id: string) {
-    settings.value.ai.activeModelId = id
-    save()
+    if (!settings.value.ai.models.some(m => m.id === id)) return
+    return useLocalStateStore().setActiveAIModel(id)
   }
 
   const sftpBookmarks = computed(() => settings.value.sftpBookmarks)
@@ -301,9 +340,8 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  // No deep watcher on settings.value.ai: every mutator above calls save()
-  // explicitly (and SettingsTab binds ai.maxTurns with @change="save()").
-  // The watcher caused double saves and, after a failed load, wrote defaults.
+  // Auto-save when AI models change
+  watch(() => settings.value.ai, save, { deep: true, flush: 'sync' })
 
   // Apply theme when it changes
   watch(() => settings.value.theme, applyTheme)
@@ -326,9 +364,15 @@ export const useSettingsStore = defineStore('settings', () => {
   unsubSettingsChanged?.()
   unsubSettingsChanged =Events.On('store:settings:changed', (ev) => { const data: AppSettings = ev.data; 
     if (data) {
-      const liveAi = settings.value.ai
-      settings.value = mergeSettings(data)
-      settings.value.ai = liveAi
+      const wasApplyingSettings = applyingLoadedSettings
+      applyingLoadedSettings = true
+      try {
+        const liveAi = settings.value.ai
+        settings.value = mergeSettings(data)
+        settings.value.ai = liveAi
+      } finally {
+        applyingLoadedSettings = wasApplyingSettings
+      }
       loaded.value = true
       applyUiFontSize()
       applyTheme()
@@ -343,7 +387,14 @@ export const useSettingsStore = defineStore('settings', () => {
       const aiCfg = useAIConfigStore()
       aiCfg.maxTurns = data.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns
       aiCfg.models = data.models?.length ? data.models : aiCfg.models
-      recomposeAi()
+      const wasApplyingSettings = applyingLoadedSettings
+      applyingLoadedSettings = true
+      try {
+        recomposeAi()
+      } finally {
+        applyingLoadedSettings = wasApplyingSettings
+      }
+      void useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id)).catch(() => {})
       lastSavedAiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
     }
   })
@@ -366,6 +417,7 @@ export const useSettingsStore = defineStore('settings', () => {
     terminal,
     ai,
     activeModel,
+    activeModelId,
     activeCategory,
     openCategory,
     init,
@@ -405,7 +457,6 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     ai: {
       maxTurns: loaded.ai?.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns,
       models: loaded.ai?.models?.length ? loaded.ai.models : structuredClone(DEFAULT_SETTINGS.ai.models),
-      activeModelId: loaded.ai?.activeModelId || DEFAULT_SETTINGS.ai.activeModelId,
       // F-02: an unknown/hand-edited value falls back to the safe default
       // instead of being trusted (the Go side validates too).
       executionMode: isExecutionMode(loaded.ai?.executionMode)

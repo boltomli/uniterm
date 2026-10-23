@@ -1,15 +1,149 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
+	"golang.org/x/crypto/ssh"
 )
+
+func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverConfig := &ssh.ServerConfig{
+		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			if meta.User() != "jump" || string(password) != "jump-pw" {
+				return nil, fmt.Errorf("unexpected jump-host credentials")
+			}
+			return nil, nil
+		},
+	}
+	serverConfig.AddHostKey(signer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	targets := make(chan string, 8)
+	go func() {
+		raw, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer raw.Close()
+		conn, channels, requests, err := ssh.NewServerConn(raw, serverConfig)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		go ssh.DiscardRequests(requests)
+		for request := range channels {
+			var target struct {
+				Host       string
+				Port       uint32
+				OriginHost string
+				OriginPort uint32
+			}
+			if request.ChannelType() != "direct-tcpip" || ssh.Unmarshal(request.ExtraData(), &target) != nil {
+				request.Reject(ssh.UnknownChannelType, "unsupported")
+				continue
+			}
+			channel, requests, err := request.Accept()
+			if err != nil {
+				continue
+			}
+			targets <- net.JoinHostPort(target.Host, fmt.Sprint(target.Port))
+			go ssh.DiscardRequests(requests)
+			go func() {
+				defer channel.Close()
+				_, _ = io.Copy(channel, channel)
+			}()
+		}
+	}()
+	connections, err := store.NewConnectionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections.SetPasswordStore(stubPasswordStore{})
+	if err := connections.Save(session.ConnectionStoreData{Connections: []session.ConnectionConfig{{
+		ID: "jump", Type: "ssh", Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port,
+		User: "jump", AuthType: "password",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{sessionManager: session.NewSessionManager(), tunnelService: session.NewTunnelService(), connectionStore: connections}
+	t.Cleanup(a.tunnelService.Shutdown)
+	info, err := a.CreateSession("spice", session.ConnectionConfig{
+		Type: "spice", Host: "spice.internal.invalid", Port: 3,
+		TunnelSSHConnID: "jump", TunnelSSHPassword: "jump-pw",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.CloseSession(info.ID) })
+	endpoint, err := url.Parse(info.ProxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.Hostname() != "127.0.0.1" || info.Status != session.StatusConnected {
+		t.Fatalf("SPICE did not return a connected local proxy: %+v", info)
+	}
+	dialer := websocket.Dialer{Subprotocols: []string{"binary"}, HandshakeTimeout: 3 * time.Second}
+	var sockets []*websocket.Conn
+	for _, channel := range []string{"main", "display", "inputs", "cursor"} {
+		ws, _, err := dialer.Dial(info.ProxyAddr, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ws.Close() })
+		_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+		payload := "REDQ:" + channel
+		if err := ws.WriteMessage(websocket.BinaryMessage, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		kind, echoed, err := ws.ReadMessage()
+		if err != nil || kind != websocket.BinaryMessage || string(echoed) != payload {
+			t.Fatalf("SPICE %s channel did not travel through SSH: %q, %v", channel, echoed, err)
+		}
+		select {
+		case target := <-targets:
+			if target != "spice.internal.invalid:5903" {
+				t.Fatalf("SSH channel reached %q", target)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("SPICE channel bypassed the SSH tunnel")
+		}
+		sockets = append(sockets, ws)
+	}
+	if err := a.CloseSession(info.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, ws := range sockets {
+		if _, _, err := ws.ReadMessage(); err == nil {
+			t.Fatal("SPICE channel survived session/tunnel shutdown")
+		}
+	}
+}
 
 func TestAppendFileBase64RejectsSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {

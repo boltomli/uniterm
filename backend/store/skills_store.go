@@ -2,8 +2,10 @@ package store
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,9 +115,12 @@ type skillFrontmatter struct {
 
 // parseFrontmatter 从 SKILL.md 全文里抽出 YAML frontmatter 的几个平铺字段与正文。
 // 只支持 `key: value` 平铺写法（社区 SKILL.md 的 name/description 均如此），不做完整 YAML。
+// 剥 UTF-8 BOM：Windows 记事本产物常带 BOM，前端解析器已剥（SkillCreateDialog），
+// 后端不剥则 HasPrefix("---") 不成立、name 为空、目录被静默跳过。
 func parseFrontmatter(content string) (fm skillFrontmatter, body string) {
 	body = content
-	trimmed := strings.TrimLeft(content, " \t\r\n")
+	trimmed := strings.TrimPrefix(content, "\ufeff")
+	trimmed = strings.TrimLeft(trimmed, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "---") {
 		return fm, body
 	}
@@ -386,6 +391,172 @@ func (s *SkillsStore) SetSortOrder(name string, order int) error {
 
 func (s *SkillsStore) SetOrigin(name string, origin string) error {
 	return s.setPref(name, func(p *skillPref) { p.Origin = origin })
+}
+
+// ---- 同步契约（SyncableStore，接口声明在 backend/sync/backend.go）----
+//
+// skills.json blob = 偏好层 + 全部用户 skill 的目录内容（捆绑包）。skill
+// 是多文件目录（SKILL.md + references/ + scripts/），而同步引擎按单文件
+// 全量交换，所以内容随偏好层一起进同一个 blob：新设备一次 pull 即得完整
+// skills（issue #1180）。.system（随构建分发）不入包。
+//
+// 删除不传播：blob 里没有的本地 skill（手拷的、或对端删过的）一律保留，
+// 由扫描补默认偏好。sync 永不删本地 skill 数据。
+
+const (
+	// skillSyncMaxFileLen 单个文件入包上限；超限报错而不是静默截断。
+	skillSyncMaxFileLen = 256 * 1024
+	// skillSyncBundleMaxBytes 捆绑包序列化上限，防止仓库膨胀。
+	skillSyncBundleMaxBytes = 4 << 20
+)
+
+type skillSyncFile struct {
+	Path    string `json:"path"`    // skill 目录内相对路径（'/' 分隔）
+	Content []byte `json:"content"` // base64（encoding/json 对 []byte 的默认编码）
+	Mode    uint32 `json:"mode"`    // 权限位（可执行脚本跨设备保真）
+}
+
+type skillSyncSkill struct {
+	Name  string          `json:"name"` // = 目录名（同时是偏好关联键）
+	Files []skillSyncFile `json:"files"`
+}
+
+type skillSyncBundle struct {
+	Version int             `json:"version"`
+	Prefs   []skillPref     `json:"prefs"`
+	Skills  []skillSyncSkill `json:"skills"`
+}
+
+// BlobName 与本地偏好文件同名：同步层按文件名搬运 blob，不感知内容形状。
+func (s *SkillsStore) BlobName() string { return skillPrefsFile }
+
+// ExportPlain 先扫描补齐偏好（手拷进目录、尚无偏好条目的 skill 也入包），
+// 再序列化偏好层 + 用户 skill 目录。一个 skill 都没有且偏好文件从未写过
+// 时返回 fs.ErrNotExist，同步层跳过而不是上传空文档覆盖远端。
+func (s *SkillsStore) ExportPlain() ([]byte, error) {
+	metas, err := s.scanAndMerge()
+	if err != nil {
+		return nil, err
+	}
+	if len(metas) == 0 {
+		if _, err := os.Stat(s.prefsPath()); os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: %w", skillPrefsFile, fs.ErrNotExist)
+		}
+	}
+	prefs, err := s.loadPrefs()
+	if err != nil {
+		return nil, err
+	}
+	bundle := skillSyncBundle{Version: 1}
+	for _, p := range prefs.Prefs {
+		bundle.Prefs = append(bundle.Prefs, p)
+	}
+	for _, m := range metas {
+		if m.IsSystem {
+			continue
+		}
+		files, err := collectSkillFiles(m.Path)
+		if err != nil {
+			return nil, fmt.Errorf("skill %s: %w", m.Name, err)
+		}
+		bundle.Skills = append(bundle.Skills, skillSyncSkill{Name: m.Dir, Files: files})
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > skillSyncBundleMaxBytes {
+		return nil, fmt.Errorf("skills bundle exceeds %d bytes; slim the skill files to sync", skillSyncBundleMaxBytes)
+	}
+	return data, nil
+}
+
+// collectSkillFiles 收集一个 skill 目录的全部常规文件（跳过符号链接与
+// 点文件，不跟随链接）。WalkDir 按字典序遍历，导出哈希稳定。
+func collectSkillFiles(skillDir string) ([]skillSyncFile, error) {
+	out := []skillSyncFile{}
+	err := filepath.WalkDir(skillDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		base := filepath.Base(path)
+		if d.IsDir() {
+			if path != skillDir && strings.HasPrefix(base, ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || strings.HasPrefix(base, ".") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > skillSyncMaxFileLen {
+			return fmt.Errorf("file %s too large to sync (%d bytes)", base, info.Size())
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel := filepath.ToSlash(strings.TrimPrefix(path, skillDir+string(filepath.Separator)))
+		out = append(out, skillSyncFile{Path: rel, Content: content, Mode: uint32(info.Mode().Perm())})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ImportPlain 先落盘捆绑包里的 skill 目录，再整层覆盖偏好，最后扫描收敛
+// （补齐本地独有 skill 的偏好、清掉无目录的孤儿偏好）。
+func (s *SkillsStore) ImportPlain(raw []byte) error {
+	var bundle skillSyncBundle
+	if err := json.Unmarshal(raw, &bundle); err != nil {
+		return fmt.Errorf("parse sync blob: %w", err)
+	}
+	if err := os.MkdirAll(s.skillsRoot(), 0755); err != nil {
+		return err
+	}
+	for _, sk := range bundle.Skills {
+		if !skillNameRe.MatchString(sk.Name) {
+			return fmt.Errorf("invalid skill name in sync blob: %s", sk.Name)
+		}
+		if err := writeSkillDir(s.skillsRoot(), sk); err != nil {
+			return fmt.Errorf("skill %s: %w", sk.Name, err)
+		}
+	}
+	if err := s.savePrefs(skillPrefsData{Version: 1, Prefs: bundle.Prefs}); err != nil {
+		return err
+	}
+	s.invalidateListCache()
+	_, err := s.scanAndMerge()
+	return err
+}
+
+// writeSkillDir 把捆绑包里的一个 skill 目录写到 skills/<name>/（整目录
+// 覆盖）。路径防穿越：拒绝绝对路径与 ".."。
+func writeSkillDir(root string, sk skillSyncSkill) error {
+	dst := filepath.Join(root, sk.Name)
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	for _, f := range sk.Files {
+		clean := filepath.Clean(filepath.FromSlash(f.Path))
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("path not allowed: %s", f.Path)
+		}
+		target := filepath.Join(dst, clean)
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, f.Content, os.FileMode(f.Mode).Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetBody 读取指定 skill 的 SKILL.md 正文（不含 frontmatter）。

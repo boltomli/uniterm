@@ -117,7 +117,7 @@ type Env struct {
 	// allowed directories (SFTP bookmarks) and returns the resolved path.
 	ResolveLocalPath func(path string) (resolved string, err error)
 	// Foreground runs a command in the live terminal PTY as an async job and
-	// completes on idle-settle / EOF rather than an end marker. When nil the
+	// completes on a shell acknowledgement, never terminal silence. When nil the
 	// unified uniterm_exec tool reports foreground mode unsupported; background
 	// mode still works over Sessions/Commands.
 	Foreground ForegroundJobs
@@ -137,7 +137,7 @@ type Env struct {
 	// disables the tool.
 	SendKey func(sessionID, text, control string, sendEnter bool) error
 	// Collect starts read-only output observation using the foreground job engine.
-	Collect func(sessionID string, idleMs, hardLimitMs int) (string, error)
+	Collect func(sessionID string, hardLimitMs int) (string, error)
 }
 
 // ForegroundJobs is the unified async-job surface for the live-PTY (foreground)
@@ -145,9 +145,9 @@ type Env struct {
 // interface so the mcp package stays testable without a real session.
 type ForegroundJobs interface {
 	// StartForeground types command into sessionID's live terminal and returns
-	// a jobId. idleMs bounds the silence that counts as completion; hardLimitMs
-	// is the hard runtime cap (the job moves to "timeout" but stays pollable).
-	StartForeground(sessionID, command string, idleMs, hardLimitMs int) (jobID string, err error)
+	// a jobId. hardLimitMs bounds this
+	// wait. On timeout the command and output tap continue until real completion.
+	StartForeground(sessionID, command string, hardLimitMs int) (jobID string, err error)
 	// PollForeground returns output-so-far, exit code and state for a jobId.
 	PollForeground(jobID string, offset, max int) (stdout, stderr []byte, exitCode int, state string, err error)
 	// InterruptForeground stops a running foreground job.

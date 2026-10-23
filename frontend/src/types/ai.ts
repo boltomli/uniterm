@@ -7,7 +7,18 @@ export function isExecutionMode(v: unknown): v is ExecutionMode {
   return typeof v === 'string' && (EXECUTION_MODES as readonly string[]).includes(v)
 }
 
-export type AIAgentStatus = 'thinking' | 'outputting' | 'executing' | 'confirming'
+export type AIAgentStatus = 'thinking' | 'outputting' | 'executing' | 'confirming' | 'compacting'
+
+export type AIReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export interface AIReasoningPreference {
+  reasoningEffort: AIReasoningEffort
+}
+
+export interface AILocalState {
+  activeModelId: string
+  modelPreferences: Record<string, AIReasoningPreference>
+}
 
 export interface ToolCall {
   id: string
@@ -76,4 +87,12 @@ export interface AISession {
   createdAt: number
   updatedAt: number
   messages: AIMessage[]
+  contextSummary?: AIContextSummary
+}
+
+export interface AIContextSummary {
+  version: 1
+  content: string
+  throughMessageId: string
+  createdAt: number
 }

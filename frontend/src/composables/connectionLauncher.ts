@@ -249,12 +249,13 @@ async function runSpec(key: string, config: ConnectionConfig, spec: ConnectSpec,
   }
 
   const displayTitle = (spec.title ?? userHost)(config)
-  const panelKind = (spec.uiType ?? spec.panelType ?? key) as Parameters<typeof panelStore.createPanel>[1]
+  const uiType = spec.uiType ?? key
+  const panelKind = (spec.panelType ?? uiType) as Parameters<typeof panelStore.createPanel>[1]
   const panel = panelStore.createPanel(config, panelKind)
   panelStore.updateTitle(panel.id, displayTitle)
   const reposition = opts.prevStart && deps ? deps.closeStartAndReposition(opts.prevStart) : null
 
-  const tabKind = (spec.uiType ?? key) as Parameters<typeof tabStore.createTab>[0]
+  const tabKind = uiType as Parameters<typeof tabStore.createTab>[0]
   let tab: { id: string } | null = null
   const openTab = () => {
     const t = useTabStore().createTab(tabKind, displayTitle, panel.id, spec.tabExtra?.(config))
@@ -279,7 +280,10 @@ async function runSpec(key: string, config: ConnectionConfig, spec: ConnectSpec,
 
   try {
     const info = await CreateSession(sessionType, config)
-    if (spec.sessionFirst && info?.proxyAddr) panelStore.setProxyAddr(panel.id, info.proxyAddr)
+    // proxyAddr capture is not gated on sessionFirst: RDP keeps the
+    // tab-first flow but its proxy URL must survive into the tab exactly like
+    // VNC/SPICE. Only VNC/SPICE/RDP sessions ever return proxyAddr.
+    if (info?.proxyAddr) panelStore.setProxyAddr(panel.id, info.proxyAddr)
     panelStore.bindSession(panel.id, info.id)
     if (spec.initSession) sessionStore.initSession(info.id)
     if (spec.sessionFirst) {

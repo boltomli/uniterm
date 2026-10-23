@@ -1,4 +1,5 @@
 import type { KeyboardSettings, KeyBinding, ShortcutAction } from '../types/settings'
+import { remoteDesktopOwnsKey } from '../utils/remoteKeyboard'
 
 type ActionHandlers = Record<ShortcutAction, () => void>
 
@@ -164,6 +165,7 @@ function fire(e: KeyboardEvent, normalized: string, map: Map<string, () => void>
 }
 
 export function onGlobalKeydown(e: KeyboardEvent) {
+  if (remoteDesktopOwnsKey(e)) return
   fire(e, normalize(e), shortcutMap)
 }
 

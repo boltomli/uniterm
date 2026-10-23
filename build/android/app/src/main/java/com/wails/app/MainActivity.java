@@ -40,6 +40,7 @@ import androidx.webkit.WebViewAssetLoader;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -71,9 +72,16 @@ public class MainActivity extends AppCompatActivity {
     private int pendingFilePickerCallbackID = -1;
     private static final int PHOTO_CAPTURE_REQUEST = 7002;
     private static final int VIDEO_CAPTURE_REQUEST = 7003;
+    private static final int SAVE_DOCUMENT_REQUEST = 7004;
     private static final int CAMERA_PERMISSION_REQUEST = 7010;
     private File pendingCaptureFile;
     private boolean pendingCaptureIsVideo;
+
+    // "Save to" picker (ACTION_CREATE_DOCUMENT): the staged sandbox file that
+    // gets streamed into the user-chosen destination (null when idle). The
+    // destination itself is a SAF URI with no filesystem path, so Go stages
+    // the export here first and the copy happens in this activity.
+    private String pendingSaveTempPath;
 
     // System-event sources (battery/power, screen lock, network). Registered in
     // onCreate, torn down in onDestroy. Each forwards a "system:*" event to JS
@@ -159,14 +167,7 @@ public class MainActivity extends AppCompatActivity {
         bridge.setWebView(webView);
 
         // Configure WebView settings
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        configureWebViewSettings(webView.getSettings());
 
         // Enable debugging in debug builds
         if (DEBUG) {
@@ -269,6 +270,17 @@ public class MainActivity extends AppCompatActivity {
 
         // Add JavaScript interface for Go communication
         webView.addJavascriptInterface(new WailsJSBridge(bridge, webView), "wails");
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    static void configureWebViewSettings(WebSettings settings) {
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
     }
 
     private void loadApplication() {
@@ -489,6 +501,89 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Launch the system save picker (ACTION_CREATE_DOCUMENT). optionsJson:
+     * {"tempPath","name","mime"}. The staged file is streamed into the chosen
+     * destination on completion (or deleted on cancellation) and the outcome is
+     * reported as a "common:saveDocument" event. Called by WailsBridge on the
+     * main thread.
+     */
+    public void launchSaveDocument(String optionsJson) {
+        String tempPath = null;
+        String name = "export.bin";
+        String mime = "application/octet-stream";
+        try {
+            JSONObject o = new JSONObject(optionsJson);
+            tempPath = o.optString("tempPath", "");
+            name = o.optString("name", name);
+            mime = o.optString("mime", mime);
+        } catch (Exception ignored) {
+        }
+        if (tempPath == null || tempPath.isEmpty()) {
+            bridge.emitEvent("common:saveDocument", "{\"error\":\"missing tempPath\"}");
+            return;
+        }
+        synchronized (this) {
+            if (pendingSaveTempPath != null) {
+                // Only one save picker can be in flight
+                bridge.emitEvent("common:saveDocument", "{\"error\":\"save already in progress\"}");
+                return;
+            }
+            pendingSaveTempPath = tempPath;
+        }
+
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mime);
+        intent.putExtra(Intent.EXTRA_TITLE, name);
+        try {
+            startActivityForResult(intent, SAVE_DOCUMENT_REQUEST);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to launch save picker", e);
+            pendingSaveTempPath = null;
+            bridge.emitEvent("common:saveDocument", "{\"error\":\"no save picker available\"}");
+        }
+    }
+
+    /**
+     * Stream the staged file into the picked destination URI and report the
+     * outcome via "common:saveDocument". The staged file is always deleted —
+     * it lives in the app cache and is worthless once handed over.
+     */
+    private void handleSaveDocumentResult(int resultCode, @Nullable Intent data) {
+        final String tempPath = pendingSaveTempPath;
+        pendingSaveTempPath = null;
+        if (tempPath == null) {
+            return;
+        }
+        final Uri dest = (resultCode == RESULT_OK && data != null) ? data.getData() : null;
+        new Thread(() -> {
+            File temp = new File(tempPath);
+            if (dest == null) {
+                temp.delete();
+                bridge.emitEvent("common:saveDocument", "{\"cancelled\":true}");
+                return;
+            }
+            try (InputStream in = new FileInputStream(temp);
+                 OutputStream os = getContentResolver().openOutputStream(dest)) {
+                if (os == null) {
+                    throw new java.io.IOException("destination is not writable");
+                }
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    os.write(buf, 0, n);
+                }
+                os.flush();
+                temp.delete();
+                bridge.emitEvent("common:saveDocument", "{\"saved\":true}");
+            } catch (Exception e) {
+                Log.e(TAG, "saveDocument failed", e);
+                bridge.emitEvent("common:saveDocument", "{\"error\":\"write failed\"}");
+            }
+        }).start();
+    }
+
+    /**
      * Launch the system document picker. Results are copied into the app's
      * cache directory so Go receives real filesystem paths. Called by
      * WailsBridge on the main thread.
@@ -521,6 +616,10 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PHOTO_CAPTURE_REQUEST || requestCode == VIDEO_CAPTURE_REQUEST) {
             handleCaptureResult(resultCode, data);
+            return;
+        }
+        if (requestCode == SAVE_DOCUMENT_REQUEST) {
+            handleSaveDocumentResult(resultCode, data);
             return;
         }
         if (requestCode != FILE_PICKER_REQUEST) {

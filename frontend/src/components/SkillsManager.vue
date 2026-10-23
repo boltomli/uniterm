@@ -204,7 +204,9 @@ function onCreated() {
 }
 
 onMounted(() => {
-  store.load()
+  // 强制重扫：设置页打开即反映外部变化（手拷进目录的 skill），绕过
+  // load-once 守卫。后端 List 有 2s TTL 缓存，成本可控。
+  store.reload()
 })
 </script>
 

@@ -6,9 +6,13 @@
 // under <script setup> they are per instance. The coordinator now lives in a
 // real module singleton, ref-counted by the number of mounted menus.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createMenuCoordinator, type ActiveMenu, type ListenerTarget } from './menuCoordinator'
 import { scriptBody, readSrc } from '../testUtils/sfc'
+
+// activate() releases the remote-desktop keyboard grab, which reads the real
+// document.activeElement — stub it for the node test environment.
+vi.stubGlobal('document', { activeElement: null })
 
 interface FakeTarget extends ListenerTarget {
   added: number
@@ -118,7 +122,7 @@ describe('menu coordinator listener lifecycle', () => {
     expect(closed).toEqual(['esc'])
   })
 
-  it('keeps single-open semantics and the RDP overlay ref-count', () => {
+  it('keeps single-open semantics', () => {
     const { win, coordinator } = setup()
     const closed: string[] = []
     // In the app, close() emits update:visible=false and the visible-prop
@@ -133,34 +137,27 @@ describe('menu coordinator listener lifecycle', () => {
     coordinator.retain(second)
 
     coordinator.activate(first)
-    expect(coordinator.openCount()).toBe(1)
-    // Re-activating the SAME menu (open + visible watcher) must not push again.
+    // Re-activating the SAME menu (open + visible watcher) must not re-broadcast.
+    const broadcasts = win.events.filter((e) => e === 'global:close-context-menus').length
     coordinator.activate(first)
-    expect(coordinator.openCount()).toBe(1)
+    expect(win.events.filter((e) => e === 'global:close-context-menus')).toHaveLength(broadcasts)
 
     coordinator.activate(second)
     expect(closed).toEqual(['first'])
     coordinator.deactivate(second)
-    expect(coordinator.openCount()).toBe(0)
-
-    // Every open was pushed and popped again — the ref-count cannot leak, or
-    // the RDP window would stay hidden forever.
-    expect(win.events.filter((e) => e === 'rdp:overlay-push')).toHaveLength(2)
-    expect(win.events.filter((e) => e === 'rdp:overlay-pop')).toHaveLength(2)
+    expect(coordinator.isActive(second)).toBe(false)
   })
 
-  it('releasing the menu while it is open drops it and pops the RDP overlay', () => {
-    const { win, coordinator } = setup()
+  it('releasing the menu while it is open drops it', () => {
+    const { coordinator } = setup()
     const m = menu()
     coordinator.retain(m)
     coordinator.activate(m)
 
     // The component is gone: the coordinator only has to stop referencing it
-    // (no dangling `active`) and restore the RDP window.
+    // (no dangling `active`).
     coordinator.release(m)
     expect(coordinator.isActive(m)).toBe(false)
-    expect(coordinator.openCount()).toBe(0)
-    expect(win.events.filter((e) => e === 'rdp:overlay-pop')).toHaveLength(1)
   })
 
   it('ignores a stray release without a matching retain', () => {

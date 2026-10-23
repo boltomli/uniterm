@@ -106,7 +106,6 @@ type ConnectionConfig struct {
 	// with the new size so the server renders at the window's resolution.
 	RdpFixedWidth  int  `json:"rdpFixedWidth,omitempty"`
 	RdpFixedHeight int  `json:"rdpFixedHeight,omitempty"`
-	RdpSmartSizing bool `json:"rdpSmartSizing"`
 	RdpEnableNLA   bool `json:"rdpEnableNLA"`
 	// RdpDomain is the Windows domain (or computer name for local accounts)
 	// sent to the RDP ActiveX control's Domain property. When empty, a
@@ -117,18 +116,6 @@ type ConnectionConfig struct {
 	// equivalent of "mstsc /admin". Mapped to the ActiveX
 	// IMsRdpClientAdvancedSettings8::ConnectToAdministerServer property.
 	RdpAdminSession bool `json:"rdpAdminSession"`
-	// RdpRedirectClipboard / RdpRedirectDrives select local resource
-	// redirection for THIS connection. Both are tri-state: nil (the field is
-	// absent from a connection saved before it existed, or synced from an
-	// older version) falls back to the documented defaults in
-	// buildRdpSettings — clipboard ON (pasting local text into the remote
-	// desktop keeps working), local drives OFF (the remote side must not
-	// reach the disks via \\tsclient without an explicit opt-in). An
-	// explicit value, including an opt-out, always wins. omitempty keeps
-	// absent fields absent on the JSON wire so the frontend's
-	// resolveRdpRedirection resolves them the same way.
-	RdpRedirectClipboard *bool `json:"rdpRedirectClipboard,omitempty"`
-	RdpRedirectDrives    *bool `json:"rdpRedirectDrives,omitempty"`
 	// Local terminal shell path
 	ShellPath string `json:"shellPath,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)
@@ -223,6 +210,8 @@ type ConnectionConfig struct {
 	// Empty (default) — direct connection to the VNC server.
 	// Non-empty — connect via an UltraVNC-compatible repeater using the given ID.
 	VncRepeaterID string `json:"vncRepeaterID,omitempty"`
+
+	VncClipboardEncoding string `json:"vncClipboardEncoding,omitempty"`
 	// SMB-specific fields
 	SmbDomain string `json:"smbDomain,omitempty"`
 	SmbShare  string `json:"smbShare,omitempty"`

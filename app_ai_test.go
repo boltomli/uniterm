@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,10 +13,78 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ys-ll/uniterm/backend/store"
 )
+
+func TestAIReasoningParametersReachEachProtocol(t *testing.T) {
+	for _, protocol := range []string{"openai", "responses", "anthropic"} {
+		t.Run(protocol, func(t *testing.T) {
+			body := map[string]interface{}{"max_tokens": 16384, "messages": []interface{}{}, "thinking": map[string]interface{}{"type": "enabled"}}
+			var expectedField string
+			var stream string
+			switch protocol {
+			case "openai":
+				expectedField = "reasoning_effort"
+				body[expectedField] = "high"
+				stream = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+			case "responses":
+				expectedField = "reasoning"
+				body[expectedField] = map[string]interface{}{"effort": "high"}
+				stream = "data: {\"type\":\"response.completed\"}\n\n"
+			default:
+				expectedField = "output_config"
+				body[expectedField] = map[string]interface{}{"effort": "high"}
+				stream = "data: {\"type\":\"message_stop\"}\n\n"
+			}
+			client := &http.Client{Transport: llmRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				var outgoing map[string]interface{}
+				if err := json.NewDecoder(req.Body).Decode(&outgoing); err != nil {
+					t.Fatal(err)
+				}
+				actual, _ := json.Marshal(outgoing[expectedField])
+				want, _ := json.Marshal(body[expectedField])
+				if string(actual) != string(want) || outgoing["thinking"] == nil {
+					t.Fatalf("lost reasoning parameters: %s", actual)
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream))}, nil
+			})}
+			app := &App{}
+			var err error
+			switch protocol {
+			case "openai":
+				_, err = app.chatCompletionOpenAI("key", "https://gateway.example/v1", "alias", body, "test", "session", "", client)
+			case "responses":
+				_, err = app.chatCompletionResponses("key", "https://gateway.example/v1", "alias", body, "test", "session", "", client)
+			default:
+				_, err = app.chatCompletionAnthropic("key", "https://gateway.example", "alias", body, "test", "session", "", client)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestNativeOpenAIReasoningOutputLimit(t *testing.T) {
+	client := &http.Client{Transport: llmRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["max_tokens"] != nil || body["max_completion_tokens"] != float64(16384) {
+			t.Fatalf("invalid reasoning output budget: %#v", body)
+		}
+		return &http.Response{StatusCode: 400, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"reasoning effort is not supported"}}`))}, nil
+	})}
+	_, err := (&App{}).chatCompletionOpenAI("key", "https://api.openai.com/v1", "gpt-5.2", map[string]interface{}{"max_tokens": 16384, "reasoning_effort": "max"}, "test", "session", "", client)
+	if err == nil || !strings.Contains(err.Error(), "reasoning effort is not supported") {
+		t.Fatalf("provider error was hidden: %v", err)
+	}
+}
 
 // TestLLMProxyEnvFallback verifies that llmProxy resolves proxies declared
 // via the HTTP_PROXY/HTTPS_PROXY environment variables (go-ieproxy prefers
@@ -81,7 +151,7 @@ func TestChatCompletionOpenAI_ReasoningContent(t *testing.T) {
 		"max_tokens": 1024,
 		"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 	}
-	result, err := (&App{}).chatCompletionOpenAI("k", srv.URL, "deepseek-r1", reqBody, "test", "", srv.Client())
+	result, err := (&App{}).chatCompletionOpenAI("k", srv.URL, "deepseek-r1", reqBody, "test", "", "", srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +187,9 @@ func TestIsOpenCodeGoBaseURL(t *testing.T) {
 		{"https://opencode.ai/zen/go/v1/", true},
 		{"https://opencode.ai/zen/go/v1/chat/completions", true},
 		{" https://OPENCODE.AI/zen/go/v1/ ", true},
+		{"https://opencode.ai/inference/go/openai/v1", true},
+		{"https://opencode.ai/inference/go/openai/v1/", true},
+		{"https://opencode.ai/inference/go/openai/v1/chat/completions", true},
 		{"https://api.openai.com/v1", false},
 		{"https://openrouter.ai/api/v1", false},
 		{"http://localhost:11434/v1", false},
@@ -125,6 +198,9 @@ func TestIsOpenCodeGoBaseURL(t *testing.T) {
 		{"https://opencode.ai/zen/v1", false},
 		{"https://opencode.ai/zen/go/v10", false},
 		{"https://opencode.ai/zen/go/v1-extra", false},
+		{"https://opencode.ai/inference/openai/v1", false},
+		{"https://opencode.ai/inference/go/openai/v10", false},
+		{"https://opencode.ai.example.com/inference/go/openai/v1", false},
 		{"https://opencode.ai/%zz", false},
 		{"", false},
 	}
@@ -145,17 +221,24 @@ func (f llmRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestChatCompletionOpenAI_SessionHeader(t *testing.T) {
 	tests := []struct {
-		name      string
-		baseURL   string
-		sessionID string
-		want      string
+		name       string
+		baseURL    string
+		sessionID  string
+		header     string
+		wantHeader string // expected x-opencode-session value
 	}{
-		{"OpenCode Go", "https://opencode.ai/zen/go/v1", "session-123", "session-123"},
-		{"empty session", "https://opencode.ai/zen/go/v1", "", ""},
-		{"OpenCode Zen", "https://opencode.ai/zen/v1", "session-123", ""},
-		{"OpenAI", "https://api.openai.com/v1", "session-123", ""},
-		{"OpenRouter", "https://openrouter.ai/api/v1", "session-123", ""},
-		{"local provider", "http://localhost:11434/v1", "session-123", ""},
+		{"OpenCode Go", "https://opencode.ai/zen/go/v1", "session-123", "", "session-123"},
+		{"OpenCode Go inference", "https://opencode.ai/inference/go/openai/v1", "session-123", "", "session-123"},
+		{"inference empty session", "https://opencode.ai/inference/go/openai/v1", "", "", ""},
+		{"empty session", "https://opencode.ai/zen/go/v1", "", "", ""},
+		{"OpenCode Zen", "https://opencode.ai/zen/v1", "session-123", "", ""},
+		{"OpenAI", "https://api.openai.com/v1", "session-123", "", ""},
+		{"OpenRouter", "https://openrouter.ai/api/v1", "session-123", "", ""},
+		{"local provider", "http://localhost:11434/v1", "session-123", "", ""},
+		// A configured session header replaces the opencode fallback entirely.
+		{"custom header replaces fallback", "https://opencode.ai/zen/go/v1", "session-123", "session-id", ""},
+		{"custom header no session", "https://opencode.ai/zen/go/v1", "", "session-id", ""},
+		{"custom header on openai", "https://api.openai.com/v1", "session-123", "session-id", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,19 +255,56 @@ func TestChatCompletionOpenAI_SessionHeader(t *testing.T) {
 				"max_tokens": 1024,
 				"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 			}
-			if _, err := (&App{}).chatCompletionOpenAI("k", tt.baseURL, "model", reqBody, "test", tt.sessionID, client); err != nil {
+			if _, err := (&App{}).chatCompletionOpenAI("k", tt.baseURL, "model", reqBody, "test", tt.sessionID, tt.header, client); err != nil {
 				t.Fatal(err)
 			}
 			if got == nil {
 				t.Fatal("no HTTP request sent")
 			}
-			if value := got.Get("x-opencode-session"); value != tt.want {
-				t.Fatalf("x-opencode-session = %q, want %q", value, tt.want)
+			if value := got.Get("x-opencode-session"); value != tt.wantHeader {
+				t.Fatalf("x-opencode-session = %q, want %q", value, tt.wantHeader)
 			}
-			if tt.want == "" && got.Values("x-opencode-session") != nil {
+			if tt.wantHeader == "" && got.Values("x-opencode-session") != nil {
 				t.Fatal("x-opencode-session must be absent")
 			}
+			// With a configured header, the session ID must arrive there.
+			if tt.header != "" {
+				if value := got.Get(tt.header); value != tt.sessionID {
+					t.Fatalf("%s = %q, want %q", tt.header, value, tt.sessionID)
+				}
+			}
 		})
+	}
+}
+
+// TestChatCompletionAnthropic_SessionHeader verifies the model-configured
+// session header (issue #1170) on the Anthropic path, including that the
+// built-in opencode fallback stays off for non-opencode base URLs.
+func TestChatCompletionAnthropic_SessionHeader(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", sseContentType)
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	reqBody := map[string]interface{}{
+		"max_tokens": 1024,
+		"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+	}
+	if _, err := (&App{}).chatCompletionAnthropic("k", srv.URL, "claude", reqBody, "test", "session-9", "session-id", srv.Client()); err != nil {
+		t.Fatal(err)
+	}
+	if value := got.Get("Session-Id"); value != "session-9" {
+		t.Fatalf("Session-Id = %q, want %q", value, "session-9")
+	}
+	if got.Values("x-opencode-session") != nil {
+		t.Fatal("x-opencode-session must be absent for a non-opencode base URL")
 	}
 }
 
@@ -212,7 +332,7 @@ func TestChatCompletionAnthropic_ThinkingBlocks(t *testing.T) {
 		"max_tokens": 1024,
 		"messages":   []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
 	}
-	result, err := (&App{}).chatCompletionAnthropic("k", srv.URL, "claude", reqBody, "test", srv.Client())
+	result, err := (&App{}).chatCompletionAnthropic("k", srv.URL, "claude", reqBody, "test", "", "", srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +838,7 @@ func TestChatCompletionWireFormats(t *testing.T) {
 			path:     "/v1/messages",
 			protocol: "anthropic",
 			call: func(a *App, base string, body map[string]interface{}, c *http.Client) (string, error) {
-				return a.chatCompletionAnthropic("k", base, "claude", body, "test", c)
+				return a.chatCompletionAnthropic("k", base, "claude", body, "test", "", "", c)
 			},
 			assert: func(t *testing.T, sent map[string]interface{}) {
 				block := firstUserBlock(t, sent, "messages")
@@ -736,7 +856,7 @@ func TestChatCompletionWireFormats(t *testing.T) {
 			path:     "/chat/completions",
 			protocol: "openai",
 			call: func(a *App, base string, body map[string]interface{}, c *http.Client) (string, error) {
-				return a.chatCompletionOpenAI("k", base, "gpt", body, "test", "", c)
+				return a.chatCompletionOpenAI("k", base, "gpt", body, "test", "", "", c)
 			},
 			assert: func(t *testing.T, sent map[string]interface{}) {
 				block := firstUserBlock(t, sent, "messages")
@@ -754,7 +874,7 @@ func TestChatCompletionWireFormats(t *testing.T) {
 			path:     "/responses",
 			protocol: "responses",
 			call: func(a *App, base string, body map[string]interface{}, c *http.Client) (string, error) {
-				return a.chatCompletionResponses("k", base, "gpt", body, "test", c)
+				return a.chatCompletionResponses("k", base, "gpt", body, "test", "", "", c)
 			},
 			assert: func(t *testing.T, sent map[string]interface{}) {
 				block := firstUserBlock(t, sent, "input")
@@ -849,7 +969,7 @@ func TestChatCompletionRejectsOversizedAttachmentBeforeSending(t *testing.T) {
 		"messages": []interface{}{
 			map[string]interface{}{"role": "user", "content": []interface{}{imageBlock("image/png", oversized)}},
 		},
-	}), "openai", "test", "", "")
+	}), "openai", "test", "", "", "")
 	if !errors.Is(err, errAttachmentTooLarge) {
 		t.Fatalf("want %v, got %v", errAttachmentTooLarge, err)
 	}
@@ -902,5 +1022,281 @@ func TestMCPClientUpdateRenamesWithoutCreatingDuplicate(t *testing.T) {
 	all, err = a.mcpClientStore.Load()
 	if err != nil || len(all) != 2 {
 		t.Fatalf("failed rename changed store: %+v %v", all, err)
+	}
+}
+
+func TestSummarizeAIContextProtocols(t *testing.T) {
+	for _, protocol := range []string{"anthropic", "openai", "responses"} {
+		t.Run(protocol, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				if body["stream"] != false || body["tools"] != nil {
+					t.Error("summary must be non-streaming and tool-free")
+				}
+				if r.Header.Get("User-Agent") != "test-agent" {
+					t.Error("user agent lost")
+				}
+				switch protocol {
+				case "anthropic":
+					if r.URL.Path != "/v1/messages" || r.Header.Get("x-api-key") != "test-key" {
+						t.Error("wrong Anthropic endpoint/auth")
+					}
+					fmt.Fprint(w, `{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"handoff"}]}`)
+				case "responses":
+					if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer test-key" {
+						t.Error("wrong Responses endpoint/auth")
+					}
+					if !strings.Contains(body["input"].(string), "prior goal") {
+						t.Error("previous summary lost")
+					}
+					fmt.Fprint(w, `{"status":"completed","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"handoff"}]}]}`)
+				default:
+					if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
+						t.Error("wrong Chat Completions endpoint/auth")
+					}
+					fmt.Fprint(w, `{"choices":[{"finish_reason":"stop","message":{"content":"handoff"}}]}`)
+				}
+			}))
+			defer server.Close()
+			app := &App{}
+			var chatCancelled atomic.Bool
+			chatCancel := context.CancelFunc(func() { chatCancelled.Store(true) })
+			app.chatCancel.Store(&chatCancel)
+			got, err := app.SummarizeAIContext("test-key", server.URL+"/v1", "test-model", protocol, "test-agent", "", "request", "prior goal", "observed result")
+			if err != nil || got != "handoff" {
+				t.Fatalf("summary = %q, %v", got, err)
+			}
+			if chatCancelled.Load() || app.chatCancel.Load() != &chatCancel {
+				t.Fatal("summary changed chat cancellation")
+			}
+			if _, exists := app.compactionCancels.Load("request"); exists {
+				t.Fatal("request cancellation leaked")
+			}
+		})
+	}
+}
+
+func TestSummarizeAIContextCancellationIsIsolated(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	app := &App{}
+	otherCtx, otherCancel := context.WithCancel(context.Background())
+	defer otherCancel()
+	app.compactionCancels.Store("other-request", otherCancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.SummarizeAIContext("k", server.URL, "m", "openai", "", "", "cancel-me", "", "history")
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not start")
+	}
+	app.CancelAICompaction("cancel-me")
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want cancelled, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not finish")
+	}
+	if otherCtx.Err() != nil {
+		t.Fatal("cancelled another summary")
+	}
+	app.CancelAICompaction("already-finished")
+}
+
+func TestParseAISummaryRejectsIncompleteResults(t *testing.T) {
+	cases := []struct{ protocol, data string }{
+		{"openai", `{"choices":[{"finish_reason":"length","message":{"content":"partial"}}]}`},
+		{"openai", `{"choices":[{"finish_reason":"stop","message":{"content":""}}]}`},
+		{"anthropic", `{"stop_reason":"max_tokens","content":[{"type":"text","text":"partial"}]}`},
+		{"responses", `{"status":"incomplete","output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`},
+		{"responses", `{"error":{"message":"failed"}}`},
+		{"openai", `not json`},
+	}
+	for _, c := range cases {
+		if _, err := parseAISummary([]byte(c.data), c.protocol); err == nil {
+			t.Errorf("accepted invalid %s summary", c.protocol)
+		}
+	}
+}
+
+func TestOpenAIConversionPreservesHandoffAndUserText(t *testing.T) {
+	for _, role := range []string{"user", "assistant"} {
+		messages := convertAnthropicMessageToOpenAI(map[string]interface{}{
+			"role": role,
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "historical handoff"},
+				map[string]interface{}{"type": "text", "text": "current user request"},
+			},
+		})
+		if len(messages) != 1 || messages[0]["content"] != "historical handoff\n\ncurrent user request" {
+			t.Fatalf("lost text blocks: %#v", messages)
+		}
+	}
+}
+
+func TestAISummaryClientAllowsSlowNonStreamingHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprint(w, `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"handoff"}]}]}`)
+	}))
+	defer server.Close()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil // Local fixture must not populate the process-wide env proxy cache.
+	transport.ResponseHeaderTimeout = 20 * time.Millisecond
+	shared := &http.Client{Transport: transport, Timeout: 50 * time.Millisecond}
+	defer shared.CloseIdleConnections()
+	// Reproduce the old path: it fails before the non-streaming answer is ready.
+	if response, err := shared.Get(server.URL); err == nil {
+		response.Body.Close()
+		t.Fatal("expected the original short header timeout")
+	}
+	client := aiSummaryClient(shared)
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	response, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("summary inherited streaming timeout: %v", err)
+	}
+	response.Body.Close()
+	if transport.ResponseHeaderTimeout != 20*time.Millisecond || shared.Timeout != 50*time.Millisecond {
+		t.Fatal("summary mutated the shared chat client")
+	}
+	// Removing the early header timeout must still honor cancellation/deadline.
+	expired, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stop()
+	req, _ = http.NewRequestWithContext(expired, http.MethodGet, server.URL, nil)
+	if response, err := client.Do(req); err == nil {
+		response.Body.Close()
+		t.Fatal("summary ignored its request deadline")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unexpected deadline error: %v", err)
+	}
+}
+
+func TestAISummaryClientPreservesNegotiatedHTTPProtocols(t *testing.T) {
+	for _, h2 := range []bool{true, false} {
+		t.Run(fmt.Sprintf("http2=%v", h2), func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, "summary response")
+			}))
+			server.EnableHTTP2 = true
+			server.StartTLS()
+			defer server.Close()
+			shared := server.Client()
+			transport := shared.Transport.(*http.Transport)
+			transport.ForceAttemptHTTP2 = h2
+			if !h2 {
+				transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+			}
+			response, err := shared.Get(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			wanted := response.ProtoMajor
+			if h2 && wanted != 2 {
+				t.Fatal("fixture did not negotiate HTTP/2")
+			}
+			// The app's standard transport automatically enables h2 with this
+			// flag false. Model that initialized state with the fixture TLS roots.
+			transport.ForceAttemptHTTP2 = false
+			client := aiSummaryClient(shared)
+			defer client.CloseIdleConnections()
+			response, err = client.Get(server.URL)
+			if err != nil {
+				t.Fatalf("cloned summary client lost protocol support: %v", err)
+			}
+			defer response.Body.Close()
+			if response.ProtoMajor != wanted {
+				t.Fatalf("protocol changed: %s, wanted HTTP/%d", response.Proto, wanted)
+			}
+		})
+	}
+}
+
+func TestResponsesStreamErrorDetails(t *testing.T) {
+	cases := []struct {
+		name, data string
+		want       []string
+	}{
+		{"top-level", `{"type":"error","code":"ModelResponseError","message":"generation failed","param":"input"}`, []string{"ModelResponseError", "generation failed", "input"}},
+		{"nested", `{"type":"error","error":{"code":"RateLimitExceeded","message":"try later","request_id":"body-id"}}`, []string{"RateLimitExceeded", "try later"}},
+		{"failed-response", `{"type":"response.failed","response":{"id":"resp-1","error":{"code":"context_length_exceeded","message":"input too long"},"output":[{"text":"PRIVATE_OUTPUT"}],"input":"PRIVATE_INPUT"}}`, []string{"context_length_exceeded", "input too long", "resp-1"}},
+		{"incomplete", `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, []string{"incomplete", "max_output_tokens"}},
+		{"message-only", `{"type":"error","error":"provider unavailable"}`, []string{"provider unavailable"}},
+		{"no-details", `{"type":"error"}`, []string{"without code or message"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := responsesStreamError([]byte(tc.data), "error", "trace-id").Error()
+			for _, part := range append(tc.want, "trace-id") {
+				if !strings.Contains(got, part) {
+					t.Errorf("missing %q in %s", part, got)
+				}
+			}
+			if strings.Contains(got, "PRIVATE_") || strings.Contains(got, "output_index") {
+				t.Fatalf("unrelated payload fields leaked: %s", got)
+			}
+		})
+	}
+}
+
+func TestResponsesStreamFailureEvents(t *testing.T) {
+	cases := []struct{ name, stream, want string }{
+		{"upstream error", "data: {\"type\":\"error\",\"code\":\"ModelResponseError\",\"message\":\"generation failed\"}\n\n", "ModelResponseError"},
+		{"event name without space", "event: error\ndata:{\"error\":{\"code\":\"TooManyRequests\",\"message\":\"slow down\"}}\n\n", "TooManyRequests"},
+		{"response failed", "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"InternalError\",\"message\":\"backend failure\"}}}\n\n", "InternalError"},
+		{"response incomplete", "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n", "max_output_tokens"},
+		{"EOF after tool", "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"execute_command\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{}\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0}\n\n", "stream ended without response.completed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("X-Tt-Logid", "volc-trace-id")
+				fmt.Fprint(w, tc.stream)
+			}))
+			defer srv.Close()
+			result, err := (&App{}).chatCompletionResponses("k", srv.URL, "glm-5.3-flash", map[string]interface{}{}, "test", "", "", srv.Client())
+			if err == nil || result != "" {
+				t.Fatalf("incomplete response accepted: result=%s error=%v", result, err)
+			}
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "volc-trace-id") {
+				t.Fatalf("lost diagnosis: %v", err)
+			}
+		})
+	}
+}
+
+func TestResponsesCompletedStreamStillSucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0}\n\ndata: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer srv.Close()
+	result, err := (&App{}).chatCompletionResponses("k", srv.URL, "glm-5.3-flash", map[string]interface{}{}, "test", "", "", srv.Client())
+	if err != nil || !strings.Contains(result, "hello") {
+		t.Fatalf("completed stream failed: %s, %v", result, err)
 	}
 }

@@ -1252,7 +1252,7 @@
               <div class="setting-title">{{ t('settings.modelList') }}</div>
               <div class="setting-desc">{{ t('settings.modelListDesc') }}</div>
             </div>
-            <div class="setting-control">
+            <div class="setting-control action-control">
               <el-button @click="openNewModelForm"><Plus :size="lucideSize('0.875rem')" /> {{ t('settings.addModel') }}</el-button>
             </div>
           </div>
@@ -1261,11 +1261,11 @@
             v-for="model in settingsStore.settings.ai.models"
             :key="model.id"
             class="model-card"
-            :class="{ active: model.id === settingsStore.settings.ai.activeModelId }"
+            :class="{ active: model.id === settingsStore.activeModelId }"
           >
             <div class="model-main">
               <el-radio
-                :model-value="settingsStore.settings.ai.activeModelId"
+                :model-value="settingsStore.activeModelId"
                 :value="model.id"
                 @change="settingsStore.setActiveModel(model.id)"
               >
@@ -1274,6 +1274,9 @@
               <span class="model-detail">{{ model.model }} @ {{ model.baseURL }}</span>
             </div>
             <div class="model-actions">
+              <el-button link :title="t('common.copy')" @click="duplicateModel(model)">
+                <el-icon><Copy :size="'0.875rem'" /></el-icon>
+              </el-button>
               <el-button link @click="editModel(model)">
                 <el-icon><Pencil :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
@@ -1497,6 +1500,41 @@
     <!-- Model Form Dialog -->
     <el-dialog append-to-body v-model="showModelForm" :title="editingModel ? t('settings.editModel') : t('settings.newModel')" width="25rem">
       <el-form label-width="5rem">
+        <el-form-item :label="t('settings.modelProvider')">
+          <button type="button" class="provider-trigger" @click.stop="providerMenuRef?.toggle($event.currentTarget)">
+            <span class="provider-trigger-text">{{ providerDisplay }}</span>
+            <ChevronDown :size="14" class="menu-icon-trailing" />
+          </button>
+          <Menu ref="providerMenuRef" v-model:visible="providerMenuVisible">
+            <MenuItem :class="{ active: selectedProvider === 'custom' }" @click="onProviderSelect('custom')">
+              {{ t('settings.providerCustom') }}
+            </MenuItem>
+            <template v-for="group in providerGroups" :key="group.key">
+              <MenuDivider />
+              <div class="menu-group-label">{{ t(group.nameKey) }}</div>
+              <template v-for="e in group.entries" :key="e.key">
+                <!-- Providers with a single access type go straight on the
+                     list; only multi-endpoint ones get a submenu. -->
+                <MenuSubmenu
+                  v-if="e.provider.endpoints.length > 1"
+                  :label="e.provider.name"
+                >
+                  <MenuItem
+                    v-for="(endpoint, i) in e.provider.endpoints"
+                    :key="i"
+                    :class="{ active: selectedProvider === `${e.key}:${i}` }"
+                    @click="onProviderSelect(`${e.key}:${i}`)"
+                  >{{ endpoint.labelKey ? t(endpoint.labelKey) : endpoint.label }}</MenuItem>
+                </MenuSubmenu>
+                <MenuItem
+                  v-else
+                  :class="{ active: selectedProvider === `${e.key}:0` }"
+                  @click="onProviderSelect(`${e.key}:0`)"
+                >{{ e.provider.name }}</MenuItem>
+              </template>
+            </template>
+          </Menu>
+        </el-form-item>
         <el-form-item :label="t('settings.modelName')">
           <el-input v-model="modelForm.name" />
         </el-form-item>
@@ -1539,6 +1577,9 @@
               <Plus :size="lucideSize('0.875rem')" />
             </el-button>
           </div>
+        </el-form-item>
+        <el-form-item :label="t('settings.modelSessionHeader')">
+          <el-input v-model="modelForm.sessionHeader" :placeholder="t('settings.modelSessionHeaderPlaceholder')" />
         </el-form-item>
         <el-form-item :label="t('settings.modelModel')">
           <div class="model-fetch-row">
@@ -1649,7 +1690,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, Plug, Server } from '@lucide/vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1663,6 +1704,10 @@ import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontF
 import { backendErrorText } from '../utils/backendError'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import SkillsManager from './SkillsManager.vue'
+import Menu from './Menu.vue'
+import MenuItem from './MenuItem.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
+import MenuDivider from './MenuDivider.vue'
 import CommandsManager from './CommandsManager.vue'
 import GitHubLogo from './icons/GitHubLogo.vue'
 import GiteeLogo from './icons/GiteeLogo.vue'
@@ -2385,7 +2430,7 @@ const shortcutCategories: { key: string; label: string; actions: ShortcutAction[
   {
     key: 'sidebar',
     label: 'shortcut.catSidebar',
-    actions: ['toggleSidebar', 'openQuickCommands', 'focusAI', 'openSettings'],
+    actions: ['toggleSidebar', 'openQuickCommands', 'focusAI', 'toggleFilePanel', 'toggleMonitor', 'openSettings'],
   },
   {
     key: 'terminal',
@@ -2880,11 +2925,203 @@ const modelForm = reactive({
   protocol: 'anthropic' as 'anthropic' | 'openai' | 'responses',
   userAgent: 'uniTerm' as string,
   proxyId: '' as string,
+  sessionHeader: '' as string,
 })
+
+// ── Provider quick presets ───────────────────────────────────────
+// Provider-level presets: picking an entry fills in the display name,
+// protocol and baseURL.  Model IDs churn constantly, so the model field
+// is intentionally left empty — use "Fetch models" after entering the
+// API key, or type one manually.  Provider and endpoint labels are i18n
+// keys (zh locales get Chinese, everything else English).
+interface ProviderEndpoint {
+  /** i18n key for the label (e.g. pay-as-you-go); omit to use `label` as-is. */
+  labelKey?: string
+  /** Raw label, kept in English for plan names ("Coding Plan", "Agent Plan"). */
+  label?: string
+  protocol: 'anthropic' | 'openai' | 'responses'
+  baseURL: string
+}
+
+interface ProviderPreset {
+  /** Brand name, kept in English everywhere (not translated). */
+  name: string
+  endpoints: ProviderEndpoint[]
+}
+
+const EP_PAYG = 'settings.endpointPayAsYouGo'
+
+const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
+  openai: {
+    name: 'OpenAI',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.openai.com/v1' }],
+  },
+  anthropic: {
+    name: 'Anthropic',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'anthropic', baseURL: 'https://api.anthropic.com' }],
+  },
+  google: {
+    name: 'Google AI',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://generativelanguage.googleapis.com/v1beta' }],
+  },
+  xai: {
+    name: 'xAI',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.x.ai/v1' }],
+  },
+  mistral: {
+    name: 'Mistral AI',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.mistral.ai/v1' }],
+  },
+  deepseek: {
+    name: 'DeepSeek',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.deepseek.com/v1' }],
+  },
+  alibaba: {
+    name: 'Alibaba Cloud',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+      { label: 'Coding Plan', protocol: 'anthropic', baseURL: 'https://coding.dashscope.aliyuncs.com/apps/anthropic' },
+    ],
+  },
+  zhipu: {
+    name: 'Zhipu AI',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/paas/v4' },
+      { label: 'Coding Plan', protocol: 'openai', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+    ],
+  },
+  baidu: {
+    name: 'Baidu Cloud',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://qianfan.baidubce.com/v2' },
+      { label: 'Token Plan', protocol: 'openai', baseURL: 'https://qianfan.baidubce.com/v2/tokenplan/personal' },
+    ],
+  },
+  moonshot: {
+    name: 'Moonshot AI',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.moonshot.cn/v1' },
+      { label: 'Kimi For Coding', protocol: 'anthropic', baseURL: 'https://api.kimi.com/coding/v1' },
+    ],
+  },
+  minimax: {
+    name: 'MiniMax',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.minimax.cn/v1' },
+      { label: 'Coding Plan', protocol: 'anthropic', baseURL: 'https://api.minimax.cn/anthropic' },
+    ],
+  },
+  mimo: {
+    name: 'Xiaomi MiMo',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.xiaomimimo.com/v1' },
+      { label: 'Token Plan', protocol: 'openai', baseURL: 'https://token-plan-cn.xiaomimimo.com/v1' },
+    ],
+  },
+  longcat: {
+    name: 'LongCat',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.longcat.chat/openai/v1' }],
+  },
+  volcengine: {
+    name: 'Volcengine',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://ark.cn-beijing.volces.com/api/v3' },
+      { label: 'Coding Plan', protocol: 'openai', baseURL: 'https://ark.cn-beijing.volces.com/api/coding/v3' },
+      { label: 'Agent Plan', protocol: 'openai', baseURL: 'https://ark.cn-beijing.volces.com/api/plan/v3' },
+    ],
+  },
+  byteplus: {
+    name: 'BytePlus',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://ark.ap-southeast.bytepluses.com/api/v3' },
+      { label: 'Coding Plan', protocol: 'openai', baseURL: 'https://ark.ap-southeast.bytepluses.com/api/coding/v3' },
+    ],
+  },
+  tencent: {
+    name: 'Tencent Cloud',
+    endpoints: [
+      { labelKey: EP_PAYG, protocol: 'openai', baseURL: 'https://api.hunyuan.cloud.tencent.com/v1' },
+      { label: 'Token Plan', protocol: 'openai', baseURL: 'https://api.lkeap.cloud.tencent.com/plan/v3' },
+    ],
+  },
+  ollama: {
+    name: 'Ollama',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'http://localhost:11434/v1' }],
+  },
+  vllm: {
+    name: 'vLLM',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'http://localhost:8000/v1' }],
+  },
+  lmstudio: {
+    name: 'LM Studio',
+    endpoints: [{ labelKey: EP_PAYG, protocol: 'openai', baseURL: 'http://localhost:1234/v1' }],
+  },
+}
+
+const selectedProvider = ref('custom')
+const providerMenuRef = ref()
+const providerMenuVisible = ref(false)
+
+// Menu sections. Cloud vendors (Alibaba/Volcengine/Tencent/Baidu) count as
+// model vendors — they all ship first-party models.
+const PROVIDER_GROUPS: { key: string; nameKey: string; providers: string[] }[] = [
+  {
+    key: 'model',
+    nameKey: 'settings.providerGroupModels',
+    providers: ['openai', 'anthropic', 'google', 'xai', 'mistral', 'deepseek', 'zhipu', 'moonshot', 'minimax', 'mimo', 'longcat', 'alibaba', 'volcengine', 'byteplus', 'tencent', 'baidu'],
+  },
+  {
+    key: 'local',
+    nameKey: 'settings.providerGroupLocal',
+    providers: ['ollama', 'vllm', 'lmstudio'],
+  },
+]
+
+const providerGroups = computed(() => PROVIDER_GROUPS.map(group => ({
+  ...group,
+  entries: group.providers
+    .map(key => ({ key, provider: PROVIDER_PRESETS[key] }))
+    .filter(e => e.provider)
+    // Alphabetical by brand name, so future additions keep the order.
+    .sort((a, b) => a.provider.name.localeCompare(b.provider.name)),
+})))
+
+// Text shown on the trigger button for the current selection.
+const providerDisplay = computed(() => {
+  if (selectedProvider.value === 'custom') return t('settings.providerCustom')
+  const sep = selectedProvider.value.indexOf(':')
+  const provider = PROVIDER_PRESETS[selectedProvider.value.slice(0, sep)]
+  const endpoint = provider?.endpoints[Number(selectedProvider.value.slice(sep + 1))]
+  if (!provider || !endpoint) return t('settings.providerCustom')
+  return `${provider.name} / ${endpoint.labelKey ? t(endpoint.labelKey) : endpoint.label}`
+})
+
+function onProviderSelect(index: string) {
+  providerMenuRef.value?.close()
+  selectedProvider.value = index
+  // "custom" is the default — the user fills everything manually. Reset
+  // protocol + baseURL so nothing leaks over from a previously picked preset.
+  if (index === 'custom') {
+    modelForm.protocol = '' as typeof modelForm.protocol
+    modelForm.baseURL = ''
+    return
+  }
+  const sep = index.indexOf(':')
+  const provider = PROVIDER_PRESETS[index.slice(0, sep)]
+  const endpoint = provider?.endpoints[Number(index.slice(sep + 1))]
+  if (!endpoint) return
+  modelForm.name = provider.name
+  modelForm.protocol = endpoint.protocol
+  modelForm.baseURL = endpoint.baseURL
+  modelForm.model = ''
+  // Clear any stale fetched model suggestions so "Fetch models" starts fresh.
+  modelSuggestions.value = []
+}
 
 function openNewModelForm() {
   editingModel.value = null
   resetModelForm()
+  selectedProvider.value = 'custom'
   testResult.value = null
   testError.value = ''
   showModelForm.value = true
@@ -2893,6 +3130,7 @@ function openNewModelForm() {
 function editModel(model: AIModelConfig) {
   editingModel.value = model
   modelSuggestions.value = []
+  selectedProvider.value = 'custom'
   testResult.value = null
   testError.value = ''
   Object.assign(modelForm, { ...model })
@@ -2911,6 +3149,20 @@ async function removeModelConfirm(model: AIModelConfig) {
   }
 }
 
+// Copy an existing model as a new entry (name suffixed with "copy"; a
+// numeric suffix when that name is taken too). The duplicate starts
+// inactive with a fresh id.
+function duplicateModel(model: AIModelConfig) {
+  const names = new Set(settingsStore.settings.ai.models.map(m => m.name))
+  let name = `${model.name} copy`
+  for (let i = 2; names.has(name); i++) name = `${model.name} copy ${i}`
+  settingsStore.addModel({
+    ...model,
+    id: `model-${Date.now()}`,
+    name,
+  })
+}
+
 function saveModel() {
   if (editingModel.value) {
     settingsStore.updateModel(editingModel.value.id, { ...modelForm })
@@ -2923,7 +3175,8 @@ function saveModel() {
       apiKey: modelForm.apiKey,
       protocol: modelForm.protocol,
       userAgent: modelForm.userAgent || undefined,
-      proxyId: modelForm.proxyId || undefined
+      proxyId: modelForm.proxyId || undefined,
+      sessionHeader: modelForm.sessionHeader || undefined
     })
   }
   showModelForm.value = false
@@ -2940,6 +3193,7 @@ function resetModelForm() {
   modelForm.protocol = 'anthropic'
   modelForm.userAgent = 'uniTerm'
   modelForm.proxyId = ''
+  modelForm.sessionHeader = ''
   modelSuggestions.value = []
 }
 
@@ -2988,7 +3242,8 @@ async function testConnection() {
       modelForm.protocol,
       modelForm.userAgent || '',
       modelForm.proxyId || '',
-      `uniterm-test-${Date.now()}`
+      `uniterm-test-${Date.now()}`,
+      modelForm.sessionHeader || ''
     )
     testResult.value = true
     msg.success(t('settings.testSuccess'))
@@ -3253,6 +3508,15 @@ async function onToggleSystemTitleBar(v: boolean) {
 /* Switch-only cards (e.g. the MCP enable toggle) hug the right edge
    instead of honoring the wide select-oriented min-width. */
 .setting-control.switch-control {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Action-button controls (e.g. the model list's "Add model") hug the right
+   edge too — the select-oriented min-width leaves a lone button floating
+   mid-card otherwise. */
+.setting-control.action-control {
   min-width: 0;
   display: flex;
   justify-content: flex-end;
@@ -3764,5 +4028,42 @@ async function onToggleSystemTitleBar(v: boolean) {
   width: 4rem; height: 2.5rem; border-radius: var(--radius-sm);
   background-size: cover; background-position: center;
   border: 1px solid var(--border-subtle);
+}
+
+/* Provider picker trigger — styled like the surrounding form inputs. */
+.provider-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.375rem 0.625rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  /* <button> doesn't inherit the document font by default — match the inputs. */
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.1s ease;
+}
+.provider-trigger:hover {
+  background: var(--bg-hover);
+}
+
+.provider-trigger-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Non-clickable section header inside the provider menu. */
+.menu-group-label {
+  padding: 0.375rem 0.875rem 0.125rem;
+  font-size: 0.6875rem;
+  color: var(--text-muted, var(--text-disabled));
+  user-select: none;
+  white-space: nowrap;
 }
 </style>

@@ -344,6 +344,7 @@ function onMoreClick(e: MouseEvent, conn: ConnectionConfig) {
 .conn-details {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 0.125rem;
   min-width: 0;
 }

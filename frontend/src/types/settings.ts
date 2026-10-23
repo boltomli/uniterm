@@ -140,6 +140,11 @@ export interface AIModelConfig {
   // Reference to a saved outbound proxy (proxies.json) for all traffic to
   // this model's baseURL. Empty/undefined = direct connection.
   proxyId?: string
+  // HTTP header name that every request to this model's baseURL carries
+  // with the current chat session's ID as the value — for gateways that do
+  // prompt caching / sticky routing per session (issue #1170).
+  // Empty/undefined = no such header.
+  sessionHeader?: string
 }
 
 export const USER_AGENT_PRESETS: { label: string; value: string }[] = [
@@ -154,7 +159,6 @@ export const USER_AGENT_PRESETS: { label: string; value: string }[] = [
 export interface AISettings {
   maxTurns: number
   models: AIModelConfig[]
-  activeModelId: string
   // F-02: the AI panel's confirmation policy. Defaults to confirm_write —
   // the same policy the MCP server uses — and is persisted so the user's
   // choice survives restarts (it previously reset to confirm_dangerous).
@@ -181,6 +185,8 @@ export type ShortcutAction =
   | 'toggleTimestamps'
   | 'zoomFontIn'
   | 'zoomFontOut'
+  | 'toggleFilePanel'    // 切换文件边栏
+  | 'toggleMonitor'      // 切换资源监控边栏
 
 // User-facing bindings only use ctrl/shift/alt. On macOS the runtime mirrors
 // every ctrl combo to Cmd (per-action shortcuts register both; the digit
@@ -232,6 +238,8 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   toggleTimestamps: 'shortcut.toggleTimestamps',
   zoomFontIn: 'shortcut.zoomFontIn',
   zoomFontOut: 'shortcut.zoomFontOut',
+  toggleFilePanel: 'shortcut.toggleFilePanel',
+  toggleMonitor: 'shortcut.toggleMonitor',
 }
 
 export const DEFAULT_KEYBOARD: KeyboardSettings = {
@@ -256,6 +264,8 @@ export const DEFAULT_KEYBOARD: KeyboardSettings = {
   toggleTimestamps: { ctrl: true, shift: true, alt: false, key: 't' },
   zoomFontIn: { ctrl: true, shift: false, alt: false, key: '=' },
   zoomFontOut: { ctrl: true, shift: false, alt: false, key: '-' },
+  toggleFilePanel: { ctrl: true, shift: true, alt: false, key: 'b' },   // Ctrl+Shift+B
+  toggleMonitor: { ctrl: true, shift: true, alt: false, key: 'i' },     // Ctrl+Shift+I
   trayShowHide: { ctrl: true, shift: false, alt: false, key: 'm' },
 }
 
@@ -423,7 +433,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
         protocol: 'anthropic' as const
       }
     ],
-    activeModelId: 'model-default',
     executionMode: 'confirm_write',
     allowInsecureHttp: false
   },

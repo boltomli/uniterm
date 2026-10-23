@@ -167,12 +167,6 @@ function onWheel(e: WheelEvent) {
 
 const tabMoreRef = ref<InstanceType<typeof Menu> | null>(null)
 const tabMoreVisible = ref(false)
-// Push/pop the native RDP overlay while the tab-more menu is open, so the menu
-// floats above it (mirrors the old el-dropdown @visible-change behavior).
-watch(tabMoreVisible, (v) => {
-  if (v) window.dispatchEvent(new CustomEvent('rdp:overlay-push'))
-  else window.dispatchEvent(new CustomEvent('rdp:overlay-pop'))
-})
 
 function onTabMoreToggle(e: MouseEvent) {
   if (e.currentTarget instanceof HTMLElement) tabMoreRef.value?.toggle(e.currentTarget)
