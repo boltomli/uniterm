@@ -232,7 +232,7 @@ import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
 import type { ShortcutAction } from './types/settings'
 import { useI18n } from './i18n'
-import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval } from '../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval, SessionGetCwd } from '../bindings/github.com/ys-ll/uniterm/app'
 import { waitForTerminalSize } from './services/terminalManager'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
@@ -862,13 +862,22 @@ onMounted(async () => {
     const c = connId ? connectionStore.connections.find(x => x.id === connId) : undefined
     if (c) void openConnectionAtIndex(c, typeof index === 'number' ? index : tabStore.tabs.length)
   }) as EventListener)
-  window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
+  window.addEventListener('app:connect-sftp', (async (e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d
     if (c) {
       const prev = tabStore.activeTab
       // Explicit initialPath (sidebar "open standalone tab") wins; otherwise
       // fall back to the terminal's last recorded cwd (right-click "open SFTP").
-      const initialPath = d?.initialPath || (d?.sessionId ? companionStore.sessionCwd[d.sessionId] : '')
+      let initialPath = d?.initialPath || (d?.sessionId ? companionStore.sessionCwd[d.sessionId] : '')
+      if (!d?.initialPath && d?.sessionId) {
+        try {
+          const current = await SessionGetCwd(d.sessionId)
+          if (current) {
+            initialPath = current
+            companionStore.recordSessionCwd(d.sessionId, current)
+          }
+        } catch { /* The recorded directory remains the fallback. */ }
+      }
       openFileBrowser(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId, initialPath)
     }
   }) as EventListener)
