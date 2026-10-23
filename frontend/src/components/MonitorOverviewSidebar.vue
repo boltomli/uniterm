@@ -309,7 +309,8 @@ function openFullMonitor() {
   const pid = companionStore.activeSshPanelId
   const panel = pid ? panelStore.getPanel(pid) : null
   if (!panel?.config) return
-  window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: panel }))
+  // sourceTabId anchors the new monitor tab beside the owning terminal tab
+  window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: { ...panel, sourceTabId: panel.tabId } }))
 }
 
 let diskRetryTimer: ReturnType<typeof setTimeout> | null = null

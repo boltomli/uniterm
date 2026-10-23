@@ -57,7 +57,7 @@ export function useDuplicateSession() {
     if (tab.type === 'k8s') {
       const newPanel = panelStore.createPanel(panel.config, 'k8s')
       panelStore.updateTitle(newPanel.id, panel.title)
-      const newTab = tabStore.createTab('k8s', newPanel.title, newPanel.id, { connectionId: tab.connectionId, connId: null, namespace: tab.namespace || '' })
+      const newTab = tabStore.createTab('k8s', newPanel.title, newPanel.id, { connectionId: tab.connectionId, connId: null, namespace: tab.namespace || '' }, tab.id)
       panelStore.movePanelToTab(newPanel.id, newTab.id)
       return
     }
@@ -114,10 +114,10 @@ export function useDuplicateSession() {
       if (addedToWorkspace) {
         panelStore.movePanelToTab(newPanel.id, targetWorkspace!.workspaceId)
       } else {
-        newTab = tabStore.createTerminalTab(newPanel.title, newPanel.id)
+        newTab = tabStore.createTerminalTab(newPanel.title, newPanel.id, tab.id)
       }
     } else if (TAB_BACKED_DUPLICATE_TYPES.includes(tab.type)) {
-      newTab = tabStore.createTab(tab.type, newPanel.title, newPanel.id)
+      newTab = tabStore.createTab(tab.type, newPanel.title, newPanel.id, undefined, tab.id)
     } else {
       return
     }
@@ -203,7 +203,7 @@ export function useDuplicateSession() {
         return
       }
     }
-    const newTab = tabStore.createTerminalTab(newPanel.title, newPanel.id)
+    const newTab = tabStore.createTerminalTab(newPanel.title, newPanel.id, tab.id)
     panelStore.movePanelToTab(newPanel.id, newTab.id)
 
     try {

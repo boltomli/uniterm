@@ -117,7 +117,12 @@ function updateOverflow() {
 // Watch tab changes and window resize to update overflow state
 
 watch(() => tabs.value.length, () => nextTick(updateOverflow))
-watch(activeTabId, () => nextTick(updateOverflow))
+// Activation change → keep the active tab visible in an overflowing bar:
+// newly created, keyboard-switched and "more"-menu-selected tabs all land here.
+watch(activeTabId, (id) => nextTick(() => {
+  updateOverflow()
+  if (id) scrollToTab(id)
+}))
 
 let resizeObserver: ResizeObserver | null = null
 
@@ -288,7 +293,9 @@ function onTabsContainerDrop(e: DragEvent) {
     return
   }
 
-  // Case 2: Panel dropped on empty area → create terminal tab at end
+  // Case 2: Panel dropped on empty area → create terminal tab at end (the
+  // drop indicator renders there; do NOT use createTerminalTab, which inserts
+  // beside the active tab and would land somewhere else than indicated)
   if (panelId) {
     const panel = panelStore.getPanel(panelId)
     if (!panel) return
@@ -297,7 +304,7 @@ function onTabsContainerDrop(e: DragEvent) {
       tabStore.removePanelFromWorkspaceTab(sourceTabId, panelId)
     }
 
-    const tab = tabStore.createTerminalTab(panel.title, panelId)
+    const tab = tabStore.createTerminalTabAt(panel.title, panelId, tabs.value.length)
     panelStore.movePanelToTab(panelId, tab.id)
   }
 }

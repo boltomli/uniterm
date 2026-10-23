@@ -298,7 +298,8 @@ function openStandaloneSftp() {
     return
   }
   const ev = companionStore.isWslPanel(pid) ? 'app:connect-wsl-file' : 'app:connect-sftp'
-  window.dispatchEvent(new CustomEvent(ev, { detail: panel }))
+  // sourceTabId anchors the new tab beside the owning terminal tab
+  window.dispatchEvent(new CustomEvent(ev, { detail: { ...panel, sourceTabId: panel.tabId } }))
 }
 
 // ── "Follow terminal path" (per-panel toggle) ──

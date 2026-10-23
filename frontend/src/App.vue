@@ -854,19 +854,19 @@ onMounted(async () => {
     if (c) void openConnectionAtIndex(c, typeof index === 'number' ? index : tabStore.tabs.length)
   }) as EventListener)
   window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId) }
   }) as EventListener)
   window.addEventListener('app:connect-terminal', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) onConnect(c)
   }) as EventListener)
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId }) }
   }) as EventListener)
   window.addEventListener('app:connect-container-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId }) }
   }) as EventListener)
   window.addEventListener('app:connect-monitor', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId) }
   }) as EventListener)
   window.addEventListener('app:connect-rdp', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchConnection(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
@@ -1345,12 +1345,12 @@ function onSidebarConnect(config: ConnectionConfig, kind?: 'file' | 'wsl-file' |
   return onConnect(config)
 }
 
-function openFileBrowser(config: ConnectionConfig, prevStart?: any) {
-  return launchFileBrowser(config, { prevStart })
+function openFileBrowser(config: ConnectionConfig, prevStart?: any, afterTabId?: string) {
+  return launchFileBrowser(config, { prevStart, afterTabId })
 }
 
-function openMonitorPanel(config: ConnectionConfig, prevStart?: any) {
-  return launchMonitor(config, { prevStart })
+function openMonitorPanel(config: ConnectionConfig, prevStart?: any, afterTabId?: string) {
+  return launchMonitor(config, { prevStart, afterTabId })
 }
 
 // Atomically remove a start tab and place a newly-created tab in its position.
