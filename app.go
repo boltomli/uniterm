@@ -1500,6 +1500,12 @@ func (a *App) syncableStores() []sync.SyncableStore {
 	if a.skillsStore != nil {
 		stores = append(stores, a.skillsStore)
 	}
+	if a.commandsStore != nil {
+		stores = append(stores, a.commandsStore)
+	}
+	if a.mcpClientStore != nil {
+		stores = append(stores, a.mcpClientStore)
+	}
 	return stores
 }
 
@@ -1549,6 +1555,10 @@ func (a *App) reloadStoresAfterSync() {
 	if a.skillsStore != nil {
 		a.emit("store:skills:changed", nil)
 	}
+	if a.commandsStore != nil {
+		a.emit("store:commands:changed", nil)
+	}
+	a.reloadMCPClientsAfterSync()
 }
 
 func (a *App) triggerAutoSync() {

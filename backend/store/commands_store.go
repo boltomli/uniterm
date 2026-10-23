@@ -1,7 +1,9 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -399,4 +401,107 @@ func assembleCommandMD(name, description, argumentHint, body string) string {
 		fm += fmt.Sprintf("argument-hint: %s\n", argumentHint)
 	}
 	return fm + "---\n\n" + body
+}
+
+// ---- Sync contract (SyncableStore, declared in backend/sync/backend.go) ----
+//
+// The commands.json blob = preference layer + every user command's full .md
+// body (bundle). Same pattern as skills.json: the sync engine exchanges
+// single files wholesale, so bodies ride in the same blob as the prefs —
+// one pull gives the other device the complete command set.
+//
+// Deletion does not propagate: local commands absent from the blob (hand-
+// copied, or deleted on the peer) are always kept, and the scan fills in
+// their default prefs. Sync never deletes local command data.
+
+// commandSyncMaxBodyLen caps a single command .md in the bundle; oversize
+// fails the export instead of silently truncating.
+const commandSyncMaxBodyLen = 256 * 1024
+
+type commandSyncEntry struct {
+	Name    string `json:"name"`    // command name = .md file base name
+	Content []byte `json:"content"` // full .md (frontmatter + body), base64 via encoding/json
+	Mode    uint32 `json:"mode"`    // permission bits (fidelity across devices)
+}
+
+type commandSyncBundle struct {
+	Version  int                `json:"version"`
+	Prefs    []commandPref      `json:"prefs"`
+	Commands []commandSyncEntry `json:"commands"`
+}
+
+// BlobName matches the local prefs file name: the sync layer moves the blob
+// by file name and never inspects its shape.
+func (s *CommandsStore) BlobName() string { return commandPrefsFile }
+
+// ExportPlain first scans (so hand-copied .md files with no pref entry yet
+// still make it into the bundle), then serializes prefs + bodies. Returns
+// fs.ErrNotExist when there is not a single command and the prefs file was
+// never written — the sync layer skips the store instead of uploading an
+// empty blob that would clobber the remote copy.
+func (s *CommandsStore) ExportPlain() ([]byte, error) {
+	metas, err := s.scanAndLoad()
+	if err != nil {
+		return nil, err
+	}
+	if len(metas) == 0 {
+		if _, err := os.Stat(s.prefsPath()); os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: %w", commandPrefsFile, fs.ErrNotExist)
+		}
+	}
+	prefs, err := s.loadPrefs()
+	if err != nil {
+		return nil, err
+	}
+	bundle := commandSyncBundle{Version: 1}
+	bundle.Prefs = append(bundle.Prefs, prefs.Prefs...)
+	for _, m := range metas {
+		content, err := os.ReadFile(m.Path)
+		if err != nil {
+			return nil, fmt.Errorf("command %s: %w", m.Name, err)
+		}
+		if len(content) > commandSyncMaxBodyLen {
+			return nil, fmt.Errorf("command %s too large to sync (%d bytes)", m.Name, len(content))
+		}
+		mode := uint32(0644)
+		if info, err := os.Stat(m.Path); err == nil {
+			mode = uint32(info.Mode().Perm())
+		}
+		bundle.Commands = append(bundle.Commands, commandSyncEntry{Name: m.Name, Content: content, Mode: mode})
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > skillSyncBundleMaxBytes {
+		return nil, fmt.Errorf("commands bundle exceeds %d bytes; slim the command bodies to sync", skillSyncBundleMaxBytes)
+	}
+	return data, nil
+}
+
+// ImportPlain writes every bundled command .md to disk (whole-file
+// overwrite), then replaces the preference layer wholesale and drops the
+// list cache so the next List re-scans.
+func (s *CommandsStore) ImportPlain(raw []byte) error {
+	var bundle commandSyncBundle
+	if err := json.Unmarshal(raw, &bundle); err != nil {
+		return fmt.Errorf("parse sync blob: %w", err)
+	}
+	if err := os.MkdirAll(s.commandsRoot(), 0755); err != nil {
+		return err
+	}
+	for _, c := range bundle.Commands {
+		if !skillNameRe.MatchString(c.Name) {
+			return fmt.Errorf("invalid command name in sync blob: %s", c.Name)
+		}
+		mdPath := filepath.Join(s.commandsRoot(), c.Name+commandFileExt)
+		if err := atomicWriteFile(mdPath, c.Content, os.FileMode(c.Mode).Perm()); err != nil {
+			return fmt.Errorf("command %s: %w", c.Name, err)
+		}
+	}
+	if err := s.savePrefs(commandPrefsData{Version: 1, Prefs: bundle.Prefs}); err != nil {
+		return err
+	}
+	s.invalidateListCache()
+	return nil
 }

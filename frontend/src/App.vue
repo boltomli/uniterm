@@ -1130,6 +1130,8 @@ onUnmounted(() => {
   connectionStore.dispose?.()
   syncStore.dispose?.()
   tunnelStore.dispose?.()
+  useSkillStore().dispose?.()
+  useCommandStore().dispose?.()
   disposeSessionStore?.()
   credStore.dispose()
 })

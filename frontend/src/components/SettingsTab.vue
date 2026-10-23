@@ -8,15 +8,18 @@
       >
         <el-icon><component :is="sidebarCollapsed ? ChevronRight : ChevronLeft" /></el-icon>
       </button>
-      <div
-        v-for="cat in categories"
-        :key="cat.key"
-        class="settings-category"
-        :class="{ active: settingsStore.activeCategory === cat.key }"
-        @click="settingsStore.activeCategory = cat.key"
-      >
-        <el-icon class="category-icon"><component :is="cat.icon" /></el-icon>
-        <span v-if="!sidebarCollapsed" class="category-label">{{ cat.label }}</span>
+      <div v-for="group in categoryGroups" :key="group.key" class="settings-nav-group">
+        <div v-if="group.title && !sidebarCollapsed" class="settings-nav-group-title">{{ group.title }}</div>
+        <div
+          v-for="cat in group.items"
+          :key="cat.key"
+          class="settings-category"
+          :class="{ active: settingsStore.activeCategory === cat.key }"
+          @click="settingsStore.activeCategory = cat.key"
+        >
+          <el-icon class="category-icon"><component :is="cat.icon" /></el-icon>
+          <span v-if="!sidebarCollapsed" class="category-label">{{ cat.label }}</span>
+        </div>
       </div>
     </div>
 
@@ -772,11 +775,15 @@
         </div>
       </div>
 
-      <!-- Skills & Commands -->
+      <!-- Skills -->
       <div v-if="settingsStore.activeCategory === 'skills'" class="settings-section">
         <h2 class="section-title">{{ t('settings.skills') }}</h2>
         <p class="section-desc">{{ t('settings.skillsDesc') }}</p>
         <SkillsManager />
+      </div>
+
+      <!-- Commands -->
+      <div v-if="settingsStore.activeCategory === 'commands'" class="settings-section">
         <h2 class="section-title">{{ t('settings.commands') }}</h2>
         <p class="section-desc">{{ t('settings.commandsDesc') }}</p>
         <CommandsManager />
@@ -1648,7 +1655,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server } from '@lucide/vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, SquareSlash, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -1691,7 +1698,7 @@ import { useTunnelStore } from '../stores/tunnelStore'
 import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import type { Tunnel, TunnelMode } from '../stores/tunnelStore'
 import type { Identity } from '../types/identity'
-import { Browser } from '@wailsio/runtime'
+import { Browser, Events } from '@wailsio/runtime'
 import { isMobilePlatform, supportsLocalTerminal } from '../utils/platform'
 import type { Proxy } from '../types/proxy'
 import { uiPx } from '../utils/uiScale'
@@ -2155,6 +2162,11 @@ async function refreshMcpClients() {
     mcpClientHealth.value = map
   } catch { /* health optional */ }
 }
+
+// A sync pull may rewrite mcp_clients.json — refresh the list and health
+// view when it lands.
+const unsubMcpClientsChanged = Events.On('store:mcpClients:changed', () => { void refreshMcpClients() })
+onUnmounted(() => { unsubMcpClientsChanged() })
 
 async function saveMcpClient(c: any) {
   try {
@@ -2750,23 +2762,43 @@ const categories = computed(() => {
   // Explicitly read language to ensure reactivity tracking
   void settingsStore.settings.language
   const cats = [
-    { key: 'basic', label: t('settings.basic'), icon: Settings },
-    { key: 'terminal', label: t('settings.terminal'), icon: Monitor },
+    { key: 'basic', label: t('settings.basic'), icon: Settings, group: 'app' },
+    { key: 'terminal', label: t('settings.terminal'), icon: Monitor, group: 'app' },
     // Keyboard shortcuts still WORK on mobile (physical keyboards), but the
     // rebinding UI is desktop-only and hidden from the category list there.
-    ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard }] : []),
-    { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore },
-    // MCP server has no mobile backend — hidden from the category list there.
-    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Server }] : []),
-    ...(!isMobile ? [{ key: 'mcp-client', label: t('settings.mcpClient'), icon: Plug }] : []),
-    { key: 'skills', label: t('settings.skillsAndCommands'), icon: Wrench },
-    { key: 'identities', label: t('settings.identities'), icon: Key },
-    { key: 'proxies', label: t('settings.proxies'), icon: Network },
-    { key: 'tunnels', label: t('settings.tunnels'), icon: ArrowRightLeft },
-    { key: 'sync', label: t('settings.sync'), icon: RefreshCw },
-    { key: 'about', label: t('settings.about'), icon: Info },
+    ...(!isMobile ? [{ key: 'keyboard', label: t('shortcut.title'), icon: Keyboard, group: 'app' }] : []),
+    { key: 'ai', label: t('settings.ai'), icon: MessageCircleMore, group: 'ai' },
+    { key: 'skills', label: t('settings.skills'), icon: Wrench, group: 'ai' },
+    { key: 'commands', label: t('settings.commands'), icon: SquareSlash, group: 'ai' },
+    // MCP features have no mobile backend — hidden from the category list there.
+    ...(!isMobile ? [{ key: 'mcp-client', label: t('settings.mcpClient'), icon: Plug, group: 'ai' }] : []),
+    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Server, group: 'ai' }] : []),
+    { key: 'identities', label: t('settings.identities'), icon: Key, group: 'net' },
+    { key: 'proxies', label: t('settings.proxies'), icon: Network, group: 'net' },
+    { key: 'tunnels', label: t('settings.tunnels'), icon: ArrowRightLeft, group: 'net' },
+    { key: 'sync', label: t('settings.sync'), icon: RefreshCw, group: 'other' },
+    { key: 'about', label: t('settings.about'), icon: Info, group: 'other' },
   ]
   return cats
+})
+
+// Nav sidebar rendering: categories sliced into titled groups (app config /
+// network & identities / AI / other); an entry without a group renders
+// without a header.
+const categoryGroups = computed(() => {
+  const cats = categories.value as { key: string; label: string; icon: any; group?: string }[]
+  const defs = [
+    { key: 'app', title: t('settings.groupApp') },
+    { key: 'net', title: t('settings.groupNetwork') },
+    { key: 'ai', title: t('settings.groupAI') },
+    { key: 'other', title: t('settings.groupOther') },
+  ]
+  const groups = defs
+    .map(d => ({ ...d, items: cats.filter(c => c.group === d.key) }))
+    .filter(g => g.items.length > 0)
+  const rest = cats.filter(c => !c.group)
+  if (rest.length > 0) groups.push({ key: 'misc', title: '', items: rest })
+  return groups
 })
 
 // A persisted 'keyboard' active category would show an empty settings page on
@@ -3336,6 +3368,23 @@ async function onToggleSystemTitleBar(v: boolean) {
   padding: 0.625rem 0.5rem;
   margin: 0 0.375rem;
   gap: 0;
+}
+
+.settings-nav-group {
+  margin-bottom: 0.375rem;
+}
+
+.settings-nav-group-title {
+  padding: 0.625rem 1.5rem 0.25rem;
+  font-size: 0.6875rem;
+  font-family: var(--font-ui);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .settings-category {
