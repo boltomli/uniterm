@@ -380,6 +380,9 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 				return
 			}
 			if msgType == websocket.BinaryMessage {
+				if len(data) > 0 && data[0] == 0x30 {
+					log.Writef("[RDPProxy] client %s", summarizeTsRequest(data))
+				}
 				data, err = handshake.rewrite(data)
 				if err != nil {
 					reportError(fmt.Errorf("RDP client handshake failed: %w", err))
@@ -414,6 +417,7 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 			}
 		}()
 		buf := make([]byte, 32768)
+		credsspSeen := false // stop inspecting for TSRequests after RDP PDUs start
 		for {
 			select {
 			case <-p.stopCh:
@@ -422,6 +426,14 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 			}
 			n, err := upstreamConn.Read(buf)
 			if n > 0 {
+				// CredSSP TSRequest records (DER SEQUENCE) precede any
+				// TPKT-framed RDP PDU; log their summary so NTSTATUS
+				// auth failures are visible in the app log.
+				if !credsspSeen && buf[0] == 0x30 {
+					log.Writef("[RDPProxy] server %s", summarizeTsRequest(buf[:n]))
+				} else if buf[0] == 0x03 {
+					credsspSeen = true
+				}
 				if writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
 					log.Writef("[RDPProxy] WebSocket write error: %v", writeErr)
 					return
@@ -674,7 +686,10 @@ func parseX224SelectedProtocol(tpktPDU []byte) uint32 {
 // Only the fields this proxy consumes are modeled; other tags are skipped on
 // decode.
 
-const rdcleanErrCodeGeneral uint16 = 1
+const (
+	rdcleanErrCodeGeneral     uint16 = 1
+	rdcleanErrCodeNegotiation uint16 = 2 // NEGOTIATION_ERROR_CODE
+)
 
 // rdcleanPathVersion mirrors ironrdp-rdcleanpath's VERSION_1 = BASE_VERSION+1
 // (3389 + 1). detect() rejects any other value — this burned us once as a
@@ -822,13 +837,21 @@ func encodeRDCleanPathErr(code uint16) []byte {
 }
 
 // encodeRDCleanPathNegotiationErr mirrors the client's NegotiationErr branch:
-// the raw X.224 confirm (a NEG_FAILURE) without the TPKT header.
+// the error field (NEGOTIATION_ERROR_CODE) plus the raw X.224 confirm (a
+// NEG_FAILURE) without the TPKT header. The error field is mandatory —
+// without destination, server_addr or error, the client's der decode fails
+// with "RDCleanPath is missing error field" before it ever looks at the
+// X.224 payload (upstream new_negotiation_error always sets it).
 func encodeRDCleanPathNegotiationErr(x224Resp []byte) []byte {
 	if len(x224Resp) > 4 {
 		x224Resp = x224Resp[4:]
 	}
+	errSeq := derExplicit(0, 0x02, derIntegerBytes(uint64(rdcleanErrCodeNegotiation)))
 	pdu := derEncodeTLV(0x30, append(
-		derExplicit(0, 0x02, derIntegerBytes(rdcleanPathVersion)),
+		append(
+			derExplicit(0, 0x02, derIntegerBytes(rdcleanPathVersion)),
+			derExplicit(1, 0x30, errSeq)...,
+		),
 		derExplicit(6, 0x04, x224Resp)...,
 	))
 	return pdu
@@ -1028,6 +1051,101 @@ func encodeRDPPERLength(length int) []byte {
 		return []byte{byte(length)}
 	}
 	return []byte{byte(length>>8) | 0x80, byte(length)}
+}
+
+// summarizeTsRequest produces a one-line log summary of a CredSSP TSRequest
+// (DER SEQUENCE, version/negoTokens/authInfo/pubKeyAuth/errorCode fields).
+// Its errorCode [4] carries the server's NTSTATUS — the only place the real
+// auth failure reason (bad password, account locked, NTLM blocked, …) ever
+// appears; the WASM client flattens all of it to "invalid token".
+func summarizeTsRequest(der []byte) string {
+	tag, _, err := derTLV(der, 0)
+	if err != nil || tag != 0x30 {
+		return fmt.Sprintf("TSRequest (undecodable, %d bytes)", len(der))
+	}
+	body := derTLVBody(der, 0)
+	var version, negoTokens, errorCode, hasPubKeyAuth string
+	off := 0
+	for off < len(body) {
+		fieldTag, n, err := derTLV(body, off)
+		if err != nil {
+			break
+		}
+		switch fieldTag & 0x1f {
+		case 0:
+			var v uint64
+			for _, b := range derTLVBody(derTLVBody(body, off), 0) {
+				v = v<<8 | uint64(b)
+			}
+			version = fmt.Sprint(v)
+		case 1:
+			negoTokens = fmt.Sprintf("%d bytes", len(derTLVBody(body, off)))
+		case 3:
+			hasPubKeyAuth = "yes"
+		case 4:
+			code := derTLVBody(derTLVBody(body, off), 0)
+			var v uint32
+			for _, b := range code {
+				v = v<<8 | uint32(b)
+			}
+			errorCode = fmt.Sprintf("0x%08X (%s)", v, ntstatusName(v))
+		}
+		off += n
+	}
+	s := fmt.Sprintf("TSRequest v%s", version)
+	if negoTokens != "" {
+		s += " negoTokens=" + negoTokens
+	}
+	if hasPubKeyAuth != "" {
+		s += " pubKeyAuth"
+	}
+	if errorCode != "" {
+		s += " errorCode=" + errorCode
+	}
+	return s
+}
+
+// ntstatusName maps the NTSTATUS codes CredSSP commonly returns to their
+// symbolic names; unknown codes render as "unknown".
+func ntstatusName(code uint32) string {
+	switch code {
+	case 0x00000000:
+		return "STATUS_SUCCESS"
+	case 0xC0000064:
+		return "STATUS_NO_SUCH_USER"
+	case 0xC000006A:
+		return "STATUS_WRONG_PASSWORD"
+	case 0xC000006D:
+		return "STATUS_LOGON_FAILURE"
+	case 0xC000006E:
+		return "STATUS_ACCOUNT_RESTRICTION"
+	case 0xC000006F:
+		return "STATUS_INVALID_LOGON_HOURS"
+	case 0xC0000070:
+		return "STATUS_INVALID_WORKSTATION"
+	case 0xC0000071:
+		return "STATUS_PASSWORD_EXPIRED"
+	case 0xC000015B:
+		return "STATUS_PRIVILEGE_NOT_HELD"
+	case 0xC0000193:
+		return "STATUS_ACCOUNT_EXPIRED"
+	case 0xC0000224:
+		return "STATUS_PASSWORD_MUST_CHANGE"
+	case 0xC0000234:
+		return "STATUS_ACCOUNT_LOCKED_OUT"
+	case 0xC0000413:
+		return "STATUS_AUTHENTICATION_FIREWALL_FAILED"
+	case 0xC000018B:
+		return "STATUS_NO_TRUST_SAM_ACCOUNT"
+	case 0xC00001AD:
+		return "STATUS_NTLM_BLOCKED"
+	case 0xC00000BB:
+		return "STATUS_NOT_SUPPORTED"
+	case 0x8009030C:
+		return "SEC_E_LOGON_DENIED"
+	default:
+		return "unknown"
+	}
 }
 
 // CredSSP TSRequest records precede MCS when NLA is negotiated. Leave them

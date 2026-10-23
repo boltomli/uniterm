@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,6 +331,79 @@ func TestResponseStructure(t *testing.T) {
 		if !seen[want] {
 			t.Fatalf("missing field %d", want)
 		}
+	}
+}
+
+// A negotiation-error PDU must carry the error field (code 2) alongside the
+// X.224 NEG_FAILURE payload. Without it the client's der decode finds no
+// destination/server_addr/error and fails with "RDCleanPath is missing error
+// field" before ever reading the X.224 bytes (upstream new_negotiation_error).
+func TestNegotiationErrorStructure(t *testing.T) {
+	tpkt := []byte{0x03, 0x00, 0x00, 0x0B, 0x06, 0xD0, 0x00, 0x00, 0x00, 0x00, 0x00}
+	pdu := encodeRDCleanPathNegotiationErr(tpkt)
+
+	body := derTLVBody(pdu, 0)
+	seen := map[int]bool{}
+	off := 0
+	for off < len(body) {
+		fieldTag, n, err := derTLV(body, off)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapped := derTLVBody(body, off)
+		switch fieldTag & 0x1f {
+		case 0: // version
+			seen[0] = true
+		case 1: // error SEQUENCE { error_code [0] INTEGER }
+			if wrapped[0] != 0x30 {
+				t.Fatalf("error inner tag %x, want SEQUENCE", wrapped[0])
+			}
+			errBody := derTLVBody(wrapped, 0)
+			codeTag, _, err := derTLV(errBody, 0)
+			if err != nil || codeTag != 0xA0 {
+				t.Fatalf("error_code tag %x err %v", codeTag, err)
+			}
+			code := derTLVBody(derTLVBody(errBody, 0), 0)
+			if len(code) != 1 || code[0] != byte(rdcleanErrCodeNegotiation) {
+				t.Fatalf("error_code = % x, want %d", code, rdcleanErrCodeNegotiation)
+			}
+			seen[1] = true
+		case 6: // x224 NEG_FAILURE without TPKT
+			if !bytes.Equal(derTLVBody(wrapped, 0), tpkt[4:]) {
+				t.Fatalf("x224 = % x, want TPKT-stripped % x", derTLVBody(wrapped, 0), tpkt[4:])
+			}
+			seen[6] = true
+		}
+		off += n
+	}
+	for _, want := range []int{0, 1, 6} {
+		if !seen[want] {
+			t.Fatalf("missing field %d", want)
+		}
+	}
+}
+
+// The proxy logs TSRequest summaries so CredSSP NTSTATUS failures are
+// visible; errorCode [4] (present from TSRequest version 3 on) must decode
+// to the symbolic NTSTATUS name.
+func TestSummarizeTsRequest(t *testing.T) {
+	// v3, negoTokens present, errorCode = STATUS_LOGON_FAILURE (0xC000006D).
+	nego := derEncodeTLV(0x04, []byte{0x60, 0x26, 0x06, 0x06})
+	der := derEncodeTLV(0x30, concatBytes(
+		derExplicit(0, 0x02, []byte{3}),
+		derExplicit(1, 0x30, derEncodeTLV(0x30, derEncodeTLV(0x30, nego))),
+		derExplicit(4, 0x02, []byte{0xC0, 0x00, 0x00, 0x6D}),
+	))
+	got := summarizeTsRequest(der)
+	for _, want := range []string{"v3", "negoTokens=", "STATUS_LOGON_FAILURE"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summarizeTsRequest = %q, missing %q", got, want)
+		}
+	}
+
+	// Non-DER input must not panic and must stay terse.
+	if got := summarizeTsRequest([]byte{0x03, 0x00, 0x00, 0x04}); !strings.Contains(got, "undecodable") {
+		t.Fatalf("non-DER summary = %q", got)
 	}
 }
 
