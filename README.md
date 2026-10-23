@@ -87,7 +87,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 | File Transfer | WebDAV | WebDAV server file management |
 | File Transfer | S3 | Amazon S3 compatible object storage |
 | File Transfer | Zmodem | In-terminal file transfer via rz/sz commands |
-| Remote Desktop | RDP | Windows server remote desktop management (Windows only) |
+| Remote Desktop | RDP | Windows server remote desktop management |
 | Remote Desktop | VNC | Linux server remote control |
 | Remote Desktop | SPICE | KVM/QEMU VM management |
 | Remote Desktop | X11 | X Window forwarding |

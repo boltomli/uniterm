@@ -16,15 +16,8 @@ uniTerm has a built-in database client that supports mainstream relational datab
 | PostgreSQL | 5432 |
 | Oracle | 1521 |
 | SQL Server | 1433 |
+| SQLite | - (local file) |
 | rqlite | 4001 |
-
-**NoSQL databases:**
-
-| Database | Default Port |
-|--------|----------|
-| Redis | 6379 |
-| MongoDB | 27017 |
-| Elasticsearch | 9200 |
 
 ### Connection Parameters
 

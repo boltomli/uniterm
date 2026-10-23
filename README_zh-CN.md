@@ -87,7 +87,7 @@
 | 文件传输 | WebDAV | WebDAV 服务器文件管理 |
 | 文件传输 | S3 | 兼容 Amazon S3 的对象存储 |
 | 文件传输 | Zmodem | SSH 终端内 rz/sz 命令传输文件 |
-| 远程桌面 | RDP | Windows 服务器远程桌面管理（仅 Windows） |
+| 远程桌面 | RDP | Windows 服务器远程桌面管理 |
 | 远程桌面 | VNC | Linux 服务器远程控制 |
 | 远程桌面 | SPICE | KVM/QEMU 虚拟机管理 |
 | 远程桌面 | X11 | X Window 图形界面转发 |

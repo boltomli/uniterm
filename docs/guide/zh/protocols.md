@@ -48,6 +48,7 @@ uniTerm 支持 30+ 种连接协议，覆盖远程终端、远程桌面、文件�
 | PostgreSQL | 5432 | 兼容 PostgreSQL 协议：PostgreSQL、CockroachDB 等 |
 | Oracle | 1521 | 通过纯 Go 驱动连接 Oracle Database |
 | SQL Server | 1433 | 通过纯 Go 驱动连接 SQL Server |
+| SQLite | -（本地文件） | 本地嵌入式数据库，直接打开数据库文件 |
 | rqlite | 4001 | 基于 SQLite、Raft 共识的轻量分布式数据库 |
 | Redis | 6379 | 内存键值数据库，可视化键值浏览与编辑 |
 | MongoDB | 27017 | 文档数据库，树形浏览、查询与行内编辑 |

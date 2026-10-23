@@ -6,8 +6,6 @@ uniTerm integrates four remote desktop protocols, providing a smooth graphical r
 
 RDP (Remote Desktop Protocol) is the built-in remote desktop protocol of Windows.
 
-> Only supported on Windows clients. This feature is hidden on macOS and Linux versions. Uses the system's built-in Remote Desktop control.
-
 ![RDP](/imgs/rdp_light.webp)
 
 ### Connection Parameters
@@ -17,12 +15,11 @@ RDP (Remote Desktop Protocol) is the built-in remote desktop protocol of Windows
 | Host | Windows host IP or domain name |
 | Port | Default 3389 |
 | Username | Windows login username |
-| Password | Windows login password |
-| Domain | Optional, the Windows domain name (e.g. `WORKGROUP`) |
+| Password | Windows login password, can be saved as a credential |
+| Domain | Optional, the Windows domain or computer name (e.g. `WORKGROUP`) |
+| Resolution | **Adaptive** by default (follows the window size; resizing briefly reconnects); alternatively choose a preset fixed resolution or a custom resolution |
 | Session Mode | Normal session / Admin session (attach to the console session, like `mstsc /admin`) |
-| Resolution | Full screen by default; alternatively choose a preset fixed resolution or a custom resolution |
-| Smart Sizing | When enabled, the remote desktop automatically scales to fit the window size; off by default |
-| Network Level Authentication | Enabled (compatible with all Windows versions, enter password in credential dialog) / Disabled (only for Windows 7 / Server 2008 and servers with NLA turned off) |
+| Prefer NLA | Enabled by default; when the server rejects the NLA (CredSSP) handshake, the connection automatically falls back to TLS login |
 | SSH Tunnel | Select an existing SSH connection as a jump host |
 
 ## VNC
@@ -51,8 +48,7 @@ SPICE (Simple Protocol for Independent Computing Environments) is optimized for 
 | Host | SPICE server IP or domain name |
 | Port | Default 5900 |
 | Password | SPICE authentication password |
-
-> SPICE does not support SSH tunnels.
+| SSH Tunnel | Select an existing SSH connection as a jump host |
 
 ## X11 Desktop
 

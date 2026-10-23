@@ -35,7 +35,7 @@ Integrated **RDP** (Windows Remote Desktop), **VNC** (Linux remote control), **S
 
 #### Database Client
 
-Supports **MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch**, with inline editing, query history, result export, and script execution.
+Supports **MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch**, with inline editing, query history, result export, and script execution.
 
 ![Database](/imgs/database_light.webp)
 
