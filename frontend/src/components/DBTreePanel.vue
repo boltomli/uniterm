@@ -241,7 +241,7 @@ async function loadTree() {
   if (!props.sessionId) return
   loading.value = true
   try {
-    const dbs = await GetDatabases(props.sessionId)
+    const dbs: string[] = await GetDatabases(props.sessionId)
     // Auto-expand the connection's default db only when it's actually a real
     // entry in the list. Oracle's dbName is the service name and never
     // matches — that case falls through to the oracle branch below.

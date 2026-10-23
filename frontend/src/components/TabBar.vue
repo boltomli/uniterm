@@ -58,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { MoreHorizontal } from '@lucide/vue'
 import { useTabStore } from '../stores/tabStore'

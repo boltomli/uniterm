@@ -257,7 +257,7 @@
               <span class="hash-btn-icon">/</span>
             </button>
             <template v-if="settingsStore.settings.ai.models.length > 0">
-              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="modelMenuRef?.toggle($event.currentTarget)">
+              <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="modelMenuRef?.toggle($event.currentTarget as HTMLElement)">
                 <span>{{ currentModelName }}</span>
                 <span v-if="reasoningPreference.reasoningEffort !== 'default'" class="model-effort">{{ reasoningLabel(reasoningPreference.reasoningEffort) }}</span>
                 <ChevronDown :size="12" />

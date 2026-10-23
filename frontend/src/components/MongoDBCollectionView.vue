@@ -311,18 +311,20 @@ const v2Columns = computed(() => {
   // 操作列：编辑 / 删除按钮
   cols.push({
     key: '__actions',
+    dataKey: '__actions',
     title: '',
     width: 80,
+    flexGrow: 1,
     cellRenderer: ({ rowData }: { rowData: any }) => {
       return h('div', { class: 'v2-row-actions' }, [
         h('button', {
           class: 'btn btn-ghost btn-icon btn-sm',
           onClick: (e: Event) => { e.stopPropagation(); onRowDblClick(rowData) },
-        }, h(Pencil, { size: '0.875rem' })),
+        }, h(Pencil, { size: lucideSize('0.875rem') })),
         h('button', {
           class: 'btn btn-ghost btn-icon btn-sm danger',
           onClick: (e: Event) => { e.stopPropagation(); deleteDocument(rowData) },
-        }, h(Trash2, { size: '0.875rem' })),
+        }, h(Trash2, { size: lucideSize('0.875rem') })),
       ])
     },
   })

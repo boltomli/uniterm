@@ -1275,7 +1275,7 @@
             </div>
             <div class="model-actions">
               <el-button link :title="t('common.copy')" @click="duplicateModel(model)">
-                <el-icon><Copy :size="'0.875rem'" /></el-icon>
+                <el-icon><Copy :size="lucideSize('0.875rem')" /></el-icon>
               </el-button>
               <el-button link @click="editModel(model)">
                 <el-icon><Pencil :size="lucideSize('0.875rem')" /></el-icon>

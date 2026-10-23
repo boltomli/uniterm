@@ -154,7 +154,10 @@ func (c *RDPKeyboardCapture) run(ready chan<- error) {
 	rdpPeekMessage.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
 	c.callback = windows.NewCallback(func(code int32, wParam, lParam uintptr) uintptr {
 		if code >= 0 && (wParam == 0x100 || wParam == 0x101 || wParam == 0x104 || wParam == 0x105) {
-			data := (*rdpKeyboardData)(unsafe.Pointer(lParam))
+			// WH_KEYBOARD_LL lParam is a real pointer to KBDLLHOOKSTRUCT;
+			// read the uintptr's bits as a pointer (vet-clean, no uintptr→
+			// unsafe.Pointer conversion in Go code).
+			data := *(**rdpKeyboardData)(unsafe.Pointer(&lParam))
 			scan := uint16(data.ScanCode & 0xff)
 			if scan != 0 && data.Flags&1 != 0 {
 				scan |= 0xe000

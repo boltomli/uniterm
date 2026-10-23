@@ -135,7 +135,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'

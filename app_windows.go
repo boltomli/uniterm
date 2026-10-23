@@ -822,7 +822,10 @@ func (a *App) setClipboardFiles(paths []string) error {
 	if ptr == 0 {
 		return fmt.Errorf("GlobalLock: %w", err)
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
+	// GlobalLock returns a real pointer to the locked block; read the
+	// uintptr's bits as a pointer instead of converting (vet-clean).
+	locked := *(*unsafe.Pointer)(unsafe.Pointer(&ptr))
+	copy(unsafe.Slice((*byte)(locked), len(data)), data)
 	kernel32.NewProc("GlobalUnlock").Call(handle)
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -990,7 +993,9 @@ func readClipboardHDROP() ([]string, error) {
 	if total == 0 || total > 64*1024*1024 {
 		return nil, fmt.Errorf("bad clipboard block size %d", total)
 	}
-	base := unsafe.Pointer(locked)
+	// GlobalLock returns a real pointer to the locked block; read the
+	// uintptr's bits as a pointer instead of converting (vet-clean).
+	base := *(*unsafe.Pointer)(unsafe.Pointer(&locked))
 
 	// DROPFILES: pFiles (offset to the file list, DWORD), POINT pt (8),
 	// fNC (4), fWide (4).

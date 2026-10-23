@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -238,7 +239,12 @@ func TestSkillsStore_ExportPlain_CarriesNestedFiles(t *testing.T) {
 		t.Fatalf("references/notes.md not carried: %+v", byPath)
 	}
 	script, ok := byPath["scripts/run.sh"]
-	if !ok || script.Mode&0100 == 0 {
+	if !ok {
+		t.Fatalf("scripts/run.sh not carried: %+v", byPath)
+	}
+	// Windows/NTFS 没有执行位概念：os.WriteFile(…, 0755) 落地为 0666，
+	// 导入端的 chmod 同样是 no-op，所以该断言只在 POSIX 上有意义。
+	if runtime.GOOS != "windows" && script.Mode&0100 == 0 {
 		t.Fatalf("scripts/run.sh missing exec bit: mode %o", script.Mode)
 	}
 	if md, ok := byPath["SKILL.md"]; !ok || !strings.Contains(string(md.Content), "name: alpha") {
