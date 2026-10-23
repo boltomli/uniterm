@@ -196,7 +196,7 @@ type cwdServerCounters struct {
 	input       atomic.Int32
 }
 
-func startCwdSSHServer(t *testing.T, fs *testCwdFS, subsystemMode string) (string, *cwdServerCounters) {
+func startCwdSSHServer(t *testing.T, fs *testCwdFS, subsystemMode string, execHandlers ...func(string) ([]byte, error)) (string, *cwdServerCounters) {
 	t.Helper()
 	signer, err := ssh.ParsePrivateKey([]byte(testHostKeyPEM))
 	if err != nil {
@@ -271,7 +271,24 @@ func startCwdSSHServer(t *testing.T, fs *testCwdFS, subsystemMode string) (strin
 								go func() { defer server.Close(); _ = server.Serve() }()
 							case "exec":
 								counters.execs.Add(1)
-								req.Reply(false, nil)
+								if len(execHandlers) == 0 {
+									req.Reply(false, nil)
+									continue
+								}
+								var request struct{ Command string }
+								if err := ssh.Unmarshal(req.Payload, &request); err != nil {
+									req.Reply(false, nil)
+									continue
+								}
+								req.Reply(true, nil)
+								data, err := execHandlers[0](request.Command)
+								_, _ = ch.Write(data)
+								var status uint32
+								if err != nil {
+									status = 1
+								}
+								_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+								return
 							default:
 								req.Reply(false, nil)
 							}

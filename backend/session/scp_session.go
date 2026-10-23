@@ -427,6 +427,9 @@ func (s *SCPSession) ListRemote(dir string) (FileListResult, error) {
 	if err != nil {
 		return FileListResult{}, err
 	}
+	// Keep later empty-path refreshes and relative operations in the directory
+	// this listing displays, including tabs opened at the terminal's cwd.
+	s.setCwd(dir)
 	parsed := parseLsLongListing(out)
 	files := make([]FileItem, 0, len(parsed))
 

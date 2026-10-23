@@ -569,7 +569,7 @@ func (a *App) SessionGetCwd(sessionID string) (string, error) {
 	return session.GetSessionCwd(sessionID), nil
 }
 
-// SessionSetCwdTracking controls read-only SFTP cwd polling for an SSH terminal.
+// SessionSetCwdTracking controls read-only cwd polling for an SSH terminal.
 func (a *App) SessionSetCwdTracking(sessionID string, enabled bool) error {
 	if a.sessionManager == nil {
 		return fmt.Errorf("session manager not initialized")
@@ -580,7 +580,7 @@ func (a *App) SessionSetCwdTracking(sessionID string, enabled bool) error {
 	}
 	terminal, ok := s.(*session.SSHSession)
 	if !ok {
-		return fmt.Errorf("session type %s does not support SFTP cwd tracking", s.Type())
+		return fmt.Errorf("session type %s does not support SSH cwd tracking", s.Type())
 	}
 	return terminal.SetCwdTracking(enabled)
 }

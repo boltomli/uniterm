@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ const (
 var (
 	errNoCwdTerminal       = errors.New("no terminal process found")
 	errCwdProcessChanged   = errors.New("terminal process changed or exited")
-	errCwdProbeUnavailable = errors.New("SFTP cwd probe unavailable")
+	errCwdProbeUnavailable = errors.New("SSH cwd probe unavailable")
 )
 
 // A PID alone is not an identity: Linux can reuse it after the terminal exits.
@@ -101,6 +102,11 @@ func readCwdProcess(fs cwdProcFS, name string) (cwdProcess, error) {
 // be used here. Serializing terminal creation and remembering every assigned
 // identity makes duplicate channels unambiguous without typing into any shell.
 func findCwdTerminal(fs cwdProcFS, assigned map[cwdProcessID]bool) (cwdProcess, error) {
+	if snapshot, ok := fs.(interface {
+		FindTerminal(map[cwdProcessID]bool) (cwdProcess, error)
+	}); ok {
+		return snapshot.FindTerminal(assigned)
+	}
 	self, err := readCwdProcess(fs, "/proc/self/stat")
 	if err != nil {
 		return cwdProcess{}, fmt.Errorf("read SFTP process: %w", err)
@@ -134,7 +140,7 @@ func findCwdTerminal(fs cwdProcFS, assigned map[cwdProcessID]bool) (cwdProcess, 
 		if err != nil {
 			continue
 		} // unrelated processes can exit or be unreadable
-		if p.pid != n || p.parent != self.parent || p.session != p.pid || p.tty == 0 || p.state == "Z" || assigned[p.cwdProcessID] {
+		if p.pid != n || !isCwdTerminal(p, self.parent, assigned) {
 			continue
 		}
 		if candidate.pid != 0 {
@@ -148,7 +154,24 @@ func findCwdTerminal(fs cwdProcFS, assigned map[cwdProcessID]bool) (cwdProcess, 
 	return candidate, nil
 }
 
+func isCwdTerminal(p cwdProcess, parent int, assigned map[cwdProcessID]bool) bool {
+	return p.parent == parent && p.session == p.pid && p.tty != 0 && p.state != "Z" && !assigned[p.cwdProcessID]
+}
+
+func sameCwdTerminal(p, want cwdProcess) bool {
+	return p.cwdProcessID == want.cwdProcessID && p.parent == want.parent && p.tty == want.tty && p.state != "Z"
+}
+
+func validTerminalCwd(path string) bool {
+	return strings.HasPrefix(path, "/") && !strings.HasSuffix(path, " (deleted)")
+}
+
 func readTerminalCwd(fs cwdProcFS, want cwdProcess) (string, error) {
+	if snapshot, ok := fs.(interface {
+		ReadTerminalCwd(cwdProcess) (string, error)
+	}); ok {
+		return snapshot.ReadTerminalCwd(want)
+	}
 	base := "/proc/" + strconv.Itoa(want.pid)
 	check := func() error {
 		p, err := readCwdProcess(fs, base+"/stat")
@@ -158,7 +181,7 @@ func readTerminalCwd(fs cwdProcFS, want cwdProcess) (string, error) {
 			}
 			return err
 		}
-		if p.cwdProcessID != want.cwdProcessID || p.parent != want.parent || p.tty != want.tty || p.state == "Z" {
+		if !sameCwdTerminal(p, want) {
 			return errCwdProcessChanged
 		}
 		return nil
@@ -174,15 +197,15 @@ func readTerminalCwd(fs cwdProcFS, want cwdProcess) (string, error) {
 	if err := check(); err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(cwd, "/") || strings.HasSuffix(cwd, " (deleted)") {
+	if !validTerminalCwd(cwd) {
 		return "", errors.New("terminal cwd is unavailable")
 	}
 	return cwd, nil
 }
 
-// One read-only probe channel per authenticated transport, shared by clones.
-// All I/O is bounded; timeout closes ONLY this auxiliary channel, never the
-// interactive terminal or its transport. Unsupported hosts never get a hook.
+// One read-only cwd backend per authenticated transport, shared by clones.
+// SFTP shares a probe channel; SCP uses bounded non-interactive exec queries.
+// Timeouts never close the interactive terminal or its transport.
 type sshCwdProbe struct {
 	mu            sync.Mutex
 	fs            cwdProcFS
@@ -200,8 +223,12 @@ type cwdProbeResult struct {
 	err     error
 }
 
-func (p *sshCwdProbe) open(client *ssh.Client) error {
+func (p *sshCwdProbe) open(client *ssh.Client, useExec bool) error {
 	if p.fs != nil {
+		return nil
+	}
+	if useExec {
+		p.fs = newCwdExecFS(client)
 		return nil
 	}
 	type result struct {
@@ -281,11 +308,18 @@ func (p *sshCwdProbe) run(fn func(cwdProcFS) cwdProbeResult) cwdProbeResult {
 	}
 	done := make(chan cwdProbeResult, 1)
 	fs := p.fs
+	ctx, cancel := context.WithTimeout(context.Background(), sshCwdTimeout)
+	defer cancel()
+	if contextual, ok := fs.(interface {
+		withContext(context.Context) cwdProcFS
+	}); ok {
+		fs = contextual.withContext(ctx)
+	}
 	go func() { done <- fn(fs) }()
 	select {
 	case result := <-done:
 		return result
-	case <-time.After(sshCwdTimeout):
+	case <-ctx.Done():
 		p.unavailable = true
 		if p.channel != nil {
 			go p.channel.Close()
@@ -297,13 +331,13 @@ func (p *sshCwdProbe) run(fn func(cwdProcFS) cwdProbeResult) cwdProbeResult {
 	}
 }
 
-func (p *sshCwdProbe) bind(client *ssh.Client) cwdProbeResult {
+func (p *sshCwdProbe) bind(client *ssh.Client, useExec bool) cwdProbeResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.unavailable || p.bindingFailed {
-		return cwdProbeResult{err: errors.New("SFTP cwd discovery unavailable")}
+		return cwdProbeResult{err: errors.New("SSH cwd discovery unavailable")}
 	}
-	if err := p.open(client); err != nil {
+	if err := p.open(client, useExec); err != nil {
 		p.unavailable = true
 		return cwdProbeResult{err: err}
 	}

@@ -65,7 +65,7 @@ type SSHSession struct {
 	// Only used from the readLoop goroutine.
 	osc7 osc7Scanner
 
-	// Linux cwd tracking uses an auxiliary SFTP channel, never terminal input.
+	// Linux cwd tracking uses auxiliary SSH channels, never terminal input.
 	cwdTracking atomic.Bool
 	cwdWake     chan struct{}
 	cwdTarget   cwdProcess // protected by mu; fixed at attach time
@@ -86,7 +86,7 @@ type SSHSession struct {
 	// Connect from the server identification string.
 	remoteOS string
 
-	// detectedShell is read from the bound terminal process via SFTP.
+	// detectedShell is read from the bound terminal process in procfs.
 	detectedShell string
 
 	// clientRef wraps the shared *ssh.Client with reference counting so a
@@ -235,7 +235,7 @@ func NewSSHChannelSession(id string, source *SSHSession) *SSHSession {
 		clone.clientRef = ref
 	}
 	clone.remoteOS = remoteOS
-	// Seed shell detection from the source; SFTP discovery refreshes this
+	// Seed shell detection from the source; cwd discovery refreshes this
 	// from the clone's own process after its shell starts.
 	clone.detectedShell = detectedShell
 	clone.channelClone = true
@@ -545,10 +545,11 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 
 	// A probe on this authenticated transport can identify sibling PTY
 	// processes. Bind before allowing another clone to start its shell.
-	if ref != nil && s.remoteOS != remoteOSWindowsOpenSSH && strings.Contains(string(client.ServerVersion()), "OpenSSH") {
-		r := ref.cwd.bind(client)
+	useExecCwd := config.FileTransferProto == "scp"
+	if ref != nil && s.remoteOS != remoteOSWindowsOpenSSH && (useExecCwd || strings.Contains(string(client.ServerVersion()), "OpenSSH")) {
+		r := ref.cwd.bind(client, useExecCwd)
 		if r.err != nil {
-			log.Writef("ssh: SFTP cwd discovery unavailable (session=%s): %v", s.id, r.err)
+			log.Writef("ssh: cwd discovery unavailable (session=%s): %v", s.id, r.err)
 		} else {
 			s.mu.Lock()
 			s.detectedShell = r.shell

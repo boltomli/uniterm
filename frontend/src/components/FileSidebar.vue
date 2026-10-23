@@ -307,7 +307,7 @@ function openStandaloneSftp() {
 // ── "Follow terminal path" (per-panel toggle) ──
 // When enabled for the active SSH/WSL panel, the sidebar navigates whenever the
 // panel's terminal shell reports a cwd change (terminal:cwd, emitted by the
-// backend via SFTP or OSC 7). The flag is per panel id and
+// backend via SSH queries or OSC 7). The flag is per panel id and
 // ephemeral; rapid cd chains are debounced (trailing) so only the last path
 // navigates.
 const followActive = computed(() => {
@@ -330,7 +330,7 @@ function toggleFollow() {
   if (recorded && recorded !== cwd.value) scheduleFollowNavigate(recorded)
 }
 
-// SSH follows cwd through read-only SFTP polling. WSL reports through its
+// SSH follows cwd through read-only SFTP/exec queries. WSL reports through its
 // automatic prompt hook. No connection-level injection option is needed.
 const followTerminalSessionId = computed(() => {
   const pid = companionStore.activeFilesPanelId
@@ -567,7 +567,7 @@ watch(() => companionStore.activeFilesPanelId, () => {
 
 onMounted(() => {
   bindListeners()
-  // Terminal cwd reports (SSH SFTP polling / WSL shell integration).
+  // Terminal cwd reports (SSH SFTP/exec polling / WSL shell integration).
   unsubCwd = Events.On('terminal:cwd', onTerminalCwd)
   // Re-mounting after the view was hidden (e.g. switching files<->monitor):
   // restore this panel's cached listing since the session didn't change.
