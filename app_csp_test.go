@@ -40,7 +40,11 @@ func TestContentSecurityPolicyDirectives(t *testing.T) {
 	if scriptSrc == "" {
 		t.Fatal("no script-src directive")
 	}
-	if strings.Contains(scriptSrc, "unsafe") {
+	// 'wasm-unsafe-eval' is allowed (IronRDP WASM engine compilation; it
+	// does not permit JavaScript eval). Everything else with "unsafe" in
+	// the name — 'unsafe-inline', bare 'unsafe-eval' — must stay out.
+	cleaned := strings.ReplaceAll(scriptSrc, "'wasm-unsafe-eval'", "")
+	if strings.Contains(cleaned, "unsafe") {
 		t.Fatalf("script-src must not carry unsafe allowances: %q", scriptSrc)
 	}
 }

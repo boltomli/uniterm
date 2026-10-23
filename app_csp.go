@@ -23,8 +23,12 @@ import "net/http"
 //     (backend/session/{vnc,spice}_proxy.go).
 //   - worker/blob allowances cover bundled dynamic imports
 //     (@novnc/novnc, spice-html5) and Vite's asset URLs.
+//   - script-src 'wasm-unsafe-eval': the RDP tab runs the IronRDP engine as
+//     a WASM module (@ys-ll/ironrdp-wasm); CSP3 requires this source to
+//     permit WebAssembly compilation. It enables wasm compilation only —
+//     NOT JavaScript eval — so it does not weaken the JS policy.
 const contentSecurityPolicy = "default-src 'self'; " +
-	"script-src 'self' 'sha256-grnC/M1y7+r9gmG+whHoc1WfLuvqVtKQhMcfr4QglG0='; " +
+	"script-src 'self' 'wasm-unsafe-eval' 'sha256-grnC/M1y7+r9gmG+whHoc1WfLuvqVtKQhMcfr4QglG0='; " +
 	"style-src 'self' 'unsafe-inline'; " +
 	"img-src 'self' data: blob:; " +
 	"connect-src 'self' ws://127.0.0.1:* ws://localhost:*; " +
