@@ -289,17 +289,19 @@ function openStandaloneSftp() {
   const pid = companionStore.activeFilesPanelId
   const panel = pid ? panelStore.getPanel(pid) : null
   if (!panel) return
+  // Open at the directory the sidebar is currently browsing.
+  const initialPath = cwd.value || undefined
   if (companionStore.isContainerExecPanel(pid)) {
     const cfg = panel.config as any
     if (!cfg?.containerExecConnId || !cfg?.containerExecContainerId) return
     window.dispatchEvent(new CustomEvent('app:connect-container-file', {
-      detail: { config: { id: cfg.containerExecConnId, name: cfg.name, containerId: cfg.containerExecContainerId } },
+      detail: { config: { id: cfg.containerExecConnId, name: cfg.name, containerId: cfg.containerExecContainerId }, initialPath },
     }))
     return
   }
   const ev = companionStore.isWslPanel(pid) ? 'app:connect-wsl-file' : 'app:connect-sftp'
   // sourceTabId anchors the new tab beside the owning terminal tab
-  window.dispatchEvent(new CustomEvent(ev, { detail: { ...panel, sourceTabId: panel.tabId } }))
+  window.dispatchEvent(new CustomEvent(ev, { detail: { ...panel, sourceTabId: panel.tabId, initialPath } }))
 }
 
 // ── "Follow terminal path" (per-panel toggle) ──
@@ -325,7 +327,14 @@ function toggleFollow() {
   // startup injection — the hook is typed on demand below.
   const enabling = companionStore.followPathByPanel[pid] !== true
   companionStore.toggleFollowPath(pid)
-  if (enabling) injectCwdHookIfNeeded(pid)
+  if (!enabling) return
+  injectCwdHookIfNeeded(pid)
+  // Jump straight to the directory the terminal is already in (recorded
+  // app-wide, independent of this toggle) instead of waiting for the next
+  // cwd event — which may never come if the user stops running commands.
+  const panel = panelStore.getPanel(pid)
+  const recorded = panel?.sessionId ? companionStore.sessionCwd[panel.sessionId] : ''
+  if (recorded && recorded !== cwd.value) scheduleFollowNavigate(recorded)
 }
 
 // Connections with cwdHookMode "follow" never touch the shell at connect
