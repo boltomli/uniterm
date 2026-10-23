@@ -1,6 +1,6 @@
 # Cloud Sync
 
-Supports **dual-mode cloud sync over Git or WebDAV** with encrypted synchronization of uniTerm settings: the Git mode uses your own private repository (GitHub / GitLab / Gitee), while the WebDAV mode works with any standard WebDAV service. Your data security stays fully under your control.
+Supports **five cloud sync modes over Git / WebDAV / SFTP / S3 / SMB** with encrypted synchronization of uniTerm settings: the Git mode uses your own private repository (GitHub / GitLab / Gitee), the WebDAV mode works with any standard WebDAV service, the SFTP / SMB modes reuse servers you already have, and the S3 mode works with any S3-compatible object storage. Your data security stays fully under your control.
 
 ![Cloud Sync](/imgs/cloud_sync_light.webp)
 
@@ -41,10 +41,36 @@ The WebDAV mode needs no repository — just prepare a WebDAV service:
 - **Server URL**: works with WebDAV-capable clouds (Nextcloud, Jianguoyun, InfiniCloud, ...) or a self-hosted service; the URL must include protocol and port
 - **Account**: the username and password (app password) of that service
 
+#### SFTP
+
+The SFTP mode reuses any server you can log into over SSH:
+
+- **Server**: `host[:port]` format, port defaults to 22
+- **Account**: the username and password of that server
+
+#### S3
+
+The S3 mode works with any S3-compatible object storage (AWS S3, MinIO, Cloudflare R2, ...):
+
+- **Endpoint**: e.g. `https://s3.amazonaws.com`
+- **Access Key / Secret Key**: the access keys of that object storage
+- **Bucket**: the bucket name (required)
+- **Region**: e.g. `us-east-1`
+- **URL Style**: Virtual-hosted or Path, depending on the provider
+
+#### SMB
+
+The SMB mode works with Windows shared folders or NAS devices:
+
+- **Server**: `host[:port]` format, port defaults to 445
+- **Share**: the SMB share name (required)
+- **Domain**: optional, the Windows domain (e.g. `WORKGROUP`)
+- **Account**: the username and password of that service
+
 ### 2. Configure uniTerm
 
-1. Open Settings → Cloud Sync and click "Add Repository", choosing **Git** or **WebDAV** as the sync source
-2. Git: enter the repository URL, username (optional), and access token; WebDAV: enter the server URL (with protocol and port), username, and password
+1. Open Settings → Cloud Sync and click "Add Repository", choosing the sync mode **Git / WebDAV / SFTP / S3 / SMB**
+2. Fill in the parameters for the chosen mode: Git — repository URL, username (optional), access token; WebDAV — server URL (with protocol and port), username, password; SFTP — server (`host[:port]`), username, password; S3 — endpoint, Access Key / Secret Key, bucket, region; SMB — server (`host[:port]`), share name, username, password
 3. Set a **master password** (used to encrypt data; it is not uploaded to the repository or cloud drive)
 4. Click OK, and uniTerm will automatically complete the initial synchronization
 5. Tick the data to sync under "Sync Scope" as needed

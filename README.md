@@ -65,7 +65,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 
 - **Connection Manager** — Group, quickly search, create, and batch-operate server connections.
 - **Workspace** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
-- **Cloud Sync** — Dual-mode cloud sync via private Git repository or WebDAV — no worry about data loss or leaks, and pick up your work seamlessly across devices.
+- **Cloud Sync** — Encrypted cloud sync in five modes: Git repository, WebDAV, SFTP, S3 and SMB — no worry about data loss or leaks, and pick up your work seamlessly across devices.
 - **Custom Keybindings** — Freely bind keyboard shortcuts for every action for full keyboard-driven operation, hands never leaving the keyboard.
 - **Themes & Internationalization** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image; 11-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian, Portuguese, Vietnamese.
 

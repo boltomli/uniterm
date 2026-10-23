@@ -1,6 +1,6 @@
 # 云同步
 
-支持 **Git / WebDAV 云同步双模式**，加密同步 uniTerm 设置：Git 模式使用您自己的私有仓库（GitHub / GitLab / Gitee），WebDAV 模式对接任意标准 WebDAV 服务。数据安全完全由您掌控。
+支持 **Git / WebDAV / SFTP / S3 / SMB 五种云同步模式**，加密同步 uniTerm 设置：Git 模式使用您自己的私有仓库（GitHub / GitLab / Gitee），WebDAV 模式对接任意标准 WebDAV 服务，SFTP / SMB 模式复用您已有的服务器，S3 模式对接任意 S3 兼容对象存储。数据安全完全由您掌控。
 
 ![云同步](/imgs/cloud_sync_light.webp)
 
@@ -42,10 +42,36 @@ WebDAV 模式无需创建仓库，准备好一个 WebDAV 服务即可：
 - **服务地址**：支持 Nextcloud、坚果云、InfiniCloud 等提供 WebDAV 的网盘，或自建服务，地址需包含协议与端口
 - **账号**：该服务的用户名与密码（应用密码）
 
+#### SFTP
+
+SFTP 模式复用任意可 SSH 登录的服务器：
+
+- **服务器地址**：`host[:port]` 格式，端口默认 22
+- **账号**：该服务器的用户名与密码
+
+#### S3
+
+S3 模式对接任意 S3 兼容对象存储（AWS S3、MinIO、Cloudflare R2 等）：
+
+- **Endpoint**：如 `https://s3.amazonaws.com`
+- **Access Key / Secret Key**：该对象存储的访问密钥
+- **Bucket**：存储桶名称（必填）
+- **Region**：区域，如 `us-east-1`
+- **URL 风格**：Virtual-hosted 或 Path，按服务商要求选择
+
+#### SMB
+
+SMB 模式对接 Windows 共享文件夹或 NAS：
+
+- **服务器地址**：`host[:port]` 格式，端口默认 445
+- **共享名**：SMB 共享目录名称（必填）
+- **域**：可选，Windows 域名（如 `WORKGROUP`）
+- **账号**：该服务的用户名与密码
+
 ### 2. 配置 uniTerm
 
-1. 打开设置 → 云同步，点击「添加仓库」，选择同步源 **Git** 或 **WebDAV**
-2. Git：填入仓库地址、用户名（可选）、访问令牌；WebDAV：填入服务器地址（含协议与端口）、用户名、密码
+1. 打开设置 → 云同步，点击「添加仓库」，选择同步方式 **Git / WebDAV / SFTP / S3 / SMB**
+2. 按所选方式填写对应参数：Git 填仓库地址、用户名（可选）、访问令牌；WebDAV 填服务器地址（含协议与端口）、用户名、密码；SFTP 填服务器地址（`host[:port]`）、用户名、密码；S3 填 Endpoint、Access Key / Secret Key、Bucket、Region；SMB 填服务器地址（`host[:port]`）、共享名、用户名、密码
 3. 设置一个**主密码**（用于加密数据，不会上传到仓库或网盘）
 4. 点击确定，uniTerm 自动完成首次同步
 5. 可在「同步范围」中按需勾选参与同步的数据
