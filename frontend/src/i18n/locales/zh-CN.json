@@ -775,7 +775,7 @@
   "sync.conflictUseLocal": "用本地覆盖远端",
   "sync.conflictUseRemote": "用远端覆盖本地",
   "remoteDesktop.scale": "自动缩放",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "优先使用 NLA",
   "conn.rdpDomain": "域",
   "conn.smbDomain": "域",
   "conn.smbShare": "共享名称",

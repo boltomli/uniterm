@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "Использовать локальную, перезаписать удалённые данные",
   "sync.conflictUseRemote": "Использовать удаленную, перезаписать локальную конфигурацию",
   "remoteDesktop.scale": "Автомасштабирование",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Предпочитать NLA",
   "conn.rdpDomain": "Домен",
   "conn.smbDomain": "Домен",
   "conn.smbShare": "Общий ресурс",

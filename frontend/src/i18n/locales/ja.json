@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "ローカルを使用し、リモートを上書き",
   "sync.conflictUseRemote": "リモートを使用し、ローカルを上書き",
   "remoteDesktop.scale": "自動スケーリング",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "NLA を優先",
   "conn.rdpDomain": "ドメイン",
   "conn.smbDomain": "ドメイン",
   "conn.smbShare": "共有",

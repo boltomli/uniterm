@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "로컬 사용, 원격 덮어쓰기",
   "sync.conflictUseRemote": "원격 사용, 로컬 덮어쓰기",
   "remoteDesktop.scale": "자동 크기 조정",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "NLA 우선 사용",
   "conn.rdpDomain": "도메인",
   "conn.smbDomain": "도메인",
   "conn.smbShare": "공유",

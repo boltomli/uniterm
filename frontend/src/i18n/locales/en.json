@@ -775,7 +775,7 @@
   "sync.conflictUseLocal": "Use local, overwrite remote",
   "sync.conflictUseRemote": "Use remote, overwrite local repo",
   "remoteDesktop.scale": "Auto Scaling",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Prefer NLA",
   "conn.rdpDomain": "Domain",
   "conn.smbDomain": "Domain",
   "conn.smbShare": "Share",

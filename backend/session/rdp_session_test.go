@@ -530,6 +530,10 @@ func testWasmProxyHandshake(t *testing.T, options RDPOptions) {
 			return
 		}
 		protocols := binary.LittleEndian.Uint32(request[len(request)-4:])
+		if protocols&x224ProtoSSL == 0 {
+			serverError <- fmt.Errorf("TLS login not offered: 0x%x", protocols)
+			return
+		}
 		if (protocols&x224ProtoHybrid != 0) != options.EnableCredSSP {
 			serverError <- fmt.Errorf("NLA setting not applied to negotiation: 0x%x", protocols)
 			return

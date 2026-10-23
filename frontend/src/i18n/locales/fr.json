@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "Utiliser la version locale et écraser les données distantes",
   "sync.conflictUseRemote": "Utiliser la version distante et écraser la configuration locale",
   "remoteDesktop.scale": "Redimensionnement auto",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Privilégier NLA",
   "conn.rdpDomain": "Domaine",
   "conn.smbDomain": "Domaine",
   "conn.smbShare": "Partage",

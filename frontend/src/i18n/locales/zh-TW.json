@@ -775,7 +775,7 @@
   "sync.conflictUseLocal": "用本機覆蓋遠端",
   "sync.conflictUseRemote": "用遠端覆蓋本機",
   "remoteDesktop.scale": "自動縮放",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "優先使用 NLA",
   "conn.rdpDomain": "網域",
   "conn.smbDomain": "網域",
   "conn.smbShare": "共用資料夾",
