@@ -1,7 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { Events } from '@wailsio/runtime'
 import { ListCommands, GetCommandBody, SetCommandEnabled, SetCommandLocked, DeleteCommand, CreateCommand, SaveCommand, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { CommandMeta } from '../types/command'
+
+// Module-level un-subscriber for the sync-pull store:commands:changed
+// listener, so re-imports under HMR can detach the previous one (FE-03).
+let unsubCommandsChanged: (() => void) | null = null
 
 export const useCommandStore = defineStore('commands', () => {
   const commands = ref<CommandMeta[]>([])
@@ -96,9 +101,19 @@ export const useCommandStore = defineStore('commands', () => {
     }
   }
 
+  // A sync pull may have rewritten the commands dir — force a re-list
+  // bypassing the load-once guard.
+  unsubCommandsChanged?.()
+  unsubCommandsChanged = Events.On('store:commands:changed', () => { void reload() })
+
+  function dispose() {
+    unsubCommandsChanged?.()
+    unsubCommandsChanged = null
+  }
+
   return {
     commands, loaded, enabledCommands,
-    load, reload,
+    load, reload, dispose,
     toggleEnabled, toggleLocked, remove, create, save, getBody, openFolder,
   }
 })

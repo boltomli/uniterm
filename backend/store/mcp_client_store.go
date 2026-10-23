@@ -1,8 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -71,7 +73,8 @@ type mcpClientsFile struct {
 const mcpClientsFileName = "mcp_clients.json"
 
 // MCPClientStore persists external tool servers with the shared store envelope.
-// This is device-local configuration; it is not registered for cloud sync.
+// Sync participation is opt-in: mcp_clients.json joins the sync scope only
+// when the user ticks it in the sync-scope picker.
 type MCPClientStore struct {
 	configDir     string
 	passwordStore PasswordStore
@@ -164,4 +167,36 @@ func (s *MCPClientStore) Load() ([]MCPClientConfig, error) {
 		s.lastSavedHash = hash
 	}
 	return data.Clients, nil
+}
+
+// BlobName, ExportPlain and ImportPlain implement the sync exchange contract
+// (SyncableStore, declared in backend/sync/backend.go). The blob is the
+// mcp_clients.json document itself, headers/env included — auth material
+// rides inside the sync layer's transport encryption, the same trade-off
+// every other secret-bearing store makes.
+
+func (s *MCPClientStore) BlobName() string { return mcpClientsFileName }
+
+func (s *MCPClientStore) ExportPlain() ([]byte, error) {
+	if _, err := os.Stat(s.filePath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: %w", mcpClientsFileName, fs.ErrNotExist)
+		}
+		return nil, err
+	}
+	clients, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(mcpClientsFile{Clients: clients}, "", "  ")
+}
+
+func (s *MCPClientStore) ImportPlain(raw []byte) error {
+	var data mcpClientsFile
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("parse sync blob: %w", err)
+	}
+	// ForceSave bypasses the hash-skip so a pulled blob always materializes
+	// on disk even when it hashes equal to a stale local state.
+	return s.ForceSave(data.Clients)
 }

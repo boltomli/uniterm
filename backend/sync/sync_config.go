@@ -31,10 +31,11 @@ import (
 // custom terminal themes on another machine can tick it in the scope picker.
 //
 // skills.json carries the skill preference layer (enabled/locked/sortOrder/
-// origin). It is opt-in like settings.json: skill bodies live in the
-// skills/ tree (potentially large, multi-file), so sync exchanges only the
-// preference layer — the other device copies the skill directories once via
-// its own import (issue #1180).
+// origin) bundled with the full skill directories. It is opt-in like
+// settings.json: skills can be large and multi-file, so a user who does not
+// need them cross-device keeps them out of the sync payload (issue #1180).
+// commands.json (commands/*.md + preferences) and mcp_clients.json (external
+// tool servers, headers/env included) are opt-in for the same reason.
 var defaultSyncedFiles = []string{
 	"connections.json",
 	"favorites.json",
@@ -46,9 +47,10 @@ var defaultSyncedFiles = []string{
 }
 
 // syncableFiles is the full menu offered by the sync-scope picker: the
-// always-on legacy set plus the two opt-in entries (settings.json,
-// skills.json).
-var syncableFiles = append(append([]string{}, defaultSyncedFiles...), "settings.json", "skills.json")
+// always-on legacy set plus the four opt-in entries (settings.json,
+// skills.json, commands.json, mcp_clients.json).
+var syncableFiles = append(append([]string{}, defaultSyncedFiles...),
+	"settings.json", "skills.json", "commands.json", "mcp_clients.json")
 
 // EffectiveSyncFiles resolves the user's scope against syncableFiles.
 // A nil/empty scope returns the default set. Unknown names are dropped so a
