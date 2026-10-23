@@ -686,14 +686,22 @@ function resize() {
     // Without this, stale inline pixel dimensions from a previous fit()
     // prevent the terminal from filling the container after window resize
     // (e.g. after duplicating a session tab).
+    const beforeCols = terminal.cols
+    const beforeRows = terminal.rows
     fitAddon.fit()
     if (terminal.cols <= 0 || terminal.rows <= 0) return
 
     // Trust fitAddon.fit() — its measure already accounts for the scrollbar
     // gutter; manual recomputation double-subtracts it.
     terminal.resize(terminal.cols, terminal.rows)
-    // Full-viewport redraw — prevents canvas ghosting during rapid write bursts.
-    terminal.refresh(0, terminal.rows - 1)
+    // Full-viewport redraw — prevents canvas ghosting during rapid write
+    // bursts. Only when the grid actually changed: resize() is also called by
+    // the post-mount/activation retry ladders (6-9 times per switch), and an
+    // unconditional refresh re-rendered every row each time for nothing.
+    // A real size change is what needs the redraw.
+    if (terminal.cols !== beforeCols || terminal.rows !== beforeRows) {
+      terminal.refresh(0, terminal.rows - 1)
+    }
     SessionResize(sid, terminal.cols, terminal.rows).catch(() => {})
   } else {
     getFitAddon()?.fit()
@@ -1615,7 +1623,9 @@ onMounted(() => {
       // ZMODEM mode and made the sentry write protocol bytes back to the
       // server, crashing the remote shell (issue #242).
       const ZMODEM_HEX_RE = /\*{2,}\x18[ABC][0-9a-fA-F]{10,}/
-      if (ZMODEM_HEX_RE.test(payload.data)) {
+      // Guard first: the regex needs `**` + ZDLE, so a chunk without `**`
+      // cannot match. This scan runs on every SSH/local chunk.
+      if (payload.data.includes('**') && ZMODEM_HEX_RE.test(payload.data)) {
         console.debug('[zmodem] header detected, entering transfer mode')
         isZmodemStarting = true
         if (zmodemStartTimer) clearTimeout(zmodemStartTimer)

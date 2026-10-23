@@ -319,8 +319,14 @@ function notifyGutter(sessionId: string) {
   gutterNotifier.request(sessionId)
 }
 
-function timestampsEnabled(): boolean {
-  return useSettingsStore().settings.terminal.showTimestamps ?? false
+/** Whether either gutter column is displayed. The registry keeps recording
+ * regardless (so enabling a column mid-session still has data), but the
+ * per-write gutter notification — a global CustomEvent that makes every
+ * pane's gutter schedule a Vue update — is pointless while both columns are
+ * off, which is the default. */
+function gutterVisible(): boolean {
+  const ts = useSettingsStore().settings.terminal
+  return !!(ts.showTimestamps || ts.showLineNumbers)
 }
 
 /** Absolute buffer row index of the cursor, compensating for scrollback trim. */
@@ -352,7 +358,7 @@ export function recordWrite(sessionId: string, beforeAbs: number, ts: number): v
     source: bufferRowSource(buf),
     now: ts,
   })
-  notifyGutter(sessionId)
+  if (gutterVisible()) notifyGutter(sessionId)
 }
 
 /**
@@ -387,7 +393,7 @@ export function stampCommandLine(sessionId: string, ts: number): void {
       registry.entries.set(abs, { number: registry.nextNumber++, ts } satisfies LineMetaEntry)
     }
   }
-  if (timestampsEnabled()) notifyGutter(sessionId)
+  if (gutterVisible()) notifyGutter(sessionId)
 }
 
 /** Return the cursor's absolute line index for the current terminal. */

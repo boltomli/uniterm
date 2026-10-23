@@ -794,23 +794,59 @@ func (s *baseSession) emitLoop() {
 		}
 		s.emitMu.Unlock()
 
+		// Coalesce the FIRST flush of a burst into one IPC event: that is
+		// what keeps a trickle (shell echo, one log line at a time) from
+		// costing one Wails event per chunk. Every following pass in the
+		// same burst skips the window when the producer already refilled
+		// the queue during the previous flush — i.e. when output is
+		// sustained rather than trickling.
+		//
+		// The unconditional window used to cap throughput at
+		// emitQueueCapacity chunks per emitFlushInterval no matter how fast
+		// the consumer was. With small chunks (ConPTY/TUI redraws emit many
+		// short writes) that ceiling sat below the frontend's parse rate,
+		// so the queue stayed full and the readLoop blocked on a producer
+		// that was merely waiting for the timer.
+		coalesce := true
 		for {
-			// Batch window: give the producer a beat to accumulate more
-			// chunks before flushing.
-			timer.Reset(emitFlushInterval)
 			select {
 			case <-s.emitQuit:
 				s.flushEmitChunks(s.drainEmitQueue())
 				return
-			case <-timer.C:
+			default:
+			}
+			if coalesce {
+				// Batch window: give the producer a beat to accumulate more
+				// chunks before flushing.
+				timer.Reset(emitFlushInterval)
+				select {
+				case <-s.emitQuit:
+					s.flushEmitChunks(s.drainEmitQueue())
+					return
+				case <-timer.C:
+				}
 			}
 			chunks := s.drainEmitQueue()
 			if len(chunks) == 0 {
 				break
 			}
 			s.flushEmitChunks(chunks)
+			// Chunks arrived while we were emitting: flush them immediately
+			// instead of adding another coalescing delay.
+			coalesce = !s.emitQueuePending()
 		}
 	}
+}
+
+// emitQueuePending reports whether chunks are already waiting for the emit
+// loop. Lets the loop decide whether another coalescing window is worth
+// waiting for: when the producer is outpacing the consumer, flushing
+// immediately is what keeps the readLoop from blocking on the queue.
+func (s *baseSession) emitQueuePending() bool {
+	s.emitMu.Lock()
+	pending := len(s.emitQueue) > 0
+	s.emitMu.Unlock()
+	return pending
 }
 
 // SetOutputLogWriter installs (or clears with nil) the sink that

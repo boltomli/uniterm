@@ -48,5 +48,8 @@ export function sanitizeTerminalOutput(text: string): string {
 // binary-garbage passes are deliberately absent here.
 export function sanitizeLiveTerminalOutput(text: string): string {
   if (!text) return text
+  // Guard: replace() walks the whole chunk even when there is nothing to
+  // drop. U+FFFD is rare, and this runs on every session:data chunk.
+  if (!text.includes('\uFFFD')) return text
   return text.replace(FFFD_RE, '')
 }

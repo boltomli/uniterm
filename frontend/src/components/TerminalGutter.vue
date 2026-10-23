@@ -129,6 +129,11 @@ function bindTerminal() {
 }
 
 function compute() {
+  // Both columns off (the default): skip the whole buffer walk. The terminal
+  // fires onWriteParsed/onRender on every frame, so computing a full row set
+  // here would allocate ~rows GutterRows per frame, per pane, and hand Vue a
+  // brand-new layout object — all of it for a v-if="false" subtree.
+  if (!visible.value) return
   const t = terminal
   const host = props.getHost?.()
   // Only render when this component's own host actually shows the terminal —

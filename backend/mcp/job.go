@@ -932,12 +932,23 @@ func (s *Screen) scrollUp(n int) {
 	if n > s.rows {
 		n = s.rows
 	}
+	// Rows leaving the top are pushed to scrollback and then REUSED as the
+	// blank bottom rows. Under a flood this runs once per output line; a
+	// fresh []rune per line (plus the TrimRight copy inside pushScrollback)
+	// was the emulator's dominant allocation in the profile, and the
+	// emulator runs for every session on the readLoop.
+	top := make([][]rune, n)
+	copy(top, s.grid[:n])
 	for i := 0; i < n; i++ {
-		s.pushScrollback(string(s.grid[i]))
+		s.pushScrollbackRow(top[i])
 	}
 	copy(s.grid, s.grid[n:])
 	for i := 0; i < n; i++ {
-		s.grid[s.rows-1-i] = s.newRow()
+		row := top[i]
+		for j := range row {
+			row[j] = ' '
+		}
+		s.grid[s.rows-n+i] = row
 	}
 	s.absTop += n
 }
@@ -960,8 +971,14 @@ func (s *Screen) scrollDown(n int) {
 	}
 }
 
-func (s *Screen) pushScrollback(line string) {
-	s.scrollback = append(s.scrollback, strings.TrimRight(line, " "))
+func (s *Screen) pushScrollbackRow(row []rune) {
+	// Trim trailing blanks by index instead of string+TrimRight: the latter
+	// allocates twice per scrolled line.
+	end := len(row)
+	for end > 0 && row[end-1] == ' ' {
+		end--
+	}
+	s.scrollback = append(s.scrollback, string(row[:end]))
 	if len(s.scrollback) > scrollbackCap {
 		// Drop oldest so the ring stays bounded on very long output.
 		s.scrollback = s.scrollback[len(s.scrollback)-scrollbackCap:]

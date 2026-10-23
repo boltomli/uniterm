@@ -169,6 +169,40 @@ export function logicalLineStart(
   return startY
 }
 
+/** Re-key the fork's per-line cell color overrides after `trimmed` lines were
+ * trimmed from the top of the buffer. The override store is keyed by absolute
+ * buffer line, exactly like the span cache, so the same shift applies: every
+ * surviving line's key drops by the trim count and trimmed lines fall out.
+ *
+ * This replaces the previous clearCellColorOverrides() call on every trim.
+ * Once scrollback is full — which any long flood reaches and then stays at —
+ * every output row trims a line, and clearing threw away the colors of
+ * everything still in scrollback AND forced a full-viewport re-render
+ * (clearCellColorOverrides calls refreshRows(0, rows - 1)). Shifting keeps
+ * both: the visible DOM already shows the correct colors for the lines that
+ * remain, and scrolling back finds its colors still cached.
+ *
+ * Returns false when the fork's internal store is unavailable (upstream
+ * xterm without the CellColorOverrideStore patch), so the caller can fall
+ * back to the clear.
+ */
+export function shiftOverrideStore(term: XTerm, trimmed: number): boolean {
+  if (trimmed <= 0) return true
+  const store = (term as unknown as {
+    _core?: { cellColorOverrides?: { _overrides?: Map<number, unknown> } }
+  })._core?.cellColorOverrides
+  const map = store?._overrides
+  if (!(map instanceof Map)) return false
+  const shifted = new Map<number, unknown>()
+  for (const [key, value] of map) {
+    const next = key - trimmed
+    if (next >= 0) shifted.set(next, value)
+  }
+  map.clear()
+  for (const [key, value] of shifted) map.set(key, value)
+  return true
+}
+
 /** Re-key a scrollback line cache after `trimmed` lines were trimmed from
  * the top of the buffer: every surviving absolute line index drops by the
  * trim count, and entries whose line was itself trimmed away are dropped.
@@ -543,8 +577,9 @@ export class OverlayHighlighter {
       // the visible viewport by the scan below; rows above the viewport
       // re-apply from the shifted cache when scrolled to, without a rescan.
       shiftLineCache(this.lineMatchCache, this.pendingTrim)
+      const shifted = shiftOverrideStore(this.term, this.pendingTrim)
       this.pendingTrim = 0
-      this.term.clearCellColorOverrides()
+      if (!shifted) this.term.clearCellColorOverrides()
       this.disposeSentinel()
       this.bufferTrimmed = false
     }

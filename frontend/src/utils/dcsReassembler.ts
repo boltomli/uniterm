@@ -40,6 +40,13 @@ export class DcsReassembler {
 
   /** Feed one chunk; returns the segments that are safe to write now. */
   feed(chunk: string): DataSegment[] {
+    // Fast path: no DCS open and nothing held back, and the chunk carries no
+    // ESC at all (the common case for shell output). Everything below this
+    // point only exists to find/hold DCS sequences, which need an ESC; the
+    // previous implementation ran a concatenation + indexOf over every chunk.
+    if (!this.inDcs && this.buf === '' && chunk.indexOf('\x1b') < 0) {
+      return chunk === '' ? [] : [{ text: chunk, dcs: false }]
+    }
     return this.feedInner(chunk).filter(s => s.text !== '')
   }
 

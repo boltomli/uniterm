@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { logicalLineStart, shiftLineCache } from './overlayHighlight'
+import { logicalLineStart, shiftLineCache, shiftOverrideStore } from './overlayHighlight'
 
 // xterm marks isWrapped on the row wrapped TO: row N.isWrapped=true ⇒
 // row N continues row N-1. The walk-up must ask each row about ITSELF,
@@ -77,5 +77,42 @@ describe('shiftLineCache()', () => {
     shiftLineCache(cache, 5)
     // Insertion order must survive the rebuild: 5, 15, 25 (oldest first).
     expect([...cache.keys()]).toEqual([5, 15, 25])
+  })
+})
+
+describe('shiftOverrideStore()', () => {
+  // Minimal stand-in for the xterm fork: Terminal._core.cellColorOverrides
+  // owns a private lineY → spans Map.
+  function fakeTerm(overrides?: Map<number, unknown>) {
+    return (overrides
+      ? { _core: { cellColorOverrides: { _overrides: overrides } } }
+      : {}) as unknown as Parameters<typeof shiftOverrideStore>[0]
+  }
+
+  it('re-keys surviving lines and drops trimmed ones in place', () => {
+    const store = new Map<number, unknown>([
+      [2, 'trimmed'],
+      [5, 'kept-a'],
+      [9, 'kept-b'],
+    ])
+    const map = store
+    expect(shiftOverrideStore(fakeTerm(store), 3)).toBe(true)
+    // Same Map instance (the renderer holds a reference), re-keyed.
+    expect(map).toBe(store)
+    expect([...store.entries()]).toEqual([
+      [2, 'kept-a'],
+      [6, 'kept-b'],
+    ])
+  })
+
+  it('is a no-op for a zero trim', () => {
+    const store = new Map<number, unknown>([[3, 'x']])
+    expect(shiftOverrideStore(fakeTerm(store), 0)).toBe(true)
+    expect([...store.keys()]).toEqual([3])
+  })
+
+  it('reports failure when the fork store is unavailable', () => {
+    expect(shiftOverrideStore(fakeTerm(), 5)).toBe(false)
+    expect(shiftOverrideStore(fakeTerm(new Map()), 0)).toBe(true)
   })
 })
