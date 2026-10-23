@@ -708,6 +708,12 @@ function onMouseMove(e: MouseEvent) {
   } catch (_) {}
 }
 
+function wheelRotationUnit(deltaMode: number): number {
+  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return wasmModule!.RotationUnit.Line
+  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return wasmModule!.RotationUnit.Page
+  return wasmModule!.RotationUnit.Pixel
+}
+
 function onWheel(e: WheelEvent) {
   if (!scaleCanvas.value && e.target === viewportEl.value) return
   if (!session || !wasmModule) return
@@ -715,13 +721,16 @@ function onWheel(e: WheelEvent) {
   if (!pos) return
   e.preventDefault()
   try {
+    const unit = wheelRotationUnit(e.deltaMode)
+    const clamp = (v: number) => Math.max(-1000, Math.min(1000, Math.round(v)))
     const tx = new wasmModule.InputTransaction()
     tx.addEvent(wasmModule.DeviceEvent.mouseMove(pos.x, pos.y))
     if (e.deltaY !== 0) {
-      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(true, Math.max(-1000, Math.min(1000, Math.round(e.deltaY))), wasmModule.RotationUnit.Pixel))
+      // RDP expects the wheel sign inverted relative to the DOM: negate the delta.
+      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(true, clamp(-e.deltaY), unit))
     }
     if (e.deltaX !== 0) {
-      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(false, Math.max(-1000, Math.min(1000, Math.round(e.deltaX))), wasmModule.RotationUnit.Pixel))
+      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(false, clamp(-e.deltaX), unit))
     }
     session.applyInputs(tx)
   } catch (_) {}
