@@ -2372,7 +2372,8 @@ function openSftp() {
   menu.closeMenu()
   const p = panel.value
   if (p) {
-    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: p }))
+    // sourceTabId anchors the new SFTP tab beside the owning terminal tab
+    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: { ...p, sourceTabId: p.tabId } }))
   }
 }
 
@@ -2385,7 +2386,8 @@ function openMonitor() {
   menu.closeMenu()
   const p = panel.value
   if (p) {
-    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: p }))
+    // sourceTabId anchors the new monitor tab beside the owning terminal tab
+    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: { ...p, sourceTabId: p.tabId } }))
   }
 }
 

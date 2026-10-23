@@ -42,6 +42,10 @@ export interface LaunchOptions {
   wasEdit?: boolean
   // Start tab to close and reposition the new tab after.
   prevStart?: any
+  // Anchor tab: the new tab is inserted right after this one (companion views
+  // opened from a context menu land beside their source tab) instead of beside
+  // the currently active tab.
+  afterTabId?: string
   // Fallback for types without a spec: the generic terminal path in App.vue.
   // Returns the created panel id + status when the caller is workspace
   // orchestration (create-from-selection / open-saved); plain connects ignore it.
@@ -258,7 +262,7 @@ async function runSpec(key: string, config: ConnectionConfig, spec: ConnectSpec,
   const tabKind = uiType as Parameters<typeof tabStore.createTab>[0]
   let tab: { id: string } | null = null
   const openTab = () => {
-    const t = useTabStore().createTab(tabKind, displayTitle, panel.id, spec.tabExtra?.(config))
+    const t = useTabStore().createTab(tabKind, displayTitle, panel.id, spec.tabExtra?.(config), opts.afterTabId)
     reposition?.(t.id)
     panelStore.movePanelToTab(panel.id, t.id)
     return t

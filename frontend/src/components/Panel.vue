@@ -391,7 +391,8 @@ async function openLogDir() {
 }
 
 function connectSftp() {
-  window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: props.panel }))
+  // sourceTabId anchors the new SFTP tab beside the owning tab
+  window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: { ...props.panel, sourceTabId: props.panel.tabId } }))
 }
 
 function uploadFileRz() {
@@ -399,7 +400,8 @@ function uploadFileRz() {
 }
 
 function connectMonitor() {
-  window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: props.panel }))
+  // sourceTabId anchors the new monitor tab beside the owning tab
+  window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: { ...props.panel, sourceTabId: props.panel.tabId } }))
 }
 
 function triggerSearch() {

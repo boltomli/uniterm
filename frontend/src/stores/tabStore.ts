@@ -156,14 +156,34 @@ export const useTabStore = defineStore('tab', () => {
 
   // ── Create tabs ──
 
-  function createTerminalTab(name: string, panelId: string): TerminalTab {
+  // User-initiated tab creation lands right after an anchor tab instead of the
+  // far end of the bar, so the new tab stays visible even when the bar
+  // overflows into the "more" menu. The anchor is the given tab (duplicates
+  // and companion views open beside their source) or, when absent/unfound, the
+  // currently active tab. Falls back to the end when there is no active tab
+  // (startup restore keeps its order either way: each created tab activates,
+  // so the next one inserts right after it).
+  function insertIndexAfterActive(): number {
+    const idx = tabState.tabs.findIndex(t => t.id === tabState.activeTabId)
+    return idx === -1 ? tabState.tabs.length : idx + 1
+  }
+
+  function insertIndexAfterTab(afterTabId?: string): number {
+    if (afterTabId) {
+      const idx = tabState.tabs.findIndex(t => t.id === afterTabId)
+      if (idx !== -1) return idx + 1
+    }
+    return insertIndexAfterActive()
+  }
+
+  function createTerminalTab(name: string, panelId: string, afterTabId?: string): TerminalTab {
     const tab: TerminalTab = {
       type: 'terminal',
       id: genId('term-tab'),
       panelId,
       name
     }
-    tabState.tabs.push(tab)
+    tabState.tabs.splice(insertIndexAfterTab(afterTabId), 0, tab)
     tabState.activeTabId = tab.id
     return tab
   }
@@ -208,9 +228,9 @@ export const useTabStore = defineStore('tab', () => {
   // connectionId/namespace, container: runtime/connectionId). Terminal tabs
   // keep dedicated creators (insert-at-index, start-tab replacement);
   // workspace/start tabs build richer state.
-  function createTab(type: Tab['type'], name: string, panelId: string, extra?: Record<string, unknown>): Tab {
+  function createTab(type: Tab['type'], name: string, panelId: string, extra?: Record<string, unknown>, afterTabId?: string): Tab {
     const tab = { type, id: genId(`${type}-tab`), panelId, name, ...extra } as Tab
-    tabState.tabs.push(tab)
+    tabState.tabs.splice(insertIndexAfterTab(afterTabId), 0, tab)
     tabState.activeTabId = tab.id
     return tab
   }
@@ -222,7 +242,7 @@ export const useTabStore = defineStore('tab', () => {
       name: t('startTab.defaultName'),
       viewMode: 'home'
     }
-    tabState.tabs.push(tab)
+    tabState.tabs.splice(insertIndexAfterActive(), 0, tab)
     tabState.activeTabId = tab.id
     return tab
   }
@@ -236,7 +256,7 @@ export const useTabStore = defineStore('tab', () => {
       layout,
       activePanelId: panelIds[0] || null
     }
-    tabState.tabs.push(tab)
+    tabState.tabs.splice(insertIndexAfterActive(), 0, tab)
     tabState.activeTabId = tab.id
     return tab
   }
