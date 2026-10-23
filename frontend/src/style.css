@@ -1315,6 +1315,28 @@ body.drag-active .zone {
   white-space: normal;
 }
 
+/* --- MCP approval-policy select options ---
+   Semantic colors mirror the AI panel's mode menu (AISidebar .mode-option
+   classes). The popper is teleported to body, so these live in global CSS;
+   the selected label rendered inside the select input stays default-colored
+   by design. */
+.policy-select-popper .policy-option {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.policy-select-popper .policy-confirm {
+  color: var(--success);
+}
+.policy-select-popper .policy-write {
+  color: var(--accent);
+}
+.policy-select-popper .policy-warning {
+  color: var(--warning);
+}
+.policy-select-popper .policy-auto {
+  color: var(--error);
+}
+
 /* ============================================================
    Autocomplete suggestion dropdown
    Target every possible selector so the item font matches
