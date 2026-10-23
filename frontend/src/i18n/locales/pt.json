@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "Usar local, sobrescrever remoto",
   "sync.conflictUseRemote": "Usar remoto, sobrescrever o repositório local",
   "remoteDesktop.scale": "Dimensionamento automático",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Preferir NLA",
   "conn.rdpDomain": "Domínio",
   "conn.smbDomain": "Domínio",
   "conn.smbShare": "Compartilhamento",

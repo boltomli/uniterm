@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "Usar local, sobrescribir remoto",
   "sync.conflictUseRemote": "Usar remoto, sobrescribir configuración local",
   "remoteDesktop.scale": "Ajuste automático",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Preferir NLA",
   "conn.rdpDomain": "Dominio",
   "conn.smbDomain": "Dominio",
   "conn.smbShare": "Recurso compartido",

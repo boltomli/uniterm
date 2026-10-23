@@ -772,7 +772,7 @@
   "sync.conflictUseLocal": "Dùng bản cục bộ, ghi đè từ xa",
   "sync.conflictUseRemote": "Dùng bản từ xa, ghi đè kho cục bộ",
   "remoteDesktop.scale": "Tự động co giãn",
-  "conn.rdpEnableNLA": "CredSSP (NLA)",
+  "conn.rdpEnableNLA": "Ưu tiên NLA",
   "conn.rdpDomain": "Miền",
   "conn.smbDomain": "Miền",
   "conn.smbShare": "Chia sẻ",
