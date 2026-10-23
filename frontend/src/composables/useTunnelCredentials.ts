@@ -17,11 +17,17 @@ type ShowCredentialDialog = (
 // 从密钥库解析出的正确值，因此必须排除）。
 // LoadConnections 不再把明文密码发给渲染层：hasPassword 标志（而非 password
 // 字段本身）表示"已存密码"，后端 CreateSession 会按连接 ID 解析明文。
+//
+// RDP 也在这里：NLA 开启时 CredSSP 必须在桌面出现前完成认证，拿空密码去
+// 只会得到服务器的登录错误，宁可先问一次（凭据弹窗的"保存并连接"会持久化）。
+// NLA 关闭时反而不弹——Windows 登录界面本来就接受空密码，取消弹窗会中止
+// 一条本来能正常登录的连接。
 export function needsCredentialCheck(config: ConnectionConfig): boolean {
-  const inScope = ['ssh', 'mosh', 'sftp', 'scp', 'ftp'].includes(config.type)
+  const inScope = ['ssh', 'mosh', 'sftp', 'scp', 'ftp', 'rdp'].includes(config.type)
   if (!inScope) return false
   if ((config.type === 'ssh' || config.type === 'mosh' || config.type === 'scp' || config.type === 'sftp') && (config.authType === 'key' || config.authType === 'keyText')) return false
   if (config.authType === 'identity' || config.authType === 'kerberos' || config.authType === 'agent') return false
+  if (config.type === 'rdp' && !config.rdpEnableNLA) return false
   return !config.user || (!config.password && !config.hasPassword)
 }
 

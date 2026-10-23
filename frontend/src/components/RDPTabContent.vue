@@ -98,7 +98,7 @@ import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 import { CreateSession, CloseSession, FrontendLog, ClipboardGetFiles, ClipboardReadFileChunkByID,
   ClipboardBeginFileTransfer, ClipboardWriteFileChunk, ClipboardFinishFileTransfer,
-  ClipboardAbortFileTransfer, SetRDPKeyboardCapture } from '../../bindings/github.com/ys-ll/uniterm/app'
+  ClipboardAbortFileTransfer, SetRDPKeyboardCapture, ResolveConnectionSecret } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 import { Events } from '@wailsio/runtime'
 import { usePanelStore } from '../stores/panelStore'
@@ -260,6 +260,24 @@ function splitDomainUser(cfg: ConnectionConfig): { username: string; domain: str
   return { username, domain }
 }
 
+// LoadConnections 脱敏后渲染层不再持有连接密码；IronRDP 的 CredSSP/autologon
+// 握手需要明文，按连接 ID 向后端解析（与 VNCTabContent/SPICETabContent 一致）。
+// "仅保存"后从连接列表发起的连接走的就是这条路径：panel 里的 config.password
+// 是空的，直接用它会拿空密码去 CredSSP，服务器报登录错误。
+async function resolvePassword(): Promise<string> {
+  if (!props.config) return ''
+  // 凭据弹窗/表单内联输入的一次性密码优先。
+  if (props.config.password) return props.config.password
+  if (!props.config.id) return ''
+  try {
+    const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }
+    return secret.password || ''
+  } catch (e) {
+    rdpLog(`stored RDP password resolve failed: ${describeError(e)}`)
+    return ''
+  }
+}
+
 async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSize) {
   if (started || !props.config || !canvasEl.value) return
   started = true
@@ -278,6 +296,10 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
   }, CONNECT_TIMEOUT)
 
   try {
+    // Resolve the plaintext BEFORE the handshake: the renderer only holds a
+    // redacted copy for connections opened from the saved list.
+    const password = await resolvePassword()
+    if (generation !== clientGeneration) return
     const mod = await loadWasm()
     if (generation !== clientGeneration) return
     const { username, domain } = splitDomainUser(props.config)
@@ -291,7 +313,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
 
     const builder = new mod.SessionBuilder()
       .username(username)
-      .password(props.config.password || '')
+      .password(password)
       .destination(props.config.host)
       .proxyAddress(proxyUrl)
       .authToken(authToken)
@@ -301,7 +323,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     builder.extension(new mod.Extension('enable_credssp', props.config.rdpEnableNLA ?? false))
     // Auto-logon with the saved credentials (mstsc saved-creds equivalent) —
     // requires the autologon extension patch in the WASM build.
-    builder.extension(new mod.Extension('autologon', !!props.config.password))
+    builder.extension(new mod.Extension('autologon', !!password))
     // Servers with Display Control resize in place; older servers use the
     // reconnect fallback when the canvas does not reach the requested size.
     if (isAdaptive()) builder.extension(new mod.Extension('display_control', true))
