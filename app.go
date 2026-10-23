@@ -1929,12 +1929,13 @@ func resolveDialogDir(candidates ...string) string {
 }
 
 // openFileDialog builds an open-file picker that starts in a known-good
-// directory. Hidden files are revealed whenever the start directory is itself
-// inside a dot directory (~/.ssh, ~/.kube): the platform panels hide those
-// entries by default, so navigating up to home and back would otherwise leave
-// the target unreachable rather than merely hard to find.
-func (a *App) openFileDialog(title, startDir string) *application.OpenFileDialogStruct {
-	dir := resolveDialogDir(startDir)
+// directory (first existing candidate). Hidden files are revealed whenever the
+// start directory is itself inside a dot directory (~/.ssh, ~/.kube): the
+// platform panels hide those entries by default, so navigating up to home and
+// back would otherwise leave the target unreachable rather than merely hard to
+// find.
+func (a *App) openFileDialog(title string, startDirs ...string) *application.OpenFileDialogStruct {
+	dir := resolveDialogDir(startDirs...)
 	return a.app.Dialog.OpenFile().
 		SetTitle(title).
 		SetDirectory(dir).
@@ -2065,13 +2066,16 @@ func (a *App) OpenFileDialogFiltered(title, filterDisplayName, filterPattern str
 	}).PromptForSingleSelection()
 }
 
+// OpenMultipleFilesDialog / OpenDirectoryDialog accept a candidate list of
+// start directories (e.g. [last-used dir, local pane cwd]); the first existing
+// one wins, home is the final fallback.
 func (a *App) OpenMultipleFilesDialog(startDir ...string) ([]string, error) {
-	return a.openFileDialog("Select Files", firstArg(startDir)).
+	return a.openFileDialog("Select Files", startDir...).
 		PromptForMultipleSelection()
 }
 
 func (a *App) OpenDirectoryDialog(startDir ...string) (string, error) {
-	return a.openFileDialog("Select Directory", firstArg(startDir)).
+	return a.openFileDialog("Select Directory", startDir...).
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
 		PromptForSingleSelection()
