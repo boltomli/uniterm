@@ -252,11 +252,18 @@ const fileDialogs = useFileDialogs()
 const { dlg: genDlg, onGenericConfirm, onGenericCancel } = fileDialogs
 
 // ── Listing / navigation engine — one instance per pane ──
+// A directory stashed on the panel (terminal cwd via "open SFTP", or the
+// sidebar's current dir via "open standalone tab") seeds the remote pane's
+// first listing and is consumed once — later reconnects restore the pane's
+// own cwd instead.
+const initialRemoteDir = panel.value?.initialPath || ''
+if (panel.value && initialRemoteDir) panel.value.initialPath = undefined
 const remoteListing = useFileListing({
   sid: () => panel.value?.sessionId ?? undefined,
   list: SftpListRemote,
   changeDir: SftpChangeRemoteDir,
   resolveTarget: resolveRemoteTarget,
+  initialDir: initialRemoteDir || undefined,
   onListError: onRemoteListError,
 })
 const localListing = useFileListing({
@@ -529,10 +536,13 @@ async function fetchLocalDrives() {
   } catch {}
 }
 
-// Auto-navigate into the configured share/bucket on initial load.
+// Auto-navigate into the configured share/bucket on initial load. Skipped when
+// the tab was opened with an explicit initial directory (terminal cwd / sidebar
+// path) — that already IS the target of the first listing.
 async function doInitialAutoNav() {
   if (initialNavDone) return
   initialNavDone = true
+  if (initialRemoteDir) return
   const cfg = panel.value?.config
   if (!cfg) return
   let target = ''

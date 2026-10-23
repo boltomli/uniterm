@@ -76,6 +76,28 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
   })
 }
 
+// --- Upload/download picker start directory ---------------------------------
+// Both pickers share one "last used directory" (per device, never synced).
+// The backend's resolveDialogDir skips candidates that no longer exist, so a
+// stale recorded path silently falls through to the caller's local cwd and
+// then the home directory.
+async function dialogStartDirs(localCwd?: string): Promise<string[]> {
+  const ls = useLocalStateStore()
+  await ls.init()
+  return [ls.state.sftpDialogDir, localCwd || ''].filter(Boolean)
+}
+
+function rememberDialogDir(dir: string) {
+  if (!dir) return
+  void useLocalStateStore().update({ sftpDialogDir: dir })
+}
+
+/** Directory part of a Windows or POSIX file path ('' when there is none). */
+function parentDirOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+  return i > 0 ? p.slice(0, i) : ''
+}
+
 // --- Conflict dialog (shared instance per host component) ------------------
 
 export function useConflictDialog() {
@@ -549,8 +571,9 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
-      const localPaths = await OpenMultipleFilesDialog(opts.localCwd?.() || '')
+      const localPaths = await OpenMultipleFilesDialog(...await dialogStartDirs(opts.localCwd?.()))
       if (!localPaths?.length) return
+      rememberDialogDir(parentDirOf(localPaths[0]))
       const names = localPaths.map(fp => fp.replace(/\\/g, '/').split('/').pop() || 'upload')
       const action = await conflicts.resolveConflicts(names, files.value.map(f => f.name))
       if (action === 'cancel') return
@@ -573,8 +596,9 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
-      const dir = await OpenDirectoryDialog(opts.localCwd?.() || '')
+      const dir = await OpenDirectoryDialog(...await dialogStartDirs(opts.localCwd?.()))
       if (!dir) return
+      rememberDialogDir(dir)
 
       const fileNames = items.filter(i => i.name !== '..').map(i => i.name)
       // Conflict check against the selected directory (may differ from cwd).

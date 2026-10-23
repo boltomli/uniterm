@@ -232,7 +232,7 @@ import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
 import type { ShortcutAction } from './types/settings'
 import { useI18n } from './i18n'
-import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval } from '../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval, SessionGetCwd } from '../bindings/github.com/ys-ll/uniterm/app'
 import { waitForTerminalSize } from './services/terminalManager'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
@@ -372,6 +372,8 @@ let uninstallFocusRestore: (() => void) | null = null
 // Tray menu → open the settings tab (Go shows the window first).
 let unsubTrayOpenSettings: (() => void) | null = null
 let unsubTrayOpenAbout: (() => void) | null = null
+// Records every terminal's cwd reports app-wide (see companionStore.sessionCwd).
+let unsubTerminalCwd: (() => void) | null = null
 const { t, locale } = useI18n()
 const EL_LOCALE_MAP: Record<string, typeof enUs> = {
   'zh-CN': zhCn, 'zh-TW': zhTw, en: enUs, ja, ko, de, es, fr, ru,
@@ -839,6 +841,13 @@ onMounted(async () => {
   unsubMcpSessionCreated = Events.On('mcp:session-created', (ev) => {
     void onMcpSessionCreated(ev.data)
   })
+  // Remember every terminal session's last reported cwd (OSC 7) regardless of
+  // the file sidebar's follow toggle — enabling follow or opening an SFTP view
+  // jumps straight to this directory.
+  unsubTerminalCwd = Events.On('terminal:cwd', (ev) => {
+    const p = ev?.data as { sessionId?: string; cwd?: string } | undefined
+    if (p?.sessionId && p.cwd) companionStore.recordSessionCwd(p.sessionId, p.cwd)
+  })
   // Panel/Tab/StartTab menu actions
   // Sidebar connection dropped onto a workspace panel: connect it and split
   // in at the drop position (see WorkspaceContent.onPanelDrop Case 0).
@@ -853,17 +862,33 @@ onMounted(async () => {
     const c = connId ? connectionStore.connections.find(x => x.id === connId) : undefined
     if (c) void openConnectionAtIndex(c, typeof index === 'number' ? index : tabStore.tabs.length)
   }) as EventListener)
-  window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId) }
+  window.addEventListener('app:connect-sftp', (async (e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d
+    if (c) {
+      const prev = tabStore.activeTab
+      // Explicit initialPath (sidebar "open standalone tab") wins; otherwise
+      // fall back to the terminal's last recorded cwd (right-click "open SFTP").
+      let initialPath = d?.initialPath || (d?.sessionId ? companionStore.sessionCwd[d.sessionId] : '')
+      if (!d?.initialPath && d?.sessionId) {
+        try {
+          const current = await SessionGetCwd(d.sessionId)
+          if (current) {
+            initialPath = current
+            companionStore.recordSessionCwd(d.sessionId, current)
+          }
+        } catch { /* The recorded directory remains the fallback. */ }
+      }
+      openFileBrowser(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId, initialPath)
+    }
   }) as EventListener)
   window.addEventListener('app:connect-terminal', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) onConnect(c)
   }) as EventListener)
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
   window.addEventListener('app:connect-container-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
   window.addEventListener('app:connect-monitor', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId) }
@@ -1084,6 +1109,7 @@ onUnmounted(() => {
   unsubTrayOpenAbout?.()
   unsubMcpApproval?.()
   unsubMcpSessionCreated?.()
+  unsubTerminalCwd?.()
   settingsStore.dispose?.()
   connectionStore.dispose?.()
   syncStore.dispose?.()
@@ -1345,8 +1371,8 @@ function onSidebarConnect(config: ConnectionConfig, kind?: 'file' | 'wsl-file' |
   return onConnect(config)
 }
 
-function openFileBrowser(config: ConnectionConfig, prevStart?: any, afterTabId?: string) {
-  return launchFileBrowser(config, { prevStart, afterTabId })
+function openFileBrowser(config: ConnectionConfig, prevStart?: any, afterTabId?: string, initialPath?: string) {
+  return launchFileBrowser(config, { prevStart, afterTabId, initialPath })
 }
 
 function openMonitorPanel(config: ConnectionConfig, prevStart?: any, afterTabId?: string) {

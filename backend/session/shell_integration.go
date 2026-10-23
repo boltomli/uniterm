@@ -44,7 +44,7 @@ const (
 	osc7Prefix            = "\x1b]7;"
 	osc7BEL               = "\x07"
 	osc7ST                = "\x1b\\"
-	sshIntegrationTimeout = 5 * time.Second
+	cwdHookConfirmTimeout = 3 * time.Second
 
 	// maxOSCPending caps how long an unterminated OSC-7 payload may buffer
 	// display output before it is dropped as garbage. Without this a program
@@ -53,7 +53,7 @@ const (
 	maxOSCPending = 4096
 )
 
-// sshCwdHookReadyMarker is printed by the injected cwd hook once it is fully
+// sshCwdHookReadyMarker is printed by the WSL cwd hook once it is fully
 // installed and terminal echo has been restored. The read loop strips it from
 // the display stream and uses it to confirm the hook came up.
 const sshCwdHookReadyMarker = "\x1b]7777;uniterm-ok\x07"
@@ -158,73 +158,13 @@ func decodeOSC7Payload(raw string) string {
 	return raw
 }
 
-// cwdHookEchoOffLine is the first line typed into a bash/zsh login shell. It
-// turns the pty echo off itself so the long hook line that follows never
-// renders even when the remote rc files re-enable echo or the server ignores
-// the pty-req ECHO mode (the visible-command leak of the old single-line
-// injection), then clears the first-prompt row — which may hold an echo of
-// this short line — and advances one row. Everything the injection renders
-// from here on is deterministic: the shell prints its second prompt on the
-// fresh row, the hook line is read silently, and the cleanup below knows
-// exactly how many rows the injection produced.
-const cwdHookEchoOffLine = " stty -echo; printf '\\r\\033[2K\\n'\n"
-
-// buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
-// login shell (typed, never executed as a remote command, so sshd's native
-// login flow and banner are untouched). The hook ends by restoring echo,
-// clearing the rows the injection produced (so exactly one prompt remains on
-// screen), and printing the ready marker last — a missing stty must leave the
-// marker unsent so the session's blind echo-restore fallback fires.
-// ok=false for unsupported shells, which get a plain ECHO-on shell and no
-// injection.
-//
-// Row accounting for bash/zsh: shells differ in whether accepting a line
-// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
-// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
-// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
-// and distinguishes the two layouts: column 1 means the shell started command
-// output on a fresh row and four rows belong to the injection (prompt #1, the
-// row cleared by the echo-off line, prompt #2, the cursor row); any other
-// column means the shell reused the prompt row and two rows suffice. A
-// missing or late CPR reply falls back to the two-row clear — still correct
-// for prompt-reusing shells and no worse than the old behavior for fresh-row
-// shells.
+// cwdHookCleanup removes WSL's temporary hook prompts after checking cursor
+// position. The typed hook is only used by WSL; SSH uses SFTP cwd discovery.
 const cwdHookCleanup = `printf '\033[6n'; if IFS=';' read -rs -d R -t 1 __u7y __u7x < /dev/tty && [ "${__u7x-}" = 1 ]; then printf '\033[2K\033[1A\033[2K\033[1A\033[2K\033[1A\033[2K\r'; else printf '\r\033[2K\033[1A\033[2K\r'; fi;`
 
-// buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
-// login shell (typed, never executed as a remote command, so sshd's native
-// login flow and banner are untouched). The hook ends by restoring echo,
-// clearing the rows the injection produced (so exactly one prompt remains on
-// screen), and printing the ready marker last — a missing stty must leave the
-// marker unsent so the session's blind echo-restore fallback fires.
-// ok=false for unsupported shells, which get a plain ECHO-on shell and no
-// injection.
-//
-// Row accounting for bash/zsh: shells differ in whether accepting a line
-// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
-// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
-// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
-// and distinguishes the two layouts: column 1 means the shell started command
-// output on a fresh row and four rows belong to the injection (prompt #1, the
-// row cleared by the echo-off line, prompt #2, the cursor row); any other
-// column means the shell reused the prompt row and two rows suffice. A
-// missing or late CPR reply falls back to the two-row clear — still correct
-// for prompt-reusing shells and no worse than the old behavior for fresh-row
-// shells.
-func buildStartupCwdHook(shell string) (string, bool) {
-	body, ok := buildShellCwdHookBody(shell)
-	if !ok {
-		return "", false
-	}
-	return cwdHookEchoOffLine + body, true
-}
-
-// buildShellCwdHookBody returns the hook line WITHOUT the echo-off prefix
-// (cwdHookEchoOffLine). WSL uses this variant: ConPTY cannot pre-disable
-// pty echo, so the WSL injection arms echo-off first (printing an
-// echo-armed marker) and only then sends the hook body, which must never
-// render.
-func buildShellCwdHookBody(shell string) (string, bool) {	base := shellBasename(shell)
+// buildShellCwdHookBody builds the WSL prompt hook body.
+func buildShellCwdHookBody(shell string) (string, bool) {
+	base := shellBasename(shell)
 	const oscFn = `__uniterm_osc7() { printf '\033]7;file://%s\033\\' "$PWD" 2>/dev/null; }`
 	switch base {
 	case "bash":
@@ -254,52 +194,28 @@ func buildShellCwdHookBody(shell string) (string, bool) {	base := shellBasename(
 }
 
 // cwdHookEchoArmedMarker is printed by the phase-1 arm line of the typed
-// cwd-hook injection once stty -echo has taken effect. Shared by the WSL and
-// the on-demand SSH paths; the read loop strips it from the display stream
+// WSL cwd-hook injection once stty -echo has taken effect. The read loop
+// strips it from the display stream
 // and starts phase 2 (the hook body) only after seeing it, so the body can
 // never render. Kept short so the arm line stays single-row when echoed.
 const cwdHookEchoArmedMarker = "\x1b]7777;e\x07"
 
-// cwdHookArmLine is phase 1 of the on-demand typed cwd-hook injection into a
-// LIVE shell (directory follow). The pty of such a session was created
-// echo-on (no startup injection happened), so the arm line turns the echo off
-// itself and prints the echo-armed marker; the row it leaves behind is
-// erased by its own trailing cursor-up/clear. Content matches the WSL arm
-// line.
+// cwdHookArmLine disables echo before the WSL hook body is sent.
 const cwdHookArmLine = " stty -echo;printf '\\033]7777;e\\007\\033[1A\\033[2K\\r\\n'\n"
-
-// buildTwoPhaseCwdHook returns the phase-1 arm line and the phase-2 hook body
-// for typing the cwd hook into a running shell. bash/zsh get the two-phase
-// treatment (arm echo-off, wait for the armed marker, then the body — issue
-// #1113: a single-shot write into a live echo-on shell renders both lines
-// because the line discipline echoes bytes before stty -echo executes).
-// fish has no stty-based arm and keeps the single-line injection with its
-// known cosmetic leak. ok=false for unsupported shells.
-func buildTwoPhaseCwdHook(shell string) (arm, body string, ok bool) {
-	body, ok = buildShellCwdHookBody(shell)
-	if !ok {
-		return "", "", false
-	}
-	switch shellBasename(shell) {
-	case "bash", "zsh":
-		return cwdHookArmLine, body, true
-	}
-	return "", body, true
-}
 
 // cwdHookBlindRestoreLine is typed into the shell when the injected hook
 // never confirmed within the watchdog timeout: the arm phase left the pty
 // echo off and nothing else will turn it back on. Leading space keeps it out
-// of bash history (HISTCONTROL=ignorespace).
+// of bash history when HISTCONTROL includes ignorespace.
 const cwdHookBlindRestoreLine = " stty echo\n"
 
 // typedCwdHookState carries the state machine of the two-phase typed
-// cwd-hook injection shared by the WSL and the on-demand SSH paths: phase 1
+// cwd-hook injection used by WSL: phase 1
 // arms stty -echo, and the read loop writes the stored phase-2 body only once
 // the echo-armed marker shows the echo actually went off, so the body can
 // never render. The ready marker (printed last by the body) confirms the
-// whole injection. Single-phase injections (fish, or the SSH startup path
-// with its echo-off pty) never set an arm pending, so the armed event never
+// whole injection. Single-phase injections (fish) never set an arm pending,
+// so the armed event never
 // fires and only the ready marker matters. onOutput must only be called from
 // the session's read loop; arm/disarm come from the injecting goroutine.
 type typedCwdHookState struct {
@@ -437,33 +353,6 @@ func shellBasename(shell string) string {
 	return shell
 }
 
-// sshShellProbeCommand reports the login shell and whether stty exists, in
-// one exec that always exits 0. Line 1 is the shell path; a non-empty line 2
-// is stty's path. The injected cwd hook relies on stty both to silence the
-// injection and to restore terminal echo — without it the ECHO-off pty stays
-// echo-off forever (minimal busybox builds may ship a shell without stty), so
-// callers must skip the injection entirely when stty is missing.
-const sshShellProbeCommand = `echo "$SHELL"; command -v stty || true`
-
-// parseShellProbe splits the sshShellProbeCommand output into the detected
-// shell and whether stty is available. shell is "" when the first line is
-// missing or empty.
-func parseShellProbe(out string) (shell string, hasStty bool) {
-	// Only strip \r and the trailing newline: a leading empty line is
-	// meaningful (empty $SHELL) and must not collapse into the shell line.
-	out = strings.TrimSuffix(strings.ReplaceAll(out, "\r", ""), "\n")
-	lines := strings.SplitN(out, "\n", 2)
-	if len(lines) == 0 {
-		return "", false
-	}
-	shell = strings.TrimSpace(lines[0])
-	if shell == "" {
-		return "", false
-	}
-	hasStty = len(lines) == 2 && strings.TrimSpace(lines[1]) != ""
-	return shell, hasStty
-}
-
 func sshRunCommand(client *ssh.Client, cmd, stdin string, timeout time.Duration) (string, error) {
 	// Start the timeout before opening the channel so the caller always returns
 	// within its budget. x/crypto/ssh cannot cancel one pending channel-open;
@@ -528,4 +417,3 @@ func closeSSHSessionAsync(sess *ssh.Session) {
 		go func() { _ = sess.Close() }()
 	}
 }
-

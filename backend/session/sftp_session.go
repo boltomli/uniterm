@@ -564,6 +564,10 @@ func (s *SFTPSession) listRemoteUnlocked(dir string) (FileListResult, error) {
 	if err != nil {
 		return FileListResult{}, err
 	}
+	// Keep the session cwd in step with what the pane displays: the initial
+	// list of an explicit directory (e.g. the terminal cwd an SFTP tab opened
+	// at) must not leave later empty-dir refreshes resolving to the home dir.
+	s.cwd = dir
 	files := make([]FileItem, 0, len(infos))
 	for _, fi := range infos {
 		owner, group := s.resolveOwnerGroup(fi)

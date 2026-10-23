@@ -33,6 +33,9 @@ interface LocalState {
   // SFTP file-list columns the user hid via the header context menu. Columns
   // absent from the list stay visible.
   sftpHiddenColumns: string[]
+  // Last directory used by the SFTP upload/download pickers (shared by both).
+  // Per device — never synced.
+  sftpDialogDir: string
   // MCP server config (external AI agents). Per device — never synced.
   mcp: MCPSettings
   // Open-tabs snapshot for "reopen last session's tabs". Opaque shape
@@ -61,6 +64,7 @@ const DEFAULT: LocalState = {
   systemTitleBar: false,
   externalEditor: '',
   sftpHiddenColumns: [],
+  sftpDialogDir: '',
   mcp: { ...DEFAULT_MCP_SETTINGS },
   lastTabsSnapshot: null,
 } as LocalState

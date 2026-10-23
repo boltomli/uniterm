@@ -1,14 +1,6 @@
 package session
 
-// Regression tests for issues #1031 and #1057: the startup cwd-hook shell
-// probe must run on a short-lived SSH connection of its own, never on the
-// main session connection.
-//
-// - #1057: CLI-only appliances (Netgear M4300 etc.) implement only pty-req +
-//   shell; an exec request tears down the whole transport, so a probe on the
-//   main connection made connecting impossible.
-// - #1031: on OpenSSH servers the first exec session consumes the one-shot
-//   PAM loginmsg (MOTD), so the following shell session never shows it.
+// SSH connections must never execute cwd probes or type integration commands.
 
 import (
 	"net"
@@ -156,81 +148,25 @@ func waitForProbeConns(t *testing.T, conns chan *probeConnActivity, n int) []*pr
 	return nil
 }
 
-// TestSSHConnectSurvivesExecKillingServer is the #1057 regression: a server
-// that tears down the transport on any exec request must still be connectable
-// — the shell probe dies on its own connection, the main connection never
-// carries an exec.
-func TestSSHConnectSurvivesExecKillingServer(t *testing.T) {
-	addr, conns := startProbeTrackingServer(t, true)
-	s := NewSSHSession("probe-killer-" + t.Name())
-	if err := s.Connect(probeTestConfig(addr)); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer s.Disconnect()
-
-	if s.Status() != StatusConnected {
-		t.Fatalf("status = %s, want connected", s.Status())
-	}
-	// Main connection must be the exec-free one; the probe connection is the
-	// one that got killed.
-	acts := waitForProbeConns(t, conns, 2)
-	var shellConn, killedConn bool
-	for _, act := range acts {
-		if atomic.LoadInt32(&act.exec) > 0 {
-			if atomic.LoadInt32(&act.killed) == 0 {
-				t.Fatalf("exec on a connection that was not killed")
+func TestSSHConnectNeverExecutesCwdProbe(t *testing.T) {
+	for _, killOnExec := range []bool{false, true} {
+		t.Run(strconv.FormatBool(killOnExec), func(t *testing.T) {
+			addr, conns := startProbeTrackingServer(t, killOnExec)
+			s := NewSSHSession("no-cwd-exec-" + t.Name())
+			if err := s.Connect(probeTestConfig(addr)); err != nil {
+				t.Fatal(err)
 			}
-			killedConn = true
-		}
-		if atomic.LoadInt32(&act.shell) >= 2 {
-			shellConn = true
-			if atomic.LoadInt32(&act.exec) != 0 {
-				t.Fatalf("main shell connection carries %d exec request(s); probe must not run on it", act.exec)
+			defer s.Disconnect()
+			if s.Status() != StatusConnected {
+				t.Fatalf("status = %s", s.Status())
 			}
-		}
-	}
-	if !shellConn {
-		t.Fatalf("no connection with pty-req + shell")
-	}
-	if !killedConn {
-		t.Fatalf("probe connection never issued the exec (probe not running?)")
-	}
-}
-
-// TestSSHShellProbeRunsOnSeparateConnection pins the client-side contract of
-// the #1031 fix: the connection carrying pty-req + shell carries no exec, and
-// the exec probe rides a second TCP connection of its own.
-func TestSSHShellProbeRunsOnSeparateConnection(t *testing.T) {
-	addr, conns := startProbeTrackingServer(t, false)
-	s := NewSSHSession("probe-separate-" + t.Name())
-	if err := s.Connect(probeTestConfig(addr)); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer s.Disconnect()
-
-	acts := waitForProbeConns(t, conns, 2)
-	if s.Status() != StatusConnected {
-		t.Fatalf("status = %s, want connected", s.Status())
-	}
-
-	shellConns, execConns := 0, 0
-	for _, act := range acts {
-		hasShell := atomic.LoadInt32(&act.shell) >= 2
-		hasExec := atomic.LoadInt32(&act.exec) > 0
-		if hasShell {
-			shellConns++
-			if hasExec {
-				t.Fatalf("shell connection also carries exec — probe leaked onto the main connection (MOTD would be lost, issue #1031)")
+			acts := waitForProbeConns(t, conns, 1)
+			if len(acts) != 1 {
+				t.Fatalf("got %d transports, want one", len(acts))
 			}
-		}
-		if hasExec {
-			execConns++
-		}
-	}
-	if shellConns != 1 {
-		t.Fatalf("%d connections with pty-req + shell, want 1", shellConns)
-	}
-	if execConns != 1 {
-		t.Fatalf("%d connections with exec, want 1 (the probe connection)", execConns)
+			if atomic.LoadInt32(&acts[0].shell) != 2 || atomic.LoadInt32(&acts[0].exec) != 0 {
+				t.Fatal("expected pty-req + shell without exec")
+			}
+		})
 	}
 }
