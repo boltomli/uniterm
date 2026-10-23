@@ -508,20 +508,34 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 	// demand.
 	s.cwdHookFollow = config.CwdHookMode == CwdHookModeFollow
 	injectHook, injectShell := "", ""
+	injectHookBody := ""
 	if s.cwdHookFollow {
 		log.Writef("ssh: cwd hook deferred to directory-follow toggle")
 	} else {
 		s.mu.RLock()
 		shell := s.detectedShell
 		s.mu.RUnlock()
-		if snippet, ok := buildStartupCwdHook(shell); ok {
-			injectHook, injectShell = snippet, shellBasename(shell)
+		if arm, body, gated, ok := buildStartupCwdHook(shell); ok {
+			injectHook, injectHookBody, injectShell = arm, body, shellBasename(shell)
+			if !gated {
+				// Shell without a stty-based arm (fish): single-phase,
+				// written as one line (known cosmetic leak, unchanged).
+				injectHook += injectHookBody
+				injectHookBody = ""
+			}
 		} else {
 			log.Writef("ssh: cwd hook skipped (no probe result or unsupported shell %q)", shell)
 		}
 	}
 	if injectHook != "" {
 		s.hookConfirmedCh = make(chan struct{})
+		if injectHookBody != "" {
+			// Arm phase 2 BEFORE the read loop starts: the echo-armed
+			// marker can already be buffered in the stdout pipe by the
+			// time readLoop begins feeding output through the hook
+			// state, and the body must then follow immediately.
+			s.hook.arm(injectHookBody)
+		}
 	}
 
 	session, err := client.NewSession()
@@ -613,10 +627,16 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 	// rc-file replacement, no ZDOTDIR switch. The server prints its own
 	// Last login/MOTD banner and every startup file runs exactly as an
 	// interactive login would. For supported shells the cwd hook is typed in
-	// right after the shell starts: with ECHO off the line never renders, the
-	// shell executes it before/at the first prompt, and the hook itself
-	// clears the prompt line, restores echo and prints the ready marker the
-	// read loop confirms.
+	// right after the shell starts in TWO phases: phase 1 (the arm line)
+	// turns the pty echo off itself and prints the echo-armed marker; the
+	// read loop types the long hook body (phase 2) only once that marker
+	// proves stty -echo took effect. Gating the body — instead of riding in
+	// the same write — keeps it from rendering when the pty ECHO mode did
+	// not stick (the server ignores the mode, or an rc file re-enables echo
+	// before the queued line is consumed), which previously flashed the
+	// whole ~600-char hook command on screen with only 2–4 rows of cleanup
+	// to hide it. The hook itself clears the prompt line, restores echo and
+	// prints the ready marker the read loop confirms.
 	if err := session.Shell(); err != nil {
 		session.Close()
 		s.setStatus(StatusError)
@@ -626,9 +646,12 @@ func (s *SSHSession) attach(client *ssh.Client, config ConnectionConfig) error {
 	if injectHook != "" {
 		if _, err := stdinPipe.Write(s.encodeInput([]byte(injectHook))); err != nil {
 			log.Writef("ssh: cwd hook write failed (shell=%s): %v", injectShell, err)
+			// The arm line never landed — drop the pending phase-2 body so
+			// no stale write fires later, and restore echo blindly.
+			s.hook.disarm()
 			_, _ = stdinPipe.Write([]byte(" stty echo\n"))
 		} else {
-			log.Writef("ssh: cwd hook injected (shell=%s)", injectShell)
+			log.Writef("ssh: cwd hook arm injected (shell=%s)", injectShell)
 			go s.watchCwdHookConfirm()
 		}
 	}
@@ -945,11 +968,11 @@ func (s *SSHSession) Disconnect() error {
 	return nil
 }
 
-// writeCwdHookBody is phase 2 of the on-demand two-phase injection: runs once
-// the echo-armed marker confirmed that stty -echo took effect, so the body
-// cannot echo. The body ends with its own echo restore and ready marker, so
-// this is also where the confirm watchdog that InjectCwdHook armed becomes
-// meaningful.
+// writeCwdHookBody is phase 2 of the two-phase injection (SSH startup and
+// the on-demand directory-follow path): runs once the echo-armed marker
+// confirmed that stty -echo took effect, so the body cannot echo. The body
+// ends with its own echo restore and ready marker, so this is also where the
+// confirm watchdog becomes meaningful.
 func (s *SSHSession) writeCwdHookBody(body string) {
 	if body == "" {
 		return
@@ -964,7 +987,7 @@ func (s *SSHSession) writeCwdHookBody(body string) {
 		log.Writef("ssh: cwd hook body write failed: %v", err)
 		return
 	}
-	log.Writef("ssh: cwd hook body written on demand")
+	log.Writef("ssh: cwd hook body written")
 }
 
 // cwdProbeDialTimeout bounds the probe connection's TCP dial. It only needs
@@ -1079,6 +1102,9 @@ func (s *SSHSession) watchCwdHookConfirm() {
 	// line executed without the marker) or will never open (hook line never
 	// executed). Waiting longer would just delay post-login further.
 	s.closeHookConfirmed()
+	// Drop any pending phase-2 body: a late echo-armed marker must not type
+	// the body into an already echo-restored shell (it would render).
+	s.hook.disarm()
 	s.mu.RLock()
 	stdin := s.stdin
 	s.mu.RUnlock()

@@ -178,55 +178,56 @@ func decodeOSC7Payload(raw string) string {
 // exactly how many rows the injection produced.
 const cwdHookEchoOffLine = " stty -echo; printf '\\r\\033[2K\\n'\n"
 
-// buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
-// login shell (typed, never executed as a remote command, so sshd's native
-// login flow and banner are untouched). The hook ends by restoring echo,
-// clearing the rows the injection produced (so exactly one prompt remains on
-// screen), and printing the ready marker last — a missing stty must leave the
-// marker unsent so the session's blind echo-restore fallback fires.
-// ok=false for unsupported shells, which get a plain ECHO-on shell and no
-// injection.
-//
-// Row accounting for bash/zsh: shells differ in whether accepting a line
-// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
-// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
-// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
-// and distinguishes the two layouts: column 1 means the shell started command
-// output on a fresh row and four rows belong to the injection (prompt #1, the
-// row cleared by the echo-off line, prompt #2, the cursor row); any other
-// column means the shell reused the prompt row and two rows suffice. A
-// missing or late CPR reply falls back to the two-row clear — still correct
-// for prompt-reusing shells and no worse than the old behavior for fresh-row
-// shells.
-const cwdHookCleanup = `printf '\033[6n'; if IFS=';' read -rs -d R -t 1 __u7y __u7x < /dev/tty && [ "${__u7x-}" = 1 ]; then printf '\033[2K\033[1A\033[2K\033[1A\033[2K\033[1A\033[2K\r'; else printf '\r\033[2K\033[1A\033[2K\r'; fi;`
+// cwdHookStartupArmLine is phase 1 of the startup injection. Byte-for-byte
+// today's echo-off line plus the echo-armed marker, so the ECHO=0-honored
+// case renders exactly the same rows as before (the marker is stripped from
+// the display stream); the difference is that the long hook body is now
+// gated on this marker instead of riding in the same write — when the server
+// ignores the pty ECHO mode (or an rc file re-enables echo before the queued
+// line is consumed), the body can no longer render.
+const cwdHookStartupArmLine = " stty -echo; printf '\\r\\033[2K\\n'; printf '\\033]7777;e\\007'\n"
 
 // buildStartupCwdHook returns the keystrokes typed into a freshly started SSH
-// login shell (typed, never executed as a remote command, so sshd's native
-// login flow and banner are untouched). The hook ends by restoring echo,
-// clearing the rows the injection produced (so exactly one prompt remains on
-// screen), and printing the ready marker last — a missing stty must leave the
-// marker unsent so the session's blind echo-restore fallback fires.
+// login shell, split into phase 1 (arm) and phase 2 (body). The caller writes
+// the arm line right after session.Shell() and arms the hook state with the
+// body; the read loop types the body only once the echo-armed marker shows
+// stty -echo took effect, so the body can never render even when the pty
+// ECHO mode did not stick. The body ends by restoring echo, clearing the rows
+// the injection produced (so exactly one prompt remains on screen), and
+// printing the ready marker last — a missing stty must leave the marker
+// unsent so the session's blind echo-restore fallback fires.
+// gated=false for shells without a stty-based arm (fish): the caller writes
+// arm+body as one line (known cosmetic leak, unchanged).
 // ok=false for unsupported shells, which get a plain ECHO-on shell and no
 // injection.
 //
-// Row accounting for bash/zsh: shells differ in whether accepting a line
-// moves the cursor to a fresh row (zsh yes, bash no — the old fixed one-line
-// clear left a duplicate prompt on fresh-row shells). The cleanup therefore
-// asks the terminal for the cursor position (ESC[6n, answered by xterm.js)
-// and distinguishes the two layouts: column 1 means the shell started command
-// output on a fresh row and four rows belong to the injection (prompt #1, the
-// row cleared by the echo-off line, prompt #2, the cursor row); any other
-// column means the shell reused the prompt row and two rows suffice. A
-// missing or late CPR reply falls back to the two-row clear — still correct
-// for prompt-reusing shells and no worse than the old behavior for fresh-row
-// shells.
-func buildStartupCwdHook(shell string) (string, bool) {
-	body, ok := buildShellCwdHookBody(shell)
+// Row accounting for bash/zsh (unchanged from the single-phase line — the
+// arm line's printf is byte-identical): shells differ in whether accepting a
+// line moves the cursor to a fresh row (zsh yes, bash no — the old fixed
+// one-line clear left a duplicate prompt on fresh-row shells). The cleanup
+// therefore asks the terminal for the cursor position (ESC[6n, answered by
+// xterm.js) and distinguishes the two layouts: column 1 means the shell
+// started command output on a fresh row and four rows belong to the
+// injection (prompt #1, the row cleared by the echo-off line, prompt #2,
+// the cursor row); any other column means the shell reused the prompt row
+// and two rows suffice. A missing or late CPR reply falls back to the
+// two-row clear — still correct for prompt-reusing shells and no worse than
+// the old behavior for fresh-row shells.
+func buildStartupCwdHook(shell string) (arm, body string, gated bool, ok bool) {
+	body, ok = buildShellCwdHookBody(shell)
 	if !ok {
-		return "", false
+		return "", "", false, false
 	}
-	return cwdHookEchoOffLine + body, true
+	switch shellBasename(shell) {
+	case "bash", "zsh":
+		return cwdHookStartupArmLine, body, true, true
+	}
+	// fish: no stty-based arm (see buildShellCwdHookBody) — keep the
+	// single-line injection with its known cosmetic leak.
+	return cwdHookEchoOffLine, body, false, true
 }
+
+const cwdHookCleanup = `printf '\033[6n'; if IFS=';' read -rs -d R -t 1 __u7y __u7x < /dev/tty && [ "${__u7x-}" = 1 ]; then printf '\033[2K\033[1A\033[2K\033[1A\033[2K\033[1A\033[2K\r'; else printf '\r\033[2K\033[1A\033[2K\r'; fi;`
 
 // buildShellCwdHookBody returns the hook line WITHOUT the echo-off prefix
 // (cwdHookEchoOffLine). WSL uses this variant: ConPTY cannot pre-disable

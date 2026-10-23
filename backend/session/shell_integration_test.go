@@ -136,23 +136,36 @@ func TestBuildStartupCwdHook(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := buildStartupCwdHook(tt.shell)
+			arm, body, gated, ok := buildStartupCwdHook(tt.shell)
 			if ok != tt.wantOK {
 				t.Fatalf("buildStartupCwdHook(%q) ok = %v, want %v", tt.shell, ok, tt.wantOK)
 			}
 			if !ok {
 				return
 			}
+			got := arm + body
 			if !strings.HasPrefix(got, " ") || !strings.HasSuffix(got, "\n") {
 				t.Fatalf("snippet must start with a space and end with a newline: %q", got)
 			}
 			if !strings.Contains(got, "__uniterm_osc7") {
 				t.Fatalf("snippet must define the __uniterm_osc7 hook: %q", got)
 			}
-			// bash/zsh inject two lines: the echo-off line must come first so
-			// the hook line itself never renders.
-			if tt.shell != "/usr/bin/fish" && !strings.HasPrefix(got, " stty -echo;") {
-				t.Fatalf("bash/zsh snippet must start with the echo-off line: %q", got)
+			// bash/zsh inject in two phases: the arm line must come first so
+			// the hook body is gated on stty -echo taking effect.
+			if tt.shell != "/usr/bin/fish" {
+				if !strings.HasPrefix(arm, " stty -echo;") {
+					t.Fatalf("bash/zsh snippet must start with the echo-off line: %q", got)
+				}
+				if !gated {
+					t.Fatalf("bash/zsh startup injection must be gated (two-phase): %q", arm)
+				}
+				if !strings.Contains(arm, "7777;e") {
+					t.Fatalf("bash/zsh arm line must print the echo-armed marker: %q", arm)
+				}
+			}
+			// fish has no stty-based arm: single-phase, written as one line.
+			if tt.shell == "/usr/bin/fish" && gated {
+				t.Fatalf("fish startup injection must stay single-phase: %q", arm)
 			}
 			for _, want := range tt.mustHave {
 				if !strings.Contains(got, want) {
@@ -170,10 +183,11 @@ func TestBuildStartupCwdHook(t *testing.T) {
 // post-hook prompt renders exactly once) must also precede the marker.
 func TestStartupCwdHookRestoresEchoBeforeMarker(t *testing.T) {
 	for _, shell := range []string{"/bin/bash", "/usr/bin/zsh", "/usr/bin/fish"} {
-		hook, ok := buildStartupCwdHook(shell)
+		arm, body, _, ok := buildStartupCwdHook(shell)
 		if !ok {
 			t.Fatalf("shell %q must be supported", shell)
 		}
+		hook := arm + body
 		if strings.Index(hook, "stty echo") > strings.Index(hook, "7777;uniterm-ok") {
 			t.Fatalf("stty echo must run before the ready marker for %s: %q", shell, hook)
 		}
@@ -188,14 +202,14 @@ func TestGeneratedStartupCwdHookHasValidBashSyntax(t *testing.T) {
 	if err != nil {
 		t.Skip("bash is not available for generated-script syntax checks")
 	}
-	hook, ok := buildStartupCwdHook("/bin/bash")
+	arm, body, _, ok := buildStartupCwdHook("/bin/bash")
 	if !ok {
 		t.Fatal("bash must be supported")
 	}
 	cmd := exec.Command(bash, "-n")
-	cmd.Stdin = strings.NewReader(hook)
+	cmd.Stdin = strings.NewReader(arm + body)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("startup cwd hook has invalid bash syntax: %v: %s\n%s", err, out, hook)
+		t.Fatalf("startup cwd hook has invalid bash syntax: %v: %s\n%s", err, out, arm+body)
 	}
 }
 
