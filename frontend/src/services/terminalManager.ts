@@ -72,6 +72,12 @@ export interface ManagedTerminal {
    * line-number and timestamp columns stay continuous as old lines drop off
    * the top of the buffer. */
   lineOffset: number
+  /** End row of the last COMPLETED parse (P-07). Parses run in write order,
+   * so this is the true start row of the next parse — using the write-time
+   * cursor instead made every backlog callback rescan from the same stale
+   * row (blocks × scan). null until the first parse completes; reset by
+   * clearRegistry. Alternate-screen writes never touch it. */
+  lastParsedAbs: number | null
   /** Subscription to the normal-buffer line-collection onTrim event. */
   trimDispose: { dispose(): void } | null
   /** Subscription to terminal.onResize — reflows the buffer, so the registry
@@ -519,6 +525,7 @@ export function acquireTerminal(
       onDataGeneration: 0,
       lineRegistry: createLineRegistry(),
       lineOffset: 0,
+      lastParsedAbs: null,
       trimDispose: null,
       resizeDispose: null,
       progressDispose: null,

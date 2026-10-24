@@ -108,6 +108,10 @@ export interface RecordWriteOptions {
   source: LineRegistryRowSource
   /** Arrival time of this write (ms). */
   now: number
+  /** Terminal rows — caps the completion backfill (step 2) to rows*4 when
+   * the band exceeds it (P-07: one merged multi-MB parse can travel
+   * thousands of rows). Omitted (or non-positive) disables the cap. */
+  rows?: number
 }
 
 /** Rows above the cursor band also scanned for unregistered content —
@@ -156,15 +160,23 @@ export function recordWrittenLines(state: LineRegistryState, opts: RecordWriteOp
   for (let y = from; y <= to; y += 1) registerRow(y)
 
   // 2. Completion: for rows in the band belonging to lines that now end above
-  //    the cursor, the output has finished — fix their timestamp.
-  for (let y = from; y <= to; y += 1) {
-    let start = y
-    while (start > 0 && source.isWrapped(start)) start -= 1
-    let end = start
-    while (source.isWrapped(end + 1)) end += 1
-    if (end >= cursorRow) continue
-    const entry = state.entries.get(lineOffset + start)
-    if (entry && entry.ts !== now) entry.ts = now
+  //    the cursor, the output has finished — fix their timestamp. Capped at
+  //    rows*4 (P-07): a single oversized parse (merged flush of many chunks)
+  //    would walk a wrapped group per row across thousands of rows. The band
+  //    is still registered above — only the timestamp backfill is skipped,
+  //    and such lines keep their birth time, which for a flood write is the
+  //    same instant as their completion anyway.
+  const completionCapped = opts.rows != null && opts.rows > 0 && to - from > opts.rows * 4
+  if (!completionCapped) {
+    for (let y = from; y <= to; y += 1) {
+      let start = y
+      while (start > 0 && source.isWrapped(start)) start -= 1
+      let end = start
+      while (source.isWrapped(end + 1)) end += 1
+      if (end >= cursorRow) continue
+      const entry = state.entries.get(lineOffset + start)
+      if (entry && entry.ts !== now) entry.ts = now
+    }
   }
 
   // 3. Advance the probe watermark (absolute rows survive trims by
@@ -340,7 +352,8 @@ function absoluteCursorLine(sessionId: string, lineOffset: number): number {
 
 /**
  * Fold one applied write into the registry. Call this from the write's
- * completion callback, with `beforeAbs` captured before the write started.
+ * completion callback, with `beforeAbs` captured when the write was issued
+ * (P-07: only ever a fallback — see lastParsedAbs below).
  * No-op while an alternate-screen app owns the buffer — lines there are
  * transient and never join the registry.
  */
@@ -351,13 +364,22 @@ export function recordWrite(sessionId: string, beforeAbs: number, ts: number): v
   const buf = t.buffer.active
   if (buf.type === 'alternate') return
 
+  // P-07: parses run strictly in write order, so the PREVIOUS parse's end
+  // row is this parse's true start. Using the write-time capture instead
+  // made every callback of a backlog rescan from the same stale row to the
+  // current cursor — total cost blocks × scan rows. The fallback is only
+  // consulted for the first parse after creation/reset (lastParsedAbs null).
+  const before = managed.lastParsedAbs ?? beforeAbs
+  const afterAbs = managed.lineOffset + buf.baseY + buf.cursorY
   recordWrittenLines(managed.lineRegistry, {
     lineOffset: managed.lineOffset,
-    beforeAbs,
-    afterAbs: managed.lineOffset + buf.baseY + buf.cursorY,
+    beforeAbs: before,
+    afterAbs,
     source: bufferRowSource(buf),
     now: ts,
+    rows: t.rows,
   })
+  managed.lastParsedAbs = afterAbs
   if (gutterVisible()) notifyGutter(sessionId)
 }
 
@@ -416,5 +438,8 @@ export function clearRegistry(sessionId: string): void {
   // The cleared buffer's rows are new territory: the look-above window must
   // probe them again, so rewind the write-scan watermark.
   managed.lineRegistry.scannedUpTo = -1
+  // The cursor lands at the top after a clear — a stale parse position
+  // would make the next write scan the whole pre-clear distance (P-07).
+  managed.lastParsedAbs = null
   notifyGutter(sessionId)
 }

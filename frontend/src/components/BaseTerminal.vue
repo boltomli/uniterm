@@ -251,8 +251,10 @@ const showTimestamps = computed(() => settingsStore.settings.terminal.showTimest
 // Write terminal data and fold it into the logical-line registry for the
 // gutter's number/time columns: lines that just received characters get the
 // next sequential number and the arrival time; lines the cursor moved past
-// get their timestamp fixed to the completion time. `before` is an absolute
-// row index, so a trim inside the write doesn't skew the band.
+// get their timestamp fixed to the completion time. `before` (the write-time
+// cursor) is only a FALLBACK for the very first parse — recordWrite prefers
+// managed.lastParsedAbs, the previous parse's end, so a backlog of queued
+// writes never rescans from the same stale row (P-07).
 function writeStamped(data: string, onParsed?: () => void) {
   const t = terminal
   const sid = props.sessionId
