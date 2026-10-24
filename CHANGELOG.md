@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.11.1
+
+### What's Changed
+
+**Bug Fixes**
+
+- Terminal: `clear` keeps the history again — the screen content scrolls into the scrollback instead of being wiped, and the clear-scrollback action now drops only the rows above the viewport, leaving the current screen untouched.
+- Terminal (macOS): fixes Backspace stopping to work after pasting text into the prompt. (@surenwuyuwuqiu)
+- AI: fixes garbled terminal output returned by foreground jobs in the AI panel — merged fragments, lost or blank rows, and a first line starting mid-row without the shell prompt, on PowerShell, git bash and SSH sessions alike.
+- AI: sessions started from a terminal are now named after both the connection and the topic of the first message, instead of the connection name alone; manual renames are never overwritten.
+- Tray: fixes the tray menu always showing English when the language is set to follow the system, and switching the language in the UI now updates the tray immediately without a restart.
+- Remote desktop (VNC / SPICE): pressing Escape in fullscreen is now forwarded to the remote desktop instead of exiting fullscreen, and the mouse cursor no longer disappears after entering fullscreen.
+- Remote desktop (SPICE): auto-scale now upscales a desktop smaller than the window to fill fullscreen, matching VNC and RDP behavior.
+
+**Notes**
+
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+- Android app: since version 1.11.0, the Android app uses a new application ID based on the uniterm domain (`net.uniterm.app`) — if a version before 1.11.0 is installed, uninstall it first before installing the new version.
+
+Thanks to @surenwuyuwuqiu for their contribution to this release.
+
+### 更新内容
+
+**问题修复**
+
+- 终端：`clear` 不再清空历史——屏幕内容滚动进入回滚区保留下来；「清空回滚区」操作也修正为只删除视口上方的内容，当前屏幕不受影响。
+- 终端（macOS）：修复粘贴文本后退格键失效的问题。(@surenwuyuwuqiu)
+- AI：修复 AI 面板前台任务回传的终端输出错乱问题——PowerShell 下内容合并、丢行，git bash 下行间出现空白，以及首行从行中开始、缺少 shell 提示符等，SSH 会话同样受影响。
+- AI：从终端新建的 AI 会话命名改为结合连接名与首条消息的主题，不再只取连接名；手动重命名的会话不会被覆盖。
+- 托盘：修复语言设置为「跟随系统」时托盘菜单始终显示英文的问题；在界面中切换语言后托盘菜单立即更新，无需重启。
+- 远程桌面（VNC / SPICE）：修复全屏下按 Esc 会退出全屏而非发送到远端的问题，以及进入全屏后鼠标光标消失的问题。
+- 远程桌面（SPICE）：自动缩放现在会将小于窗口的远程桌面放大铺满全屏，与 VNC、RDP 行为一致。
+
+**说明**
+
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+- 安卓 APP 从 1.11.0 版本起更换为基于 uniterm 域名的新应用 ID（`net.uniterm.app`），如果安装了该版本之前的版本，需要先卸载旧版后安装新版。
+
 ## v1.11.0
 
 ### What's Changed
