@@ -875,6 +875,13 @@ func (a *App) AppendFileBase64(path string, base64Data string, offset int64) err
 	if err := requireFileGrant(path); err != nil {
 		return err
 	}
+	// S-02: bound the allocation BEFORE decoding, consistent with
+	// WriteFileBase64's post-decode cap — DecodedLen is an upper bound, so
+	// nothing over the limit can slip through after the decode itself has
+	// already allocated.
+	if n := base64.StdEncoding.DecodedLen(len(base64Data)); n > maxWriteFileBase64Bytes {
+		return fmt.Errorf("payload of up to %d bytes exceeds the %d byte limit", n, maxWriteFileBase64Bytes)
+	}
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("decode base64: %w", err)

@@ -139,6 +139,31 @@ func TestReadFileChunkBase64ClampsLength(t *testing.T) {
 	}
 }
 
+// S-02: AppendFileBase64 decoded an unbounded payload before anything
+// checked its size — inconsistent with WriteFileBase64's cap. The pre-check
+// must reject before the decode allocates, and before the file is created.
+func TestAppendFileBase64RejectsOversizePayload(t *testing.T) {
+	prev := maxWriteFileBase64Bytes
+	maxWriteFileBase64Bytes = 16
+	t.Cleanup(func() { maxWriteFileBase64Bytes = prev })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "append.txt")
+	fileGrants.addFile(path)
+
+	oversize := base64.StdEncoding.EncodeToString(make([]byte, 17))
+	if err := (&App{}).AppendFileBase64(path, oversize, 0); err == nil {
+		t.Fatal("AppendFileBase64 accepted a payload over the size cap")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversize payload must not create the file, stat error = %v", err)
+	}
+
+	if err := (&App{}).AppendFileBase64(path, base64.StdEncoding.EncodeToString([]byte("ok")), 0); err != nil {
+		t.Fatalf("in-cap append failed: %v", err)
+	}
+}
+
 // Regression (security.md low): panelAutoTriggered and panelLogs kept an
 // entry for every panel ever opened. ReleasePanel drops both when a tab
 // closes (and closes the panel's log so buffered output + footer land).
