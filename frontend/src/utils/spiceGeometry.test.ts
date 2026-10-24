@@ -17,10 +17,10 @@ describe('SPICE display geometry', () => {
     expect((100 * geometry.scale) * (1920 / geometry.width)).toBeCloseTo(100)
   })
 
-  it('keeps the existing automatic fitting limit and recovers native pixels when disabled', () => {
+  it('upscales small desktops to fill the viewport like VNC/RDP, recovering native pixels when disabled', () => {
     const fitted = spiceDesktopGeometry(800, 600, 1600, 1200, true, 1.5)!
-    expect(fitted.width).toBe(800)
-    expect(fitted.height).toBe(600)
+    expect(fitted.width).toBe(1600)
+    expect(fitted.height).toBe(1200)
     const native = spiceDesktopGeometry(800, 600, 1600, 1200, false, 1.5)!
     expect(native.width * 1.5).toBeCloseTo(800)
   })
