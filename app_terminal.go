@@ -721,9 +721,30 @@ func (a *App) SessionWriteBinary(sessionID string, base64Data string) error {
 	return s.Write(data)
 }
 
+// maxReadFileBase64Bytes caps ReadFileBase64: the whole file crosses the
+// IPC bridge as ONE base64 string, so an unbounded request means an
+// unbounded read + allocation — the renderer layer being compromised (or
+// bugged) must not be able to exhaust memory through it (S-01). Callers
+// needing more (zmodem uploads) use ReadFileChunkBase64. A var so tests can
+// shrink it.
+var maxReadFileBase64Bytes = 64 << 20 // 64 MiB, matching maxWriteFileBase64Bytes
+
 func (a *App) ReadFileBase64(path string) (string, error) {
 	if err := requireFileGrant(path); err != nil {
 		return "", err
+	}
+	// Stat BEFORE reading (S-01): the size check must happen before the
+	// allocation os.ReadFile would make.
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("path is a directory: %s", path)
+	}
+	if info.Size() > int64(maxReadFileBase64Bytes) {
+		return "", fmt.Errorf("file of %d bytes exceeds the %d byte limit; use the chunked reader",
+			info.Size(), maxReadFileBase64Bytes)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -776,6 +797,12 @@ func (a *App) ReadFileChunkBase64(path string, offset int64, length int64) (stri
 	if remaining := info.Size() - offset; length > remaining {
 		length = remaining
 	}
+	// S-01: cap the per-call allocation even for a huge file — `length`
+	// came straight from the renderer, and the chunked callers walk the
+	// file by offset anyway, so serving a partial chunk is safe.
+	if length > maxReadFileChunkBytes {
+		length = maxReadFileChunkBytes
+	}
 
 	buf := make([]byte, length)
 	n, err := f.ReadAt(buf, offset)
@@ -784,6 +811,12 @@ func (a *App) ReadFileChunkBase64(path string, offset int64, length int64) (stri
 	}
 	return base64.StdEncoding.EncodeToString(buf[:n]), nil
 }
+
+// maxReadFileChunkBytes caps one ReadFileChunkBase64 request (S-01):
+// over-limit requests are served a partial chunk instead of rejected —
+// chunked callers resume by offset, so a clamp cannot lose data. A var so
+// tests can shrink it.
+var maxReadFileChunkBytes int64 = 16 << 20 // 16 MiB
 
 // maxWriteFileBase64Bytes caps one WriteFileBase64 payload once decoded: the
 // whole value crosses the IPC bridge as a single string and is written in one
