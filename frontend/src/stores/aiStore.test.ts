@@ -1,8 +1,13 @@
-// Session default naming (issue #1036): a new session created while a
-// terminal is connected is named after that terminal's connection, so the
-// history list stays identifiable as it grows. Without a terminal the
-// generic label stays, and first-message auto-naming never overwrites a
-// host-derived name.
+// AI session store behaviors:
+//
+// 1. Default naming (issue #1036): a new session created while a terminal is
+//    connected is named after that terminal's connection, so the history list
+//    stays identifiable as it grows. Without a terminal the generic label
+//    stays. The first user message then appends its first sentence to that
+//    label; a manual rename is never overwritten.
+// 2. Session-boundary binding: creating a new session or switching to another
+//    session clears the locked panel, so the next conversation re-locks onto
+//    whatever terminal is active at that moment.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
@@ -14,6 +19,9 @@ vi.mock('@wailsio/runtime', () => ({
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   LoadAISessions: vi.fn().mockResolvedValue({ sessions: [], currentSessionId: '' }),
   SaveAISessions: vi.fn().mockResolvedValue(undefined),
+  DisableSessionOutputLog: vi.fn().mockResolvedValue(undefined),
+  RegisterSessionForPanel: vi.fn().mockResolvedValue(undefined),
+  UnregisterSession: vi.fn().mockResolvedValue(undefined),
   LoadLocalState: vi.fn().mockResolvedValue({}),
   SaveLocalState: vi.fn().mockResolvedValue(undefined),
 }))
@@ -89,12 +97,12 @@ describe('session default naming from the active terminal (#1036)', () => {
     expect(s.name).toBe(t('ai.newSession'))
   })
 
-  it('keeps the generic label for a config-less panel', () => {
+  it('falls back to the tab name for a config-less panel', () => {
     const ai = useAIStore()
     setupTerminalPanel(null)
     ai.createSession()
     const s = ai.sessions.find(s => s.id === ai.currentSessionId)!
-    expect(s.name).toBe(t('ai.newSession'))
+    expect(s.name).toBe('test')
   })
 
   it('prefers the AI-locked panel over the active tab', () => {
@@ -109,13 +117,13 @@ describe('session default naming from the active terminal (#1036)', () => {
     expect(s.name).toBe('db')
   })
 
-  it('the first user message does not overwrite a host-derived name', () => {
+  it('the first user message combines the host label with the first sentence', () => {
     const ai = useAIStore()
     setupTerminalPanel(sshConfig())
     ai.createSession()
     const s = ai.sessions.find(s => s.id === ai.currentSessionId)!
     ai.addMessage({ id: 'msg-1', role: 'user', content: 'a fairly long first message' })
-    expect(s.name).toBe('prod-web')
+    expect(s.name).toBe('prod-web: a fairly long first ...')
   })
 
   it('the first user message still auto-names generic-label sessions', () => {
@@ -126,11 +134,55 @@ describe('session default naming from the active terminal (#1036)', () => {
     expect(s.name).toBe('hello world this is ...')
   })
 
+  it('a manual rename survives the first user message', () => {
+    const ai = useAIStore()
+    setupTerminalPanel(sshConfig())
+    ai.createSession()
+    const s = ai.sessions.find(s => s.id === ai.currentSessionId)!
+    ai.renameSession(s.id, 'my own name')
+    ai.addMessage({ id: 'msg-1', role: 'user', content: 'hello world' })
+    expect(s.name).toBe('my own name')
+  })
+
   it('an explicit name argument wins over the host label', () => {
     const ai = useAIStore()
     setupTerminalPanel(sshConfig())
     ai.createSession('custom topic')
     const s = ai.sessions.find(s => s.id === ai.currentSessionId)!
     expect(s.name).toBe('custom topic')
+  })
+})
+
+describe('AI session changes clear the terminal binding', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    closeAllTabs()
+  })
+
+  it('createSession clears the locked panel', () => {
+    const ai = useAIStore()
+    const tabStore = useTabStore()
+    tabStore.addAILockedPanel('panel-1')
+    expect(tabStore.getAILockedPanels()).toEqual(['panel-1'])
+
+    ai.createSession()
+
+    expect(tabStore.getAILockedPanels()).toEqual([])
+  })
+
+  it('switchSession clears the locked panel', () => {
+    const ai = useAIStore()
+    const tabStore = useTabStore()
+    ai.createSession()
+    const firstId = ai.currentSessionId!
+    ai.createSession()
+
+    tabStore.addAILockedPanel('panel-1')
+    expect(tabStore.getAILockedPanels()).toEqual(['panel-1'])
+
+    ai.switchSession(firstId)
+
+    expect(tabStore.getAILockedPanels()).toEqual([])
   })
 })
