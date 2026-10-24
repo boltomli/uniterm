@@ -932,6 +932,11 @@ func (s *SSHSession) EndZmodem(trailing []byte) {
 	w := s.outputLogWriter
 	cb := s.onDataCallback
 	s.mu.Unlock()
+	// Drop the pre-transfer UTF-8 tail, then carry the trailing bytes to a
+	// rune boundary like any other text output (decodeOutputLocked only
+	// handles the configured decoder, which is nil for UTF-8 sessions).
+	s.resetUTF8Carry()
+	decoded = s.carryUTF8(decoded)
 	if w != nil && len(decoded) > 0 {
 		w(decoded)
 	}

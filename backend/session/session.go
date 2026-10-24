@@ -460,6 +460,12 @@ type baseSession struct {
 	emitQuit chan struct{}
 	emitDone chan struct{}
 	emitOnce sync.Once
+	// utf8Tail holds ≤3 bytes of an incomplete trailing UTF-8 rune between
+	// reads so every emitted chunk ends on a rune boundary (see
+	// utf8_carry.go). Guarded by utf8Mu, which is a leaf lock: no path
+	// holds it while acquiring another mutex.
+	utf8Mu   sync.Mutex
+	utf8Tail []byte
 }
 
 const (
@@ -611,6 +617,9 @@ func (s *baseSession) setStatus(st SessionStatus) {
 // Called by terminal session types from Connect. Idempotent.
 func (s *baseSession) startEmitLoop() {
 	s.emitOnce.Do(func() {
+		// A (re)connect starts a fresh byte stream; a stale tail from the
+		// previous connection must not prefix the new output.
+		s.resetUTF8Carry()
 		s.emitQuit = make(chan struct{})
 		s.emitDone = make(chan struct{})
 		s.emitCond = sync.NewCond(&s.emitMu)
@@ -656,6 +665,17 @@ func (s *baseSession) emitData(data []byte) {
 	}
 	if cb == nil {
 		return
+	}
+	// Hold back an incomplete trailing UTF-8 rune and prepend it to the next
+	// read, so json.Marshal never sees (and replaces) a split rune. ZMODEM/
+	// binary bytes are routed to emitBinary and never reach here; skip the
+	// carry anyway while binary mode is on so a stray text chunk during a
+	// transfer cannot queue bytes across the mode switch.
+	if !s.IsZmodemMode() {
+		data = s.carryUTF8(data)
+		if len(data) == 0 {
+			return
+		}
 	}
 	if s.queueEmit(data) {
 		return
@@ -900,6 +920,10 @@ func (s *baseSession) EndZmodem(trailing []byte) {
 	w := s.outputLogWriter
 	cb := s.onDataCallback
 	s.mu.Unlock()
+	// Drop the pre-transfer tail (already incomplete), then give the
+	// trailing bytes the same rune-boundary protection as normal output.
+	s.resetUTF8Carry()
+	trailing = s.carryUTF8(trailing)
 	if w != nil && len(trailing) > 0 {
 		w(trailing)
 	}
@@ -916,6 +940,11 @@ var zmodemModeTimeout = 2 * time.Minute
 func (s *baseSession) setZmodemModeLocked(v bool) {
 	s.zmodemGeneration++
 	s.zmodemMode = v
+	if v {
+		// Entering binary mode: drop any held incomplete-rune tail so it
+		// cannot be prepended to post-transfer output.
+		s.resetUTF8Carry()
+	}
 	if s.zmodemTimer != nil {
 		s.zmodemTimer.Stop()
 		s.zmodemTimer = nil
