@@ -87,27 +87,51 @@ export interface ManagedTerminal {
 const terminals = new Map<string, ManagedTerminal>()
 
 // ---------------------------------------------------------------------------
-// Headless mirror terminal (AI output path)
+// Headless mirror terminal (background device-query responder)
 // ---------------------------------------------------------------------------
 // While a panel is deactivated, its visible terminal's buffer freezes (live
 // session:data writes are gated on component activity and replayed on
-// reactivation). The AI executor still needs emulator-faithful output:
-// raw-stream text reconstruction cannot resolve ConPTY cursor-positioning
-// redraws (the issue-624 class), which glues prompt redraws onto output rows
-// and silently drops them. A second, never-rendered Terminal instance per
-// session parses the same stream continuously, so its buffer always matches
-// what the screen would show. Cost: one extra headless parse per session —
-// no DOM, no renderer.
+// reactivation), so a device query (DA, CPR/ESC[6n, DSR…) in the stream would
+// never be answered — the remote's read times out, and the stale reply the
+// visible terminal emits during the reactivation gap leaks into the shell
+// (the "0R" artifact after switching back to a background-opened SSH tab).
+// A second, never-rendered Terminal instance per session parses the stream
+// and answers while the panel is in the background.
+//
+// P-01 (plan A): while the panel is FOREGROUND the visible terminal already
+// parses the same stream, so the mirror only QUEUES the bytes and drains them
+// in idle-time batches — parsing every chunk twice was the dominant
+// main-thread cost of high-volume output. While the queued (old) data is
+// being parsed the mirror must stay silent: its device queries were already
+// answered by the visible terminal, and a second, late reply is exactly the
+// "0R" corruption the responder handoff exists to prevent.
 const MIRROR_SCROLLBACK_CAP = 2000
+// Max backlog while the panel is foreground. Beyond this the queue would
+// delay background catch-up for seconds: drop it, reset the mirror, and
+// replay the most recent session history instead — device replies only
+// depend on the current cursor/mode state, which that window restores.
+const MIRROR_PENDING_LIMIT = 2 * 1024 * 1024
+// Bytes drained per idle callback, so foreground catch-up never monopolizes
+// the main thread.
+const MIRROR_IDLE_FLUSH_BATCH = 64 * 1024
 
 interface TerminalMirror {
   terminal: Terminal
-  lineOffset: number
-  trimDispose: { dispose(): void } | null
   resizeDispose: { dispose(): void } | null
   /** Inactive-window device-query responder (responder handoff). */
   replyDispose: { dispose(): void } | null
   unsub: () => void
+  /** Foreground backlog awaiting idle-time parse, oldest first. */
+  pending: string[]
+  /** Sum of pending[].length — capped by MIRROR_PENDING_LIMIT. */
+  pendingBytes: number
+  /** In-flight catch-up writes whose parse callback has not fired yet.
+   * While > 0 the mirror is chewing through OLD data and must not answer
+   * device queries (see replyDispose). */
+  catchUpWrites: number
+  /** Scheduled idle drain's canceller (requestIdleCallback / setTimeout
+   * fallback), null when no drain is armed. */
+  idleCancel: (() => void) | null
 }
 
 const mirrors = new Map<string, TerminalMirror>()
@@ -139,11 +163,13 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
   terminal.unicode.activeVersion = '11'
   const mirror: TerminalMirror = {
     terminal,
-    lineOffset: 0,
-    trimDispose: null,
     resizeDispose: null,
     replyDispose: null,
     unsub: () => {},
+    pending: [],
+    pendingBytes: 0,
+    catchUpWrites: 0,
+    idleCancel: null,
   }
   // Mirror grid must match the PTY size the visible terminal negotiated:
   // ConPTY streams are size-dependent (cursor positioning, wrapping), so a
@@ -153,18 +179,6 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
     terminal.resize(cols, rows)
   })
   terminal.resize(source.cols, source.rows)
-  // Track scrollback trimming so absolute rows stay stable — same internal
-  // API and guard as the visible terminal's lineOffset bookkeeping.
-  try {
-    const core = (terminal as any)._core
-    const lines = core?._bufferService?.buffers?.normal?.lines
-    if (typeof lines?.onTrim === 'function') {
-      const m = mirror
-      m.trimDispose = lines.onTrim((amount: number) => {
-        m.lineOffset += amount
-      })
-    }
-  } catch { /* noop */ }
   mirror.unsub = Events.On('session:data', (ev: any) => {
     const payload = ev?.data
     if (!payload || payload.id !== sessionId || typeof payload.data !== 'string') return
@@ -173,6 +187,15 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
     try {
       if (Date.now() < useZmodemStore().getCancelUntil(payload.id)) return
     } catch { /* pinia not installed yet */ }
+    if (isTerminalActive(sessionId)) {
+      // Foreground: the visible terminal parses this stream already. Queue
+      // only and drain on idle (P-01) — never double-parse per chunk.
+      enqueueMirrorData(sessionId, payload.data)
+      return
+    }
+    // Background: the mirror is the stream's only parser. Flush any queued
+    // backlog first (ordering: pending is older), then write the live chunk.
+    flushMirrorPending(sessionId, Infinity, false)
     mirror.terminal.write(payload.data)
   })
   // Inactive-window responder (see the handoff comment above): the activity
@@ -181,9 +204,108 @@ function createMirror(sessionId: string, options: TerminalOptions, source: Termi
   // remote's read falls back on its own timeout, same as before the handoff.
   mirror.replyDispose = terminal.onData((data) => {
     if (isTerminalActive(sessionId)) return
+    // Catch-up parses OLD queued data whose queries the visible terminal
+    // already answered — a second, late reply re-introduces the "0R" bug.
+    if (mirror.catchUpWrites > 0) return
     if (data) queuedSessionWrite(sessionId, data)
   })
   return mirror
+}
+
+// enqueueMirrorData buffers foreground output for an idle-time drain.
+// Exceeding MIRROR_PENDING_LIMIT resets the mirror and replays the recent
+// session history so the backlog can never grow without bound.
+function enqueueMirrorData(sessionId: string, data: string): void {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror) return
+  mirror.pending.push(data)
+  mirror.pendingBytes += data.length
+  if (mirror.pendingBytes > MIRROR_PENDING_LIMIT) {
+    mirror.pending = []
+    mirror.pendingBytes = 0
+    mirror.terminal.reset()
+    try {
+      const replay = useSessionStore().getData(sessionId)
+      if (replay) {
+        mirror.pending.push(replay)
+        mirror.pendingBytes = replay.length
+      }
+    } catch { /* pinia not installed yet */ }
+  }
+  scheduleMirrorIdleFlush(sessionId)
+}
+
+// scheduleMirrorIdleFlush arms at most one pending drain per mirror.
+// requestIdleCallback keeps catch-up off the foreground's critical path;
+// the 200ms timeout fallback bounds the delay where the API is missing.
+function scheduleMirrorIdleFlush(sessionId: string): void {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror || mirror.idleCancel != null) return
+  const run = () => {
+    mirror.idleCancel = null
+    flushMirrorPending(sessionId, MIRROR_IDLE_FLUSH_BATCH, true)
+  }
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(run, { timeout: 1000 })
+    mirror.idleCancel = () => cancelIdleCallback(id)
+  } else {
+    const id = setTimeout(run, 200)
+    mirror.idleCancel = () => clearTimeout(id)
+  }
+}
+
+function cancelMirrorIdleFlush(mirror: TerminalMirror): void {
+  mirror.idleCancel?.()
+  mirror.idleCancel = null
+}
+
+// takePending removes up to maxChars from the front of the queue (all of it
+// when it fits), preserving stream order.
+function takePending(mirror: TerminalMirror, maxChars: number): string | null {
+  if (mirror.pending.length === 0) return null
+  if (mirror.pendingBytes <= maxChars) {
+    const chunk = mirror.pending.join('')
+    mirror.pending = []
+    mirror.pendingBytes = 0
+    return chunk
+  }
+  let taken = 0
+  let count = 0
+  while (count < mirror.pending.length && taken < maxChars) {
+    taken += mirror.pending[count].length
+    count++
+  }
+  const chunk = mirror.pending.slice(0, count).join('')
+  mirror.pending = mirror.pending.slice(count)
+  mirror.pendingBytes -= taken
+  return chunk
+}
+
+// writeMirrorCatchUp marks a write as catch-up: its parse callback fires
+// after the (old) data has been applied, until which time the mirror must
+// not answer device queries.
+function writeMirrorCatchUp(mirror: TerminalMirror, data: string, done?: () => void): void {
+  mirror.catchUpWrites++
+  mirror.terminal.write(data, () => {
+    mirror.catchUpWrites--
+    done?.()
+  })
+}
+
+// flushMirrorPending parses up to maxChars of queued backlog. With
+// reschedule=true (idle drains) whatever remains waits for the next idle
+// slot; with reschedule=false (deactivation, where the mirror becomes the
+// responder and must catch up ASAP) it continues in the write callback.
+function flushMirrorPending(sessionId: string, maxChars: number, reschedule: boolean): void {
+  const mirror = mirrors.get(sessionId)
+  if (!mirror) return
+  const chunk = takePending(mirror, maxChars)
+  if (chunk == null) return
+  writeMirrorCatchUp(mirror, chunk, () => {
+    if (mirror.pending.length === 0) return
+    if (reschedule) scheduleMirrorIdleFlush(sessionId)
+    else flushMirrorPending(sessionId, maxChars, false)
+  })
 }
 
 function disposeMirror(sessionId: string): void {
@@ -191,75 +313,10 @@ function disposeMirror(sessionId: string): void {
   if (!mirror) return
   mirrors.delete(sessionId)
   mirror.unsub()
-  mirror.trimDispose?.dispose()
+  cancelMirrorIdleFlush(mirror)
   mirror.resizeDispose?.dispose()
   mirror.replyDispose?.dispose()
   mirror.terminal.dispose()
-}
-
-// Cursor line + absolute row on the mirror buffer — prompt snapshot source
-// for inactive terminals.
-export function getMirrorPromptSnapshot(sessionId: string): { promptLine: string; startRow: number } | null {
-  const mirror = mirrors.get(sessionId)
-  if (!mirror) return null
-  const buf = mirror.terminal.buffer.active
-  const line = buf.getLine(buf.baseY + buf.cursorY)
-  const promptLine = line ? line.translateToString(true).trimEnd() : ''
-  return { promptLine, startRow: mirror.lineOffset + buf.baseY + buf.cursorY }
-}
-
-// Screen text from the mirror buffer starting at an absolute row — the
-// inactive-terminal counterpart of reading the visible terminal's screen.
-// Returns null when no mirror exists for the session.
-export function readMirrorScreenFromRow(sessionId: string, absStartRow: number): string | null {
-  const mirror = mirrors.get(sessionId)
-  if (!mirror || absStartRow < 0) return null
-  const buf = mirror.terminal.buffer.active
-  let first: number
-  let last: number
-  if (buf.type === 'alternate') {
-    first = buf.baseY
-    last = buf.length - 1
-  } else {
-    first = Math.max(0, absStartRow - mirror.lineOffset)
-    last = buf.length - 1
-    while (last >= first && mirrorRowBlank(buf, last)) last--
-    if (last < first) return ''
-  }
-  const lines: string[] = []
-  for (let i = first; i <= last; i++) {
-    const line = buf.getLine(i)
-    if (line) lines.push(line.translateToString(true))
-  }
-  return lines.join('\n')
-}
-
-// Last tailLines non-blank-terminated lines from the mirror buffer — the
-// inactive-terminal counterpart of captureTerminal. Returns null when no
-// mirror exists for the session.
-export function readMirrorTail(sessionId: string, tailLines: number): string | null {
-  const mirror = mirrors.get(sessionId)
-  if (!mirror) return null
-  const buf = mirror.terminal.buffer.active
-  if (buf.length === 0) return ''
-  let last = buf.length - 1
-  while (last >= 0 && mirrorRowBlank(buf, last)) last--
-  if (last < 0) return ''
-  const first = Math.max(0, last - tailLines + 1)
-  const lines: string[] = []
-  for (let i = first; i <= last; i++) {
-    const line = buf.getLine(i)
-    if (line) lines.push(line.translateToString())
-  }
-  return lines.join('\n')
-}
-
-function mirrorRowBlank(
-  buf: { getLine(n: number): { translateToString(): string } | undefined },
-  row: number
-): boolean {
-  const line = buf.getLine(row)
-  return !line || line.translateToString().trim() === ''
 }
 
 // Route a progress state from a session's terminal to the tab that displays
@@ -618,10 +675,15 @@ export function transferTerminal(oldSessionId: string, newSessionId: string): bo
     const mirror = createMirror(newSessionId, managed.options, managed.terminal)
     mirrors.set(newSessionId, mirror)
     // Seed with the new session's buffered history (reconnect replay reaches
-    // the visible terminal directly, not through session:data events).
+    // the visible terminal directly, not through session:data events),
+    // marked as catch-up: the history contains old device queries that must
+    // not be answered a second time.
     const sessionStore = useSessionStore()
     const total = sessionStore.getChunkCount(newSessionId)
-    if (total > 0) mirror.terminal.write(sessionStore.getDataFromChunk(newSessionId, 0))
+    if (total > 0) {
+      const seed = sessionStore.getDataFromChunk(newSessionId, 0)
+      if (seed) writeMirrorCatchUp(mirror, seed)
+    }
   } catch (e) {
     console.warn('[terminalManager] headless mirror re-creation failed', e)
   }
@@ -713,8 +775,20 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 export function markTerminalActive(sessionId: string, ref: string, active: boolean): void {
   const managed = terminals.get(sessionId)
   if (!managed) return
-  if (active) managed.activeRefs.add(ref)
-  else managed.activeRefs.delete(ref)
+  if (active) {
+    managed.activeRefs.add(ref)
+    return
+  }
+  managed.activeRefs.delete(ref)
+  if (managed.activeRefs.size > 0) return
+  // Last ref went to the background: the mirror becomes the stream's only
+  // parser AND the device-query responder, so catch up on the foreground
+  // backlog immediately — a delayed catch-up leaves queries unanswered (and
+  // once the drain completes it must be silent only during that drain, see
+  // replyDispose).
+  const mirror = mirrors.get(sessionId)
+  if (mirror) cancelMirrorIdleFlush(mirror)
+  flushMirrorPending(sessionId, Infinity, false)
 }
 
 // True while any visible component drives the terminal. When false the xterm
