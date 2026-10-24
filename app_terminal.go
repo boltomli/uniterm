@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
@@ -593,7 +594,34 @@ func (a *App) SessionResize(sessionID string, cols, rows int) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	return s.Resize(cols, rows)
+	// The capture emulator (MCP uniterm_capture / AI collect fallback) is
+	// sized from the PTY at attach time; a resized PTY reflows the stream, so
+	// the stale grid would mis-render every later frame. Recreate it instead
+	// of just dropping it: snapshot its cursor row first (normally the shell
+	// prompt the PTY stream never resends — foreground jobs seed from it),
+	// attach the fresh emulator BEFORE the resize so ConPTY's post-resize
+	// full repaint lands in it, and keep the snapshot as a fallback for
+	// remotes that don't repaint on resize (SSH reflows far-side only).
+	var carried mcp.ScreenSeed
+	a.captureMu.Lock()
+	if old, ok := a.captures[sessionID]; ok {
+		old.mu.Lock()
+		carried = old.screen.PromptSeed()
+		if carried.Line == "" {
+			carried = old.carriedSeed
+		}
+		old.mu.Unlock()
+	}
+	a.captureMu.Unlock()
+	a.removeCapture(sessionID)
+	cap := a.sessionCaptureFor(s)
+	if err := s.Resize(cols, rows); err != nil {
+		return err
+	}
+	cap.mu.Lock()
+	cap.carriedSeed = carried
+	cap.mu.Unlock()
+	return nil
 }
 
 func (a *App) SessionStartZmodem(sessionID string) error {
