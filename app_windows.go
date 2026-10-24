@@ -659,6 +659,55 @@ func systemPrefersDark() bool {
 	return val == 0
 }
 
+// systemLanguage returns the Windows display language (Settings → Time &
+// Language → Language) as a locale tag for tray-menu localization
+// (issue #1215). GetUserDefaultUILanguage is the same value the WebView2
+// engine derives navigator.language from, so the tray matches the UI when
+// the app language is set to "system". x/sys/windows does not wrap the
+// kernel32 export, so it is loaded via LazyDLL. Returns "" when the LANGID
+// is not one of the app's supported languages — the caller falls back.
+func systemLanguage() string {
+	r, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetUserDefaultUILanguage").Call()
+	return langIDToLocale(uint16(r))
+}
+
+// langIDToLocale maps a Windows LANGID to one of the app's supported locale
+// tags. Only the Chinese sublanguages matter for picking the written form;
+// every other language matches on the primary identifier alone. Unknown
+// LANGIDs return "".
+func langIDToLocale(langid uint16) string {
+	primary := langid & 0x03FF
+	if primary == 0x0004 { // Chinese
+		switch langid >> 10 {
+		case 0x01, 0x03, 0x05: // Traditional, Hong Kong, Macao
+			return "zh-TW"
+		default: // Simplified (PRC, Singapore, zh-Hans)
+			return "zh-CN"
+		}
+	}
+	switch primary {
+	case 0x0009:
+		return "en"
+	case 0x0011:
+		return "ja"
+	case 0x0012:
+		return "ko"
+	case 0x0007:
+		return "de"
+	case 0x000A:
+		return "es"
+	case 0x000C:
+		return "fr"
+	case 0x0019:
+		return "ru"
+	case 0x0016:
+		return "pt"
+	case 0x002A:
+		return "vi"
+	}
+	return ""
+}
+
 // waitForRelaunchParent and the UNITERM_RELAUNCH_PID handshake were removed:
 // the relaunch is now quit-then-spawn (relaunchPending + spawnSuccessorProcess
 // in main.go), so the successor never sees the lock held.
