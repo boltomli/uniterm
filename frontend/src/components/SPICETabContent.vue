@@ -397,7 +397,7 @@ function onFocusIn() {
   const captureID = crypto.randomUUID()
   const sessionID = currentSessionId.value
   keyboardCaptureId = captureID
-  queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true))
+  queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
     .then(enabled => {
       if (!enabled || keyboardCaptureId !== captureID) return
       let pending = false
@@ -405,7 +405,7 @@ function onFocusIn() {
         if (!ownsRemoteKeyboard()) { onFocusOut(); return }
         if (pending) return
         pending = true
-        queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true))
+        queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
           .catch(error => {
             console.error('SPICE keyboard capture error:', error)
             if (keyboardCaptureId === captureID) onFocusOut()
@@ -450,6 +450,14 @@ function onToolbarError(error: unknown) {
 
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement === container.value
+  if (keyboardCaptureId && currentSessionId.value) {
+    // Apply the new fullscreen flag immediately instead of waiting for the
+    // next capture heartbeat, so Escape is forwarded right away.
+    const captureID = keyboardCaptureId
+    const sessionID = currentSessionId.value
+    queueRemoteKeyboardChange(() => SetSPICEKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
+      .catch(error => console.error('SPICE keyboard capture error:', error))
+  }
   void nextTick(applyScale)
 }
 

@@ -9,6 +9,8 @@ export function spiceDesktopGeometry(
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
   const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1
   const canFit = Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && viewportWidth > 0 && viewportHeight > 0
-  const scale = scaleViewport && canFit ? Math.min(viewportWidth / width, viewportHeight / height, 1) : 1 / ratio
+  // Match VNC/RDP behavior: fit the viewport in both directions, so small
+  // remote desktops also upscale to fill a fullscreen window.
+  const scale = scaleViewport && canFit ? Math.min(viewportWidth / width, viewportHeight / height) : 1 / ratio
   return { scale, width: width * scale, height: height * scale }
 }
