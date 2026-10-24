@@ -132,8 +132,13 @@ function emitSessionData(id: string, data: string): void {
 
 // The mirror is the LAST Terminal constructed for a session (acquire creates
 // the visible terminal first, then createMirror).
-function mirrorOf(): any {
-  return createdTerminals[createdTerminals.length - 1]
+interface MirrorLike {
+  writes: Array<{ data: string; cb?: () => void }>
+  resets: number
+  dataHandlers: Array<(data: string) => void>
+}
+function mirrorOf(): MirrorLike {
+  return createdTerminals[createdTerminals.length - 1] as MirrorLike
 }
 
 // Idle callbacks armed via the requestIdleCallback stub (P-01 catch-up).
@@ -278,7 +283,7 @@ describe('terminalManager mirror foreground queueing (P-01 plan A)', () => {
   })
 
   it('does not answer queries while the panel is foreground', () => {
-    const sid = setupSession(true)
+    setupSession(true)
     const mirror = mirrorOf()
 
     // Foreground: the visible terminal is the responder.
