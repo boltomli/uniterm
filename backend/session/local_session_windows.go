@@ -683,7 +683,10 @@ func (s *LocalSession) encodeInput(data []byte) []byte {
 }
 
 func (s *LocalSession) readLoop() {
-	buf := make([]byte, 4096)
+	// 16 KiB, matching the SSH readLoop (P-09): ConPTY emits many small
+	// writes, and the old 4 KiB buffer quadrupled the read → emit → IPC
+	// event count for the same output.
+	buf := make([]byte, 16*1024)
 	for {
 		select {
 		case <-s.quit:

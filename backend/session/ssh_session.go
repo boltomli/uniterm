@@ -621,8 +621,10 @@ func (s *SSHSession) readLoop() {
 			// lastRecv outlives this iteration (Disconnect logs it after
 			// readLoop returns) so it must hold an independent copy. It
 			// keeps the RAW server bytes (diagnostics), not the cleaned
-			// stream below.
-			s.lastRecv.Store(append([]byte(nil), data...))
+			// stream below — and only the TAIL tailHex(last, 64) ever
+			// renders, so copy at most that much instead of the whole ≤16KiB
+			// read (P-09: one full-buffer clone per read was pure garbage).
+			s.lastRecv.Store(keepTail(data, 64))
 			// OSC-7 extraction runs on the RAW byte stream, BEFORE decoding:
 			// the sequence is pure ASCII while legacy codecs (GBK/Big5/...)
 			// could mangle its bytes or withhold a fragment in their
@@ -678,6 +680,16 @@ func tailHex(b []byte, max int) string {
 		b = b[len(b)-max:]
 	}
 	return fmt.Sprintf("% x", b)
+}
+
+// keepTail returns an independent copy of the last n bytes of b (all of b
+// when shorter). Only consumers that keep data past the read buffer's
+// lifetime may call it — and they should only ever need the tail (P-09).
+func keepTail(b []byte, n int) []byte {
+	if len(b) <= n {
+		return append([]byte(nil), b...)
+	}
+	return append([]byte(nil), b[len(b)-n:]...)
 }
 
 // sentDiag renders the last-sent payload for disconnect diagnostics as a
