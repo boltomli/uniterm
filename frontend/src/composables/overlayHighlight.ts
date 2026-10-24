@@ -210,36 +210,45 @@ export function shiftOverrideStore(term: XTerm, trimmed: number): boolean {
   return true
 }
 
-/** Re-key a scrollback line cache after `trimmed` lines were trimmed from
- * the top of the buffer: every surviving absolute line index drops by the
- * trim count, and entries whose line was itself trimmed away are dropped.
- * Mutates in place and preserves Map insertion order so the LRU eviction
- * in setCachedSpans keeps working unchanged. Generic over the value so the
- * text-validated screen cache can share it (P-05). */
-export function shiftLineCache<V>(
-  cache: Map<number, V>,
-  trimmed: number,
-): void {
-  if (trimmed <= 0) return
-  const shifted = new Map<number, V>()
-  for (const [key, spans] of cache) {
-    const next = key - trimmed
-    if (next >= 0) shifted.set(next, spans)
+/** Drop overrides more than `keepFromY` above the current viewport top
+ * (P-06): scrollback far above the viewport is reachable only through the
+ * span caches, which re-apply a row's overrides when it scrolls into view.
+ * Keeping just the viewport plus two screens of slack means small scroll-
+ * ups never flash uncolored (the scroll refresh debounces by 120ms), and —
+ * once prune runs after every refresh — the store stays bounded at ~3
+ * screens, so the trim re-key below costs O(screens) instead of O(scrollback).
+ *
+ * Returns false when the fork's internal store is unavailable (upstream
+ * xterm without the CellColorOverrideStore patch). */
+export function pruneOverrideStore(term: XTerm, keepFromY: number): boolean {
+  const store = (term as unknown as {
+    _core?: { cellColorOverrides?: { _overrides?: Map<number, unknown> } }
+  })._core?.cellColorOverrides
+  const map = store?._overrides
+  if (!(map instanceof Map)) return false
+  // Deleting during Map iteration is safe (unlike plain objects).
+  for (const key of map.keys()) {
+    if (key < keepFromY) map.delete(key)
   }
-  cache.clear()
-  for (const [key, spans] of shifted) cache.set(key, spans)
+  return true
 }
 
 export class OverlayHighlighter {
   private term: XTerm
-  /** Immutable (scrollback) absolute line index → resolved spans, including []. */
+  /** Span cache keyed ABSOLUTELY (buffer index + totalTrim): including []. */
   private lineMatchCache = new Map<number, HighlightSpan[]>()
   /** Text-validated cache for entirely-on-screen logical lines (P-05):
    * screen rows are rewritten in place, so spans are reused only when the
    * stitched text is byte-identical — which skips the regex pass, the cell
    * map and the span split that used to run on EVERY ~10ms refresh. Keyed
-   * by the logical line's start row; shifted with trims like lineMatchCache. */
+   * absolutely like lineMatchCache (P-06). */
   private screenRowCache = new Map<number, { text: string; perRow: HighlightSpan[][] }>()
+  /** Cumulative lines trimmed from scrollback since the caches were last
+   * cleared. Both span caches key on `index + totalTrim`, which is stable
+   * across trims — a line's index drops by exactly what totalTrim grows by —
+   * so trims need NO cache rebuild (P-06): the O(scrollback) shift is gone
+   * and entries for trimmed-away lines simply fall out of LRU reach. */
+  private totalTrim = 0
   private writeDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private writePendingSince = 0
   private lastSyncScan = -Infinity
@@ -294,6 +303,7 @@ export class OverlayHighlighter {
       this.hasTrimHook = true
       this.trimDisposable = lines.onTrim((amount) => {
         this.pendingTrim += amount
+        this.totalTrim += amount // span-cache keys follow automatically
       })
     }
 
@@ -357,6 +367,7 @@ export class OverlayHighlighter {
     this.term.clearCellColorOverrides()
     this.lineMatchCache.clear()
     this.screenRowCache.clear()
+    this.totalTrim = 0 // caches are empty; absolute keys restart here
     this.pendingTrim = 0 // cache is gone; a pending shift has nothing to move
     this.disposeSentinel()
     this.bufferTrimmed = false
@@ -468,6 +479,7 @@ export class OverlayHighlighter {
     this.term.clearCellColorOverrides()
     this.lineMatchCache.clear()
     this.screenRowCache.clear()
+    this.totalTrim = 0
     this.lastViewportY = -1
     this.refreshViewport()
   }
@@ -480,17 +492,18 @@ export class OverlayHighlighter {
   }
 
   private getCachedSpans(lineY: number): HighlightSpan[] | undefined {
-    const spans = this.lineMatchCache.get(lineY)
+    const spans = this.lineMatchCache.get(lineY + this.totalTrim)
     if (spans === undefined) return undefined
     // LRU touch
-    this.lineMatchCache.delete(lineY)
-    this.lineMatchCache.set(lineY, spans)
+    this.lineMatchCache.delete(lineY + this.totalTrim)
+    this.lineMatchCache.set(lineY + this.totalTrim, spans)
     return spans
   }
 
   private setCachedSpans(lineY: number, spans: HighlightSpan[]): void {
-    this.lineMatchCache.delete(lineY)
-    this.lineMatchCache.set(lineY, spans)
+    const key = lineY + this.totalTrim
+    this.lineMatchCache.delete(key)
+    this.lineMatchCache.set(key, spans)
     while (this.lineMatchCache.size > MAX_CACHED_MATCH_LINES) {
       const oldest = this.lineMatchCache.keys().next().value
       if (oldest === undefined) break
@@ -498,11 +511,13 @@ export class OverlayHighlighter {
     }
   }
 
-  /** Cache a screen logical line's scan, keyed by its start row (P-05).
-   * LRU-bounded like the scrollback cache; insertion order = reuse order. */
+  /** Cache a screen logical line's scan, keyed absolutely by its start row
+   * (P-05/P-06). LRU-bounded like the scrollback cache; insertion order =
+   * reuse order. */
   private setScreenCache(startY: number, text: string, perRow: HighlightSpan[][]): void {
-    this.screenRowCache.delete(startY)
-    this.screenRowCache.set(startY, { text, perRow })
+    const key = startY + this.totalTrim
+    this.screenRowCache.delete(key)
+    this.screenRowCache.set(key, { text, perRow })
     while (this.screenRowCache.size > MAX_CACHED_MATCH_LINES) {
       const oldest = this.screenRowCache.keys().next().value
       if (oldest === undefined) break
@@ -609,6 +624,7 @@ export class OverlayHighlighter {
       this.term.clearCellColorOverrides()
       this.lineMatchCache.clear()
       this.screenRowCache.clear()
+      this.totalTrim = 0 // other buffer's indexes; absolute keys restart
       this.pendingTrim = 0 // other buffer's indexes; nothing left to shift
       this.disposeSentinel()
       this.bufferTrimmed = false
@@ -616,16 +632,12 @@ export class OverlayHighlighter {
     }
 
     if (this.pendingTrim > 0) {
-      // Scrollback was trimmed by a known count: every surviving absolute
-      // line index drops by that count. SHIFT the span cache to follow
-      // instead of wiping it — a wipe forced a full scrollback rescan on
-      // the next scroll-back, and with scrollback full every new line
-      // trimmed another, so the cache never survived. The override store
-      // has no shift API, so its entries are cleared and re-applied for
-      // the visible viewport by the scan below; rows above the viewport
-      // re-apply from the shifted cache when scrolled to, without a rescan.
-      shiftLineCache(this.lineMatchCache, this.pendingTrim)
-      shiftLineCache(this.screenRowCache, this.pendingTrim)
+      // The span caches key absolutely (index + totalTrim), so a trim needs
+      // no cache rebuild at all (P-06) — only the override store still
+      // speaks buffer indexes and must be re-keyed. The prune at the end of
+      // every refresh keeps that store at ~3 screens, so this shift is
+      // O(screens) instead of O(scrollback); rows outside the store
+      // re-apply from the absolute caches when they scroll into view.
       const shifted = shiftOverrideStore(this.term, this.pendingTrim)
       this.pendingTrim = 0
       if (!shifted) this.term.clearCellColorOverrides()
@@ -690,7 +702,7 @@ export class OverlayHighlighter {
         // is the flood case, where the regex pass used to run on every
         // refresh for every visible row.
         read = this.readLogicalLine(startY, cols)
-        const entry = this.screenRowCache.get(startY)
+        const entry = this.screenRowCache.get(startY + this.totalTrim)
         if (entry && entry.text === read.stitched.text && entry.perRow.length === read.rows.length) {
           cachedPerRow = entry.perRow
         }
@@ -729,6 +741,11 @@ export class OverlayHighlighter {
       }
       lineY = startY
     }
+
+    // Bound the override store to the viewport plus two screens of scrollback
+    // (P-06): everything further up re-applies from the absolute span caches
+    // when scrolled to, and the trim re-key above stays O(screens).
+    pruneOverrideStore(this.term, viewportY - 2 * rows)
 
     if (budget.hitLimit) {
       this.triggerContinuationRefresh()

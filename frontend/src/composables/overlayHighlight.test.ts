@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { logicalLineStart, shiftLineCache, shiftOverrideStore } from './overlayHighlight'
+import { logicalLineStart, pruneOverrideStore, shiftOverrideStore } from './overlayHighlight'
 
 // xterm marks isWrapped on the row wrapped TO: row N.isWrapped=true ⇒
 // row N continues row N-1. The walk-up must ask each row about ITSELF,
@@ -34,49 +34,40 @@ describe('logicalLineStart()', () => {
   })
 })
 
-describe('shiftLineCache()', () => {
-  const span = { cellStartCol: 2, cellWidth: 5, category: 'url' as const }
+// shiftLineCache is gone (P-06): the span caches key on
+// `index + totalTrim`, so trims never rebuild them — covered by the
+// trim-holdover test in overlayHighlight.refresh.test.ts.
 
-  it('shifts cached line indexes down by the trim amount', () => {
-    const cache = new Map<number, typeof span[]>([
-      [2, [span]],
-      [5, [span]],
-      [7, []],
+describe('pruneOverrideStore()', () => {
+  function fakeTerm(overrides?: Map<number, unknown>) {
+    return (overrides
+      ? { _core: { cellColorOverrides: { _overrides: overrides } } }
+      : {}) as unknown as Parameters<typeof pruneOverrideStore>[0]
+  }
+
+  it('drops entries more than the slack window above the viewport', () => {
+    const store = new Map<number, unknown>([
+      [1, 'far-above'],
+      [12, 'near-above'],
+      [20, 'in-viewport'],
     ])
-    shiftLineCache(cache, 3)
-    expect(cache.get(2)).toEqual([span]) // was line 5
-    expect(cache.get(4)).toEqual([]) // was line 7
-    expect(cache.has(0)).toBe(false) // line 2 was trimmed away
+    expect(pruneOverrideStore(fakeTerm(store), 10)).toBe(true)
+    // Same Map instance (the renderer holds a reference).
+    expect([...store.entries()]).toEqual([
+      [12, 'near-above'],
+      [20, 'in-viewport'],
+    ])
   })
 
-  it('drops lines trimmed out of the buffer', () => {
-    const cache = new Map<number, typeof span[]>([
-      [0, [span]],
-      [1, []],
-      [9, [span]],
-    ])
-    shiftLineCache(cache, 9)
-    // Lines 0-8 are gone; line 9 becomes the new line 0.
-    expect(cache.size).toBe(1)
-    expect(cache.get(0)).toEqual([span])
-    expect(cache.has(1)).toBe(false)
+  it('is a no-op when everything is within the window', () => {
+    const store = new Map<number, unknown>([[0, 'a'], [5, 'b']])
+    expect(pruneOverrideStore(fakeTerm(store), -10)).toBe(true)
+    expect(store.size).toBe(2)
   })
 
-  it('is a no-op for a zero trim', () => {
-    const cache = new Map<number, typeof span[]>([[3, [span]]])
-    shiftLineCache(cache, 0)
-    expect(cache.get(3)).toEqual([span])
-  })
-
-  it('preserves LRU order so the oldest entry still evicts first', () => {
-    const cache = new Map<number, typeof span[]>([
-      [10, []],
-      [20, []],
-      [30, []],
-    ])
-    shiftLineCache(cache, 5)
-    // Insertion order must survive the rebuild: 5, 15, 25 (oldest first).
-    expect([...cache.keys()]).toEqual([5, 15, 25])
+  it('returns false when the fork store is unavailable', () => {
+    expect(pruneOverrideStore(fakeTerm(), 10)).toBe(false)
+    expect(pruneOverrideStore(fakeTerm(new Map()), 0)).toBe(true)
   })
 })
 

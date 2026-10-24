@@ -29,31 +29,61 @@ function makeLine(text: string, wrapped = false) {
   }
 }
 
-/** Minimal xterm stand-in: a normal buffer of plain (unwrapped) rows. */
-function makeTerm(rows: string[]) {
-  const lines = rows.map(r => makeLine(r))
+/** Minimal xterm stand-in: a normal buffer of plain (unwrapped) rows,
+ * with the fork's trim hook and cell-color-override store wired up. */
+function makeTerm(screenRows: string[], scrollbackRows: string[] = []) {
+  const lines = [...scrollbackRows, ...screenRows].map(r => makeLine(r))
+  let baseY = scrollbackRows.length
+  let viewportY = baseY // starts at the bottom
+  let trimCb: ((amount: number) => void) | null = null
+  const overrides = new Map<number, unknown>()
   const buffer = {
     type: 'normal' as const,
     get length() { return lines.length },
-    baseY: 0,
-    viewportY: 0,
+    get baseY() { return baseY },
+    get viewportY() { return viewportY },
     cursorY: 0,
     getLine: (y: number) => lines[y],
     getNullCell: () => ({}),
   }
   const term = {
-    rows: rows.length,
+    rows: screenRows.length,
     cols: 80,
     buffer: { active: buffer },
     options: { theme: {} },
+    _core: {
+      _bufferService: {
+        buffers: {
+          normal: {
+            lines: {
+              onTrim: (cb: (amount: number) => void) => {
+                trimCb = cb
+                return { dispose() {} }
+              },
+            },
+          },
+        },
+      },
+      cellColorOverrides: { _overrides: overrides },
+    },
     onWriteParsed: () => ({ dispose() {} }),
     onResize: () => ({ dispose() {} }),
     onRender: () => ({ dispose() {} }),
-    setCellColorOverrides: vi.fn(),
-    clearCellColorOverrides: vi.fn(),
+    setCellColorOverrides: vi.fn((y: number, spans: unknown) => {
+      if (spans) overrides.set(y, spans)
+      else overrides.delete(y)
+    }),
+    clearCellColorOverrides: vi.fn(() => overrides.clear()),
     registerMarker: () => null,
   }
-  return { term, lines }
+  /** Trim n lines off the top of scrollback, as xterm would. */
+  const fireTrim = (n: number) => {
+    lines.splice(0, n)
+    baseY -= n
+    viewportY = Math.max(0, viewportY - n)
+    trimCb?.(n)
+  }
+  return { term, lines, fireTrim, overrides }
 }
 
 const SAMPLE_ROWS = [
@@ -121,6 +151,29 @@ describe('OverlayHighlighter screen-row text cache (P-05)', () => {
     ;(h as unknown as { refreshViewport(): void }).refreshViewport()
 
     expect(matchTextSpans).toHaveBeenCalledTimes(1)
+    h.dispose()
+  })
+
+  it('keeps cache hits across scrollback trims — absolute keys (P-06)', () => {
+    const { term, fireTrim, overrides } = makeTerm(SAMPLE_ROWS, ['old scrollback line'])
+    const h = new OverlayHighlighter(term as never)
+    h.attach()
+    // Viewport sits at the bottom: only the 5 screen rows scan (keys 1..5).
+    expect(matchTextSpans).toHaveBeenCalledTimes(SAMPLE_ROWS.length)
+    // Row 4 ('plain row with nothing') matches nothing → setOverrides sends
+    // null → the fake store deletes it; rows 1,2,3,5 carry colors.
+    expect([...overrides.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 5])
+    matchTextSpans.mockClear()
+
+    // Trim 1 scrollback line: every buffer index shifts down by 1, but the
+    // absolute key (index + totalTrim) identifies the same line — no cache
+    // rebuild, no re-match; only the override store (buffer-index space)
+    // is re-keyed.
+    fireTrim(1)
+    ;(h as unknown as { refreshViewport(): void }).refreshViewport()
+
+    expect(matchTextSpans).toHaveBeenCalledTimes(0)
+    expect([...overrides.keys()].sort((a, b) => a - b)).toEqual([0, 1, 2, 4])
     h.dispose()
   })
 })
