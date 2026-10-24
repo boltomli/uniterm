@@ -358,6 +358,12 @@ let replySuppressUntil = 0
 let savedViewportY: number | null = null
 let savedBaseY: number | null = null
 let unsubscribe: (() => void) | null = null
+// P-10: after the first notification dot lands for this INACTIVE terminal,
+// later output skips the panel/tab lookup entirely — a background session
+// flooding output must not walk panelStore.panels and tabStore.tabs once
+// per chunk. Reset when the tab returns to the foreground or the session id
+// changes, so the next background period dots again.
+let notifiedWhileInactive = false
 let statusUnsubscribe: (() => void) | null = null
 let onDocumentMouseDown: ((e: MouseEvent) => void) | null = null
 let onTerminalAuxClick: ((e: MouseEvent) => void) | null = null
@@ -1590,7 +1596,7 @@ onMounted(() => {
     if (!isActive.value) {
       // Mark notification dot on the tab when inactive terminal receives output
       // Only process events for this instance's session (events are global)
-      if (payload.id === props.sessionId && props.sessionId) {
+      if (payload.id === props.sessionId && props.sessionId && !notifiedWhileInactive) {
         // Find the panel by sessionId (panels Map is keyed by panelId)
         let panelId: string | null = null
         for (const [id, p] of panelStore.panels) {
@@ -1606,6 +1612,9 @@ onMounted(() => {
           )
           if (tab && tab.id !== tabStore.activeTabId) {
             tabStore.markTabNotification(tab.id)
+            // P-10: one dot per background period is enough — stop
+            // walking the panel/tab maps for the rest of the flood.
+            notifiedWhileInactive = true
           }
         }
       }
@@ -1859,6 +1868,8 @@ onActivated(() => {
 
   nativeDrop.bind()
   markTerminalActive(props.sessionId || '', terminalInstanceRef, true)
+  // Foreground again: the next background period may dot once more (P-10).
+  notifiedWhileInactive = false
 
   // Replay session data that arrived while deactivated BEFORE
   // setting isActive = true. The session:data handler gates on
@@ -1981,6 +1992,8 @@ watch(() => props.sessionId, (newId, oldId) => {
     // P-02: release a pause held against the OLD id before it disappears
     // behind the transfer.
     resumeBackendOutput()
+    // New session: its first background output deserves a fresh dot (P-10).
+    notifiedWhileInactive = false
     if (terminalRef.value) detachTerminal(oldId, terminalRef.value)
     disposeZmodemService(oldId)
     // Publish the active state before/after the terminal object moves between
