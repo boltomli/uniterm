@@ -183,6 +183,7 @@
   "tab.more": "More Tabs",
   "tab.dontShowAgain": "Don't show again (can be re-enabled in settings)",
   "terminal.more": "More",
+  "terminal.ctrlClickToOpen": "{modifier} + Click to open",
   "terminal.searchText": "Text Search",
   "terminal.uploadFileRz": "Upload File (rz -be)",
   "terminal.askAI": "Ask AI",

@@ -183,6 +183,7 @@
   "tab.more": "Еще вкладки",
   "tab.dontShowAgain": "Больше не показывать (можно включить в настройках)",
   "terminal.more": "Ещё",
+  "terminal.ctrlClickToOpen": "{modifier} + щёлкните, чтобы открыть",
   "terminal.searchText": "Поиск текста",
   "terminal.uploadFileRz": "Загрузить файл (rz -be)",
   "terminal.askAI": "Спросить ИИ",

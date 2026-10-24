@@ -183,6 +183,7 @@
   "tab.more": "更多标签",
   "tab.dontShowAgain": "不再提示（可在设置中开启）",
   "terminal.more": "更多",
+  "terminal.ctrlClickToOpen": "{modifier} + 点击打开",
   "terminal.searchText": "文本搜索",
   "terminal.uploadFileRz": "上传文件(rz -be)",
   "terminal.askAI": "问AI",

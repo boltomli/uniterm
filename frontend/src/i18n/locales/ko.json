@@ -183,6 +183,7 @@
   "tab.more": "더 많은 탭",
   "tab.dontShowAgain": "다시 표시하지 않음 (설정에서 다시 활성화 가능)",
   "terminal.more": "더 보기",
+  "terminal.ctrlClickToOpen": "{modifier} + 클릭하여 열기",
   "terminal.searchText": "텍스트 검색",
   "terminal.uploadFileRz": "파일 업로드(rz -be)",
   "terminal.askAI": "AI에게 묻기",

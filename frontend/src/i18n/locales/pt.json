@@ -181,6 +181,7 @@
   "tab.more": "Mais abas",
   "tab.dontShowAgain": "Não mostrar novamente (pode ser reativado nas configurações)",
   "terminal.more": "Mais",
+  "terminal.ctrlClickToOpen": "{modifier} + Clique para abrir",
   "terminal.searchText": "Pesquisa de texto",
   "terminal.uploadFileRz": "Enviar arquivo (rz -be)",
   "terminal.askAI": "Perguntar à IA",

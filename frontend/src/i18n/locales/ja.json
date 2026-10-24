@@ -183,6 +183,7 @@
   "tab.more": "他のタブ",
   "tab.dontShowAgain": "今後表示しない（設定で再開可能）",
   "terminal.more": "さらに表示",
+  "terminal.ctrlClickToOpen": "{modifier} + クリックで開く",
   "terminal.searchText": "テキスト検索",
   "terminal.uploadFileRz": "ファイルアップロード(rz -be)",
   "terminal.askAI": "AI に質問",

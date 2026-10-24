@@ -183,6 +183,7 @@
   "tab.more": "Weitere Tabs",
   "tab.dontShowAgain": "Nicht mehr anzeigen (in Einstellungen wieder aktivierbar)",
   "terminal.more": "Mehr",
+  "terminal.ctrlClickToOpen": "{modifier} + Klicken zum Öffnen",
   "terminal.searchText": "Textsuche",
   "terminal.uploadFileRz": "Datei hochladen (rz -be)",
   "terminal.askAI": "KI fragen",

@@ -183,6 +183,7 @@
   "tab.more": "Más pestañas",
   "tab.dontShowAgain": "No mostrar de nuevo (se puede reactivar en ajustes)",
   "terminal.more": "Más",
+  "terminal.ctrlClickToOpen": "Clic + {modifier} para abrir",
   "terminal.searchText": "Buscar texto",
   "terminal.uploadFileRz": "Subir archivo (rz -be)",
   "terminal.askAI": "Preguntar a la IA",

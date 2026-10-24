@@ -181,6 +181,7 @@
   "tab.more": "Thẻ khác",
   "tab.dontShowAgain": "Không hiện lại (có thể bật lại trong cài đặt)",
   "terminal.more": "Thêm",
+  "terminal.ctrlClickToOpen": "{modifier} + Nhấp để mở",
   "terminal.searchText": "Tìm kiếm văn bản",
   "terminal.uploadFileRz": "Tải tệp lên (rz -be)",
   "terminal.askAI": "Hỏi AI",

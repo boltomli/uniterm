@@ -183,6 +183,7 @@
   "tab.more": "Plus d'onglets",
   "tab.dontShowAgain": "Ne plus afficher (réactivable dans les paramètres)",
   "terminal.more": "Plus",
+  "terminal.ctrlClickToOpen": "{modifier} + Clic pour ouvrir",
   "terminal.searchText": "Rechercher",
   "terminal.uploadFileRz": "Téléverser un fichier (rz -be)",
   "terminal.askAI": "Demander à l'IA",

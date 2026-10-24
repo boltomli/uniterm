@@ -183,6 +183,7 @@
   "tab.more": "更多分頁",
   "tab.dontShowAgain": "不再提示（可在設定中開啟）",
   "terminal.more": "更多",
+  "terminal.ctrlClickToOpen": "{modifier} + 點擊開啟",
   "terminal.searchText": "文字搜尋",
   "terminal.uploadFileRz": "上傳檔案(rz -be)",
   "terminal.askAI": "問AI",

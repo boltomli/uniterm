@@ -146,7 +146,7 @@ import { queuedSessionWrite } from '../services/sessionWriter'
 import { WriteFileBase64, SaveFileDialog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
-import { isMobilePlatform } from '../utils/platform'
+import { isMobilePlatform, detectPlatformSync } from '../utils/platform'
 import { tryAndroidSave } from '../utils/androidSave'
 import { applyMobileCtrl } from '../utils/mobileCtrlKey'
 import { msg } from '../services/message'
@@ -1251,7 +1251,11 @@ onMounted(() => {
           terminal!.element!.appendChild(hoverEl)
         }
         const rect = terminal!.element!.getBoundingClientRect()
-        hoverEl.textContent = 'Ctrl + Click to open'
+        // S-03: the hint was hardcoded English — translate it, and name the
+        // right modifier for the platform (open accepts Ctrl OR ⌘).
+        hoverEl.textContent = t('terminal.ctrlClickToOpen', {
+          modifier: detectPlatformSync() === 'darwin' ? '⌘' : 'Ctrl',
+        })
         hoverEl.style.left = (event.clientX - rect.left + 12) + 'px'
         hoverEl.style.top = (event.clientY - rect.top - 28) + 'px'
         hoverEl.style.display = 'block'
