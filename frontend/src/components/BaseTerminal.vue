@@ -1394,12 +1394,6 @@ onMounted(() => {
         }
       }
 
-      // Snapshot the cursor BEFORE handleInput mutates it — the backspace
-      // guard below needs the pre-input position (line buffer empty), not
-      // the post-backspace one, or it would also swallow the DEL that
-      // removes the last remaining character.
-      const cursorIndexBeforeInput = terminalInput?.cursorIndex.value ?? -1
-
       // Handle suggestions input (skip in alternate screen apps like vim/k9s)
       if (terminalInput && !terminalInput.isInAlternateScreen() && (props.mode === 'ssh' || props.mode === 'local')) {
         terminalInput.handleInput(data)
@@ -1457,21 +1451,9 @@ onMounted(() => {
       const sid = props.sessionId
       const inAlt = terminalInput?.isInAlternateScreen() ?? false
       if (sid) {
-        // Defensive guard (issue #814): suppress backspace at the line start
-        // so it cannot eat into the shell prompt. Only applies to the normal
-        // screen (not full-screen apps like vim) and when the local line
-        // buffer's cursor is already at position 0. handleInput() above has
-        // already updated cursorIndex, so if it stayed at 0 the backspace
-        // would move the cursor into the prompt on certain shells (e.g.
-        // Euler OS where stty erase may not match the sent byte).
-        if (
-          !inAlt &&
-          terminalInput &&
-          data === '\x7f' &&
-          cursorIndexBeforeInput === 0
-        ) {
-          return
-        }
+        // The suggestion buffer is only an estimate: native paste, shell
+        // completion/history, and interactive programs can bypass it. Always
+        // deliver Backspace and let the remote line editor enforce its bounds.
         writeTerminalInput(data, inAlt)
       }
     } else {
