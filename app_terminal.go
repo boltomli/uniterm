@@ -631,6 +631,38 @@ func (a *App) SessionResize(sessionID string, cols, rows int) error {
 	return nil
 }
 
+// SessionPauseOutput holds a session's text-output stream (P-02 frontend
+// flow control): the readLoop stops pulling from the SSH/PTY channel until
+// SessionResumeOutput, so a frontend write backlog of seconds never builds
+// up. Ignored while a ZMODEM transfer owns the stream, and bounded by a
+// backend watchdog (session-level) so a lost frontend cannot wedge the
+// session. Errors are best-effort — the frontend also resumes on
+// deactivate/unmount/disconnect.
+func (a *App) SessionPauseOutput(sessionID string) error {
+	if a.sessionManager == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	s.SetOutputPaused(true)
+	return nil
+}
+
+// SessionResumeOutput releases a SessionPauseOutput hold.
+func (a *App) SessionResumeOutput(sessionID string) error {
+	if a.sessionManager == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	s.SetOutputPaused(false)
+	return nil
+}
+
 func (a *App) SessionStartZmodem(sessionID string) error {
 	if a.sessionManager == nil {
 		return fmt.Errorf("session manager not initialized")

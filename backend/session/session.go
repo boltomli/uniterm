@@ -388,6 +388,9 @@ type Session interface {
 	SetZmodemMode(bool)
 	EndZmodem([]byte)
 	IsZmodemMode() bool
+	// SetOutputPaused holds (true) or releases (false) the text-output
+	// stream — the frontend's end-to-end flow control (P-02).
+	SetOutputPaused(bool)
 }
 
 type baseSession struct {
@@ -460,6 +463,14 @@ type baseSession struct {
 	emitQuit chan struct{}
 	emitDone chan struct{}
 	emitOnce sync.Once
+	// Output flow control (P-02): the frontend pauses the stream while its
+	// xterm write backlog is above the high-water mark. outputPaused is
+	// atomic so zmodem entry (under s.mu) can drop a hold without emitting
+	// an emitMu→s.mu lock cycle; the cond, timer and generation live under
+	// emitMu. Guarded by emitMu: outputPauseTimer, pauseGen.
+	outputPaused     atomic.Bool
+	outputPauseTimer *time.Timer
+	pauseGen         uint64
 	// utf8Tail holds ≤3 bytes of an incomplete trailing UTF-8 rune between
 	// reads so every emitted chunk ends on a rune boundary (see
 	// utf8_carry.go). Guarded by utf8Mu, which is a leaf lock: no path
@@ -492,6 +503,13 @@ var (
 	// to drop-oldest so the readLoop and terminal input stay alive.
 	// Package-level var so tests can shorten it.
 	emitBlockWatchdog = 3 * time.Second
+	// outputPauseTimeout bounds a frontend-requested output pause (P-02):
+	// the session auto-resumes if no SessionResumeOutput arrives — a
+	// crashed or suspended frontend must never wedge a session with a
+	// silently paused stream. Shorter than the zmodem safety timeout: a
+	// stalled readLoop just delays binary-mode detection by at most this.
+	// Package-level var so tests can shorten it.
+	outputPauseTimeout = 5 * time.Second
 )
 
 const (
@@ -706,6 +724,18 @@ func (s *baseSession) queueEmit(data []byte) bool {
 	if s.emitQuit == nil || s.emitClosing {
 		return false
 	}
+	// Frontend flow control (P-02): while output is paused the frontend's
+	// write backlog is above its high-water mark. Hold here (cond.Wait
+	// releases emitMu) so backpressure reaches the SSH/PTY channel and no
+	// further chunks pile up in the queue. Bounded by the pause watchdog;
+	// SetOutputPaused(false) and zmodem entry both broadcast. zmodem's own
+	// data never reaches this point — it routes to emitBinary.
+	for s.outputPaused.Load() && !s.emitClosing {
+		s.emitCond.Wait()
+	}
+	if s.emitClosing {
+		return false
+	}
 	if len(s.emitQueue) >= emitQueueCapacity && !s.emitOverflow {
 		watchdog := time.AfterFunc(emitBlockWatchdog, s.emitCond.Broadcast)
 		defer watchdog.Stop()
@@ -911,6 +941,78 @@ func (s *baseSession) SetZmodemMode(v bool) {
 	s.mu.Unlock()
 }
 
+// SetOutputPaused holds (v=true) or releases (v=false) the text-output
+// stream — the frontend's end-to-end flow control (P-02). While paused the
+// readLoop blocks in queueEmit, so backpressure reaches the SSH/PTY channel
+// instead of the frontend's write buffer piling up seconds of output (the
+// cause of laggy Ctrl+C and jumpy full-screen redraws).
+//
+// Every pause is bounded by outputPauseTimeout (auto-resume), and ZMODEM
+// ignores pause entirely — entering binary mode releases an active hold so
+// a transfer can never be stalled by the frontend.
+func (s *baseSession) SetOutputPaused(v bool) {
+	if v {
+		if s.IsZmodemMode() {
+			return
+		}
+		if !s.outputPaused.CompareAndSwap(false, true) {
+			return // already paused; the existing watchdog still bounds it
+		}
+		timeout := outputPauseTimeout
+		s.emitMu.Lock()
+		s.pauseGen++
+		gen := s.pauseGen
+		s.outputPauseTimer = time.AfterFunc(timeout, func() {
+			s.emitMu.Lock()
+			stale := s.pauseGen != gen
+			s.emitMu.Unlock()
+			if stale {
+				return // paused again meanwhile; that pause owns the watchdog
+			}
+			log.Writef("session %s: output pause watchdog expired after %s, auto-resuming", s.id, timeout)
+			s.SetOutputPaused(false)
+		})
+		s.emitMu.Unlock()
+		return
+	}
+	if !s.outputPaused.CompareAndSwap(true, false) {
+		return
+	}
+	s.emitMu.Lock()
+	s.pauseGen++ // invalidate a watchdog callback that may already be queued
+	if s.outputPauseTimer != nil {
+		s.outputPauseTimer.Stop()
+		s.outputPauseTimer = nil
+	}
+	cond := s.emitCond
+	s.emitMu.Unlock()
+	if cond != nil {
+		cond.Broadcast() // wake readLoops parked in queueEmit's pause wait
+	}
+}
+
+// releasePauseForZmodem drops an active output pause when the session enters
+// binary mode: the frontend's hold must never stall a transfer. Callers hold
+// s.mu; emitMu is a leaf lock from here (queueEmit never takes s.mu while
+// holding emitMu), and emitCond may be nil for sessions that never started
+// the emit loop — nobody waits on it then.
+func (s *baseSession) releasePauseForZmodem() {
+	if !s.outputPaused.CompareAndSwap(true, false) {
+		return
+	}
+	s.emitMu.Lock()
+	s.pauseGen++
+	if s.outputPauseTimer != nil {
+		s.outputPauseTimer.Stop()
+		s.outputPauseTimer = nil
+	}
+	cond := s.emitCond
+	s.emitMu.Unlock()
+	if cond != nil {
+		cond.Broadcast()
+	}
+}
+
 // EndZmodem leaves binary mode and emits terminal bytes that followed the
 // protocol's final handshake through the normal text-output path. Session
 // types with an output decoder can override this method.
@@ -944,6 +1046,9 @@ func (s *baseSession) setZmodemModeLocked(v bool) {
 		// Entering binary mode: drop any held incomplete-rune tail so it
 		// cannot be prepended to post-transfer output.
 		s.resetUTF8Carry()
+		// Binary mode owns the stream: release any frontend output pause so
+		// the transfer's synchronous path can never stall behind it.
+		s.releasePauseForZmodem()
 	}
 	if s.zmodemTimer != nil {
 		s.zmodemTimer.Stop()

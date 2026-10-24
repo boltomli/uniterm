@@ -141,7 +141,7 @@ import type { Terminal } from '@xterm/xterm'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { createDisposeBag } from '../utils/disposeBag'
 import '@xterm/xterm/css/xterm.css'
-import { SessionResize, SessionEndZmodem } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SessionResize, SessionEndZmodem, SessionPauseOutput, SessionResumeOutput } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { queuedSessionWrite } from '../services/sessionWriter'
 import { WriteFileBase64, SaveFileDialog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
@@ -248,6 +248,44 @@ const showLineNumbers = computed(() => settingsStore.settings.terminal.showLineN
 // Whether the timestamp column is enabled (from the persistent setting).
 const showTimestamps = computed(() => settingsStore.settings.terminal.showTimestamps ?? false)
 
+// --- End-to-end output flow control (P-02) ---------------------------------
+// Count bytes handed to xterm but not yet parsed (the write callback is the
+// parse barrier). Above the high-water mark the backend is asked to HOLD the
+// session's stream — its readLoop blocks, so backpressure reaches the
+// SSH/PTY channel instead of seconds of output piling up in xterm's write
+// buffer (the cause of laggy Ctrl+C and jumpy redraws). Below the low-water
+// mark the stream is released; `outputPausedSid` remembers WHICH session is
+// held so an id switch can still release the old one. The backend bounds
+// every pause with a watchdog (5s auto-resume), and deactivation, unmount
+// and session-switch below also release defensively — a paused session must
+// never outlive the component that paused it.
+const OUTPUT_PENDING_HIGH = 512 * 1024
+const OUTPUT_PENDING_LOW = 128 * 1024
+let outputPendingBytes = 0
+let outputPaused = false
+let outputPausedSid: string | null = null
+
+function trackOutputWrite(len: number) {
+  outputPendingBytes += len
+  if (outputPaused || outputPendingBytes <= OUTPUT_PENDING_HIGH) return
+  outputPaused = true
+  outputPausedSid = props.sessionId || null
+  if (outputPausedSid) SessionPauseOutput(outputPausedSid).catch(() => {})
+}
+
+function trackOutputParsed(len: number) {
+  outputPendingBytes = Math.max(0, outputPendingBytes - len)
+  if (outputPaused && outputPendingBytes < OUTPUT_PENDING_LOW) resumeBackendOutput()
+}
+
+function resumeBackendOutput() {
+  if (!outputPaused) return
+  outputPaused = false
+  const sid = outputPausedSid
+  outputPausedSid = null
+  if (sid) SessionResumeOutput(sid).catch(() => {})
+}
+
 // Write terminal data and fold it into the logical-line registry for the
 // gutter's number/time columns: lines that just received characters get the
 // next sequential number and the arrival time; lines the cursor moved past
@@ -261,7 +299,9 @@ function writeStamped(data: string, onParsed?: () => void) {
   if (!t || !sid) { t?.write(data, onParsed); return }
   const ts = Date.now()
   const before = currentAbsoluteLine(sid)
+  trackOutputWrite(data.length)
   t.write(data, () => {
+    trackOutputParsed(data.length)
     recordWrite(sid, before, ts)
     onParsed?.()
   })
@@ -1899,6 +1939,10 @@ onDeactivated(() => {
   // Mark inactive so session event handlers become no-ops.
   nativeDrop.unbind()
   isActive.value = false
+  // P-02: while deactivated this component no longer writes session data,
+  // so its pending-byte accounting can never drain — release any output
+  // pause now (the background mirror / sessionStore take over consumption).
+  resumeBackendOutput()
   // Buffer freezes from here (live session:data handler gates on isActive) —
   // publish it so buffer readers stop trusting the screen.
   markTerminalActive(props.sessionId || '', terminalInstanceRef, false)
@@ -1934,6 +1978,9 @@ onDeactivated(() => {
 // Watch sessionId changes to rebind session data
 watch(() => props.sessionId, (newId, oldId) => {
   if (oldId && oldId !== newId) {
+    // P-02: release a pause held against the OLD id before it disappears
+    // behind the transfer.
+    resumeBackendOutput()
     if (terminalRef.value) detachTerminal(oldId, terminalRef.value)
     disposeZmodemService(oldId)
     // Publish the active state before/after the terminal object moves between
@@ -2142,6 +2189,8 @@ watch(
 // so detachTerminal would see terminalRef.value === null and skip.
 // onBeforeUnmount fires while refs are still valid.
 onBeforeUnmount(() => {
+  // P-02: never leave a session paused behind an unmounted component.
+  resumeBackendOutput()
   if (props.sessionId && terminalRef.value) {
     detachTerminal(props.sessionId, terminalRef.value)
   }
