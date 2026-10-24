@@ -43,6 +43,8 @@ type App struct {
 	ctx                  context.Context
 	app                  *application.App
 	window               *application.WebviewWindow
+	tray                 *application.SystemTray
+	trayLang             string                             // resolved UI language the tray menu was last built with
 	notifier             *notifications.NotificationService // system notifications (MCP approval prompts)
 	sessionManager       *session.SessionManager
 	k8sManager           *k8s.Manager
@@ -1795,6 +1797,9 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		// Re-apply the global show/hide hotkey so binding changes (and the
 		// enable switch) take effect immediately. No-op when unchanged.
 		applyGlobalShowHideHotkey(a.app, a.window, trayHotkeyBinding(&settings))
+		// Rebuild the tray menu when the UI language changed (issue #1215).
+		// No-op when the resolved language is unchanged.
+		a.refreshTrayLanguage(settings.Language)
 	}
 	return err
 }

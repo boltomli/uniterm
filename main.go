@@ -512,6 +512,48 @@ func trayLabel(lang string, idx int) string {
 	return trayLabels["en"][idx]
 }
 
+// resolveTrayLanguage maps the persisted settings language to one of the
+// trayLabels keys. "system" (and empty — the unset default) resolves to the
+// OS UI language so the tray follows the system locale (issue #1215),
+// mirroring the frontend's navigator.language resolution; anything unmapped
+// falls back to English.
+func resolveTrayLanguage(lang string) string {
+	if lang != "" && lang != "system" {
+		return normalizeLanguageCode(lang)
+	}
+	if sys := systemLanguage(); sys != "" {
+		return normalizeLanguageCode(sys)
+	}
+	return "en"
+}
+
+// normalizeLanguageCode matches a raw locale tag ("zh-TW", "zh-cn", "pt-BR",
+// "zh_CN.UTF-8", "zh-Hans-CN", ...) against the languages the tray offers,
+// using the same rules as the frontend's resolveLocale: zh variants split
+// between Simplified and Traditional, everything else matches by the primary
+// language subtag. Unmatched tags fall back to English.
+func normalizeLanguageCode(code string) string {
+	code = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(code, "_", "-")))
+	// Strip encoding and modifier suffixes ("zh-cn.utf-8", "zh-cn@rg=...").
+	if i := strings.IndexAny(code, ".@"); i >= 0 {
+		code = code[:i]
+	}
+	if strings.HasPrefix(code, "zh") {
+		if strings.Contains(code, "tw") || strings.Contains(code, "hk") ||
+			strings.Contains(code, "mo") || strings.Contains(code, "hant") {
+			return "zh-TW"
+		}
+		return "zh-CN"
+	}
+	if i := strings.IndexByte(code, '-'); i >= 0 {
+		code = code[:i]
+	}
+	if _, ok := trayLabels[code]; ok {
+		return code
+	}
+	return "en"
+}
+
 const (
 	trayShow  = 0
 	trayHide  = 1
@@ -522,38 +564,17 @@ const (
 )
 
 // setupTray creates the system tray icon and menu. lang is the persisted UI
-// language (from settings.json) used to localize the menu labels.
+// language (from settings.json) used to localize the menu labels. "system"
+// resolves to the OS UI language (issue #1215), and the menu is rebuilt when
+// the user changes the UI language at runtime (see refreshTrayLanguage).
 func setupTray(w3app *application.App, app *App, window *application.WebviewWindow, lang string) {
 	tray := w3app.SystemTray.New()
 	applyTrayIcon(tray)
 	tray.SetTooltip("uniTerm")
 
-	menu := application.NewMenu()
-	menu.Add(trayLabel(lang, trayShow)).OnClick(func(*application.Context) {
-		showMainWindow(window)
-	})
-	menu.Add(trayLabel(lang, trayHide)).OnClick(func(*application.Context) {
-		window.Hide()
-	})
-	menu.AddSeparator()
-	menu.Add(trayLabel(lang, trayReset)).OnClick(func(*application.Context) {
-		app.resetWindowGeometry()
-	})
-	menu.AddSeparator()
-	menu.Add(trayLabel(lang, traySet)).OnClick(func(*application.Context) {
-		showMainWindow(window)
-		app.emit("app:open-settings")
-	})
-	menu.Add(trayLabel(lang, trayAbout)).OnClick(func(*application.Context) {
-		showMainWindow(window)
-		app.emit("app:open-about")
-	})
-	menu.AddSeparator()
-	menu.Add(trayLabel(lang, trayQuit)).OnClick(func(*application.Context) {
-		w3app.Quit()
-	})
-
-	tray.SetMenu(menu)
+	app.tray = tray
+	app.trayLang = resolveTrayLanguage(lang)
+	tray.SetMenu(buildTrayMenu(app, app.trayLang))
 
 	// Left click toggles visibility, mirroring MobaXterm's tray behaviour.
 	tray.OnClick(func() {
@@ -565,6 +586,57 @@ func setupTray(w3app *application.App, app *App, window *application.WebviewWind
 	})
 
 	tray.Show()
+}
+
+// buildTrayMenu assembles the tray context menu in the given resolved UI
+// language, with the same handlers as the initial setup. Rebuilt and
+// re-applied via SystemTray.SetMenu when the user changes the UI language at
+// runtime (issue #1215); reads a.app/a.window so the handlers keep working
+// after the rebuild.
+func buildTrayMenu(app *App, lang string) *application.Menu {
+	menu := application.NewMenu()
+	menu.Add(trayLabel(lang, trayShow)).OnClick(func(*application.Context) {
+		showMainWindow(app.window)
+	})
+	menu.Add(trayLabel(lang, trayHide)).OnClick(func(*application.Context) {
+		app.window.Hide()
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, trayReset)).OnClick(func(*application.Context) {
+		app.resetWindowGeometry()
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, traySet)).OnClick(func(*application.Context) {
+		showMainWindow(app.window)
+		app.emit("app:open-settings")
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, trayAbout)).OnClick(func(*application.Context) {
+		showMainWindow(app.window)
+		app.emit("app:open-about")
+	})
+	menu.AddSeparator()
+	menu.Add(trayLabel(lang, trayQuit)).OnClick(func(*application.Context) {
+		app.app.Quit()
+	})
+	return menu
+}
+
+// refreshTrayLanguage rebuilds the tray menu when the persisted UI language
+// changed since the menu was last built (issue #1215). Called from
+// SaveSettings so runtime language switches reach the tray without a
+// restart; a no-op when the resolved language is unchanged (e.g. switching
+// between "system" and the locale the system already resolves to).
+func (a *App) refreshTrayLanguage(lang string) {
+	if a.tray == nil {
+		return
+	}
+	resolved := resolveTrayLanguage(lang)
+	if resolved == a.trayLang {
+		return
+	}
+	a.trayLang = resolved
+	a.tray.SetMenu(buildTrayMenu(a, resolved))
 }
 
 // showMainWindow brings the window back from hidden/minimised state and
