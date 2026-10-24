@@ -236,7 +236,7 @@ import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
 import type { ShortcutAction } from './types/settings'
 import { useI18n } from './i18n'
-import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval } from '../bindings/github.com/ys-ll/uniterm/app'
+import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval, SessionGetCwd } from '../bindings/github.com/ys-ll/uniterm/app'
 import { waitForTerminalSize } from './services/terminalManager'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
@@ -389,6 +389,8 @@ let uninstallFocusRestore: (() => void) | null = null
 // Tray menu → open the settings tab (Go shows the window first).
 let unsubTrayOpenSettings: (() => void) | null = null
 let unsubTrayOpenAbout: (() => void) | null = null
+// Records every terminal's cwd reports app-wide (see companionStore.sessionCwd).
+let unsubTerminalCwd: (() => void) | null = null
 const { t, locale } = useI18n()
 const EL_LOCALE_MAP: Record<string, typeof enUs> = {
   'zh-CN': zhCn, 'zh-TW': zhTw, en: enUs, ja, ko, de, es, fr, ru,
@@ -864,6 +866,13 @@ onMounted(async () => {
   unsubMcpSessionCreated = Events.On('mcp:session-created', (ev) => {
     void onMcpSessionCreated(ev.data)
   })
+  // Remember every terminal session's last reported cwd (OSC 7) regardless of
+  // the file sidebar's follow toggle — enabling follow or opening an SFTP view
+  // jumps straight to this directory.
+  unsubTerminalCwd = Events.On('terminal:cwd', (ev) => {
+    const p = ev?.data as { sessionId?: string; cwd?: string } | undefined
+    if (p?.sessionId && p.cwd) companionStore.recordSessionCwd(p.sessionId, p.cwd)
+  })
   // Panel/Tab/StartTab menu actions
   // Sidebar connection dropped onto a workspace panel: connect it and split
   // in at the drop position (see WorkspaceContent.onPanelDrop Case 0).
@@ -878,20 +887,36 @@ onMounted(async () => {
     const c = connId ? connectionStore.connections.find(x => x.id === connId) : undefined
     if (c) void openConnectionAtIndex(c, typeof index === 'number' ? index : tabStore.tabs.length)
   }) as EventListener)
-  window.addEventListener('app:connect-sftp', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openFileBrowser(c, prev?.type === 'start' ? prev : undefined) }
-  }) as EventListener)
+  window.addEventListener('app:connect-sftp', (async (e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d
+    if (c) {
+      const prev = tabStore.activeTab
+      // Explicit initialPath (sidebar "open standalone tab") wins; otherwise
+      // fall back to the terminal's last recorded cwd (right-click "open SFTP").
+      let initialPath = d?.initialPath || (d?.sessionId ? companionStore.sessionCwd[d.sessionId] : '')
+      if (!d?.initialPath && d?.sessionId) {
+        try {
+          const current = await SessionGetCwd(d.sessionId)
+          if (current) {
+            initialPath = current
+            companionStore.recordSessionCwd(d.sessionId, current)
+          }
+        } catch { /* The recorded directory remains the fallback. */ }
+      }
+      openFileBrowser(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId, initialPath)
+    }
+  }) as unknown as EventListener)
   window.addEventListener('app:connect-terminal', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) onConnect(c)
   }) as EventListener)
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
   window.addEventListener('app:connect-container-file', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
   window.addEventListener('app:connect-monitor', ((e: CustomEvent) => {
-    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined) }
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; openMonitorPanel(c, prev?.type === 'start' ? prev : undefined, d?.sourceTabId) }
   }) as EventListener)
   window.addEventListener('app:connect-rdp', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchConnection(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
@@ -961,28 +986,44 @@ function createNewTab() {
 }
 
 // ── Keyboard shortcut handlers (module-level so watch can access them) ──
+
+// Shared semantics for the three sidebar shortcuts (connections/files/monitor):
+// when the target view is not in the foreground (sidebar hidden, or open on a
+// different view) open the sidebar on it; when it already is, collapse the
+// whole sidebar and hand focus back to the terminal. Foreground detection
+// reads the sidebar's real activeView, not the companionStore flags — those
+// only control whether the files/monitor content is loaded and can drift from
+// the view actually shown.
+type SidebarTabView = 'connections' | 'files' | 'monitor'
+
+// Collapse the left sidebar and hand focus back to the current panel's
+// terminal. The files/monitor load flags are left to Sidebar's own view logic.
+function closeSidebar() {
+  sidebarVisible.value = false
+  const pid = tabStore.getActivePanelId()
+  if (pid) nextTick(() => focusPanelTerminal(pid))
+}
+
+// Open the left sidebar with its visible tab switched to the given view,
+// exactly like clicking that tab (Sidebar.openTab routes to each tab's own
+// open logic).
+function openSidebarToTab(view: SidebarTabView) {
+  sidebarVisible.value = true
+  nextTick(() => sidebarRef.value?.openTab(view))
+}
+
+function sidebarViewShortcut(view: SidebarTabView) {
+  if (sidebarVisible.value && sidebarRef.value?.activeView === view) closeSidebar()
+  else openSidebarToTab(view)
+}
+
 const actionHandlers: Record<ShortcutAction, () => void> = {
   nextTab: () => tabStore.nextTab(),
   prevTab: () => tabStore.prevTab(),
   newConnection: () => { createNewTab() },
-  toggleSidebar: () => {
-    if (sidebarVisible.value) {
-      sidebarVisible.value = false
-      const pid = tabStore.getActivePanelId()
-      if (pid) nextTick(() => focusPanelTerminal(pid))
-    } else {
-      sidebarVisible.value = true
-      nextTick(() => sidebarRef.value?.focusSearch())
-    }
-  },
-  toggleFilePanel: () => {
-    // 切换文件边栏（需当前面板支持，如 SSH/WSL/容器 exec 终端）
-    companionStore.toggleFiles()
-  },
-  toggleMonitor: () => {
-    // 切换资源监控边栏（需当前面板支持，如 SSH 终端）
-    companionStore.toggleMonitor()
-  },
+  toggleSidebar: () => sidebarViewShortcut('connections'),
+  toggleFilePanel: () => sidebarViewShortcut('files'),
+  toggleMonitor: () => sidebarViewShortcut('monitor'),
   openQuickCommands: () => {
     sidebarVisible.value = true
     nextTick(() => sidebarRef.value?.openQuickCommands())
@@ -1110,10 +1151,13 @@ onUnmounted(() => {
   unsubMcpApproval?.()
   unsubMcpSessionCreated?.()
   mcpApprovalQueue.clear()
+  unsubTerminalCwd?.()
   settingsStore.dispose?.()
   connectionStore.dispose?.()
   syncStore.dispose?.()
   tunnelStore.dispose?.()
+  useSkillStore().dispose?.()
+  useCommandStore().dispose?.()
   disposeSessionStore?.()
   credStore.dispose()
 })
@@ -1371,12 +1415,12 @@ function onSidebarConnect(config: ConnectionConfig, kind?: 'file' | 'wsl-file' |
   return onConnect(config)
 }
 
-function openFileBrowser(config: ConnectionConfig, prevStart?: any) {
-  return launchFileBrowser(config, { prevStart })
+function openFileBrowser(config: ConnectionConfig, prevStart?: any, afterTabId?: string, initialPath?: string) {
+  return launchFileBrowser(config, { prevStart, afterTabId, initialPath })
 }
 
-function openMonitorPanel(config: ConnectionConfig, prevStart?: any) {
-  return launchMonitor(config, { prevStart })
+function openMonitorPanel(config: ConnectionConfig, prevStart?: any, afterTabId?: string) {
+  return launchMonitor(config, { prevStart, afterTabId })
 }
 
 // Atomically remove a start tab and place a newly-created tab in its position.

@@ -19,6 +19,10 @@ export interface Panel {
   status: PanelStatus
   config: ConnectionConfig | null
   outputLog?: { enabled: boolean; path: string }
+  // Initial remote directory the file tab should open at (terminal cwd via
+  // the "open SFTP" context menu, or the sidebar's current directory via
+  // "open standalone tab"). Consumed once by the tab content on first load.
+  initialPath?: string
 }
 
 export interface PanelLayout {

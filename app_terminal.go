@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
@@ -560,11 +561,24 @@ func (a *App) SessionWrite(sessionID string, data string) error {
 	return s.Write([]byte(data))
 }
 
-// SessionInjectCwdHook types the OSC-7 cwd hook into a running SSH login
-// shell on demand. Used by connections with cwdHookMode "follow": the
-// frontend calls this when the user first enables directory follow for the
-// session's file panel.
-func (a *App) SessionInjectCwdHook(sessionID string) error {
+// SessionGetCwd refreshes an SSH terminal's cwd on demand. Other terminal
+// kinds use their last reported cwd (e.g. WSL's automatic OSC-7 integration).
+func (a *App) SessionGetCwd(sessionID string) (string, error) {
+	if a.sessionManager == nil {
+		return "", fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	if terminal, ok := s.(*session.SSHSession); ok {
+		return terminal.CurrentCwd()
+	}
+	return session.GetSessionCwd(sessionID), nil
+}
+
+// SessionSetCwdTracking controls read-only cwd polling for an SSH terminal.
+func (a *App) SessionSetCwdTracking(sessionID string, enabled bool) error {
 	if a.sessionManager == nil {
 		return fmt.Errorf("session manager not initialized")
 	}
@@ -572,11 +586,11 @@ func (a *App) SessionInjectCwdHook(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	inj, ok := s.(session.CwdHookInjector)
+	terminal, ok := s.(*session.SSHSession)
 	if !ok {
-		return fmt.Errorf("session type %s does not support on-demand cwd hook injection", s.Type())
+		return fmt.Errorf("session type %s does not support SSH cwd tracking", s.Type())
 	}
-	return inj.InjectCwdHook()
+	return terminal.SetCwdTracking(enabled)
 }
 
 func (a *App) SessionResize(sessionID string, cols, rows int) error {
@@ -587,7 +601,34 @@ func (a *App) SessionResize(sessionID string, cols, rows int) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	return s.Resize(cols, rows)
+	// The capture emulator (MCP uniterm_capture / AI collect fallback) is
+	// sized from the PTY at attach time; a resized PTY reflows the stream, so
+	// the stale grid would mis-render every later frame. Recreate it instead
+	// of just dropping it: snapshot its cursor row first (normally the shell
+	// prompt the PTY stream never resends — foreground jobs seed from it),
+	// attach the fresh emulator BEFORE the resize so ConPTY's post-resize
+	// full repaint lands in it, and keep the snapshot as a fallback for
+	// remotes that don't repaint on resize (SSH reflows far-side only).
+	var carried mcp.ScreenSeed
+	a.captureMu.Lock()
+	if old, ok := a.captures[sessionID]; ok {
+		old.mu.Lock()
+		carried = old.screen.PromptSeed()
+		if carried.Line == "" {
+			carried = old.carriedSeed
+		}
+		old.mu.Unlock()
+	}
+	a.captureMu.Unlock()
+	a.removeCapture(sessionID)
+	cap := a.sessionCaptureFor(s)
+	if err := s.Resize(cols, rows); err != nil {
+		return err
+	}
+	cap.mu.Lock()
+	cap.carriedSeed = carried
+	cap.mu.Unlock()
+	return nil
 }
 
 func (a *App) SessionStartZmodem(sessionID string) error {

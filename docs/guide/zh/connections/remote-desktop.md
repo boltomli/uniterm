@@ -6,8 +6,6 @@ uniTerm 集成了四种远程桌面协议，提供流畅的图形化远程控制
 
 RDP（Remote Desktop Protocol）是 Windows 系统内置的远程桌面协议。
 
-> 仅支持 Windows 版本客户端，macOS 和 Linux 版本该功能隐藏。使用系统内置的远程桌面控件。
-
 ![RDP](/imgs/rdp_light.webp)
 
 ### 连接参数
@@ -17,12 +15,11 @@ RDP（Remote Desktop Protocol）是 Windows 系统内置的远程桌面协议。
 | 主机 | Windows 主机 IP 或域名 |
 | 端口 | 默认 3389 |
 | 用户名 | Windows 登录用户名 |
-| 密码 | Windows 登录密码 |
-| 域 | 可选，Windows 域名（如 `WORKGROUP`） |
-| 会话模式 | 普通会话 / 管理员会话（连接到控制台会话，类似 `mstsc /admin`） |
-| 分辨率 | 默认**全屏**；也可选预设固定分辨率或自定义分辨率 |
-| 智能缩放 | 开启后远程桌面自动缩放适配窗口大小，默认关闭 |
-| 网络身份认证 | 开启（兼容所有版本 Windows，需在凭据弹窗中手动输入密码）/ 关闭（仅兼容 Windows 7 / Server 2008 等关闭 NLA 的服务器） |
+| 密码 | Windows 登录密码，可保存凭据 |
+| 域 | 可选，Windows 域名或计算机名（如 `WORKGROUP`） |
+| 分辨率 | 默认**自适应**（跟随窗口大小，调整尺寸时会短暂重连）；也可选预设固定分辨率或自定义分辨率 |
+| 会话模式 | 普通会话 / 管理会话（连接到控制台会话，类似 `mstsc /admin`） |
+| 优先使用 NLA | 默认开启；服务器拒绝 NLA（CredSSP）握手时自动改用 TLS 登录重试 |
 | SSH 隧道 | 选择已有的 SSH 连接作为跳板机 |
 
 ## VNC
@@ -51,8 +48,7 @@ SPICE（Simple Protocol for Independent Computing Environments）专为 KVM/QEMU
 | 主机 | SPICE 服务器 IP 或域名 |
 | 端口 | 默认 5900 |
 | 密码 | SPICE 认证密码 |
-
-> SPICE 不支持 SSH 隧道。
+| SSH 隧道 | 选择已有的 SSH 连接作为跳板机 |
 
 ## X11 Desktop
 

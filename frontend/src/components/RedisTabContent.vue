@@ -23,55 +23,53 @@
           <button class="btn btn-ghost btn-icon btn-sm" :title="t('redis.newKey')" @click="onShowNewKeyDialog" style="flex-shrink: 0"><Plus :size="lucideSize('0.875rem')" /></button>
         </div>
 
-        <!-- Key tree / flat list — P1: RecycleScroller 虚拟滚动，避免大结果集全量 DOM -->
+        <!-- Key tree / flat list -->
         <div class="redis-key-list" v-loading="loading">
           <div v-if="keys.length === 0 && !loading" class="redis-placeholder">{{ t('redis.noKeys') }}</div>
-          <RecycleScroller
-            v-else
-            :items="listItems"
-            :item-size="28"
-            :key-field="listKeyField"
-            class="redis-scroller"
-            v-slot="{ item }"
-          >
-            <!-- 树形模式：folder / key 行 -->
-            <template v-if="treeMode">
+          <template v-else-if="treeMode">
+            <!-- Rows render directly in the template (the DB tree's mode) so
+                 the scoped .db-header/.table-item styles actually reach them.
+                 visibleTreeRows is the tree flattened depth-first to the
+                 folders currently expanded; indentation is a per-depth pad. -->
+            <template v-for="row in visibleTreeRows" :key="row.node.id">
               <div
-                v-if="item.node.children.length > 0"
+                v-if="row.node.children.length > 0"
                 class="db-header"
-                :style="{ paddingLeft: (8 + item.depth * 18) + 'px' }"
-                @click="onToggleFolder(item.node.id)"
+                :style="{ paddingLeft: (8 + row.depth * 18) + 'px' }"
+                @click="onToggleFolder(row.node.id)"
               >
-                <span class="db-arrow" @click.stop="onToggleFolder(item.node.id)">
-                  <component :is="expandedFolders.has(item.node.id) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
+                <span class="db-arrow" @click.stop="onToggleFolder(row.node.id)">
+                  <component :is="expandedFolders.has(row.node.id) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
                 </span>
                 <Folder class="db-icon" :size="lucideSize('0.875rem')" />
-                <span class="db-name">{{ item.node.label }}</span>
+                <span class="db-name">{{ row.node.label }}</span>
               </div>
               <div
                 v-else
                 class="table-item"
-                :class="{ selected: selectedKey === item.node.keyName }"
-                :style="{ paddingLeft: (8 + item.depth * 18) + 'px' }"
-                @click="onSelectTreeKey(item.node)"
+                :class="{ selected: selectedKey === row.node.keyName }"
+                :style="{ paddingLeft: (8 + row.depth * 18) + 'px' }"
+                @click="onSelectTreeKey(row.node)"
               >
                 <span class="table-icon-spacer" />
-                <component :is="typeIcon(item.node.keyType)" class="table-icon" :size="lucideSize('0.875rem')" />
-                <span class="table-name">{{ item.node.label }}</span>
+                <component :is="typeIcon(row.node.keyType)" class="table-icon" :size="lucideSize('0.875rem')" />
+                <span class="table-name">{{ row.node.label }}</span>
               </div>
             </template>
-            <!-- 扁平模式：key 行 -->
+          </template>
+          <template v-else>
             <div
-              v-else
+              v-for="keyInfo in keys"
+              :key="keyInfo.name"
               class="table-item"
-              :class="{ selected: selectedKey === item.name }"
-              @click="onSelectKey(item)"
+              :class="{ selected: selectedKey === keyInfo.name }"
+              @click="onSelectKey(keyInfo)"
             >
               <span class="table-icon-spacer" />
-              <component :is="typeIcon(item.type)" class="table-icon" :size="lucideSize('0.875rem')" />
-              <span class="table-name">{{ item.name }}</span>
+              <component :is="typeIcon(keyInfo.type)" class="table-icon" :size="lucideSize('0.875rem')" />
+              <span class="table-name">{{ keyInfo.name }}</span>
             </div>
-          </RecycleScroller>
+          </template>
         </div>
 
         <!-- Pagination -->
@@ -460,7 +458,6 @@ function onSelectTreeKey(node: KeyNode) {
 // DB tree renders — so the scoped row styles reach every row. Indentation is
 // a per-depth left pad on the row itself.
 interface VisibleRow {
-  id: string
   node: KeyNode
   depth: number
 }
@@ -468,7 +465,7 @@ const visibleTreeRows = computed<VisibleRow[]>(() => {
   const rows: VisibleRow[] = []
   const walk = (nodes: KeyNode[], depth: number) => {
     for (const n of nodes) {
-      rows.push({ id: n.id, node: n, depth })
+      rows.push({ node: n, depth })
       if (n.children.length > 0 && expandedFolders.value.has(n.id)) {
         walk(n.children, depth + 1)
       }
@@ -477,10 +474,6 @@ const visibleTreeRows = computed<VisibleRow[]>(() => {
   walk(keyTree.value, 0)
   return rows
 })
-
-// P1: 虚拟滚动 — RecycleScroller 的数据源与 key 字段，树形/扁平模式统一切换
-const listItems = computed<any[]>(() => treeMode.value ? visibleTreeRows.value : keys.value)
-const listKeyField = computed(() => treeMode.value ? 'id' : 'name')
 
 // Redis key type → icon, mirroring how the DB tree distinguishes tables/views
 // by icon. Shares the .table-icon slot so tree and flat rows stay identical.
@@ -914,12 +907,7 @@ watch(() => props.sessionId, async (newId) => {
 }
 .redis-key-list {
   flex: 1;
-  overflow: hidden;
-  min-height: 0;
-}
-/* P1: RecycleScroller 占满键列表容器并自行管理滚动 */
-.redis-scroller {
-  height: 100%;
+  overflow-y: auto;
 }
 /* Rows share the DB tree's .table-item/.table-name rule set so key leaves
    match database tables exactly; folders use the shared .db-header classes.

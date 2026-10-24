@@ -151,9 +151,11 @@ func (r *Registry) Start(pty Pty, sessionID, command, newline string, hardLimit 
 // text produced by a vt emulator fed by the data tap (see the screen emulator below). On
 // Windows OpenSSH/ConPTY the raw stream carries redraw frames the screen never
 // displays; the emulator resolves them the same way an xterm.js buffer does.
-// cols/rows <= 0 falls back to raw mode.
-func (r *Registry) StartWithScreen(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int) (*Job, error) {
-	return r.start(pty, sessionID, command, newline, hardLimit, maxOutput, cols, rows, false)
+// cols/rows <= 0 falls back to raw mode. An optional seed (usually the prompt
+// line snapshotted from the session's capture emulator) paints the baseline
+// the PTY stream never resends.
+func (r *Registry) StartWithScreen(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int, seed ...ScreenSeed) (*Job, error) {
+	return r.start(pty, sessionID, command, newline, hardLimit, maxOutput, cols, rows, false, seed...)
 }
 
 // ObserveWithScreen collects future terminal output without typing a command.
@@ -162,7 +164,7 @@ func (r *Registry) ObserveWithScreen(pty Pty, sessionID string, hardLimit time.D
 	return r.start(pty, sessionID, "", "", hardLimit, DefaultMaxOutput, cols, rows, true)
 }
 
-func (r *Registry) start(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int, observe bool) (*Job, error) {
+func (r *Registry) start(pty Pty, sessionID, command, newline string, hardLimit time.Duration, maxOutput int, cols, rows int, observe bool, seed ...ScreenSeed) (*Job, error) {
 	if hardLimit <= 0 {
 		hardLimit = DefaultHardLimit
 	}
@@ -200,6 +202,9 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, hardLimit 
 	if cols > 0 && rows > 0 {
 		job.screen = NewScreen(cols, rows)
 		job.watermark = 0
+		for _, sd := range seed {
+			job.screen.Seed(sd)
+		}
 	}
 	r.jobs[job.ID] = job
 	if !observe {
@@ -558,8 +563,30 @@ type Screen struct {
 	// row 0; it only grows when lines scroll off the top (LF past the
 	// bottom, SU), so numbering is monotonic. scrollback holds the
 	// trimmed text of absolute lines [absTop-len(scrollback), absTop).
-	absTop     int
-	scrollback []string
+	// sbDeclared[i] mirrors scrollback[i]: entries pushed from undeclared
+	// rows (pre-job screen content a stream scroll displaced) are marked
+	// false and lineAt reports them not-ok, so a scroll at the bottom of a
+	// fresh grid can't emit the pre-job screen as phantom lines.
+	absTop            int
+	scrollback        []string
+	sbDeclared        []bool
+
+	// declared[i] marks grid row i as part of the logical line stream: the
+	// cursor entered it via a linefeed/scroll boundary (or runes were painted
+	// on it). Rows reached only by absolute cursor addressing (CUP/VPA) or
+	// passed by erase sequences stay undeclared — a fresh emulator has no
+	// baseline, so those rows are pre-job screen content the AI must not
+	// receive as blank filler lines. LinesSince/FlushFrom skip them.
+	declared []bool
+}
+
+// ScreenSeed carries the baseline prompt line a fresh job emulator should be
+// seeded with: the shell painted it before the job started, so the PTY stream
+// only carries incremental input-line repaints and never resends the prompt
+// text itself — without seeding, the first returned line begins mid-row.
+type ScreenSeed struct {
+	Line string // prompt row text, right-trimmed
+	X, Y int    // cursor column/row where the live PTY's cursor sits
 }
 
 // NewScreen creates a screen with the given grid dimensions (e.g. 120x40).
@@ -572,7 +599,7 @@ func NewScreen(cols, rows int) *Screen {
 	if rows < minRows {
 		rows = minRows
 	}
-	s := &Screen{cols: cols, rows: rows, grid: make([][]rune, rows)}
+	s := &Screen{cols: cols, rows: rows, grid: make([][]rune, rows), declared: make([]bool, rows)}
 	for i := range s.grid {
 		s.grid[i] = s.newRow()
 	}
@@ -585,6 +612,29 @@ func (s *Screen) newRow() []rune {
 		row[i] = ' '
 	}
 	return row
+}
+
+// Seed paints a baseline row and places the cursor where the live PTY's
+// cursor sits at job start. Must run before the first Feed. The seeded row
+// counts as declared; rows the stream later leaves untouched stay undeclared.
+// Callers snapshot it from the session's long-lived capture emulator, whose
+// cursor row holds the prompt line the shell painted before the job began.
+func (s *Screen) Seed(seed ScreenSeed) {
+	if seed.Line == "" || seed.Y < 0 || seed.Y >= s.rows {
+		return
+	}
+	s.moveCursor(0, seed.Y)
+	for _, r := range seed.Line {
+		s.writeRune(r)
+	}
+	s.moveCursor(seed.X, seed.Y)
+}
+
+// PromptSeed snapshots the cursor row (normally the prompt line the shell
+// painted before the job started) plus the cursor position, for seeding a
+// fresh job emulator via Seed.
+func (s *Screen) PromptSeed() ScreenSeed {
+	return ScreenSeed{Line: strings.TrimRight(string(s.grid[s.y]), " "), X: s.x, Y: s.y}
 }
 
 // Feed parses one chunk of raw PTY output and updates the grid.
@@ -868,6 +918,11 @@ func (s *Screen) linefeed() {
 		s.y = s.rows - 1
 		s.scrollUp(1)
 	}
+	// A linefeed is a logical line boundary: the row it lands on belongs to
+	// the command's output stream even when nothing is ever painted there
+	// (interior blank lines). Absolute cursor moves deliberately do not
+	// declare rows — see the declared field.
+	s.declared[s.y] = true
 }
 
 func (s *Screen) reverseLinefeed() {
@@ -905,6 +960,7 @@ func (s *Screen) writeRune(r rune) {
 		s.x = 0
 		s.linefeed()
 	}
+	s.declared[s.y] = true
 	s.grid[s.y][s.x] = r
 	s.x++
 	if s.x >= s.cols {
@@ -917,6 +973,7 @@ func (s *Screen) reset() {
 	for i := range s.grid {
 		s.grid[i] = s.newRow()
 	}
+	s.declared = make([]bool, s.rows)
 	s.x, s.y, s.savedX, s.savedY = 0, 0, 0, 0
 	// absTop/scrollback survive RIS: already-scrolled lines were real
 	// output and consumers may still hold watermarks below absTop.
@@ -940,15 +997,17 @@ func (s *Screen) scrollUp(n int) {
 	top := make([][]rune, n)
 	copy(top, s.grid[:n])
 	for i := 0; i < n; i++ {
-		s.pushScrollbackRow(top[i])
+		s.pushScrollbackRow(top[i], s.declared[i])
 	}
 	copy(s.grid, s.grid[n:])
+	copy(s.declared, s.declared[n:])
 	for i := 0; i < n; i++ {
 		row := top[i]
 		for j := range row {
 			row[j] = ' '
 		}
 		s.grid[s.rows-n+i] = row
+		s.declared[s.rows-n+i] = false
 	}
 	s.absTop += n
 }
@@ -966,12 +1025,14 @@ func (s *Screen) scrollDown(n int) {
 		n = s.rows
 	}
 	copy(s.grid[n:], s.grid)
+	copy(s.declared[n:], s.declared)
 	for i := 0; i < n; i++ {
 		s.grid[i] = s.newRow()
+		s.declared[i] = false
 	}
 }
 
-func (s *Screen) pushScrollbackRow(row []rune) {
+func (s *Screen) pushScrollbackRow(row []rune, declared bool) {
 	// Trim trailing blanks by index instead of string+TrimRight: the latter
 	// allocates twice per scrolled line.
 	end := len(row)
@@ -979,9 +1040,11 @@ func (s *Screen) pushScrollbackRow(row []rune) {
 		end--
 	}
 	s.scrollback = append(s.scrollback, string(row[:end]))
+	s.sbDeclared = append(s.sbDeclared, declared)
 	if len(s.scrollback) > scrollbackCap {
 		// Drop oldest so the ring stays bounded on very long output.
 		s.scrollback = s.scrollback[len(s.scrollback)-scrollbackCap:]
+		s.sbDeclared = s.sbDeclared[len(s.sbDeclared)-scrollbackCap:]
 	}
 }
 
@@ -996,8 +1059,11 @@ func (s *Screen) insertLines(n int) {
 		n = len(region)
 	}
 	copy(region[n:], region)
+	decl := s.declared[s.y:]
+	copy(decl[n:], decl)
 	for i := 0; i < n; i++ {
 		region[i] = s.newRow()
+		decl[i] = false
 	}
 }
 
@@ -1012,8 +1078,11 @@ func (s *Screen) deleteLines(n int) {
 		n = len(region)
 	}
 	copy(region, region[n:])
+	decl := s.declared[s.y:]
+	copy(decl, decl[n:])
 	for i := len(region) - n; i < len(region); i++ {
 		region[i] = s.newRow()
+		decl[i] = false
 	}
 }
 
@@ -1101,10 +1170,16 @@ func (s *Screen) AbsTop() int { return s.absTop }
 func (s *Screen) CursorAbs() int { return s.absTop + s.y }
 
 // lineAt resolves the text of one absolute line from scrollback or grid.
+// Undeclared grid rows report not-ok: they were never part of the logical
+// stream (only jumped over by absolute cursor addressing), and a fresh
+// emulator has no baseline to show for them.
 func (s *Screen) lineAt(idx int) (string, bool) {
 	if idx >= s.absTop {
 		row := idx - s.absTop
 		if row >= s.rows {
+			return "", false
+		}
+		if !s.declared[row] {
 			return "", false
 		}
 		return strings.TrimRight(string(s.grid[row]), " "), true
@@ -1112,6 +1187,9 @@ func (s *Screen) lineAt(idx int) (string, bool) {
 	sbStart := s.absTop - len(s.scrollback)
 	if idx < sbStart {
 		return "", false // aged out of the bounded ring
+	}
+	if !s.sbDeclared[idx-sbStart] {
+		return "", false // undeclared: pre-job content a scroll displaced
 	}
 	return s.scrollback[idx-sbStart], true
 }

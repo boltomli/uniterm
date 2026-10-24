@@ -136,14 +136,12 @@ type LocalSession struct {
 	// stty -echo on and the hook body is written only once the echo-armed
 	// marker is seen in the output stream, so the body never renders. fish
 	// skips phase 1 (no stty in its snippet) and accepts the single-line
-	// echo leak, same as SSH fish. The marker scanners and the arm/body
+	// echo leak. The marker scanners and the arm/body
 	// handoff live in the shared typedCwdHookState.
-	wslDistro        string
-	wslShellBase     string
-	wslCwdHookBody   string
-	cwdHookFollow    bool
-	cwdHookTriggered atomic.Bool
-	hook             typedCwdHookState
+	wslDistro      string
+	wslShellBase   string
+	wslCwdHookBody string
+	hook           typedCwdHookState
 
 	mu             sync.RWMutex
 	enc            encoding.Encoding
@@ -234,17 +232,14 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 			s.setStatus(StatusError)
 			return fmt.Errorf("empty WSL distribution name")
 		}
-		// SSH-style typed cwd hook: the distro starts through its native
+		// WSL typed cwd hook: the distro starts through its native
 		// login flow (`wsl.exe` without -e), so the MOTD banner and profile
 		// scripts run exactly as in any other terminal; the OSC-7 hook is
 		// then typed into the running shell, never injected via launch args.
 		// Any probe failure or timeout degrades to a plain shell — the hook
 		// is optional and must never fail the session.
 		s.wslDistro = distro
-		s.cwdHookFollow = config.CwdHookMode == CwdHookModeFollow
-		if s.cwdHookFollow {
-			log.Writef("wsl: cwd hook deferred to directory-follow toggle")
-		} else if sh, ok := wslDetectShell(distro); ok {
+		if sh, ok := wslDetectShell(distro); ok {
 			s.mu.Lock()
 			s.foregroundShell = sh
 			s.mu.Unlock()
@@ -436,7 +431,7 @@ const wslIntegrationTimeout = 10 * time.Second
 
 // wslDetectShell probes the distro's default shell via a one-shot
 // wsl.exe -e process. This probe is throwaway and does not affect the
-// session's own shell, mirroring the SSH probe design: the session shell
+// session's own shell: the session shell
 // starts untouched (MOTD and profile scripts intact) and the OSC-7 hook is
 // typed in afterwards.
 func wslDetectShell(distro string) (shell string, ok bool) {
@@ -458,9 +453,9 @@ const wslCwdHookRowCleanup = " printf '\\0337\\033[H\\033[2K\\0338';"
 // order: phase 1 arms echo-off (bash/zsh) and the hook body is written only
 // after the echo-armed marker is seen in the output stream (read loop);
 // phase 2's body must never render. fish skips phase 1 (no stty in its
-// snippet) and accepts the single-line echo leak, same as SSH fish.
+// snippet) and accepts the single-line echo leak.
 func (s *LocalSession) injectStartupCwdHook() {
-	if s.cwdHookFollow || s.wslDistro == "" || s.wslCwdHookBody == "" {
+	if s.wslDistro == "" || s.wslCwdHookBody == "" {
 		return
 	}
 	if s.wslShellBase == "bash" || s.wslShellBase == "zsh" {
@@ -511,61 +506,6 @@ func (s *LocalSession) watchCwdHookConfirm() {
 	}
 	log.Writef("wsl: cwd hook not confirmed after %s, restoring echo blindly", cwdHookConfirmTimeout)
 	_ = s.Write([]byte(cwdHookBlindRestoreLine))
-}
-
-// InjectCwdHook types the OSC-7 cwd hook into the running shell on demand,
-// for WSL sessions with CwdHookMode "follow" (the startup injection was
-// skipped). WSLSession satisfies session.CwdHookInjector through embedding,
-// so the frontend's directory-follow toggle reaches it via the same
-// App.SessionInjectCwdHook route SSH uses. Repeated calls are no-ops; a
-// transiently failed attempt re-arms so a later call can retry.
-func (s *LocalSession) InjectCwdHook() error {
-	if s.wslDistro == "" {
-		return fmt.Errorf("on-demand cwd hook injection is only available for WSL sessions")
-	}
-	if !s.cwdHookTriggered.CompareAndSwap(false, true) {
-		return nil
-	}
-	if s.Status() != StatusConnected {
-		s.cwdHookTriggered.Store(false)
-		return fmt.Errorf("wsl session not connected")
-	}
-	if s.hook.isInstalled() {
-		return nil
-	}
-	shell, ok := wslDetectShell(s.wslDistro)
-	if !ok {
-		s.cwdHookTriggered.Store(false)
-		return fmt.Errorf("wsl shell detection failed")
-	}
-	base := shellBasename(shell)
-	body, ok := buildShellCwdHookBody(shell)
-	if !ok {
-		s.cwdHookTriggered.Store(false)
-		return fmt.Errorf("cwd hook unavailable (shell %q)", shell)
-	}
-	if base == "bash" || base == "zsh" {
-		// Two-phase: arm echo-off, then let the read loop write the body
-		// once the echo-armed marker confirms stty -echo took effect. The
-		// body carries the home-row cleanup for the arm line's conhost echo.
-		s.mu.Lock()
-		s.wslShellBase = base
-		s.mu.Unlock()
-		s.hook.arm(wslCwdHookRowCleanup + body)
-		if err := s.Write([]byte(cwdHookArmLine)); err != nil {
-			s.hook.disarm()
-			s.cwdHookTriggered.Store(false)
-			return fmt.Errorf("cwd hook write: %w", err)
-		}
-		return nil
-	}
-	if err := s.Write([]byte(body)); err != nil {
-		s.cwdHookTriggered.Store(false)
-		return fmt.Errorf("cwd hook write: %w", err)
-	}
-	log.Writef("wsl: cwd hook injected on demand (shell=%s)", base)
-	go s.watchCwdHookConfirm()
-	return nil
 }
 
 // wslRunCommand runs a one-shot command inside the distro via wsl.exe -e

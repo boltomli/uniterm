@@ -46,11 +46,15 @@ type RDPKeyboardCapture struct {
 	callback      uintptr
 	closed        bool
 	shortcutsOnly bool
-	expires       time.Time
-	queue         []RDPKeyEvent
-	wake          chan struct{}
-	done          chan struct{}
-	emit          func(RDPKeyEvent)
+	// escCapture additionally swallows Escape while active: in fullscreen the
+	// browser consumes Escape to leave fullscreen before the page sees it, so
+	// VNC/SPICE need it captured like a shortcut and forwarded to the remote.
+	escCapture bool
+	expires    time.Time
+	queue      []RDPKeyEvent
+	wake       chan struct{}
+	done       chan struct{}
+	emit       func(RDPKeyEvent)
 }
 
 func NewRDPKeyboardCapture(emit func(RDPKeyEvent), _ ...func(func())) (*RDPKeyboardCapture, error) {
@@ -80,14 +84,14 @@ func (c *RDPKeyboardCapture) reset() {
 }
 
 func (c *RDPKeyboardCapture) SetCapture(id string, hwnd uintptr) bool {
-	return c.setCapture(id, hwnd, false)
+	return c.setCapture(id, hwnd, false, false)
 }
 
-func (c *RDPKeyboardCapture) SetShortcutCapture(id string, hwnd uintptr) bool {
-	return c.setCapture(id, hwnd, true)
+func (c *RDPKeyboardCapture) SetShortcutCapture(id string, hwnd uintptr, fullscreenEsc bool) bool {
+	return c.setCapture(id, hwnd, true, fullscreenEsc)
 }
 
-func (c *RDPKeyboardCapture) setCapture(id string, hwnd uintptr, shortcutsOnly bool) bool {
+func (c *RDPKeyboardCapture) setCapture(id string, hwnd uintptr, shortcutsOnly, escCapture bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || hwnd == 0 {
@@ -95,12 +99,16 @@ func (c *RDPKeyboardCapture) setCapture(id string, hwnd uintptr, shortcutsOnly b
 	}
 	// A crashed/reloaded WebView must not keep swallowing local input.
 	c.expires = time.Now().Add(3 * time.Second)
-	if c.state.captureID == id && c.hwnd == hwnd && c.shortcutsOnly == shortcutsOnly {
+	if c.state.captureID == id && c.hwnd == hwnd {
+		// Flag-only refreshes (e.g. fullscreen toggling) must not reset the
+		// capture: a reset emits a spurious remote key-reset event.
+		c.shortcutsOnly, c.escCapture = shortcutsOnly, escCapture
 		return true
 	}
 	c.reset()
 	c.hwnd = hwnd
 	c.shortcutsOnly = shortcutsOnly
+	c.escCapture = escCapture
 	c.state.activate(id)
 	return true
 }
@@ -170,7 +178,7 @@ func (c *RDPKeyboardCapture) run(ready chan<- error) {
 				c.reset()
 			}
 			local := data.VKCode == 0x7b
-			if c.shortcutsOnly && !c.state.shortcutKey(scan, data.Flags&0x20 != 0) {
+			if c.shortcutsOnly && !(c.escCapture && scan == keyScanEscape) && !c.state.shortcutKey(scan, data.Flags&0x20 != 0) {
 				local = true
 			}
 			event, swallow := c.state.key(scan, down, active, local) // F12

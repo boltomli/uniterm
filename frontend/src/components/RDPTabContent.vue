@@ -20,13 +20,13 @@
     <div v-else-if="status === 'error'" class="rdp-overlay">
       <p class="rdp-error-text">{{ t('rdp.error') }}</p>
       <p v-if="errorMessage" class="rdp-error-detail">{{ errorMessage }}</p>
-      <el-button type="primary" @click="reconnect">{{ t('rdp.retry') }}</el-button>
+      <el-button type="primary" @click="retryConnection">{{ t('rdp.retry') }}</el-button>
     </div>
 
     <!-- Disconnected state -->
     <div v-else-if="status === 'disconnected'" class="rdp-overlay">
       <p>{{ t('rdp.disconnected') }}</p>
-      <el-button type="primary" @click="reconnect">{{ t('rdp.reconnect') }}</el-button>
+      <el-button type="primary" @click="retryConnection">{{ t('rdp.reconnect') }}</el-button>
     </div>
 
     <!-- Connected: the WASM client renders the remote desktop straight into
@@ -210,6 +210,9 @@ let session: any = null
 let connectTimer: ReturnType<typeof setTimeout> | null = null
 let started = false
 let clientGeneration = 0
+let activeCredSSP = props.config?.rdpEnableNLA ?? false
+let nlaFallbackAttempted = false
+let pendingNlaFallback = false
 let clipboardSync: RdpClipboardSync | null = null
 let fileTransfer: RdpFileTransfer | null = null
 let clipboardAck: { resolve: () => void; reject: (error: Error) => void } | null = null
@@ -280,6 +283,7 @@ async function resolvePassword(): Promise<string> {
 
 async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSize) {
   if (started || !props.config || !canvasEl.value) return
+  if (clientGeneration === 0) activeCredSSP = props.config.rdpEnableNLA ?? false
   started = true
   const generation = ++clientGeneration
   status.value = 'connecting'
@@ -320,7 +324,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
       .desktopSize(new mod.DesktopSize(size.width, size.height))
       .renderCanvas(canvasEl.value)
     if (domain) builder.serverDomain(domain)
-    builder.extension(new mod.Extension('enable_credssp', props.config.rdpEnableNLA ?? false))
+    builder.extension(new mod.Extension('enable_credssp', activeCredSSP))
     // Auto-logon with the saved credentials (mstsc saved-creds equivalent) —
     // requires the autologon extension patch in the WASM build.
     builder.extension(new mod.Extension('autologon', !!password))
@@ -435,6 +439,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     clearConnectTimer()
     const detail = describeError(e)
     rdpLog(`connect failed: ${detail}`)
+    if (retryWithoutNLA(detail)) return
     errorMessage.value = detail
     status.value = 'error'
     teardownClient()
@@ -442,6 +447,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
 }
 
 function runEnded(reason: string, isError = false) {
+  if (retryWithoutNLA(reason)) return
   onFocusOut()
   stopClipboardPoll()
   clearResizeProbe()
@@ -478,7 +484,7 @@ async function connect() {
   status.value = 'connecting'
   errorMessage.value = ''
   try {
-    const info = await CreateSession('rdp', props.config)
+    const info = await CreateSession('rdp', { ...props.config, rdpEnableNLA: activeCredSSP })
     currentSessionId.value = info.id
     panelStore.bindSession(props.panelId, info.id)
     if (info.proxyAddr) {
@@ -510,12 +516,36 @@ async function reconnect() {
     await connect()
   } finally {
     reconnecting = false
+    if (pendingNlaFallback) {
+      pendingNlaFallback = false
+      void reconnect()
+    }
   }
+}
+
+function retryWithoutNLA(reason: string): boolean {
+  if (!activeCredSSP || nlaFallbackAttempted || framebufferSize.value) return false
+  if (!/remote error: tls: internal error/i.test(reason)) return false
+  nlaFallbackAttempted = true
+  activeCredSSP = false
+  status.value = 'connecting'
+  errorMessage.value = ''
+  rdpLog('NLA handshake failed; retrying with TLS login')
+  if (reconnecting) pendingNlaFallback = true
+  else void reconnect()
+  return true
+}
+
+function retryConnection() {
+  if (reconnecting) return
+  activeCredSSP = props.config?.rdpEnableNLA ?? false
+  nlaFallbackAttempted = false
+  void reconnect()
 }
 
 function onReconnectEvent(e: Event) {
   const panelId = (e as CustomEvent)?.detail?.panelId
-  if (panelId && panelId === props.panelId) reconnect()
+  if (panelId && panelId === props.panelId) retryConnection()
 }
 
 // ── Cursor / clipboard callbacks ──
@@ -903,7 +933,7 @@ async function reconnectWithSize(width: number, height: number) {
       try { await CloseSession(currentSessionId.value) } catch (_) {}
       currentSessionId.value = null
     }
-    const cfg = { ...(props.config || {}), rdpFixedWidth: width, rdpFixedHeight: height }
+    const cfg = { ...(props.config || {}), rdpFixedWidth: width, rdpFixedHeight: height, rdpEnableNLA: activeCredSSP }
     const info = await CreateSession('rdp', cfg)
     currentSessionId.value = info.id
     panelStore.bindSession(props.panelId, info.id)
@@ -920,6 +950,10 @@ async function reconnectWithSize(width: number, height: number) {
     status.value = 'error'
   } finally {
     reconnecting = false
+    if (pendingNlaFallback) {
+      pendingNlaFallback = false
+      void reconnect()
+    }
     // Catch viewport changes that happened while the handshake was running.
     onContainerResize()
   }
@@ -1014,6 +1048,7 @@ onMounted(() => {
         }
         break
       case 'error':
+        if (retryWithoutNLA(backendErrorTextOf(data.errorMessage || ''))) break
         clearConnectTimer()
         status.value = 'error'
         errorMessage.value = backendErrorTextOf(data.errorMessage || '')

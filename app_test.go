@@ -608,3 +608,65 @@ func TestSessionDataEventWireShapeMatchesFrontend(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeLanguageCode covers the locale-tag matching used to localize
+// the tray menu (issue #1215): it must mirror the frontend's resolveLocale —
+// zh variants split between Simplified and Traditional, everything else
+// matches by primary language subtag, unknown tags fall back to English.
+func TestNormalizeLanguageCode(t *testing.T) {
+	cases := map[string]string{
+		// Exact supported codes (any case).
+		"zh-CN": "zh-CN",
+		"zh-TW": "zh-TW",
+		"en":    "en",
+		"ja":    "ja",
+		"vi":    "vi",
+		// Region-qualified tags match by primary subtag.
+		"en-US": "en",
+		"en-GB": "en",
+		"pt-BR": "pt",
+		"pt-PT": "pt",
+		"de-AT": "de",
+		"fr-CA": "fr",
+		"ko-KR": "ko",
+		"ru-RU": "ru",
+		"es-MX": "es",
+		"ja-JP": "ja",
+		// Underscore form (Linux/macOS locale style) and encoding suffix.
+		"en_US":       "en",
+		"zh_CN.UTF-8": "zh-CN",
+		"zh_TW.utf8":  "zh-TW",
+		"zh_HK@rg":    "zh-TW",
+		// Script subtags decide the Chinese written form.
+		"zh-Hans-CN": "zh-CN",
+		"zh-Hant-TW": "zh-TW",
+		// Unmapped tags fall back to English.
+		"xx":    "en",
+		"xx-YY": "en",
+		"":      "en",
+	}
+	for in, want := range cases {
+		if got := normalizeLanguageCode(in); got != want {
+			t.Errorf("normalizeLanguageCode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestResolveTrayLanguage checks the explicit-language path; the "system"
+// path calls into platform code and depends on the host locale, so it is not
+// asserted here beyond resolving to a trayLabels key.
+func TestResolveTrayLanguage(t *testing.T) {
+	for in, want := range map[string]string{
+		"zh-CN": "zh-CN",
+		"en":    "en",
+		"pt-BR": "pt",
+		"xx-YY": "en",
+	} {
+		if got := resolveTrayLanguage(in); got != want {
+			t.Errorf("resolveTrayLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if _, ok := trayLabels[resolveTrayLanguage("system")]; !ok {
+		t.Errorf("resolveTrayLanguage(%q) = %q, want a trayLabels key", "system", resolveTrayLanguage("system"))
+	}
+}

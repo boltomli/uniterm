@@ -363,17 +363,28 @@ const dcsReassembler = new DcsReassembler()
 
 function renderTerminalData(rawData: string, countChunk = true) {
   if (!terminal) return
-  // Let xterm.js handle clear-screen sequences natively (issue #1028).
-  // The previous MobaXterm-style interception (replacing \x1b[2J with newline
-  // padding) inverted clear-screen and clear-scrollback behavior: `clear`
-  // pushed content into the scrollback instead of wiping the screen, while
-  // the right-click "clear scrollback" ended up looking like a clear-screen.
-  // \x1b[3J (erase scrollback) is now passed through so `clear` works
-  // correctly, and \x1b[2J (erase display) is handled by xterm.js's native
-  // parser which correctly clears the visible viewport without touching the
-  // scrollback. Full-screen apps (vim, tmux…) use the alternate buffer and
-  // are unaffected because they emit their own redraw sequences.
-  let data = stripCursorBlink(rawData, settingsStore.settings.terminal.cursorBlink ?? true)
+  // MobaXterm-style clear-screen (owner decision, supersedes the native
+  // handling from issue #1028): `clear` should scroll the current viewport
+  // into the scrollback instead of wiping it, so history is never lost.
+  // \x1b[3J (erase scrollback) is stripped — otherwise shells that emit
+  // ED2+ED3 would wipe the scrollback right after we pushed content into it.
+  // \x1b[2J is replaced by newline padding + home, pushing the viewport into
+  // scrollback before clearing. Full-screen apps (vim, tmux…) run on the
+  // alternate buffer and are left untouched.
+  let data = stripCursorBlink(rawData, settingsStore.settings.terminal.cursorBlink ?? true).replace(/\x1b\[3J/g, '')
+  if (data.includes('\x1b[2J') && terminal.buffer.active.type !== 'alternate') {
+    // Scroll from the current cursor position: rows newlines push every row
+    // above and including the cursor into the scrollback — and nothing
+    // below it, so the blank rows under a mid-screen prompt never pollute
+    // the history. Then wipe whatever is left on screen: the trailing blank
+    // rows for a shell prompt, or residue from a program that exited with
+    // the cursor mid-screen (that residue is dropped from history by
+    // design — trading it for a clean screen and unpolluted scrollback).
+    const scrollClear = '\n'.repeat(terminal.rows) + '\x1b[H\x1b[2J'
+    // Single pass: scrollClear itself ends with \x1b[H\x1b[2J, so a second
+    // replace pass would re-expand the sequence we just inserted.
+    data = data.replace(/\x1b\[H?\x1b\[2J/g, scrollClear)
+  }
   data = sanitizeLiveTerminalOutput(data)
   if (props.mode === 'sftp') {
     const cleaned = data.replace(/\x1b\]633;S[^\x07]*\x07/g, '')
@@ -846,22 +857,13 @@ function resetTerminalOutput() {
 }
 
 // Clear scrollback only (issue #989): the visible screen stays; rows above
-// the viewport are dropped.
+// the viewport are dropped. ED3 (erase saved lines) does exactly this — a
+// client-side write, so the \x1b[3J strip in renderTerminalData (which only
+// filters session data) does not apply. terminal.clear() must NOT be used
+// here: it wipes the viewport as well, leaving only the cursor line.
 function clearScrollback() {
   if (!terminal) return
-  const buf = terminal.buffer.active
-  const above = buf.baseY
-  if (above > 0) {
-    terminal.scrollLines(-above)
-  }
-  // Same trick as reset: a 0-sized scrollback discards the rows that just
-  // scrolled out of the viewport.
-  const scrollback = terminal.options.scrollback
-  terminal.options.scrollback = 0
-  terminal.clear()
-  terminal.options.scrollback = scrollback
-  // Return the viewport to the (bottom) live screen.
-  terminal.scrollToBottom()
+  terminal.write('\x1b[3J')
   if (props.sessionId) clearRegistry(props.sessionId)
 }
 
@@ -1391,12 +1393,6 @@ onMounted(() => {
         }
       }
 
-      // Snapshot the cursor BEFORE handleInput mutates it — the backspace
-      // guard below needs the pre-input position (line buffer empty), not
-      // the post-backspace one, or it would also swallow the DEL that
-      // removes the last remaining character.
-      const cursorIndexBeforeInput = terminalInput?.cursorIndex.value ?? -1
-
       // Handle suggestions input (skip in alternate screen apps like vim/k9s)
       if (terminalInput && !terminalInput.isInAlternateScreen() && (props.mode === 'ssh' || props.mode === 'local')) {
         terminalInput.handleInput(data)
@@ -1454,21 +1450,9 @@ onMounted(() => {
       const sid = props.sessionId
       const inAlt = terminalInput?.isInAlternateScreen() ?? false
       if (sid) {
-        // Defensive guard (issue #814): suppress backspace at the line start
-        // so it cannot eat into the shell prompt. Only applies to the normal
-        // screen (not full-screen apps like vim) and when the local line
-        // buffer's cursor is already at position 0. handleInput() above has
-        // already updated cursorIndex, so if it stayed at 0 the backspace
-        // would move the cursor into the prompt on certain shells (e.g.
-        // Euler OS where stty erase may not match the sent byte).
-        if (
-          !inAlt &&
-          terminalInput &&
-          data === '\x7f' &&
-          cursorIndexBeforeInput === 0
-        ) {
-          return
-        }
+        // The suggestion buffer is only an estimate: native paste, shell
+        // completion/history, and interactive programs can bypass it. Always
+        // deliver Backspace and let the remote line editor enforce its bounds.
         writeTerminalInput(data, inAlt)
       }
     } else {
@@ -2381,7 +2365,8 @@ function openSftp() {
   menu.closeMenu()
   const p = panel.value
   if (p) {
-    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: p }))
+    // sourceTabId anchors the new SFTP tab beside the owning terminal tab
+    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: { ...p, sourceTabId: p.tabId } }))
   }
 }
 
@@ -2394,7 +2379,8 @@ function openMonitor() {
   menu.closeMenu()
   const p = panel.value
   if (p) {
-    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: p }))
+    // sourceTabId anchors the new monitor tab beside the owning terminal tab
+    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: { ...p, sourceTabId: p.tabId } }))
   }
 }
 

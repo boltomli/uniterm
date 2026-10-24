@@ -359,7 +359,7 @@ function onFocusIn() {
   const captureID = crypto.randomUUID()
   const sessionID = currentSessionId.value
   keyboardCaptureId = captureID
-  queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true))
+  queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
     .then(enabled => {
       if (!enabled || keyboardCaptureId !== captureID) return
       let pending = false
@@ -367,7 +367,7 @@ function onFocusIn() {
         if (!ownsRemoteKeyboard()) { onFocusOut(); return }
         if (pending) return
         pending = true
-        queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true))
+        queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
           .catch(error => {
             console.error('VNC keyboard capture error:', error)
             if (keyboardCaptureId === captureID) onFocusOut()
@@ -523,8 +523,35 @@ function onToolbarError(error: unknown) {
   console.error('VNC minimize error:', error)
 }
 
+// The frameless WebView2 window runs in composition mode: the OS cursor is
+// only updated when the web content's cursor *changes* (CursorChanged →
+// Wails SetCursor). Entering fullscreen rewrites the window style, which
+// drops the active cursor; VNC servers only send cursor shapes when the
+// remote shape changes, so unlike RDP nothing re-fires it afterwards and the
+// cursor stays invisible until this replay nudges WebView2 to re-emit it.
+function replayCanvasCursor() {
+  const canvas = vncContainer.value?.querySelector('canvas')
+  if (!canvas) return
+  const cursor = canvas.style.cursor
+  if (!cursor) return
+  canvas.style.cursor = 'default'
+  requestAnimationFrame(() => { canvas.style.cursor = cursor })
+}
+
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement === container.value
+  if (keyboardCaptureId && currentSessionId.value) {
+    // Apply the new fullscreen flag immediately instead of waiting for the
+    // next capture heartbeat, so Escape is forwarded right away.
+    const captureID = keyboardCaptureId
+    const sessionID = currentSessionId.value
+    queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
+      .catch(error => console.error('VNC keyboard capture error:', error))
+  }
+  // Replay once on the next frame and once after the window-style swap has
+  // settled; both are idempotent.
+  requestAnimationFrame(replayCanvasCursor)
+  setTimeout(replayCanvasCursor, 300)
 }
 
 async function toggleFullscreen() {

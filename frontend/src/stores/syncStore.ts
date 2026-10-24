@@ -56,18 +56,31 @@ export interface SyncConfig {
 }
 
 // Mirrors backend syncableFiles; label reuses the app's existing i18n keys
-// for each data category instead of new sync-specific strings.
+// for each data category instead of new sync-specific strings. Ordered by
+// the settings-nav grouping: app config, connections, then AI.
 export const SYNC_FILE_ITEMS: { file: string; label: string }[] = [
+  { file: 'settings.json', label: 'settings.basic' },
+  { file: 'quickCommands.json', label: 'quickCommands.quickCommandsTab' },
   { file: 'connections.json', label: 'startTab.connections' },
   { file: 'favorites.json', label: 'sidebar.favorites' },
-  { file: 'ai.json', label: 'settings.ai' },
-  { file: 'quickCommands.json', label: 'quickCommands.quickCommandsTab' },
   { file: 'tunnels.json', label: 'settings.tunnels' },
   { file: 'identities.json', label: 'settings.identities' },
   { file: 'proxies.json', label: 'settings.proxies' },
-  { file: 'skills.json', label: 'settings.skills' },
-  { file: 'settings.json', label: 'settings.basic' },
+  { file: 'ai.json', label: 'settings.ai' },
+  { file: 'skills.json', label: 'sync.skills' },
+  { file: 'commands.json', label: 'sync.commands' },
+  { file: 'mcp_clients.json', label: 'settings.mcpClient' },
 ]
+
+// Files a device without a saved scope never syncs: settings.json is
+// device-local, and skills/commands/mcp_clients are opt-in payloads. Must
+// stay in lockstep with backend defaultSyncedFiles vs syncableFiles.
+const OPT_IN_FILES = new Set(['settings.json', 'skills.json', 'commands.json', 'mcp_clients.json'])
+
+// What a legacy device (no saved syncScope) shows as its scope: the
+// always-on set only — opt-in entries start unchecked and join the scope
+// only when the user ticks them.
+export const LEGACY_SCOPE = SYNC_FILE_ITEMS.filter(i => !OPT_IN_FILES.has(i.file)).map(i => i.file)
 
 export interface SyncResult {
   direction: number // 0=none, 1=push, 2=pull, 3=conflict

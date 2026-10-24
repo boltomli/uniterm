@@ -48,6 +48,7 @@ uniTerm supports 30+ connection protocols, covering remote terminals, remote des
 | PostgreSQL | 5432 | PostgreSQL wire protocol compatible: PostgreSQL, CockroachDB, and more |
 | Oracle | 1521 | Oracle Database via pure Go driver |
 | SQL Server | 1433 | SQL Server via pure Go driver |
+| SQLite | — (local file) | Local embedded database, opens database files directly |
 | rqlite | 4001 | Lightweight distributed database built on SQLite with Raft consensus |
 | Redis | 6379 | In-memory key-value database with visual key browsing and editing |
 | MongoDB | 27017 | Document database with tree browsing, queries, and inline editing |

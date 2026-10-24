@@ -35,7 +35,7 @@ uniTerm 是一款轻量级全能终端模拟器，支持 **30+** 种连接协议
 
 #### 数据库客户端
 
-支持 **MySQL / PostgreSQL / Oracle / SQL Server / rqlite / Redis / MongoDB / Elasticsearch**，行内编辑、查询历史、结果导出与脚本执行。
+支持 **MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch**，行内编辑、查询历史、结果导出与脚本执行。
 
 ![数据库](/imgs/database_light.webp)
 

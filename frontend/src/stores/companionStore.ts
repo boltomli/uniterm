@@ -52,6 +52,17 @@ export const useCompanionStore = defineStore('companion', () => {
   // terminal's shell reports a cwd change). Ephemeral by design: never
   // persisted, resets with the session.
   const followPathByPanel = ref<Record<string, boolean>>({})
+  // Last cwd each terminal session reported (terminal:cwd, OSC 7). Recorded
+  // globally — independent of the follow toggle and of the sidebar being
+  // open — so enabling follow or opening an SFTP view can jump straight to
+  // the terminal's current directory instead of waiting for the next `cd`.
+  // Ephemeral like followPathByPanel; entries die with their panel.
+  const sessionCwd = ref<Record<string, string>>({})
+
+  function recordSessionCwd(sessionId: string, cwd: string) {
+    if (!sessionId || !cwd) return
+    sessionCwd.value = { ...sessionCwd.value, [sessionId]: cwd }
+  }
 
   const panelStore = usePanelStore()
   const sessionStore = useSessionStore()
@@ -116,8 +127,6 @@ export const useCompanionStore = defineStore('companion', () => {
     if (!panel?.sessionId) return false
     return sessionStore.getStatus(panel.sessionId) === 'connected'
   })
-
-  const canToggle = computed(() => filesConnected.value)
 
   const currentSftpSessionId = computed(() => {
     const pid = activeFilesPanelId.value
@@ -295,30 +304,6 @@ export const useCompanionStore = defineStore('companion', () => {
     }
   }
 
-  async function toggleFiles() {
-    if (!canToggle.value && !filesVisible.value) return
-    if (filesVisible.value) {
-      filesVisible.value = false
-      return
-    }
-    const pid = getActiveFilesPanelId()
-    if (!pid) return
-    filesVisible.value = true
-    await ensureSftp(pid)
-  }
-
-  async function toggleMonitor() {
-    if (!canToggle.value && !monitorVisible.value) return
-    if (monitorVisible.value) {
-      monitorVisible.value = false
-      return
-    }
-    const pid = getActiveSshPanelId()
-    if (!pid) return
-    monitorVisible.value = true
-    await ensureMonitor(pid)
-  }
-
   // Follow-terminal-path is DEFAULT-OFF: the record only ever stores an
   // explicit `true` (user turned it on); absence means disabled.
   function toggleFollowPath(panelId: string) {
@@ -336,6 +321,8 @@ export const useCompanionStore = defineStore('companion', () => {
       delete monitorViewCache.value[sshPanelId]
     }
     delete followPathByPanel.value[sshPanelId]
+    const owningSid = panelStore.getPanel(sshPanelId)?.sessionId
+    if (owningSid) delete sessionCwd.value[owningSid]
     if (!entry) return
     const sftpId = entry.sftpSessionId
     const monitorId = entry.monitorSessionId
@@ -385,19 +372,18 @@ export const useCompanionStore = defineStore('companion', () => {
     monitorWidth,
     entries,
     followPathByPanel,
+    sessionCwd,
+    recordSessionCwd,
     activeSshPanelId,
     activeFilesPanelId,
     sshConnected,
     filesConnected,
-    canToggle,
     currentSftpSessionId,
     currentMonitorSessionId,
     transferKey,
     sftpTransferKeyOf,
     ensureSftp,
     ensureMonitor,
-    toggleFiles,
-    toggleMonitor,
     disposeForPanel,
     disposeForPanels,
     setFilesWidth,

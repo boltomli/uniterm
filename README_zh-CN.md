@@ -14,8 +14,17 @@
 <a href="https://github.com/ys-ll/uniterm/releases/latest"><img src="https://img.shields.io/github/v/release/ys-ll/uniterm" alt="GitHub release" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue" alt="Platform" /></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
+<a href="https://github.com/ys-ll/uniterm/releases"><img src="https://img.shields.io/github/downloads/ys-ll/uniterm/total" alt="GitHub downloads" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/github/stars/ys-ll/uniterm?style=social" alt="GitHub stars" /></a>
 <a href="https://gitee.com/ys-l/uniterm"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fys-l%2Funiterm&query=%24.stargazers_count&label=Stars&style=social&logo=gitee" alt="Gitee stars" /></a>
+<br>
+<a href="https://trendshift.io/repositories/109042?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-109042" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/109042" alt="ys-ll%2Funiterm | Trendshift" width="250" height="55"/></a>
+<a href="https://alternativeto.net/software/uniterm/about/?utm_source=badge&amp;utm_medium=referral" target="_blank">
+  <img src="https://alternativeto.net/static/badges/badge-compact-color.svg"
+       alt="uniTerm | AlternativeTo"
+       width="171" height="55"
+       style="width: 171px; height: 55px;" />
+</a>
 
 </div>
 
@@ -65,7 +74,7 @@
 
 - **连接管理器** — 分组管理服务器连接，快速搜索、一键新建连接，支持批量操作。
 - **工作区** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
-- **云端同步** — 支持私有 Git 仓库/WebDAV 双模式云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
+- **云端同步** — 支持 Git 仓库、WebDAV、SFTP、S3、SMB 五种模式加密云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
 - **自定义快捷键** — 自由绑定各项操作的键盘快捷键，实现全键盘操作，双手不离键盘。
 - **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄、葡、越等 11 种语言界面。
 
@@ -87,7 +96,7 @@
 | 文件传输 | WebDAV | WebDAV 服务器文件管理 |
 | 文件传输 | S3 | 兼容 Amazon S3 的对象存储 |
 | 文件传输 | Zmodem | SSH 终端内 rz/sz 命令传输文件 |
-| 远程桌面 | RDP | Windows 服务器远程桌面管理（仅 Windows） |
+| 远程桌面 | RDP | Windows 服务器远程桌面管理 |
 | 远程桌面 | VNC | Linux 服务器远程控制 |
 | 远程桌面 | SPICE | KVM/QEMU 虚拟机管理 |
 | 远程桌面 | X11 | X Window 图形界面转发 |
@@ -275,6 +284,14 @@ uniTerm/
 
 [![GitHub stars](https://img.shields.io/github/stars/ys-ll/uniterm?style=social)](https://github.com/ys-ll/uniterm)
 [![Gitee stars](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgitee.com%2Fapi%2Fv5%2Frepos%2Fys-l%2Funiterm&query=%24.stargazers_count&label=Stars&style=social&logo=gitee)](https://gitee.com/ys-l/uniterm)
+
+<a href="https://www.star-history.com/?repos=ys-ll%2Funiterm&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ys-ll/uniterm&type=date&theme=dark&legend=top-left&sealed_token=EJf9Yr6aVGkBwIbfGQ6u9hRwpxdIl7vVpUJshd8jaRUCw-OkotyrQX9qzDP5cXNidgLvC0yq8ltQivK06MxiTJYOxkVbPCPuIuCBZj7aTkMxUA-mqJk2KA" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ys-ll/uniterm&type=date&legend=top-left&sealed_token=EJf9Yr6aVGkBwIbfGQ6u9hRwpxdIl7vVpUJshd8jaRUCw-OkotyrQX9qzDP5cXNidgLvC0yq8ltQivK06MxiTJYOxkVbPCPuIuCBZj7aTkMxUA-mqJk2KA" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ys-ll/uniterm&type=date&legend=top-left&sealed_token=EJf9Yr6aVGkBwIbfGQ6u9hRwpxdIl7vVpUJshd8jaRUCw-OkotyrQX9qzDP5cXNidgLvC0yq8ltQivK06MxiTJYOxkVbPCPuIuCBZj7aTkMxUA-mqJk2KA" />
+ </picture>
+</a>
 
 ## 反馈与贡献
 

@@ -56,7 +56,14 @@ vi.mock('../stores/settingsStore', () => ({
   useSettingsStore: () => ({ addSftpBookmark: vi.fn(), removeSftpBookmark: vi.fn() }),
 }))
 vi.mock('../stores/localStateStore', () => ({
-  useLocalStateStore: () => ({ state: { externalEditor: '' } }),
+  // dialogStartDirs (picker start-dir memory) awaits init() and
+  // rememberDialogDir() fires update(); the mock must satisfy both so the
+  // download path reaches its traversal guard instead of throwing.
+  useLocalStateStore: () => ({
+    state: { externalEditor: '', sftpDialogDir: '' },
+    init: vi.fn(async () => {}),
+    update: vi.fn(async () => {}),
+  }),
 }))
 
 import { t as i18nT } from '../i18n'

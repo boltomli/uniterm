@@ -222,6 +222,8 @@ func allSyncableStores(t *testing.T) []syncable {
 		mustConnStore(t), mustIdentityStore(t), mustProxyStore(t), mustAIStore(t),
 		NewFavoriteStore(t.TempDir()), NewQuickCommandsStore(t.TempDir()),
 		NewTunnelStore(t.TempDir()), mustSettingsStore(t),
+		NewSkillsStore(t.TempDir()), NewCommandsStore(t.TempDir()),
+		NewMCPClientStore(t.TempDir()),
 	}
 }
 
@@ -250,6 +252,9 @@ func TestSyncableBlobNames(t *testing.T) {
 		"quickCommands.json": "quickCommands.json",
 		"tunnels.json":       "tunnels.json",
 		"settings.json":      "settings.json",
+		"skills.json":        "skills.json",
+		"commands.json":      "commands.json",
+		"mcp_clients.json":   "mcp_clients.json",
 	}
 	for _, s := range allSyncableStores(t) {
 		if s.BlobName() != want[s.BlobName()] {

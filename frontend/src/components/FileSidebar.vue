@@ -158,7 +158,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import {
   SftpListRemote, SftpChangeRemoteDir, SftpOpenExternalEditor, SftpOpenWithSystem, ListSessions,
-  SessionInjectCwdHook,
+  SessionSetCwdTracking,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import {
   useFilePanel, useConflictDialog, useFileDialogs, useFileListing, useChmodDialog,
@@ -290,22 +290,25 @@ function openStandaloneSftp() {
   const pid = companionStore.activeFilesPanelId
   const panel = pid ? panelStore.getPanel(pid) : null
   if (!panel) return
+  // Open at the directory the sidebar is currently browsing.
+  const initialPath = cwd.value || undefined
   if (companionStore.isContainerExecPanel(pid)) {
     const cfg = panel.config as any
     if (!cfg?.containerExecConnId || !cfg?.containerExecContainerId) return
     window.dispatchEvent(new CustomEvent('app:connect-container-file', {
-      detail: { config: { id: cfg.containerExecConnId, name: cfg.name, containerId: cfg.containerExecContainerId } },
+      detail: { config: { id: cfg.containerExecConnId, name: cfg.name, containerId: cfg.containerExecContainerId }, initialPath },
     }))
     return
   }
   const ev = companionStore.isWslPanel(pid) ? 'app:connect-wsl-file' : 'app:connect-sftp'
-  window.dispatchEvent(new CustomEvent(ev, { detail: panel }))
+  // sourceTabId anchors the new tab beside the owning terminal tab
+  window.dispatchEvent(new CustomEvent(ev, { detail: { ...panel, sourceTabId: panel.tabId, initialPath } }))
 }
 
 // ── "Follow terminal path" (per-panel toggle) ──
 // When enabled for the active SSH/WSL panel, the sidebar navigates whenever the
 // panel's terminal shell reports a cwd change (terminal:cwd, emitted by the
-// backend on OSC 7 / shell integration). The flag is per panel id and
+// backend via SSH queries or OSC 7). The flag is per panel id and
 // ephemeral; rapid cd chains are debounced (trailing) so only the last path
 // navigates.
 const followActive = computed(() => {
@@ -319,38 +322,45 @@ const followSupported = computed(() => !!companionStore.activeFilesPanelId)
 function toggleFollow() {
   const pid = companionStore.activeFilesPanelId
   if (!pid) return
-  // Cwd reporting is injected by the backend on every SSH attach (including
-  // clones and reconnects) for the default "startup" mode, so follow is a
-  // pure display-side toggle there. "follow"-mode connections skip the
-  // startup injection — the hook is typed on demand below.
   const enabling = companionStore.followPathByPanel[pid] !== true
   companionStore.toggleFollowPath(pid)
-  if (enabling) injectCwdHookIfNeeded(pid)
+  if (!enabling) return
+  // Show the last report immediately; enabling SSH polling refreshes it.
+  const panel = panelStore.getPanel(pid)
+  const recorded = panel?.sessionId ? companionStore.sessionCwd[panel.sessionId] : ''
+  if (recorded && recorded !== cwd.value) scheduleFollowNavigate(recorded)
 }
 
-// Connections with cwdHookMode "follow" never touch the shell at connect
-// time; the cwd hook is typed into the running login shell the first time
-// the user enables path follow. Re-connects re-run it from the
-// session:status handler below (the session object resets on reconnect).
-function injectCwdHookIfNeeded(pid: string) {
-  const panel = panelStore.getPanel(pid)
-  if (!panel || (panel.type !== 'ssh' && panel.type !== 'wsl')) return
-  if ((panel.config as any)?.cwdHookMode !== 'follow') return
-  const sid = panel.sessionId
-  if (!sid) return
-  SessionInjectCwdHook(sid).catch(() => {
-    // Not connected (yet) or unsupported remote shell: follow stays passive
-    // until the next enable/reconnect.
-  })
+// SSH follows cwd through read-only SFTP/exec queries. WSL reports through its
+// automatic prompt hook. No connection-level injection option is needed.
+const followTerminalSessionId = computed(() => {
+  const pid = companionStore.activeFilesPanelId
+  const panel = pid ? panelStore.getPanel(pid) : undefined
+  return panel?.type === 'ssh' ? panel.sessionId : undefined
+})
+
+function syncCwdTracking() {
+  const sid = followTerminalSessionId.value
+  if (sid) SessionSetCwdTracking(sid, followActive.value && companionStore.filesVisible).catch(() => {})
 }
+
+watch([followTerminalSessionId, followActive, () => companionStore.filesVisible], ([sid], [oldSid]) => {
+  if (oldSid && oldSid !== sid) SessionSetCwdTracking(oldSid, false).catch(() => {})
+  syncCwdTracking()
+}, { immediate: true })
 
 let followTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleFollowNavigate(path: string) {
+  const ownerPanelId = companionStore.activeFilesPanelId
+  const ownerSessionId = ownerPanelId ? panelStore.getPanel(ownerPanelId)?.sessionId : undefined
   if (followTimer) clearTimeout(followTimer)
   followTimer = setTimeout(() => {
     followTimer = null
-    // Re-check: the sidebar may have navigated elsewhere during the debounce.
-    if (path === cwd.value) return
+    // A pending report must not navigate a different tab or a disabled panel.
+    if (!ownerPanelId || companionStore.activeFilesPanelId !== ownerPanelId
+      || panelStore.getPanel(ownerPanelId)?.sessionId !== ownerSessionId
+      || companionStore.followPathByPanel[ownerPanelId] !== true
+      || !companionStore.filesVisible || path === cwd.value) return
     onNavigate(path)
   }, 300)
 }
@@ -443,13 +453,10 @@ function bindListeners() {
   unsubData?.()
   unsubExtEdit?.()
   unsubStatus =Events.On('session:status', (ev) => { const payload: { id: string; status: string } = ev.data;
+    if (payload.id === followTerminalSessionId.value && payload.status === 'connected') syncCwdTracking()
     if (payload.id !== sessionId.value) return
     if (payload.status === 'connected') {
       onRefresh()
-      // "follow"-mode SSH connections re-inject the cwd hook after every
-      // (re)connect while path follow is enabled for this panel.
-      const pid = companionStore.activeFilesPanelId
-      if (pid && companionStore.followPathByPanel[pid] === true) injectCwdHookIfNeeded(pid)
     } else if (payload.status === 'error') {
       markTransferTasksDisconnected()
       connectError.value = t('sftp.connectError')
@@ -563,7 +570,7 @@ watch(() => companionStore.activeFilesPanelId, () => {
 
 onMounted(() => {
   bindListeners()
-  // Terminal cwd reports (OSC 7 / shell integration) for path following.
+  // Terminal cwd reports (SSH SFTP/exec polling / WSL shell integration).
   unsubCwd = Events.On('terminal:cwd', onTerminalCwd)
   // Re-mounting after the view was hidden (e.g. switching files<->monitor):
   // restore this panel's cached listing since the session didn't change.
@@ -575,6 +582,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  const terminalSid = followTerminalSessionId.value
+  if (terminalSid) SessionSetCwdTracking(terminalSid, false).catch(() => {})
   sidebarDisposed = true
   unsubStatus?.()
   unsubData?.()

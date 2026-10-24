@@ -493,7 +493,8 @@ const showForm = ref(false)
 const showExportDialog = ref(false)
 const showImportDialog = ref(false)
 const editConfig = ref<ConnectionConfig | undefined>(undefined)
-const activeView = ref<'connections' | 'quickCommands' | 'history' | 'personalization' | 'files' | 'monitor' | 'tunnels'>('connections')
+type SidebarView = 'connections' | 'quickCommands' | 'history' | 'personalization' | 'files' | 'monitor' | 'tunnels'
+const activeView = ref<SidebarView>('connections')
 const quickCommandsRef = ref<InstanceType<typeof QuickCommandsPanel> | null>(null)
 
 function openQuickCommands() {
@@ -502,6 +503,15 @@ function openQuickCommands() {
 }
 
 // ── SSH companion: files / monitor folded into this sidebar ──
+// Generic tab-switch entry mirroring a manual tab click: files/monitor route
+// through their click handlers (flag + companion session), the rest just
+// switch the view. Used by the App.vue sidebar shortcuts.
+function openTab(view: SidebarView) {
+  if (view === 'files') return onFilesTabClick()
+  if (view === 'monitor') return onMonitorTabClick()
+  activeView.value = view
+  if (view === 'connections') nextTick(() => focusSearch())
+}
 function onFilesTabClick() {
   activeView.value = 'files'
   // Always open the files view (shows an idle/"need SSH" empty state when no
@@ -1702,7 +1712,7 @@ function openChangeGroupForGroup(groupId: string) {
   showChangeGroupDialog.value = true
 }
 
-defineExpose({ focusSearch, openQuickCommands, openChangeGroupFor, openChangeGroupForGroup })
+defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, openChangeGroupForGroup, activeView })
 </script>
 
 <style scoped>

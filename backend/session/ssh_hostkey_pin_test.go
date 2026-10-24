@@ -2,16 +2,17 @@ package session
 
 // Regression tests for the security review (security.md, SSH stack):
 //
-//   - P0: the cwd-hook shell probe dials with the same credentials as the
-//     main connection, so it must verify the host key too — an
-//     InsecureIgnoreHostKey probe hands the password to a MITM even when the
-//     main dial correctly aborts on a changed key.
 //   - P1: a jump-host tunnel rewrites the dial address to
 //     127.0.0.1:<ephemeral> (app_terminal.setupJumpHostTunnel). The host key
 //     must still be pinned and verified under the ORIGINAL host:port,
 //     otherwise every connection is a fresh first-trust (a compromised jump
 //     host can MITM the target) and known_hosts grows one entry per
 //     ephemeral port.
+//
+// The P0 finding this file originally pinned (a cwd-hook shell probe dialing
+// with InsecureIgnoreHostKey) no longer applies: SSH cwd discovery no longer
+// dials a second connection or issues an exec — TestSSHConnectNeverExecutesCwdProbe
+// pins that — so there is no probe to skip host-key verification.
 
 import (
 	"crypto/ed25519"
@@ -23,9 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -74,52 +73,6 @@ func foreignPublicKey(t *testing.T) ssh.PublicKey {
 		t.Fatalf("signer from key: %v", err)
 	}
 	return signer.PublicKey()
-}
-
-// TestCwdProbeRejectsChangedHostKey is the P0 regression: with the target's
-// pinned key differing from the server's, the shell probe must abort during
-// key exchange. Before the fix the probe used InsecureIgnoreHostKey, so it
-// authenticated with the stored password and issued the exec anyway.
-func TestCwdProbeRejectsChangedHostKey(t *testing.T) {
-	addr, conns := startProbeTrackingServer(t, false)
-	configureKnownHostsAt(t, []knownHostFileEntry{knownHostEntry(addr, foreignPublicKey(t))})
-
-	if got := probeCwdShellSeparately(probeTestConfig(addr)); got != "" {
-		t.Errorf("probe returned shell %q although the pinned host key differs — the probe must verify the host key", got)
-	}
-	// The probe must have died in key exchange: no connection may have
-	// reached the exec request (pre-fix it did, with the password sent).
-	time.Sleep(100 * time.Millisecond)
-	for _, act := range collectProbeConns(conns) {
-		if atomic.LoadInt32(&act.exec) != 0 {
-			t.Fatalf("probe issued exec despite a changed host key — verification skipped")
-		}
-	}
-}
-
-// TestCwdProbeAcceptsPinnedHostKey is the control: with the server's own key
-// pinned the probe still runs, so the fix rejects changed keys rather than
-// disabling the probe.
-func TestCwdProbeAcceptsPinnedHostKey(t *testing.T) {
-	addr, conns := startProbeTrackingServer(t, false)
-	signer, err := ssh.ParsePrivateKey([]byte(testHostKeyPEM))
-	if err != nil {
-		t.Fatalf("parse test host key: %v", err)
-	}
-	configureKnownHostsAt(t, []knownHostFileEntry{knownHostEntry(addr, signer.PublicKey())})
-
-	probeCwdShellSeparately(probeTestConfig(addr)) // no stty on the test server → ""
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, act := range collectProbeConns(conns) {
-			if atomic.LoadInt32(&act.exec) > 0 {
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("probe never issued exec although the pinned host key matches")
 }
 
 // TestHostKeyPinVerifiedUnderOriginalHostPort is the P1 regression: a config

@@ -63,37 +63,37 @@ func TestRemoteDesktopKeyboardSessionValidation(t *testing.T) {
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewVNCSession("vnc"), status: session.StatusConnected})
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewRDPSession("rdp"), status: session.StatusConnected})
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewSPICESession("spice"), status: session.StatusConnected})
-	if _, err := a.SetVNCKeyboardCapture("vnc", "vnc-capture", true); err != nil {
+	if _, err := a.SetVNCKeyboardCapture("vnc", "vnc-capture", true, false); err != nil {
 		t.Fatalf("connected VNC rejected: %v", err)
 	}
 	if _, err := a.SetRDPKeyboardCapture("rdp", "rdp-capture", true); err != nil {
 		t.Fatalf("connected RDP rejected: %v", err)
 	}
-	if _, err := a.SetSPICEKeyboardCapture("spice", "spice-capture", true); err != nil {
+	if _, err := a.SetSPICEKeyboardCapture("spice", "spice-capture", true, false); err != nil {
 		t.Fatalf("connected SPICE rejected: %v", err)
 	}
 	for _, id := range []string{"rdp", "vnc", "missing"} {
-		if _, err := a.SetSPICEKeyboardCapture(id, "invalid", true); err == nil {
+		if _, err := a.SetSPICEKeyboardCapture(id, "invalid", true, false); err == nil {
 			t.Fatalf("SPICE accepted session %q", id)
 		}
 	}
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewSPICESession("closed-spice"), status: session.StatusDisconnected})
-	if _, err := a.SetSPICEKeyboardCapture("closed-spice", "invalid", true); err == nil {
+	if _, err := a.SetSPICEKeyboardCapture("closed-spice", "invalid", true, false); err == nil {
 		t.Fatal("disconnected SPICE accepted")
 	}
-	if _, err := a.SetSPICEKeyboardCapture("missing", "stale", false); err != nil {
+	if _, err := a.SetSPICEKeyboardCapture("missing", "stale", false, false); err != nil {
 		t.Fatalf("stale SPICE blur must be harmless: %v", err)
 	}
 	for _, id := range []string{"rdp", "missing"} {
-		if _, err := a.SetVNCKeyboardCapture(id, "invalid", true); err == nil {
+		if _, err := a.SetVNCKeyboardCapture(id, "invalid", true, false); err == nil {
 			t.Fatalf("VNC accepted session %q", id)
 		}
 	}
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewVNCSession("closed"), status: session.StatusDisconnected})
-	if _, err := a.SetVNCKeyboardCapture("closed", "invalid", true); err == nil {
+	if _, err := a.SetVNCKeyboardCapture("closed", "invalid", true, false); err == nil {
 		t.Fatal("disconnected VNC accepted")
 	}
-	if _, err := a.SetVNCKeyboardCapture("missing", "stale", false); err != nil {
+	if _, err := a.SetVNCKeyboardCapture("missing", "stale", false, false); err != nil {
 		t.Fatalf("stale blur must be harmless: %v", err)
 	}
 }

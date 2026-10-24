@@ -16,15 +16,8 @@ uniTerm 内置数据库客户端，支持主流关系型数据库、Redis、Mong
 | PostgreSQL | 5432 |
 | Oracle | 1521 |
 | SQL Server | 1433 |
+| SQLite | -（本地文件） |
 | rqlite | 4001 |
-
-**NoSQL 数据库：**
-
-| 数据库 | 默认端口 |
-|--------|----------|
-| Redis | 6379 |
-| MongoDB | 27017 |
-| Elasticsearch | 9200 |
 
 ### 连接参数
 

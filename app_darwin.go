@@ -184,6 +184,29 @@ func systemPrefersDark() bool {
 	return err == nil && len(out) > 0
 }
 
+// systemLanguage returns the user's first preferred language (System
+// Settings → General → Language & Region) as a locale tag for tray-menu
+// localization (issue #1215). AppleLanguages is the same global preference
+// the system locale resolution is based on; it is an array, so the `defaults`
+// output is parsed for the first quoted entry. Returns "" when unreadable —
+// the caller falls back to English.
+func systemLanguage() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "defaults", "read", "-g", "AppleLanguages").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if i := strings.IndexByte(line, '"'); i >= 0 {
+			if j := strings.LastIndexByte(line, '"'); j > i {
+				return line[i+1 : j]
+			}
+		}
+	}
+	return ""
+}
+
 // spawnSuccessorProcess starts a fresh copy of the app after this process has
 // exited (see app_windows.go). On macOS the executable lives inside a .app
 // bundle (.../Foo.app/Contents/MacOS/Foo); re-exec'ing that path bypasses

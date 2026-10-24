@@ -156,6 +156,20 @@ func systemPrefersDark() bool {
 	return !strings.Contains(strings.ToLower(string(out)), "light")
 }
 
+// systemLanguage returns the session locale for tray-menu localization
+// (issue #1215), read from the standard environment variables (LC_ALL over
+// LC_MESSAGES over LANG), e.g. "zh_CN.UTF-8". normalizeLanguageCode strips
+// the encoding suffix and maps the tag. Returns "" when none is set — GUI
+// sessions launched without a locale fall back to English.
+func systemLanguage() string {
+	for _, name := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // spawnSuccessorProcess starts a fresh, detached copy of the current
 // executable. Called from main() AFTER w3app.Run() has returned and the
 // process is about to exit, so the successor starts with the single-instance

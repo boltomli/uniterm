@@ -51,3 +51,22 @@ func TestRDPKeyboardHookLeaseAndStaleRelease(t *testing.T) {
 		t.Fatal("panel change must release old remote inputs")
 	}
 }
+
+func TestRDPKeyboardHookFullscreenEscapeFlagRefresh(t *testing.T) {
+	c := &RDPKeyboardCapture{wake: make(chan struct{}, 1)}
+	if !c.SetShortcutCapture("vnc", 1, true) {
+		t.Fatal("capture not activated")
+	}
+	if !c.escCapture {
+		t.Fatal("fullscreen Escape capture was not enabled")
+	}
+	if !c.SetShortcutCapture("vnc", 1, false) {
+		t.Fatal("flag refresh failed")
+	}
+	if c.escCapture {
+		t.Fatal("flag refresh did not clear fullscreen Escape capture")
+	}
+	if len(c.queue) != 0 || c.state.captureID != "vnc" {
+		t.Fatal("flag refresh must keep the capture without releasing keys")
+	}
+}

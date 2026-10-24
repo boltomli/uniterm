@@ -99,11 +99,13 @@ func TestSyncableFilesIncludesOptIns(t *testing.T) {
 	for _, n := range syncableFiles {
 		found[n] = true
 	}
-	if !found["settings.json"] || !found["skills.json"] {
-		t.Fatal("syncableFiles must contain settings.json and skills.json")
+	for _, want := range []string{"settings.json", "skills.json", "commands.json", "mcp_clients.json"} {
+		if !found[want] {
+			t.Fatalf("syncableFiles must contain opt-in entry %s", want)
+		}
 	}
-	if len(syncableFiles) != len(defaultSyncedFiles)+2 {
-		t.Fatalf("syncableFiles len %d, want defaultSyncedFiles len %d + 2", len(syncableFiles), len(defaultSyncedFiles))
+	if len(syncableFiles) != len(defaultSyncedFiles)+4 {
+		t.Fatalf("syncableFiles len %d, want defaultSyncedFiles len %d + 4", len(syncableFiles), len(defaultSyncedFiles))
 	}
 }
 
@@ -170,15 +172,18 @@ func TestSyncConfigSaveLoadRoundTripRemote(t *testing.T) {
 	}
 }
 
-// skills.json 是 opt-in 条目：不在默认同步范围，但在 scope 选择器的菜单里
-// （用户勾选后 EffectiveSyncFiles 放行）。
-func TestEffectiveSyncFilesSkillsIsOptIn(t *testing.T) {
-	if got := EffectiveSyncFiles(nil); containsStr(got, "skills.json") {
-		t.Fatalf("skills.json must not be in the default scope, got %v", got)
-	}
-	got := EffectiveSyncFiles([]string{"skills.json"})
-	if len(got) != 1 || got[0] != "skills.json" {
-		t.Fatalf("skills.json must resolve when explicitly ticked, got %v", got)
+// skills.json / commands.json / mcp_clients.json are opt-in entries: absent
+// from the default sync scope but resolvable once the user ticks them in the
+// scope picker.
+func TestEffectiveSyncFilesOptIns(t *testing.T) {
+	for _, name := range []string{"skills.json", "commands.json", "mcp_clients.json"} {
+		if got := EffectiveSyncFiles(nil); containsStr(got, name) {
+			t.Fatalf("%s must not be in the default scope, got %v", name, got)
+		}
+		got := EffectiveSyncFiles([]string{name})
+		if len(got) != 1 || got[0] != name {
+			t.Fatalf("%s must resolve when explicitly ticked, got %v", name, got)
+		}
 	}
 }
 

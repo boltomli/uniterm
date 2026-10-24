@@ -1106,14 +1106,31 @@ func (a *App) jobRegistry() *mcp.Registry {
 	return a.jobs
 }
 
-// screenCols/screenRows is the emulator grid size used for foreground jobs
-// and captures. A smaller real terminal only means shorter lines in the dump
-// (content wraps at the remote's width); the grid is just the accumulator,
-// so it is sized generously rather than tracked to the session's PTY size.
+// screenCols/screenRows is the fallback emulator grid size for sessions that
+// do not report a PTY size. PTY-based sessions must size the grid from the
+// live PTY instead (sessionScreenSize): ConPTY and remote PTY streams rely on
+// the terminal's auto-wrap at the real width — PowerShell's paste echo is
+// repainted as flowing text with no CRLF between wrapped rows — so a grid
+// wider than the PTY lays the same stream out on different rows, absolute
+// cursor addressing lands on the wrong lines, and the watermark emitter skips
+// repainted rows. The AI then receives merged fragments (or nothing) for
+// everything painted above the cursor.
 const (
 	screenCols = 200
 	screenRows = 60
 )
+
+// sessionScreenSize returns the emulator grid size for foreground jobs and
+// captures: the session's live PTY size when it reports one, the generous
+// fallback constants otherwise.
+func sessionScreenSize(s session.Session) (int, int) {
+	if sized, ok := s.(interface{ GetPendingSize() (cols, rows int) }); ok {
+		if cols, rows := sized.GetPendingSize(); cols > 0 && rows > 0 {
+			return cols, rows
+		}
+	}
+	return screenCols, screenRows
+}
 
 // StartForeground implements mcp.ForegroundJobs and is the single execution
 // entry for the live-terminal path: the MCP server's foreground toolset and
@@ -1131,11 +1148,30 @@ func (a *App) StartForeground(sessionID, command string, hardLimitMs int) (strin
 	if taps, ok := s.(tapSource); ok {
 		pty.taps = taps
 	}
+	cols, rows := sessionScreenSize(s)
+	// Seed the job emulator with the prompt line from the session's long-lived
+	// capture emulator: the shell painted it before the job started, so the
+	// PTY stream only resends incremental input-line repaints and the first
+	// returned line would otherwise begin mid-row (unpainted prompt column).
+	var seed mcp.ScreenSeed
+	if cap := a.sessionCaptureFor(s); cap != nil {
+		cap.mu.Lock()
+		seed = cap.screen.PromptSeed()
+		if seed.Line == "" {
+			// The capture missed the prompt (e.g. recreated after a resize on
+			// a remote that never repaints — SSH reflows far-side only). Fall
+			// back to the row carried across the resize; flow-style streams
+			// continue right after the seeded prompt on the fresh grid.
+			seed = cap.carriedSeed
+			seed.Y = 0
+		}
+		cap.mu.Unlock()
+	}
 	job, err := a.jobRegistry().StartWithScreen(
 		pty, sessionID, command, newlineFor(s),
 		time.Duration(hardLimitMs)*time.Millisecond,
 		mcp.DefaultMaxOutput,
-		screenCols, screenRows,
+		cols, rows, seed,
 	)
 	if err != nil {
 		return "", err
@@ -1180,9 +1216,10 @@ func (a *App) StartForegroundCapture(sessionID string, hardLimitMs int) (string,
 	if taps, ok := s.(tapSource); ok {
 		p.taps = taps
 	}
+	cols, rows := sessionScreenSize(s)
 	job, err := a.jobRegistry().ObserveWithScreen(p, sessionID,
 		time.Duration(hardLimitMs)*time.Millisecond,
-		screenCols, screenRows)
+		cols, rows)
 	if err != nil {
 		return "", err
 	}
@@ -1205,6 +1242,10 @@ type sessionCapture struct {
 	screen    *mcp.Screen
 	dataOff   func()
 	statusOff func()
+	// carriedSeed holds the prompt-row snapshot taken when a resize replaced
+	// this capture. Remotes that don't repaint after a resize (SSH) leave the
+	// fresh emulator blank, so foreground jobs fall back to this seed.
+	carriedSeed mcp.ScreenSeed
 }
 
 // CaptureScreen snapshots a live session's terminal screen — what the user
@@ -1237,7 +1278,8 @@ func (a *App) sessionCaptureFor(s session.Session) *sessionCapture {
 	if c, ok := a.captures[s.ID()]; ok {
 		return c
 	}
-	screen := mcp.NewScreen(screenCols, screenRows)
+	cols, rows := sessionScreenSize(s)
+	screen := mcp.NewScreen(cols, rows)
 	c := &sessionCapture{screen: screen}
 	if taps, ok := s.(tapSource); ok {
 		c.dataOff = taps.AddDataTap(func(b []byte) {

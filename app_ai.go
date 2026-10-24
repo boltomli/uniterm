@@ -2569,6 +2569,22 @@ func (a *App) StartMCPClient() {
 	mgr.Reload(ctx)
 }
 
+// reloadMCPClientsAfterSync re-lists the persisted servers into the UI and
+// reconnects the live manager when a sync pull rewrote mcp_clients.json.
+// The manager may legitimately be nil (user never opened the AI panel) —
+// the next ensureMCPClient picks the new config up from disk.
+func (a *App) reloadMCPClientsAfterSync() {
+	a.emit("store:mcpClients:changed", nil)
+	if a.mcpClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	go func() {
+		defer cancel()
+		a.mcpClient.Reload(ctx)
+	}()
+}
+
 // ListMCPClients returns every persisted external server config.
 func (a *App) ListMCPClients() ([]store.MCPClientConfig, error) {
 	a.ensureMCPClient()
@@ -2604,7 +2620,7 @@ func (a *App) saveMCPClient(cfg store.MCPClientConfig, originalName string) erro
 	if originalName != "" {
 		for _, c := range all {
 			if c.Name == cfg.Name && c.Name != originalName {
-				return errors.New("an MCP client with this name already exists")
+				return errors.New("an MCP server with this name already exists")
 			}
 		}
 	}
@@ -2617,7 +2633,7 @@ func (a *App) saveMCPClient(cfg store.MCPClientConfig, originalName string) erro
 	}
 	if !replaced {
 		if originalName != "" {
-			return errors.New("MCP client no longer exists")
+			return errors.New("MCP server no longer exists")
 		}
 		all = append(all, cfg)
 	}

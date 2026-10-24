@@ -43,6 +43,8 @@ type App struct {
 	ctx                  context.Context
 	app                  *application.App
 	window               *application.WebviewWindow
+	tray                 *application.SystemTray
+	trayLang             string                             // resolved UI language the tray menu was last built with
 	notifier             *notifications.NotificationService // system notifications (MCP approval prompts)
 	sessionManager       *session.SessionManager
 	k8sManager           *k8s.Manager
@@ -2075,6 +2077,12 @@ func (a *App) syncableStores() []sync.SyncableStore {
 	if a.skillsStore != nil {
 		stores = append(stores, a.skillsStore)
 	}
+	if a.commandsStore != nil {
+		stores = append(stores, a.commandsStore)
+	}
+	if a.mcpClientStore != nil {
+		stores = append(stores, a.mcpClientStore)
+	}
 	return stores
 }
 
@@ -2124,6 +2132,10 @@ func (a *App) reloadStoresAfterSync() {
 	if a.skillsStore != nil {
 		a.emit("store:skills:changed", nil)
 	}
+	if a.commandsStore != nil {
+		a.emit("store:commands:changed", nil)
+	}
+	a.reloadMCPClientsAfterSync()
 }
 
 // autoSyncDebounce is how long a trigger waits before the coalesced run
@@ -2406,6 +2418,9 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		// Re-apply the global show/hide hotkey so binding changes (and the
 		// enable switch) take effect immediately. No-op when unchanged.
 		applyGlobalShowHideHotkey(a.app, a.window, trayHotkeyBinding(&settings))
+		// Rebuild the tray menu when the UI language changed (issue #1215).
+		// No-op when the resolved language is unchanged.
+		a.refreshTrayLanguage(settings.Language)
 	}
 	return err
 }
@@ -2570,12 +2585,13 @@ func resolveDialogDir(candidates ...string) string {
 }
 
 // openFileDialog builds an open-file picker that starts in a known-good
-// directory. Hidden files are revealed whenever the start directory is itself
-// inside a dot directory (~/.ssh, ~/.kube): the platform panels hide those
-// entries by default, so navigating up to home and back would otherwise leave
-// the target unreachable rather than merely hard to find.
-func (a *App) openFileDialog(title, startDir string) *application.OpenFileDialogStruct {
-	dir := resolveDialogDir(startDir)
+// directory (first existing candidate). Hidden files are revealed whenever the
+// start directory is itself inside a dot directory (~/.ssh, ~/.kube): the
+// platform panels hide those entries by default, so navigating up to home and
+// back would otherwise leave the target unreachable rather than merely hard to
+// find.
+func (a *App) openFileDialog(title string, startDirs ...string) *application.OpenFileDialogStruct {
+	dir := resolveDialogDir(startDirs...)
 	return a.app.Dialog.OpenFile().
 		SetTitle(title).
 		SetDirectory(dir).
@@ -2714,8 +2730,11 @@ func (a *App) OpenFileDialogFiltered(title, filterDisplayName, filterPattern str
 	return path, err
 }
 
+// OpenMultipleFilesDialog / OpenDirectoryDialog accept a candidate list of
+// start directories (e.g. [last-used dir, local pane cwd]); the first existing
+// one wins, home is the final fallback.
 func (a *App) OpenMultipleFilesDialog(startDir ...string) ([]string, error) {
-	paths, err := a.openFileDialog("Select Files", firstArg(startDir)).
+	paths, err := a.openFileDialog("Select Files", startDir...).
 		PromptForMultipleSelection()
 	if err == nil {
 		fileGrants.addFile(paths...)
@@ -2724,7 +2743,7 @@ func (a *App) OpenMultipleFilesDialog(startDir ...string) ([]string, error) {
 }
 
 func (a *App) OpenDirectoryDialog(startDir ...string) (string, error) {
-	dir, err := a.openFileDialog("Select Directory", firstArg(startDir)).
+	dir, err := a.openFileDialog("Select Directory", startDir...).
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
 		PromptForSingleSelection()

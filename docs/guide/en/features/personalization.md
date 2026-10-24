@@ -21,7 +21,7 @@ The entire interface scales from a unified base size. "Interface Font Size" in t
 
 ### Language
 
-Supports 9 interface languages. Changes take effect immediately without restart:
+Supports 11 interface languages. Changes take effect immediately without restart:
 
 - 简体中文
 - 繁體中文
@@ -31,7 +31,9 @@ Supports 9 interface languages. Changes take effect immediately without restart:
 - Deutsch
 - Español
 - Français
+- Português
 - Русский
+- Tiếng Việt
 
 ## Terminal Settings
 

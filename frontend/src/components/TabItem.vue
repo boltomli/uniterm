@@ -611,7 +611,8 @@ function onReconnect() {
 function openSftp() {
   const panel = panelStore.getPanel((props.tab as TerminalTab).panelId)
   if (panel) {
-    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: panel }))
+    // sourceTabId anchors the new SFTP tab beside this tab (not the active one)
+    window.dispatchEvent(new CustomEvent('app:connect-sftp', { detail: { ...panel, sourceTabId: props.tab.id } }))
   }
   closeContextMenu()
 }
@@ -624,7 +625,8 @@ function uploadFileRz() {
 function openMonitor() {
   const panel = panelStore.getPanel((props.tab as TerminalTab).panelId)
   if (panel) {
-    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: panel }))
+    // sourceTabId anchors the new monitor tab beside this tab (not the active one)
+    window.dispatchEvent(new CustomEvent('app:connect-monitor', { detail: { ...panel, sourceTabId: props.tab.id } }))
   }
   closeContextMenu()
 }
