@@ -183,7 +183,6 @@
               <span class="host">{{ getSubtitle(conn) }}</span>
             </span>
           </div>
-          <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
           <button v-if="showHostRowButtons" class="conn-fav-btn" :class="{ on: favoriteStore.isFavorite(conn.id) }" :title="favoriteStore.isFavorite(conn.id) ? t('sidebar.removeFromFavorites') : t('sidebar.addToFavorites')" @click.stop="favoriteStore.toggle(conn.id)"><Star :size="lucideSize('0.75rem')" /></button>
           <button v-if="showHostRowButtons" class="conn-more-btn" @click.stop="onConnMoreClick($event, conn)" :title="t('terminal.more')"><MoreHorizontal :size="lucideSize('0.875rem')" /></button>
         </div>
