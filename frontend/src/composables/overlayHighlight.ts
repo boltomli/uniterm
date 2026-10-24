@@ -17,7 +17,7 @@
 // logical line: rows the terminal soft-wrapped (isWrapped) are stitched
 // together before matching so wrapped strings highlight as one run.
 import type { Terminal as XTerm, IBufferCell, IBufferLine, ICellColorSpan, IDisposable } from '@xterm/xterm'
-import { matchTextSpans, HIGHLIGHT_RULES, stitchLogicalText, splitSpansToRows, type HighlightCategory } from './highlightRules'
+import { matchTextSpans, HIGHLIGHT_RULES, stitchLogicalText, splitSpansToRows, type HighlightCategory, type StitchedRows } from './highlightRules'
 import { useSettingsStore } from '../stores/settingsStore'
 
 // Category → xterm theme key, mirroring the legacy inject renderer's SGR
@@ -102,6 +102,13 @@ interface RefreshBudget {
 // colors rows before their FIRST paint. Writes following within the same
 // frame fall back to the trailing debounce and catch up on the next scan.
 const SYNC_SCAN_MIN_INTERVAL_MS = 10
+// Sustained output (P-05): after SYNC_SCAN_FLOOD_SCANS consecutive sync
+// scans that each arrived within WRITE_MAX_WAIT_MS of the previous one, the
+// gate widens to one scan per ~2 frames — at 10ms each a flood's rescans
+// could claim a third of the main thread. A gap longer than
+// WRITE_MAX_WAIT_MS (output stopped) restores the tight interval.
+const SYNC_SCAN_FLOOD_INTERVAL_MS = 33
+const SYNC_SCAN_FLOOD_SCANS = 5
 // Trailing catch-up only: batches writes that arrived inside the sync-scan
 // gate window (e.g. output stopping right after a scan). One frame long —
 // anything longer just delays those rows' color.
@@ -207,13 +214,14 @@ export function shiftOverrideStore(term: XTerm, trimmed: number): boolean {
  * the top of the buffer: every surviving absolute line index drops by the
  * trim count, and entries whose line was itself trimmed away are dropped.
  * Mutates in place and preserves Map insertion order so the LRU eviction
- * in setCachedSpans keeps working unchanged. */
-export function shiftLineCache(
-  cache: Map<number, HighlightSpan[]>,
+ * in setCachedSpans keeps working unchanged. Generic over the value so the
+ * text-validated screen cache can share it (P-05). */
+export function shiftLineCache<V>(
+  cache: Map<number, V>,
   trimmed: number,
 ): void {
   if (trimmed <= 0) return
-  const shifted = new Map<number, HighlightSpan[]>()
+  const shifted = new Map<number, V>()
   for (const [key, spans] of cache) {
     const next = key - trimmed
     if (next >= 0) shifted.set(next, spans)
@@ -226,9 +234,18 @@ export class OverlayHighlighter {
   private term: XTerm
   /** Immutable (scrollback) absolute line index → resolved spans, including []. */
   private lineMatchCache = new Map<number, HighlightSpan[]>()
+  /** Text-validated cache for entirely-on-screen logical lines (P-05):
+   * screen rows are rewritten in place, so spans are reused only when the
+   * stitched text is byte-identical — which skips the regex pass, the cell
+   * map and the span split that used to run on EVERY ~10ms refresh. Keyed
+   * by the logical line's start row; shifted with trims like lineMatchCache. */
+  private screenRowCache = new Map<number, { text: string; perRow: HighlightSpan[][] }>()
   private writeDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private writePendingSince = 0
   private lastSyncScan = -Infinity
+  /** Consecutive sync scans that arrived within WRITE_MAX_WAIT_MS of the
+   * previous one — the sustained-output signal for the widened gate. */
+  private floodSyncScans = 0
   private scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private continuationFrame: number | null = null
   private disposables: IDisposable[] = []
@@ -339,6 +356,7 @@ export class OverlayHighlighter {
     this.clearTimers()
     this.term.clearCellColorOverrides()
     this.lineMatchCache.clear()
+    this.screenRowCache.clear()
     this.pendingTrim = 0 // cache is gone; a pending shift has nothing to move
     this.disposeSentinel()
     this.bufferTrimmed = false
@@ -383,12 +401,17 @@ export class OverlayHighlighter {
     if (!this.canRefresh()) return
     if (this.scrollDebounceTimer !== null) return
     const now = performance.now()
+    if (now - this.lastSyncScan > WRITE_MAX_WAIT_MS) this.floodSyncScans = 0
+    const minInterval = this.floodSyncScans >= SYNC_SCAN_FLOOD_SCANS
+      ? SYNC_SCAN_FLOOD_INTERVAL_MS
+      : SYNC_SCAN_MIN_INTERVAL_MS
     // Scan synchronously when the last scan isn't brand new: this runs before
     // the render frame, so new rows are painted colored from the start —
     // no white flash. Rapid follow-up writes within the same frame batch
     // through the trailing debounce instead.
-    if (now - this.lastSyncScan >= SYNC_SCAN_MIN_INTERVAL_MS) {
+    if (now - this.lastSyncScan >= minInterval) {
       this.lastSyncScan = now
+      this.floodSyncScans++
       this.writePendingSince = now
       this.refreshViewport()
       return
@@ -444,6 +467,7 @@ export class OverlayHighlighter {
     if (!this.canRefresh()) return
     this.term.clearCellColorOverrides()
     this.lineMatchCache.clear()
+    this.screenRowCache.clear()
     this.lastViewportY = -1
     this.refreshViewport()
   }
@@ -474,6 +498,18 @@ export class OverlayHighlighter {
     }
   }
 
+  /** Cache a screen logical line's scan, keyed by its start row (P-05).
+   * LRU-bounded like the scrollback cache; insertion order = reuse order. */
+  private setScreenCache(startY: number, text: string, perRow: HighlightSpan[][]): void {
+    this.screenRowCache.delete(startY)
+    this.screenRowCache.set(startY, { text, perRow })
+    while (this.screenRowCache.size > MAX_CACHED_MATCH_LINES) {
+      const oldest = this.screenRowCache.keys().next().value
+      if (oldest === undefined) break
+      this.screenRowCache.delete(oldest)
+    }
+  }
+
 
   private isBudgetExhausted(budget: RefreshBudget): boolean {
     if (budget.hitLimit) return true
@@ -484,16 +520,16 @@ export class OverlayHighlighter {
     return false
   }
 
-  /** Match rules over one logical line: the physical rows [startY …] stitched
-   * together while the terminal's `isWrapped` flag says they were folded.
-   * Spans come back per physical row — clipped at the wrap seam, mapped to
-   * cell columns — ready for setCellColorOverrides. */
-  private scanLogicalLine(
-    startY: number,
-    cols: number,
-    scratchCell: IBufferCell,
-    budget: RefreshBudget,
-  ): { perRow: Map<number, HighlightSpan[]>; complete: boolean } {
+  /** Read one logical line's physical rows and stitched text — no
+   * matching. Shared by the text-validated cache path and the scan path
+   * (P-05): validation needs the text anyway, and a hit then skips the
+   * regex pass, the cell map and the span split. */
+  private readLogicalLine(startY: number, cols: number): {
+    startY: number
+    rows: IBufferLine[]
+    texts: string[]
+    stitched: StitchedRows
+  } {
     const buffer = this.term.buffer.active
     const rows: IBufferLine[] = []
     const texts: string[] = []
@@ -507,9 +543,20 @@ export class OverlayHighlighter {
       if (!next || !next.isWrapped) break
       y++
     }
+    return { startY, rows, texts, stitched: stitchLogicalText(texts) }
+  }
 
+  /** Match rules over one logical line read by readLogicalLine: spans come
+   * back per physical row — clipped at the wrap seam, mapped to cell
+   * columns — ready for setCellColorOverrides. */
+  private scanReadLine(
+    read: { startY: number; rows: IBufferLine[]; texts: string[]; stitched: StitchedRows },
+    cols: number,
+    scratchCell: IBufferCell,
+    budget: RefreshBudget,
+  ): { perRow: Map<number, HighlightSpan[]>; complete: boolean } {
+    const { startY, rows, texts, stitched } = read
     const perRow = new Map<number, HighlightSpan[]>()
-    const stitched = stitchLogicalText(texts)
     if (!stitched.text) {
       for (let i = 0; i < rows.length; i++) perRow.set(startY + i, [])
       return { perRow, complete: true }
@@ -561,6 +608,7 @@ export class OverlayHighlighter {
     if (bufferType !== this.lastBufferType) {
       this.term.clearCellColorOverrides()
       this.lineMatchCache.clear()
+      this.screenRowCache.clear()
       this.pendingTrim = 0 // other buffer's indexes; nothing left to shift
       this.disposeSentinel()
       this.bufferTrimmed = false
@@ -577,6 +625,7 @@ export class OverlayHighlighter {
       // the visible viewport by the scan below; rows above the viewport
       // re-apply from the shifted cache when scrolled to, without a rescan.
       shiftLineCache(this.lineMatchCache, this.pendingTrim)
+      shiftLineCache(this.screenRowCache, this.pendingTrim)
       const shifted = shiftOverrideStore(this.term, this.pendingTrim)
       this.pendingTrim = 0
       if (!shifted) this.term.clearCellColorOverrides()
@@ -623,30 +672,62 @@ export class OverlayHighlighter {
       // stitched into this scan so matches can straddle the wrap seam.
       const startY = logicalLineStart((y) => buffer.getLine(y), lineY, MAX_STITCH_ROWS)
 
-      let spans: HighlightSpan[] | undefined
+      // Standalone scrollback row: cacheable per row as before — content up
+      // there is immutable, so no text validation is needed.
       if (lineY < screenStartY && startY === lineY) {
-        // Standalone scrollback row: cacheable per row as before.
         const cached = this.getCachedSpans(lineY)
         if (cached !== undefined) {
-          spans = cached
+          this.setOverrides(lineY, cached, colors)
+          continue
         }
       }
-      if (spans === undefined) {
-        const result = this.scanLogicalLine(startY, cols, scratchCell, budget)
-        for (const [y, rowSpans] of result.perRow) {
+
+      let read: ReturnType<OverlayHighlighter['readLogicalLine']> | null = null
+      let cachedPerRow: HighlightSpan[][] | null = null
+      if (startY >= screenStartY) {
+        // Entirely-on-screen logical line (P-05): validate against the
+        // stitched text and reuse the cached spans when unchanged — this
+        // is the flood case, where the regex pass used to run on every
+        // refresh for every visible row.
+        read = this.readLogicalLine(startY, cols)
+        const entry = this.screenRowCache.get(startY)
+        if (entry && entry.text === read.stitched.text && entry.perRow.length === read.rows.length) {
+          cachedPerRow = entry.perRow
+        }
+      }
+
+      if (cachedPerRow && read) {
+        for (let i = 0; i < read.rows.length; i++) {
+          const y = startY + i
           covered.add(y)
-          if (y < screenStartY && result.complete) this.setCachedSpans(y, rowSpans)
           // Always sync the row's overrides: empty spans clear stale entries
           // (e.g. a vim redraw removed the match). The store no-ops when
-          // nothing changed. Overrides for lines above the viewport are kept
-          // so scrolling back re-renders them immediately without a rescan.
-          this.setOverrides(y, rowSpans, colors)
+          // nothing changed.
+          this.setOverrides(y, cachedPerRow[i], colors)
         }
         lineY = startY
         continue
       }
 
-      this.setOverrides(lineY, spans, colors)
+      if (!read) read = this.readLogicalLine(startY, cols)
+      const result = this.scanReadLine(read, cols, scratchCell, budget)
+      const rowSpans: HighlightSpan[][] = []
+      for (let i = 0; i < read.rows.length; i++) {
+        const y = startY + i
+        const spans = result.perRow.get(y) ?? []
+        rowSpans.push(spans)
+        covered.add(y)
+        // Overrides for lines above the viewport are kept so scrolling back
+        // re-renders them immediately without a rescan.
+        this.setOverrides(y, spans, colors)
+        if (y < screenStartY && result.complete) this.setCachedSpans(y, spans)
+      }
+      // Cache only complete scans: a budget-cut partial would be validated
+      // as "unchanged" on the next refresh and stay missing forever.
+      if (startY >= screenStartY && result.complete) {
+        this.setScreenCache(startY, read.stitched.text, rowSpans)
+      }
+      lineY = startY
     }
 
     if (budget.hitLimit) {
