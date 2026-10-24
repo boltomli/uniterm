@@ -67,6 +67,10 @@ type TerminalSettings struct {
 	// Pointer + omitempty so older settings.json files still load; the
 	// frontend defaults to 4.5 when nil.
 	MinimumContrast *float64 `json:"minimumContrast,omitempty"`
+	// Renderer selects the terminal renderer: "dom", "webgl", or empty for
+	// the frontend default "auto" (WebGL unless keyword highlighting is on).
+	// String + omitempty so settings.json written by older builds still loads.
+	Renderer string `json:"renderer,omitempty"`
 	// ShowLineNumbers / ShowTimestamps toggle the gutter columns in front of
 	// the terminal. Pointer + omitempty so settings.json written by older
 	// builds (which lack these fields) still loads; the frontend defaults

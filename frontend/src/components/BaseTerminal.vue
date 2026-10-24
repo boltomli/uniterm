@@ -176,6 +176,7 @@ import {
   transferTerminal,
   bumpOnDataGeneration,
   markTerminalActive,
+  refreshTerminalRenderer,
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
@@ -2182,6 +2183,10 @@ watch(() => settingsStore.settings.terminal, (ts) => {
   }
   // Live cursorStyle is applied by xterm on the next cursor render.
   if (ts.cursorStyle) terminal.options.cursorStyle = ts.cursorStyle
+  // Renderer choice (P-04): mode switches, and the highlight gate in "auto"
+  // mode, both live here. Cheap no-op when the loaded renderer already
+  // matches.
+  refreshTerminalRenderer(props.sessionId || '')
   resize()
 }, { deep: true })
 

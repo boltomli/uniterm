@@ -96,8 +96,16 @@ export interface TerminalSettings {
   // Minimum text/background contrast ratio (F-039). xterm auto-brightens or
   // darkens the foreground until this ratio is met, only for cells below it,
   // so low-contrast pairings (e.g. ls's colored blocks for 777 dirs) stay
-  // readable. 1 = xterm's no-op default = disabled.
+  // readable. 1 = xterm's no-op default = disabled. NOTE: the boost is
+  // evaluated per cell on the DOM renderer — the documented cost of the
+  // 4.5 default; the WebGL renderer absorbs it far cheaper (P-04).
   minimumContrast: number
+  // Terminal renderer (P-04). 'dom' forces the DOM renderer, 'webgl' forces
+  // WebGL, 'auto' (default) picks WebGL unless keyword highlighting is
+  // enabled — the highlighter's CellColorOverrideStore patch only exists in
+  // our fork's DOM renderer, so highlighting pins DOM. A lost WebGL context
+  // falls back to DOM for the rest of the session.
+  renderer: 'auto' | 'dom' | 'webgl'
   // Override for the session output log directory. Empty means the
   // OS default under ~/Documents/uniTerm/logs.
   sessionLogDir: string
@@ -413,6 +421,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     ctrlWheelZoom: true,
     cursorStyle: 'block',
     minimumContrast: 4.5,
+    renderer: 'auto',
     sessionLogDir: '',
     zmodemDownloadDir: '',
     sessionLogFilename: '%S_%H_%M%D_%h%m.log',

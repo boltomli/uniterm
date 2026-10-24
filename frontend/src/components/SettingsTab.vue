@@ -535,6 +535,18 @@
 
           <div class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.renderer') }}</div>
+              <div class="setting-desc">{{ t('settings.rendererDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.terminal.renderer" @change="settingsStore.save()">
+                <el-option v-for="opt in rendererOptions" :key="opt.value" :label="t(opt.labelKey)" :value="opt.value" />
+              </el-select>
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.showLineNumbers') }}</div>
               <div class="setting-desc">{{ t('settings.showLineNumbersDesc') }}</div>
             </div>
@@ -1991,6 +2003,14 @@ const secondFontOptions = computed(() =>
 const { terminalThemeGroups, isCustomTheme } = useTerminalThemeOptions()
 
 const cursorStyleOptions = CURSOR_STYLES
+
+// P-04 renderer choices; "auto" keeps the DOM renderer while keyword
+// highlighting is on (the highlighter is DOM-renderer-only in our fork).
+const rendererOptions: Array<{ value: 'auto' | 'dom' | 'webgl'; labelKey: string }> = [
+  { value: 'auto', labelKey: 'settings.rendererAuto' },
+  { value: 'dom', labelKey: 'settings.rendererDom' },
+  { value: 'webgl', labelKey: 'settings.rendererWebgl' },
+]
 
 const themeEditorVisible = ref(false)
 const themeEditorSourceId = ref<string | undefined>(undefined)

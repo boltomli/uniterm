@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { ClipboardAddon, Base64 } from '@xterm/addon-clipboard'
 import { ElMessageBox } from 'element-plus'
 import { t } from '../i18n'
@@ -88,6 +89,11 @@ export interface ManagedTerminal {
   progressDispose: { dispose(): void } | null
   /** macOS IME compatibility patch installed after terminal.open(). */
   imeDispose: { dispose(): void } | null
+  /** Active WebGL renderer addon (P-04), null while the DOM renderer runs. */
+  webglAddon: { dispose(): void } | null
+  /** Set once WebGL proved unusable this session (context lost or addon
+   * load threw) — stay on the DOM renderer instead of retrying. */
+  rendererFallbackDom: boolean
 }
 
 const terminals = new Map<string, ManagedTerminal>()
@@ -530,6 +536,8 @@ export function acquireTerminal(
       resizeDispose: null,
       progressDispose: null,
       imeDispose: null,
+      webglAddon: null,
+      rendererFallbackDom: false,
     }
     // Headless mirror starts parsing the session stream immediately so its
     // buffer is always current when the panel goes to the background. Never
@@ -629,6 +637,8 @@ export function releaseTerminal(sessionId: string, ref: string): void {
       setTabProgressForSession(sessionId, null)
       managed.imeDispose?.dispose()
       managed.imeDispose = null
+      managed.webglAddon?.dispose()
+      managed.webglAddon = null
       managed.terminal.dispose()
       terminals.delete(sessionId)
       dropSessionBuffer(sessionId)
@@ -654,6 +664,8 @@ export function disposeTerminal(sessionId: string): void {
   setTabProgressForSession(sessionId, null)
   managed.imeDispose?.dispose()
   managed.imeDispose = null
+  managed.webglAddon?.dispose()
+  managed.webglAddon = null
   managed.terminal.dispose()
   terminals.delete(sessionId)
   dropSessionBuffer(sessionId)
@@ -723,6 +735,11 @@ export function attachTerminal(sessionId: string, container: HTMLElement): void 
     container.appendChild(managed.terminal.element)
   }
 
+  // Renderer choice (P-04): WebGL can only be loaded once the terminal has
+  // an element (post-open). Re-applying here also covers re-attach after a
+  // detach, and is a no-op when the loaded renderer already matches.
+  applyTerminalRenderer(managed)
+
   // macOS direct input and Windows composition ownership both need the
   // textarea/composition helper created by open(), not construction.
   if (!managed.imeDispose) {
@@ -774,6 +791,69 @@ export function detachTerminal(sessionId: string, container: HTMLElement): void 
 
 export function getTerminal(sessionId: string): Terminal | undefined {
   return terminals.get(sessionId)?.terminal
+}
+
+// ---------------------------------------------------------------------------
+// Renderer selection (P-04, plan A)
+// ---------------------------------------------------------------------------
+// The keyword highlighter relies on the fork's CellColorOverrideStore, which
+// is patched into the DOM renderer only — so "auto" keeps DOM while
+// highlighting is on and switches to WebGL otherwise. WebGL costs far less
+// per cell (no per-glyph DOM/CSS work, much cheaper contrast enhancement),
+// which is what makes floods and minimumContrastRatio affordable. A lost
+// WebGL context falls back to DOM for the rest of the session.
+function resolveWebglEnabled(managed: ManagedTerminal): boolean {
+  if (managed.rendererFallbackDom) return false
+  try {
+    const ts = useSettingsStore().settings.terminal
+    const mode = ts.renderer ?? 'auto'
+    if (mode === 'dom') return false
+    if (mode === 'webgl') return true
+    // auto: highlighting owns the renderer.
+    return !(ts.highlightEnabled ?? true)
+  } catch {
+    return false // settings unavailable → fail to the compatible renderer
+  }
+}
+
+function applyTerminalRenderer(managed: ManagedTerminal): void {
+  const want = resolveWebglEnabled(managed)
+  if (!want) {
+    if (managed.webglAddon) {
+      try { managed.webglAddon.dispose() } catch { /* noop */ }
+      managed.webglAddon = null
+    }
+    return
+  }
+  if (managed.webglAddon) return // already active
+  if (!managed.terminal.element) return // needs open(); attachTerminal re-applies
+  let addon: WebglAddon | null = null
+  try {
+    addon = new WebglAddon()
+    // Driver reset / GPU loss: dispose once and stay on DOM — reloading
+    // would just lose the context again.
+    addon.onContextLoss(() => {
+      try { addon?.dispose() } catch { /* noop */ }
+      if (managed.webglAddon === addon) managed.webglAddon = null
+      managed.rendererFallbackDom = true
+      console.warn('[terminalManager] WebGL context lost; falling back to the DOM renderer')
+    })
+    managed.terminal.loadAddon(addon)
+    managed.webglAddon = addon
+  } catch (e) {
+    // WebGL unavailable (software GL, disabled GPU flags): stay on DOM.
+    try { addon?.dispose() } catch { /* noop */ }
+    managed.rendererFallbackDom = true
+    console.warn('[terminalManager] WebGL renderer unavailable; staying on DOM', e)
+  }
+}
+
+/** Re-evaluate the renderer choice for a session — called when terminal
+ * settings change (render mode, or the highlight gate in "auto"). */
+export function refreshTerminalRenderer(sessionId: string): void {
+  const managed = terminals.get(sessionId)
+  if (!managed) return
+  applyTerminalRenderer(managed)
 }
 
 // Mark a component instance as actively displaying the terminal (mounted and
