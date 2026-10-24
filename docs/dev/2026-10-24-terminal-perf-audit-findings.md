@@ -310,5 +310,5 @@ cd frontend && npx vue-tsc --noEmit && npx vitest run && npm run build
 
 ### 已知遗留
 
-- `GOOS=linux go build ./backend/session` 在基线上就失败（`sftp_session.go` 的 `copyFile` 未定义，平台文件缺失），与本次修复无关，未处理。
+- 基线上 `GOOS=linux/darwin go build ./backend/session` 因 `copyFile` 只定义在 Windows 专属文件而失败，已随后修复（`f5d11b3b`，移到跨平台 `file_copy.go`）。注：从 Windows 交叉编译完整应用（`go build ./...`）仍会因 wails 依赖自身的 Linux 构建要求（gtk/webkit）失败，这属于构建环境限制，非本仓库代码问题。
 - P-04 的 WebGL 渲染器在「背景图透明」组合下的视觉效果、P-08 的事件上限档位、P-02 的手工延迟对比（`yes` 后 Ctrl+C ≤100ms）需要在 `wails3 dev` + DevTools Performance 中实测确认。
