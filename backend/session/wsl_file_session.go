@@ -853,30 +853,6 @@ func copyTree(src, dst string, task *TransferTask, seen []string) error {
 	return copyFile(src, dst, task)
 }
 
-func copyFile(src, dst string, task *TransferTask) error {
-	if err := transferCtxErr(task); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	// The shared stream copy nil-guards the task (this loop used to panic on
-	// waitIfPaused with the nil task WSL Copy/Move pass) and returns write
-	// errors and cancellation instead of copying to the end.
-	cpErr := copyDownloadStream(out, in, task, nil)
-	closeErr := out.Close()
-	if cpErr != nil {
-		return cpErr
-	}
-	return closeErr
-}
-
 // RetryTransfer (re)starts a transfer from a frontend-held checkpoint.
 // resolveLocal/resolveRemote are idempotent on the resolved paths the spec
 // carries, so the retry goes through Get/Put like the original request.
