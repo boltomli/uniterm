@@ -510,6 +510,16 @@ var (
 	// stalled readLoop just delays binary-mode detection by at most this.
 	// Package-level var so tests can shorten it.
 	outputPauseTimeout = 5 * time.Second
+	// emitChunkMaxBytes caps one emit callback (P-08). Wails routes events
+	// larger than its inline payload limit (~8KiB) through a fetch whose
+	// promise chain serializes EVERY later event behind it — one merged
+	// ~1MB flush used to park key echo and other small events behind a
+	// huge JSON parse. 64KiB is the compromise: small enough that the
+	// queueing delay stays imperceptible, large enough not to explode
+	// ExecJS call counts (Wails' own comment notes fetch throughput wins
+	// on WebView2 below ~8KiB, so never go that low). Splits happen only
+	// at complete UTF-8 rune boundaries.
+	emitChunkMaxBytes = 64 * 1024
 )
 
 const (
@@ -785,6 +795,9 @@ func (s *baseSession) drainEmitQueue() [][]byte {
 
 // flushEmitChunks coalesces chunks into a single callback invocation so a
 // flood of output costs one IPC event per flush window, not one per chunk.
+// The coalesced payload is then capped at emitChunkMaxBytes per callback —
+// split only on complete UTF-8 rune boundaries (P-08; the chunks already
+// end on boundaries thanks to emitData's carry, so only the cap cuts).
 func (s *baseSession) flushEmitChunks(chunks [][]byte) {
 	s.mu.RLock()
 	cb := s.onDataCallback
@@ -793,7 +806,7 @@ func (s *baseSession) flushEmitChunks(chunks [][]byte) {
 		return
 	}
 	if len(chunks) == 1 {
-		cb(chunks[0])
+		emitChunked(cb, chunks[0])
 		return
 	}
 	total := 0
@@ -804,7 +817,28 @@ func (s *baseSession) flushEmitChunks(chunks [][]byte) {
 	for _, c := range chunks {
 		joined = append(joined, c...)
 	}
-	cb(joined)
+	emitChunked(cb, joined)
+}
+
+// emitChunked invokes cb with data split into pieces of at most
+// emitChunkMaxBytes each, cut only at complete UTF-8 rune boundaries — a
+// piece must never end mid-rune (P-03's guarantee survives P-08's split:
+// json.Marshal would turn a split rune into U+FFFD again).
+func emitChunked(cb func([]byte), data []byte) {
+	for len(data) > emitChunkMaxBytes {
+		complete, _ := splitIncompleteUTF8(data[:emitChunkMaxBytes])
+		if len(complete) == 0 {
+			// UTF-8 runes are at most 4 bytes, so complete is always ≥
+			// cap-3 here; guard anyway so pathological input cannot
+			// loop forever.
+			complete = data[:emitChunkMaxBytes]
+		}
+		cb(complete)
+		data = data[len(complete):]
+	}
+	if len(data) > 0 {
+		cb(data)
+	}
 }
 
 func (s *baseSession) emitLoop() {
