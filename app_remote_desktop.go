@@ -224,19 +224,22 @@ func (a *App) ClipboardAbortFileTransfer(id string) error {
 
 // SetRDPKeyboardCapture is enabled only while the connected WASM desktop has
 // focus. The capture token also identifies events queued before a focus change.
+// SetVNCKeyboardCapture and SetSPICEKeyboardCapture take a fullscreen flag:
+// in fullscreen the browser consumes Escape before the page sees it, so the
+// native hook must swallow Escape too and forward it to the remote desktop.
 func (a *App) SetRDPKeyboardCapture(sessionID, captureID string, enabled bool) (bool, error) {
-	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "rdp")
+	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "rdp", false)
 }
 
-func (a *App) SetVNCKeyboardCapture(sessionID, captureID string, enabled bool) (bool, error) {
-	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "vnc")
+func (a *App) SetVNCKeyboardCapture(sessionID, captureID string, enabled, fullscreen bool) (bool, error) {
+	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "vnc", fullscreen)
 }
 
-func (a *App) SetSPICEKeyboardCapture(sessionID, captureID string, enabled bool) (bool, error) {
-	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "spice")
+func (a *App) SetSPICEKeyboardCapture(sessionID, captureID string, enabled, fullscreen bool) (bool, error) {
+	return a.setDesktopKeyboardCapture(sessionID, captureID, enabled, "spice", fullscreen)
 }
 
-func (a *App) setDesktopKeyboardCapture(sessionID, captureID string, enabled bool, sessionType string) (bool, error) {
+func (a *App) setDesktopKeyboardCapture(sessionID, captureID string, enabled bool, sessionType string, fullscreen bool) (bool, error) {
 	if !enabled {
 		a.rdpKeyboardMu.Lock()
 		capture := a.rdpKeyboard
@@ -276,7 +279,7 @@ func (a *App) setDesktopKeyboardCapture(sessionID, captureID string, enabled boo
 		hwnd = a.findMainWindow()
 	}
 	if sessionType == "vnc" || sessionType == "spice" {
-		return capture.SetShortcutCapture(captureID, hwnd), nil
+		return capture.SetShortcutCapture(captureID, hwnd, fullscreen), nil
 	}
 	return capture.SetCapture(captureID, hwnd), nil
 }

@@ -19,6 +19,9 @@ type RDPKeyEvent struct {
 	VirtualKey uint32 `json:"virtualKey,omitempty"`
 }
 
+// keyScanEscape is the XT set-1 make code of the Escape key.
+const keyScanEscape = 0x01
+
 type rdpKeyboardState struct {
 	captureID string
 	pressed   map[uint16]string
@@ -89,6 +92,11 @@ type desktopKeyboardCapture struct {
 	state      rdpKeyboardState
 	window     uintptr
 	shortcuts  bool
+	// escCapture additionally swallows Escape while active. VNC/SPICE run in
+	// shortcuts-only mode, but in fullscreen the browser consumes Escape to
+	// leave fullscreen before the page sees it, so it must be captured like a
+	// shortcut and forwarded to the remote desktop.
+	escCapture bool
 	expires    time.Time
 	active     bool
 	closed     bool
@@ -122,14 +130,14 @@ func (c *desktopKeyboardCapture) reset() {
 }
 
 func (c *desktopKeyboardCapture) SetCapture(id string, window uintptr) bool {
-	return c.setCapture(id, window, false)
+	return c.setCapture(id, window, false, false)
 }
 
-func (c *desktopKeyboardCapture) SetShortcutCapture(id string, window uintptr) bool {
-	return c.setCapture(id, window, true)
+func (c *desktopKeyboardCapture) SetShortcutCapture(id string, window uintptr, fullscreenEsc bool) bool {
+	return c.setCapture(id, window, true, fullscreenEsc)
 }
 
-func (c *desktopKeyboardCapture) setCapture(id string, window uintptr, shortcuts bool) bool {
+func (c *desktopKeyboardCapture) setCapture(id string, window uintptr, shortcuts, escCapture bool) bool {
 	if c == nil {
 		return false
 	}
@@ -140,7 +148,10 @@ func (c *desktopKeyboardCapture) setCapture(id string, window uintptr, shortcuts
 		c.mu.Unlock()
 		return false
 	}
-	if c.active && c.state.captureID == id && c.window == window && c.shortcuts == shortcuts {
+	if c.active && c.state.captureID == id && c.window == window {
+		// Flag-only refreshes (e.g. fullscreen toggling) must not reset the
+		// capture: a reset emits a spurious remote key-reset event.
+		c.shortcuts, c.escCapture = shortcuts, escCapture
 		c.expires = time.Now().Add(3 * time.Second)
 		c.mu.Unlock()
 		return true
@@ -148,7 +159,8 @@ func (c *desktopKeyboardCapture) setCapture(id string, window uintptr, shortcuts
 	c.reset()
 	c.state.activate(id)
 	c.active = true
-	c.window, c.shortcuts, c.expires = window, shortcuts, time.Now().Add(3*time.Second)
+	c.window, c.shortcuts, c.escCapture = window, shortcuts, escCapture
+	c.expires = time.Now().Add(3 * time.Second)
 	c.mu.Unlock()
 	ok := c.backend.capture(window)
 	c.mu.Lock()
@@ -188,7 +200,7 @@ func (c *desktopKeyboardCapture) key(scan uint16, down, foreground, ctrl, shift,
 	if !active {
 		c.reset()
 	}
-	local := scan == 0x58 || c.shortcuts && !c.state.shortcutKey(scan, alt)
+	local := scan == 0x58 || c.shortcuts && !(c.escCapture && scan == keyScanEscape) && !c.state.shortcutKey(scan, alt)
 	event, swallow := c.state.key(scan, down, active, local)
 	if event.CaptureID != "" {
 		event.Ctrl, event.Shift, event.Meta = ctrl, shift, meta

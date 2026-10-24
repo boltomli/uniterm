@@ -272,7 +272,7 @@ func TestDesktopKeyboardReleasesOnExpiryAndFocusLoss(t *testing.T) {
 
 func TestDesktopKeyboardShortcutMode(t *testing.T) {
 	c, _, events := desktopKeyboardFixture(t)
-	c.SetShortcutCapture("vnc", 1)
+	c.SetShortcutCapture("vnc", 1, false)
 	if c.key(0x1e, true, true, false, false, false, false) {
 		t.Fatal("ordinary VNC typing must remain with the webview")
 	}
@@ -287,6 +287,48 @@ func TestDesktopKeyboardShortcutMode(t *testing.T) {
 	}
 	if c.key(0x58, true, true, false, false, false, true) {
 		t.Fatal("F12 must remain local")
+	}
+}
+
+func TestDesktopKeyboardWindowedEscape(t *testing.T) {
+	c, _, _ := desktopKeyboardFixture(t)
+	c.SetShortcutCapture("vnc", 1, false)
+	if c.key(keyScanEscape, true, true, false, false, false, false) {
+		t.Fatal("windowed VNC Escape must remain with the webview")
+	}
+	if c.key(keyScanEscape, false, true, false, false, false, false) {
+		t.Fatal("windowed VNC Escape release must remain with the webview")
+	}
+	if len(c.queue) != 0 {
+		t.Fatal("windowed VNC Escape must not reach the remote")
+	}
+}
+
+func TestDesktopKeyboardFullscreenEscape(t *testing.T) {
+	c, _, events := desktopKeyboardFixture(t)
+	if !c.SetShortcutCapture("vnc", 1, true) {
+		t.Fatal("capture not enabled")
+	}
+	if !c.key(keyScanEscape, true, true, false, false, false, false) {
+		t.Fatal("fullscreen VNC Escape must be forwarded to the remote")
+	}
+	event := desktopKeyboardNextEvent(t, events)
+	if event.CaptureID != "vnc" || event.Scancode != keyScanEscape || !event.Down {
+		t.Fatalf("incorrect Escape event: %+v", event)
+	}
+	// A fullscreen toggle renews the capture with a flipped flag. It must
+	// neither drop the lease nor reset held remote keys.
+	if !c.SetShortcutCapture("vnc", 1, false) {
+		t.Fatal("flag refresh failed")
+	}
+	if len(c.queue) != 0 {
+		t.Fatal("flag refresh must not emit a remote key reset")
+	}
+	if !c.key(keyScanEscape, false, true, false, false, false, false) {
+		t.Fatal("held Escape release must stay swallowed after the flag refresh")
+	}
+	if c.state.captureID != "vnc" {
+		t.Fatal("flag refresh lost the capture owner")
 	}
 }
 
