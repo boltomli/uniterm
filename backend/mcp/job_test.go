@@ -69,6 +69,162 @@ func TestPassiveCollectionSharesEngineWithoutWritingOrLocking(t *testing.T) {
 	}
 }
 
+// A fresh emulator grid is blank, but the stream's absolute cursor addressing
+// already points at the prompt row before any content is painted — the rows
+// in between were real screen content from before the job started. Emitting
+// them fronts the AI result with a wall of leading blank lines the real
+// screen never shows.
+func TestFreshScreenSkipsLeadingBlankRows(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ConPTY jumps the cursor to the prompt row before painting anything.
+	p.emit("\x1b[20;1H")
+	p.emit("prompt> ")
+	p.emit("hello\r\nworld")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out, _, code, state, _ := j.Snapshot()
+	if state != StateExited || code != 0 {
+		t.Fatalf("state=%s code=%d", state, code)
+	}
+	if strings.HasPrefix(string(out), "\n") {
+		t.Fatalf("leading blank lines in output: %q", out)
+	}
+	if !strings.Contains(string(out), "hello") || !strings.Contains(string(out), "world") {
+		t.Fatalf("missing content: %q", out)
+	}
+}
+
+// The prompt line was painted before the job started, so the PTY stream never
+// resends it — ConPTY only relays incremental input-line repaints that CUP
+// into the middle of the prompt row. Seeding from the capture emulator's
+// cursor row makes the first returned line start at the prompt instead of an
+// unpainted gap.
+func TestSeededPromptRowJoinsStreamRepaint(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 80, 24,
+		ScreenSeed{Line: "PS C:\\Users\\me", X: 14, Y: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ConPTY repaints the input line mid-prompt-row; the prompt text itself
+	// never arrives.
+	p.emit("\x1b[5;15H> echo hi")
+	p.emit("\r\noutput-line\r\n")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out, _, _, state, _ := j.Snapshot()
+	if state != StateExited {
+		t.Fatalf("state=%s", state)
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if !strings.HasPrefix(lines[0], "PS C:\\Users\\me> echo hi") {
+		t.Fatalf("seeded prompt missing from first line: %q", lines[0])
+	}
+	if len(lines) < 2 || lines[1] != "output-line" {
+		t.Fatalf("missing output: %q", lines)
+	}
+}
+
+// An all-blank cursor row must not be seeded: it would emit a blank filler
+// line the stream never produced.
+func TestSeedSkipsBlankCursorRow(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 80, 24,
+		ScreenSeed{Line: "", X: 0, Y: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.emit("hello")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out, _, _, _, _ := j.Snapshot()
+	if strings.Contains(string(out), "\n\n") {
+		t.Fatalf("blank seed row leaked as filler: %q", out)
+	}
+	if !strings.Contains(string(out), "hello") {
+		t.Fatalf("missing content: %q", out)
+	}
+}
+
+// A scroll at the bottom of a fresh grid (prompt row near the bottom, long
+// echo wrapping past it) pushes undeclared rows into scrollback; they are
+// pre-job screen content and must not be emitted, unlike the declared rows
+// that scroll off with real content.
+func TestScrollbackSkipsUndeclaredRows(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 40, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Prompt row 7 declared, echo + output wraps past the bottom → scrolls.
+	p.emit("\x1b[8;1Hprompt> ")
+	p.emit("long-line-one\r\nlong-line-two\r\nlong-line-three\r\nlong-line-four\r\nlong-line-five\r\nlast")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out, _, _, state, _ := j.Snapshot()
+	if state != StateExited {
+		t.Fatalf("state=%s", state)
+	}
+	if strings.HasPrefix(string(out), "\n") {
+		t.Fatalf("undeclared scrollback rows leaked as leading blanks: %q", out)
+	}
+	for _, want := range []string{"long-line-one", "long-line-three", "long-line-five", "last"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("missing %q in output: %q", want, out)
+		}
+	}
+}
+
+func TestEmittedOutputSkipsUndeclaredRows(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Painted rows 0 and 4, jumped (CUP) over rows 1-3; later painted row 9
+	// after jumping over 5-8. Only linefeed-reached or painted rows are real.
+	p.emit("\x1b[1;1Htop")
+	p.emit("\x1b[5;1Hline5")
+	p.emit("\x1b[10;1Hbottom")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out := string(j.screen.LinesSince(0, j.screen.CursorAbs())) + j.screen.FlushFrom(j.screen.CursorAbs())
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want exactly 3 lines, got %d: %q", len(lines), lines)
+	}
+	if lines[0] != "top" || lines[1] != "line5" || lines[2] != "bottom" {
+		t.Fatalf("unexpected lines: %q", lines)
+	}
+}
+
+// Interior blank lines produced by real linefeeds must survive emission.
+func TestEmittedOutputKeepsGenuineBlankLines(t *testing.T) {
+	r := NewRegistry()
+	p := &fakePty{alive: true}
+	j, err := r.StartWithScreen(p, "s", "echo hi", "\n", time.Second, 0, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.emit("\x1b[1;1Hone\r\n\r\n\r\nfour")
+	p.complete(j, 0)
+	waitDone(t, j, time.Second)
+	out := string(j.screen.LinesSince(0, j.screen.CursorAbs())) + j.screen.FlushFrom(j.screen.CursorAbs())
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 4 || lines[0] != "one" || lines[1] != "" || lines[2] != "" || lines[3] != "four" {
+		t.Fatalf("want one/blank/blank/four, got %q", lines)
+	}
+}
+
 func TestConcurrentStartsShareSessionLock(t *testing.T) {
 	r := NewRegistry()
 	var wg sync.WaitGroup
