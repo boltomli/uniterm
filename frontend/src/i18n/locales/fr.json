@@ -1773,6 +1773,8 @@
   "db.null": "NULL",
   "db.undo": "Annuler",
   "db.unsavedChanges": "Modifications non enregistrées",
+  "db.updateNoMatch": "La mise à jour a affecté 0 ligne. Les données ont peut-être été modifiées ailleurs — actualisez avant d'enregistrer à nouveau.",
+  "db.rowGone": "Cette ligne ne correspond plus aux données chargées (modifiée ou supprimée ailleurs). Elle va être actualisée.",
   "sftp.editExternal": "Ouvrir dans l'éditeur externe",
   "sftp.editExternalStart": "Modification de {path} dans un éditeur externe",
   "sftp.editExternalUploaded": "Téléversé automatiquement vers le distant : {path}",

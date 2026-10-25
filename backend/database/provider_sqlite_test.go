@@ -85,7 +85,7 @@ func TestSQLiteSchemaAndCRUD(t *testing.T) {
 		t.Fatalf("unexpected schema: %+v", schema.Columns)
 	}
 
-	if err := p.UpdateRow(db, "main", "items", map[string]any{"name": "b"}, map[string]any{"id": int64(1)}); err != nil {
+	if _, err := p.UpdateRow(db, "main", "items", map[string]any{"name": "b"}, map[string]any{"id": int64(1)}); err != nil {
 		t.Fatalf("UpdateRow: %v", err)
 	}
 	rows, err := queryStrings(db, p.DefaultTableQuery("main", "items", 50, 0))
@@ -96,7 +96,7 @@ func TestSQLiteSchemaAndCRUD(t *testing.T) {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 
-	if err := p.DeleteRow(db, "main", "items", map[string]any{"id": int64(1)}); err != nil {
+	if _, err := p.DeleteRow(db, "main", "items", map[string]any{"id": int64(1)}); err != nil {
 		t.Fatalf("DeleteRow: %v", err)
 	}
 	rows, err = queryStrings(db, p.PagedTableQuery("main", "items", 50, 0))

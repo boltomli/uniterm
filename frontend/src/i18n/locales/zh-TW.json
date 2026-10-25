@@ -1776,6 +1776,8 @@
   "db.null": "NULL",
   "db.undo": "復原",
   "db.unsavedChanges": "未儲存的變更",
+  "db.updateNoMatch": "更新比對到 0 行。資料可能已被其他位置修改，請重新整理後再儲存。",
+  "db.rowGone": "該行與載入時的資料已不一致（可能已被其他位置修改或刪除），將為你重新整理。",
   "sftp.editExternal": "以外部編輯器開啟",
   "sftp.editExternalStart": "正在外部編輯器中編輯 {path}",
   "sftp.editExternalUploaded": "已自動上傳至遠端：{path}",

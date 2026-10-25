@@ -102,7 +102,7 @@ func (p *oracleProvider) InsertRow(db *sql.DB, dbName, tableName string, values 
 	return execPrepared(p, db, dbName, sql, args)
 }
 
-func (p *oracleProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) error {
+func (p *oracleProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
 	raw := p.rawColumns(db, dbName, tableName)
 	set, where = applyRaw(raw, set), applyRaw(raw, where)
 	args := make([]any, 0, len(set)+len(where))
@@ -134,10 +134,10 @@ func (p *oracleProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, wh
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
-func (p *oracleProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) error {
+func (p *oracleProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {
 	where = p.rawArgs(db, dbName, tableName, where)
 	args := make([]any, 0, len(where))
 	phIdx := 1
@@ -156,7 +156,7 @@ func (p *oracleProvider) DeleteRow(db *sql.DB, dbName, tableName string, where m
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
 // rawColumns returns the table's RAW columns mapped to "is RAW(16)". The grid

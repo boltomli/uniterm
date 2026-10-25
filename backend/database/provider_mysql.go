@@ -32,6 +32,12 @@ func (p *mysqlProvider) DSN(host string, port int, user, password, dbName string
 		"timeout":      "10s",
 		"readTimeout":  "10s",
 		"writeTimeout": "10s",
+		// clientFoundRows makes RowsAffected count MATCHED rows instead of
+		// CHANGED rows. DBUpdateRow/DBDeleteRow surface the count so a 0
+		// means "your WHERE matched nothing" (DB-01); without this flag an
+		// UPDATE that writes the value a row already has reports 0 as well
+		// and the frontend would raise a false "data changed elsewhere".
+		"clientFoundRows": "true",
 	}
 	for k, v := range extraParams {
 		cfg.Params[k] = v
@@ -94,7 +100,7 @@ func (p *mysqlProvider) InsertRow(db *sql.DB, dbName, tableName string, values m
 	return execPrepared(p, db, dbName, sql, args)
 }
 
-func (p *mysqlProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) error {
+func (p *mysqlProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(set)+len(where))
 	phIdx := 1
 
@@ -124,10 +130,10 @@ func (p *mysqlProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, whe
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
-func (p *mysqlProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) error {
+func (p *mysqlProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(where))
 	phIdx := 1
 	whereParts := make([]string, 0, len(where))
@@ -145,7 +151,7 @@ func (p *mysqlProvider) DeleteRow(db *sql.DB, dbName, tableName string, where ma
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
 func (p *mysqlProvider) GetCapabilities() DBCapabilities {

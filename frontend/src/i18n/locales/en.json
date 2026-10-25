@@ -1776,6 +1776,8 @@
   "db.null": "NULL",
   "db.undo": "Undo",
   "db.unsavedChanges": "Unsaved changes",
+  "db.updateNoMatch": "Update matched 0 rows. The data may have been changed elsewhere — refresh before saving again.",
+  "db.rowGone": "This row no longer matches the loaded data (changed or deleted elsewhere). It will be refreshed.",
   "sftp.editExternal": "Open in External Editor",
   "sftp.editExternalStart": "Editing {path} in external editor",
   "sftp.editExternalUploaded": "Auto-uploaded to remote: {path}",

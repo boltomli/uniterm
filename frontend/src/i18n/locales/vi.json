@@ -1767,6 +1767,8 @@
   "db.null": "NULL",
   "db.undo": "Hoàn tác",
   "db.unsavedChanges": "Có thay đổi chưa lưu",
+  "db.updateNoMatch": "Câu lệnh cập nhật ảnh hưởng 0 dòng. Dữ liệu có thể đã được thay đổi ở nơi khác — làm mới rồi lưu lại.",
+  "db.rowGone": "Dòng này không còn khớp với dữ liệu đã tải (đã bị thay đổi hoặc xóa ở nơi khác). Sẽ làm mới.",
   "sftp.editExternal": "Mở bằng trình chỉnh sửa ngoài",
   "sftp.editExternalStart": "Đang chỉnh sửa {path} trong trình chỉnh sửa ngoài",
   "sftp.editExternalUploaded": "Đã tự động tải lên máy chủ: {path}",

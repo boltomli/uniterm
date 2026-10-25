@@ -745,13 +745,23 @@ async function onSaveEdits() {
   try {
     for (const ed of edits) {
       try {
-        await DBUpdateRow(
+        const affected = await DBUpdateRow(
           props.sessionId,
           props.dbName || '',
           props.tableName,
           { [ed.field]: ed.newValue },
           ed.where,
         )
+        if (affected === 0) {
+          // The snapshot WHERE matched nothing (DB-01): the row changed or
+          // was deleted elsewhere. Do NOT mark committed — the edit stays
+          // staged (visible, undoable) and the user is told to refresh.
+          ok = false
+          const m = t('db.updateNoMatch')
+          error.value = m
+          msg.error(m)
+          break
+        }
         resultGridRef.value?.markCommitted(ed.row, ed.fieldIndex)
       } catch (e: any) {
         ok = false
@@ -853,7 +863,12 @@ async function onDeleteRow(rowIndex: number) {
   }
 
   try {
-    await DBDeleteRow(props.sessionId, props.dbName || '', props.tableName, where)
+    const affected = await DBDeleteRow(props.sessionId, props.dbName || '', props.tableName, where)
+    if (affected === 0) {
+      // Snapshot matched nothing: someone changed or deleted the row already.
+      // The local copy is stale either way — tell the user (DB-01).
+      msg.error(t('db.rowGone'))
+    }
     queryResult.value = {
       ...queryResult.value!,
       rows: queryResult.value!.rows.filter((_, i) => i !== rowIndex)
@@ -1008,7 +1023,15 @@ async function onEditRowConfirm() {
   }
 
   try {
-    await DBUpdateRow(props.sessionId, props.dbName || '', props.tableName, set, where)
+    const affected = await DBUpdateRow(props.sessionId, props.dbName || '', props.tableName, set, where)
+    if (affected === 0) {
+      // Snapshot WHERE matched nothing (DB-01): keep the dialog open with the
+      // user's values so they can compare against fresh data after reloading.
+      const m = t('db.updateNoMatch')
+      error.value = m
+      msg.error(m)
+      return
+    }
     const idx = editingRowIndex.value
     const updatedRow = [...queryResult.value!.rows[idx]]
     for (const [i, col] of editRowColumns.value.entries()) {

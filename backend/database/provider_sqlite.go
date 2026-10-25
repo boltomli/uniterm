@@ -122,7 +122,7 @@ func (p *sqliteProvider) InsertRow(db *sql.DB, dbName, tableName string, values 
 	return execPrepared(p, db, dbName, sql, args)
 }
 
-func (p *sqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) error {
+func (p *sqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(set)+len(where))
 
 	setParts := make([]string, 0, len(set))
@@ -149,10 +149,10 @@ func (p *sqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, wh
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
-func (p *sqliteProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) error {
+func (p *sqliteProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(where))
 	whereParts := make([]string, 0, len(where))
 	for _, c := range sortedKeys(where) {
@@ -168,7 +168,7 @@ func (p *sqliteProvider) DeleteRow(db *sql.DB, dbName, tableName string, where m
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPrepared(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, dbName, sql, args)
 }
 
 func (p *sqliteProvider) GetCapabilities() DBCapabilities {

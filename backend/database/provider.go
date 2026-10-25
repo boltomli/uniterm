@@ -69,8 +69,14 @@ type Provider interface {
 
 	// Row-level CRUD helpers for the result-grid inline actions.
 	InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error
-	UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) error
-	DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) error
+	// UpdateRow and DeleteRow return the number of rows the statement
+	// affected. Callers must surface a zero count: it means the WHERE clause
+	// matched nothing (the row was modified elsewhere, or the snapshot the
+	// WHERE was built from is stale) and reporting "saved" would silently
+	// lose the edit (DB-01). -1 means the driver cannot report a count —
+	// treat it as "unknown", never as zero.
+	UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error)
+	DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error)
 
 	// DDL: Database
 	CreateDatabase(db *sql.DB, dbName string) error
@@ -106,19 +112,35 @@ type Provider interface {
 // execPrepared executes a parameterized statement on a dedicated connection
 // after running the provider's per-database setup (PrepareExec).
 func execPrepared(p Provider, db *sql.DB, dbName, sql string, args []any) error {
+	_, err := execPreparedAffected(p, db, dbName, sql, args)
+	return err
+}
+
+// execPreparedAffected is execPrepared plus the driver's affected-row count.
+// A count the driver refuses to provide becomes -1 (unknown), never 0: the
+// statement itself already committed, so it must not be reported as
+// "matched nothing".
+func execPreparedAffected(p Provider, db *sql.DB, dbName, sql string, args []any) (int64, error) {
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer conn.Close()
 
 	if err := p.PrepareExec(conn, dbName); err != nil {
-		return err
+		return 0, err
 	}
 
-	_, err = conn.ExecContext(ctx, sql, args...)
-	return err
+	res, err := conn.ExecContext(ctx, sql, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return -1, nil
+	}
+	return n, nil
 }
 
 var providers = map[string]Provider{}

@@ -1773,6 +1773,8 @@
   "db.null": "NULL",
   "db.undo": "Rückgängig",
   "db.unsavedChanges": "Ungespeicherte Änderungen",
+  "db.updateNoMatch": "Das Update hat 0 Zeilen betroffen. Die Daten wurden möglicherweise woanders geändert — bitte aktualisieren und erneut speichern.",
+  "db.rowGone": "Diese Zeile stimmt nicht mehr mit den geladenen Daten überein (anderweitig geändert/gelöscht). Sie wird aktualisiert.",
   "sftp.editExternal": "In externem Editor öffnen",
   "sftp.editExternalStart": "Bearbeite {path} im externen Editor",
   "sftp.editExternalUploaded": "Automatisch auf Remote hochgeladen: {path}",

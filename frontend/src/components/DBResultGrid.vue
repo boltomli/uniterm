@@ -384,12 +384,15 @@ function onCellEditConfirm() {
     return
   }
   // Stage instead of saving: reflect the change live, mark dirty, wait for explicit save.
-  row[field] = newVal
+  // Snapshot the PK BEFORE the new value lands in the row (DB-01): when the first
+  // staged edit touches a PK column, snapshotting afterwards would build the UPDATE's
+  // WHERE clause from the NEW value — matching zero rows while the UI reports success.
   let rec = pending.get(row)
   if (!rec) {
     rec = { pk: snapshotPk(row), fields: new Map() }
     pending.set(row, rec)
   }
+  row[field] = newVal
   const existing = rec.fields.get(field)
   const original = existing ? existing.old : (oldVal ?? null)
   if (valuesEqual(original, newVal)) {

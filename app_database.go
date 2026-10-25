@@ -190,18 +190,23 @@ func (a *App) DBInsertRow(sessionID string, dbName string, tableName string, val
 	return p.InsertRow(ds.DB(), dbName, tableName, values)
 }
 
-func (a *App) DBUpdateRow(sessionID string, dbName string, tableName string, set map[string]any, where map[string]any) error {
+// DBUpdateRow writes one cell/row edit and returns the number of rows the
+// UPDATE affected. 0 means the WHERE clause matched nothing (DB-01): the
+// frontend must not report such a write as saved.
+func (a *App) DBUpdateRow(sessionID string, dbName string, tableName string, set map[string]any, where map[string]any) (int64, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return p.UpdateRow(ds.DB(), dbName, tableName, set, where)
 }
 
-func (a *App) DBDeleteRow(sessionID string, dbName string, tableName string, where map[string]any) error {
+// DBDeleteRow deletes rows by snapshot WHERE and returns the affected count
+// (0 = the row is already gone / was changed elsewhere).
+func (a *App) DBDeleteRow(sessionID string, dbName string, tableName string, where map[string]any) (int64, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return p.DeleteRow(ds.DB(), dbName, tableName, where)
 }

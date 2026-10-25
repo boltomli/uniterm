@@ -743,7 +743,7 @@ revert(state, rowIdx)
 
 | ID | 状态 | 负责 | PR | 备注 |
 |---|---|---|---|---|
-| DB-01 | 待修 | | | 建议第一个做 |
+| DB-01 | 已修 | | | 2026-10-25：网格先 snapshotPk 再写行；Provider UpdateRow/DeleteRow 返回 affected（execPreparedAffected，-1=驱动不支持）；MySQL DSN 加 clientFoundRows；前端 0 行不 markCommitted；测试 backend/database/row_affected_test.go + DBResultGrid.pkSnapshot.test.ts |
 | DB-02 | 待修 | | | 与 DB-01 同批 |
 | DB-03 | 待修 | | | |
 | DB-04 | 待修 | | | |
