@@ -757,7 +757,7 @@ revert(state, rowIdx)
 | DB-12 | 待修 | | | |
 | DB-13 | 待修 | | | 一行删除 |
 | DB-14 | 待修 | | | |
-| DB-15 | 待修 | | | 建议第二个做 |
+| DB-15 | 已修 | | | 2026-10-25：抽 `utils/sqlStatements.ts`（引号/行注释/块注释/dollar-quote 感知），firstStatement 与多语句判定共用；注释片段不计为语句；纯函数单测 14 例 |
 | DB-16 | 待修 | | | 需要后端取消 API |
 | DB-17 | 待修 | | | |
 | DB-18 | 待修 | | | |

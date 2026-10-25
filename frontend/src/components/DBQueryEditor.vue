@@ -226,6 +226,7 @@ import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTab
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
+import { firstStatement, hasMultipleStatements, isQuerySql } from '../utils/sqlStatements'
 import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult, DbRow, DbCellValue } from '../types/database'
 import { tryAndroidSave } from '../utils/androidSave'
 
@@ -402,48 +403,6 @@ function applyHistory(item: HistoryEntry) {
   sql.value = item.sql
   browseMode.value = false
   historyOpen.value = false
-}
-
-function firstStatement(text: string): string {
-  const trimmed = text.trim()
-  if (!trimmed) return ''
-  const parts = trimmed.split(';').map(s => s.trim()).filter(Boolean)
-  return parts[0] || trimmed
-}
-
-function isQuerySql(text: string): boolean {
-  const stmt = firstStatement(text)
-  return /^\s*(WITH|SELECT|SHOW|DESCRIBE|DESC|EXPLAIN|PRAGMA)\b/i.test(stmt)
-}
-
-function hasMultipleStatements(text: string): boolean {
-  return SplitScriptLike(text).length > 1
-}
-
-// Lightweight statement count: respects quotes and line comments so a `;`
-// inside a literal doesn't count as a separator. Block comments/DELIMITER
-// don't matter for the >1 check in practice.
-function SplitScriptLike(text: string): string[] {
-  const parts: string[] = []
-  let cur = ''
-  let inSingle = false
-  let inDouble = false
-  let inBacktick = false
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]
-    const prev = i > 0 ? text[i - 1] : ''
-    if (c === "'" && !inDouble && !inBacktick && prev !== '\\') inSingle = !inSingle
-    else if (c === '"' && !inSingle && !inBacktick && prev !== '\\') inDouble = !inDouble
-    else if (c === '`' && !inSingle && !inDouble) inBacktick = !inBacktick
-    else if (c === ';' && !inSingle && !inDouble && !inBacktick) {
-      if (cur.trim()) parts.push(cur)
-      cur = ''
-      continue
-    }
-    cur += c
-  }
-  if (cur.trim()) parts.push(cur)
-  return parts
 }
 
 function normalizeSql(s: string): string {
