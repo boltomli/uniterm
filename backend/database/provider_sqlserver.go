@@ -403,7 +403,56 @@ func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, c
 			return err
 		}
 	}
+	// DB-22: MODIFY used to ignore defaultVal entirely — a comment-only edit
+	// left the old default silently in place and there was no way to set a
+	// new one. Swap the default constraint the same way DropColumn does.
+	if col.DefaultType == "value" {
+		return p.setDefaultValue(db, dbName, tableName, col)
+	}
 	return nil
+}
+
+// setDefaultValue drops the column's current DEFAULT constraint (if any) and
+// adds the new one. SQL Server binds defaults to the column through a named
+// constraint, so an UPDATE of the default is really DROP + ADD.
+func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	rows, err := db.Query(p.withUse(dbName, `
+		SELECT dc.name
+		FROM sys.default_constraints dc
+		JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+		JOIN sys.tables t ON c.object_id = t.object_id
+		WHERE t.name = @p1 AND c.name = @p2`), tableName, col.Name)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, n := range names {
+		if err := execDDL(db, p.withUse(dbName,
+			fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.qualifiedTable(tableName), p.Quote(n)))); err != nil {
+			return err
+		}
+	}
+
+	constraint := fmt.Sprintf("DF_%s_%s", tableName, col.Name)
+	if len(constraint) > 120 {
+		constraint = constraint[:120]
+	}
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s DEFAULT %s FOR %s",
+		p.qualifiedTable(tableName), p.Quote(constraint),
+		RenderDefaultLiteral(col.DefaultVal), p.Quote(col.Name))))
 }
 
 func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
@@ -507,11 +556,9 @@ func (p *sqlserverProvider) buildColumnSQL(action, tableName string, col ColumnD
 	case "null":
 		parts = append(parts, "DEFAULT NULL")
 	case "value":
-		if col.DefaultVal != "" {
-			parts = append(parts, fmt.Sprintf("DEFAULT '%s'", strings.ReplaceAll(col.DefaultVal, "'", "''")))
-		} else {
-			parts = append(parts, "DEFAULT ''")
-		}
+		// DB-22: whitelist rendering instead of blind quoting —
+		// GETDATE()/SYSDATE-style read-backs stay unquoted.
+		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	case "auto":
 		parts = append(parts, "IDENTITY(1,1)")
 	}

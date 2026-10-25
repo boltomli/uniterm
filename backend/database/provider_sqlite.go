@@ -371,11 +371,10 @@ func (p *sqliteProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	case "null":
 		parts = append(parts, "DEFAULT NULL")
 	case "value":
-		if col.DefaultVal != "" {
-			parts = append(parts, "DEFAULT "+col.DefaultVal)
-		} else {
-			parts = append(parts, "DEFAULT ''")
-		}
+		// DB-22: the read path returns raw dflt_value ('x', 0,
+		// CURRENT_TIMESTAMP, (expr)) — render through the whitelist instead
+		// of interpolating it verbatim.
+		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))

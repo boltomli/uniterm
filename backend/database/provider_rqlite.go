@@ -330,11 +330,8 @@ func (p *rqliteProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	case "null":
 		parts = append(parts, "DEFAULT NULL")
 	case "value":
-		if col.DefaultVal != "" {
-			parts = append(parts, "DEFAULT "+col.DefaultVal)
-		} else {
-			parts = append(parts, "DEFAULT ''")
-		}
+		// DB-22: whitelist rendering instead of verbatim interpolation.
+		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))

@@ -221,40 +221,9 @@ func (p *mysqlProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*S
 	if err != nil {
 		return nil, err
 	}
-	colRows, err := queryStrings(db, "SHOW FULL COLUMNS FROM "+qDb+"."+qTbl)
+	columns, err := mysqlColumnInfo(db, dbName, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("get columns: %w", err)
-	}
-
-	columns := make([]ColumnInfo, 0, len(colRows))
-	for _, row := range colRows {
-		nullable := strings.EqualFold(row["Null"], "YES")
-		isPrimary := row["Key"] == "PRI"
-		extra := strings.ToLower(row["Extra"])
-		onUpdate := strings.Contains(extra, "on update")
-
-		defVal := row["Default"]
-		defaultType := "none"
-		if strings.Contains(extra, "auto_increment") {
-			defaultType = "auto"
-		} else if defVal == "NULL" || (defVal == "" && nullable) {
-			defaultType = "null"
-			defVal = "NULL"
-		} else if defVal != "" {
-			defaultType = "value"
-		}
-
-		columns = append(columns, ColumnInfo{
-			Name:        row["Field"],
-			Type:        row["Type"],
-			Nullable:    nullable,
-			DefaultVal:  defVal,
-			DefaultType: defaultType,
-			IsPrimary:   isPrimary,
-			Comment:     row["Comment"],
-			Collation:   row["Collation"],
-			OnUpdate:    onUpdate,
-		})
 	}
 
 	idxRows, err := queryStrings(db, "SHOW INDEX FROM "+qDb+"."+qTbl)
@@ -284,6 +253,75 @@ func (p *mysqlProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*S
 	}
 
 	return &SchemaResult{Columns: columns, Indexes: indexes}, nil
+}
+
+// mysqlColumnInfo reads the column list from information_schema instead of
+// SHOW FULL COLUMNS so DEFAULT values survive the round-trip (DB-22):
+// COLUMN_DEFAULT is NULL both for "no default" and for an explicit
+// DEFAULT NULL on a nullable column (MySQL cannot separate the two — both
+// become defaultType "null"), while DEFAULT '' comes back as an empty
+// STRING and is now preserved as defaultType "value" instead of being
+// mistaken for "no default" and silently dropped by MODIFY COLUMN.
+// Expression defaults (MySQL 8) arrive parenthesised — e.g. (uuid()) — and
+// pass the DEFAULT whitelist as-is (see RenderDefaultLiteral).
+func mysqlColumnInfo(db *sql.DB, dbName, tableName string) ([]ColumnInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `
+		SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA,
+		       COLUMN_COMMENT, COLUMN_KEY, COLLATION_NAME
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+		ORDER BY ORDINAL_POSITION`, dbName, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make([]ColumnInfo, 0, 16)
+	for rows.Next() {
+		var name, ctype, nullable, extra, comment, colKey string
+		var def, collation sql.NullString
+		if err := rows.Scan(&name, &ctype, &nullable, &def, &extra, &comment, &colKey, &collation); err != nil {
+			return nil, err
+		}
+		extraL := strings.ToLower(extra)
+
+		defaultType := "none"
+		defVal := ""
+		switch {
+		case strings.Contains(extraL, "auto_increment"):
+			defaultType = "auto"
+		case def.Valid:
+			// Present default — including the empty string and parenthesised
+			// expression defaults.
+			defaultType = "value"
+			defVal = def.String
+		default:
+			// COLUMN_DEFAULT NULL: no default, or explicit DEFAULT NULL.
+			if strings.EqualFold(nullable, "YES") {
+				defaultType = "null"
+				defVal = "NULL"
+			}
+		}
+
+		coll := ""
+		if collation.Valid {
+			coll = collation.String
+		}
+		columns = append(columns, ColumnInfo{
+			Name:        name,
+			Type:        ctype,
+			Nullable:    strings.EqualFold(nullable, "YES"),
+			DefaultVal:  defVal,
+			DefaultType: defaultType,
+			IsPrimary:   strings.EqualFold(colKey, "PRI"),
+			Comment:     comment,
+			Collation:   coll,
+			OnUpdate:    strings.Contains(extraL, "on update"),
+		})
+	}
+	return columns, rows.Err()
 }
 
 // ── DDL: Database ──
@@ -549,11 +587,9 @@ func (p *mysqlProvider) buildColumnSQL(action, tableName string, col ColumnDef) 
 	case "null":
 		parts = append(parts, "DEFAULT NULL")
 	case "value":
-		if col.DefaultVal != "" {
-			parts = append(parts, fmt.Sprintf("DEFAULT '%s'", strings.ReplaceAll(col.DefaultVal, "'", "''")))
-		} else {
-			parts = append(parts, "DEFAULT ''")
-		}
+		// DB-22: whitelist rendering — CURRENT_TIMESTAMP / expression
+		// defaults survive unquoted; plain text becomes a quoted literal.
+		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	case "auto":
 		parts = append(parts, "AUTO_INCREMENT")
 	}

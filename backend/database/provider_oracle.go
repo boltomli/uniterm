@@ -590,15 +590,13 @@ func (p *oracleProvider) indexes(db *sql.DB, owner, tableName string) ([]IndexIn
 	return indexes, nil
 }
 
+// oracleDefaultValue renders a column default for Oracle DDL (DB-22). The
+// old rule — "bare anything containing a parenthesis or starting with TO_
+// verbatim" — let arbitrary user text reach the DDL stream; the shared
+// whitelist keeps SYSDATE/SYSTIMESTAMP/SYS_GUID()/TO_*() round-tripping
+// while everything else becomes a quoted literal.
 func oracleDefaultValue(defaultVal string) string {
-	if defaultVal == "" {
-		return "''"
-	}
-	upper := strings.ToUpper(strings.TrimSpace(defaultVal))
-	if upper == "NULL" || strings.HasPrefix(upper, "TO_") || strings.Contains(upper, "(") || upper == "SYSDATE" || upper == "SYSTIMESTAMP" {
-		return defaultVal
-	}
-	return "'" + strings.ReplaceAll(defaultVal, "'", "''") + "'"
+	return RenderDefaultLiteral(defaultVal)
 }
 
 func oracleColumnType(row map[string]string) string {

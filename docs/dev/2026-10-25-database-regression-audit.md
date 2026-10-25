@@ -764,7 +764,7 @@ revert(state, rowIdx)
 | DB-19 | 已修 | | | 2026-10-25：onSelectTable 先 push doc 再后台 loadSchema；失败 toast（db.schemaLoadFailed）且可重试；测试 DBTabContent.sessionReset.test.ts |
 | DB-20 | 待修 | | | |
 | DB-21 | 待修 | | | 顺手补测试矩阵 |
-| DB-22 | 待修 | | | |
+| DB-22 | 已修 | | | 2026-10-25：共享 RenderDefaultLiteral 白名单（数字/NULL/CURRENT_* 带精度/带参函数白名单/PG cast/括号表达式，其余转义为字符串）；MySQL 读路径改 information_schema（空串默认不再丢失）；MSSQL ModifyColumn 会替换默认值约束；Oracle 括号直通规则移除；测试 coldefault_test.go |
 | DB-23 | 待修 | | | |
 | DB-24 | 待修 | | | |
 | DB-25 | 待修 | | | 需与 ConnectionForm 同步 |

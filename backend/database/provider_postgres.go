@@ -428,15 +428,9 @@ func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col C
 	case "null":
 		parts = append(parts, "DEFAULT NULL")
 	case "value":
-		if col.DefaultVal != "" {
-			def, err := SafeDefaultLiteral(col.DefaultVal)
-			if err != nil {
-				return err
-			}
-			parts = append(parts, "DEFAULT "+def)
-		} else {
-			parts = append(parts, "DEFAULT ''")
-		}
+		// DB-22: whitelist rendering — now()/nextval(…) and 'lit'::type from
+		// the read path survive; plain text becomes a quoted literal.
+		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
@@ -472,17 +466,8 @@ func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, co
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT NULL",
 			q(tableName), q(col.Name)))
 	case "value":
-		if col.DefaultVal != "" {
-			def, err := SafeDefaultLiteral(col.DefaultVal)
-			if err != nil {
-				return err
-			}
-			stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s",
-				q(tableName), q(col.Name), def))
-		} else {
-			stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT ''",
-				q(tableName), q(col.Name)))
-		}
+		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s",
+			q(tableName), q(col.Name), RenderDefaultLiteral(col.DefaultVal)))
 	default:
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s DROP DEFAULT",
 			q(tableName), q(col.Name)))
