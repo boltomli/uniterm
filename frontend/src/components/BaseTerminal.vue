@@ -174,6 +174,7 @@ import {
   markTerminalActive,
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
+import { createKeystrokeReorder } from '../utils/imeKeystrokeOrder'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { stripCursorBlink } from '../utils/cursor'
 import { applyBackspaceKey } from '../utils/backspaceKey'
@@ -287,6 +288,10 @@ let dragEnterCount = 0
 const suggestions = useSuggestions()
 let terminalInput: ReturnType<typeof useTerminalInput> | null = null
 let terminal: Terminal | null = null
+let processTerminalData: (data: string) => void = () => {}
+// Input methods can deliver a rewrite's delete and its replacement out of
+// order; this restores the intent before anything downstream sees it.
+const imeOrder = createKeystrokeReorder((data) => processTerminalData(data))
 let onDataDispose: { dispose(): void } | null = null
 let keyHandlerDispose: { dispose(): void } | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -1345,6 +1350,16 @@ onMounted(() => {
         }
       }
 
+      // Hand the keystroke to the input-method reorder buffer, which
+      // releases it (possibly resequenced) into processTerminalData.
+      imeOrder.push(data)
+    })
+
+    // The rest of the keystroke pipeline, fed by the reorder buffer rather
+    // than straight from onData. Everything downstream — the local line
+    // buffer and the bytes sent to the session — therefore sees one
+    // consistent order.
+    processTerminalData = (data: string) => {
       if (props.mode === 'ssh' || props.mode === 'local') {
       if (retryOnEnter && (data === '\r' || data === '\n')) {
         retryOnEnter = false
@@ -1466,7 +1481,7 @@ onMounted(() => {
         }
       }
     }
-  })
+  }
 
   } // end bindListeners
 
@@ -2132,6 +2147,9 @@ onBeforeUnmount(() => {
 
 onUnmounted(() => {
   nativeDrop.unbind()
+  // Release anything the reorder buffer is still holding rather than dropping
+  // a half-finished rewrite on the floor.
+  imeOrder.dispose()
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
   touchPanStop()
