@@ -53,12 +53,25 @@ func NewDB(dbType, dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
+// queryer is satisfied by *sql.DB and *sql.Conn — metadata probes run on
+// either depending on the dialect's connection policy (DB-24 pins SQL
+// Server's database switch to a dedicated connection).
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // queryStrings executes a SQL query and returns all rows as []map[string]string.
 // F-12.4: runs under queryTimeout — schema/metadata probes against a slow or
 // hung server must not pin a goroutine (and its connection) forever.
-func queryStrings(db *sql.DB, query string, args ...any) ([]map[string]string, error) {
+func queryStrings(db queryer, query string, args ...any) ([]map[string]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
+	return queryStringsCtx(ctx, db, query, args...)
+}
+
+// queryStringsCtx is queryStrings with a caller-owned context (used when the
+// query runs on a connection the caller already set up).
+func queryStringsCtx(ctx context.Context, db queryer, query string, args ...any) ([]map[string]string, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

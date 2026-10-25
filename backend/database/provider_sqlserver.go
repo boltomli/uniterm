@@ -109,14 +109,10 @@ func (p *sqlserverProvider) qualifiedTableSchema(schema, tableName string) strin
 // ── CRUD ──
 //
 // InsertRow/UpdateRow/DeleteRow go through execPrepared so that:
-//   - USE [dbName] and the actual statement run on the same pooled conn
-//     (DB-10, AUDIT-database-10). Previously each CRUD call issued a
-//     `USE [db];\n...` multi-statement batch; the driver handles it but
-//     the pool could still split work across conns for the trailing USE.
+//   - USE [dbName] and the actual statement run on the same pinned conn
+//     (DB-10, AUDIT-database-10) — never a pooled one, so the database
+//     switch cannot leak back into the pool (DB-24).
 //   - context propagation is consistent with the other providers.
-//
-// withUse is intentionally not prepended here — execPrepared already calls
-// PrepareExec, which issues USE [dbName] on the pinned connection.
 
 func (p *sqlserverProvider) InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error {
 	return p.insertRow(db, dbName, "", tableName, values)
@@ -259,7 +255,7 @@ func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, e
 		  ON ep.major_id = v.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
 		WHERE v.is_ms_shipped = 0
 		ORDER BY table_schema, table_name`
-	results, err := queryStrings(db, p.withUse(dbName, query))
+	results, err := p.queryStringsOnDB(db, dbName, query)
 	if err != nil {
 		return nil, fmt.Errorf("get tables: %w", err)
 	}
@@ -293,12 +289,12 @@ func (p *sqlserverProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*Schema
 		schemaFilter = " AND TABLE_SCHEMA = @p2"
 		args = append(args, ref.Schema)
 	}
-	colRows, err := queryStrings(db, p.withUse(ref.Database, `
+	colRows, err := p.queryStringsOnDB(db, ref.Database, `
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
 		       CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE
 		FROM INFORMATION_SCHEMA.COLUMNS
 		WHERE TABLE_NAME = @p1`+schemaFilter+`
-		ORDER BY ORDINAL_POSITION`), args...)
+		ORDER BY ORDINAL_POSITION`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get columns: %w", err)
 	}
@@ -307,14 +303,14 @@ func (p *sqlserverProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*Schema
 	if ref.Schema != "" {
 		pkSchemaFilter = " AND tc.TABLE_SCHEMA = @p2 AND kcu.TABLE_SCHEMA = @p2"
 	}
-	pkRows, err := queryStrings(db, p.withUse(ref.Database, `
+	pkRows, err := p.queryStringsOnDB(db, ref.Database, `
 		SELECT kcu.COLUMN_NAME
 		FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
 		JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
 		  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
 		  AND tc.TABLE_NAME = kcu.TABLE_NAME
 		WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
-		  AND tc.TABLE_NAME = @p1`+pkSchemaFilter), args...)
+		  AND tc.TABLE_NAME = @p1`+pkSchemaFilter, args...)
 	pkCols := make(map[string]bool)
 	if err == nil {
 		for _, row := range pkRows {
@@ -354,14 +350,14 @@ func (p *sqlserverProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*Schema
 	if ref.Schema != "" {
 		idxSchemaFilter = " AND SCHEMA_NAME(t.schema_id) = @p2"
 	}
-	idxRows, err := queryStrings(db, p.withUse(ref.Database, `
+	idxRows, err := p.queryStringsOnDB(db, ref.Database, `
 		SELECT i.name AS index_name, i.is_unique, i.is_primary_key, c.name AS column_name
 		FROM sys.indexes i
 		JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
 		JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
 		JOIN sys.tables t ON i.object_id = t.object_id
 		WHERE t.name = @p1`+idxSchemaFilter+`
-		ORDER BY i.name, ic.key_ordinal`), args...)
+		ORDER BY i.name, ic.key_ordinal`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get indexes: %w", err)
 	}
@@ -418,7 +414,7 @@ func (p *sqlserverProvider) CreateTableSchema(db *sql.DB, dbName, schema, tableN
 }
 
 func (p *sqlserverProvider) createTable(db *sql.DB, dbName, schema, tableName string) error {
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTableSchema(schema, tableName))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTableSchema(schema, tableName)))
 }
 
 func (p *sqlserverProvider) DropTable(db *sql.DB, dbName, tableName string) error {
@@ -430,7 +426,7 @@ func (p *sqlserverProvider) DropTableSchema(db *sql.DB, dbName, schema, tableNam
 }
 
 func (p *sqlserverProvider) dropTable(db *sql.DB, dbName, schema, tableName string) error {
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTableSchema(schema, tableName))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTableSchema(schema, tableName)))
 }
 
 func (p *sqlserverProvider) DropView(db *sql.DB, dbName, viewName string) error {
@@ -442,7 +438,7 @@ func (p *sqlserverProvider) DropViewSchema(db *sql.DB, dbName, schema, viewName 
 }
 
 func (p *sqlserverProvider) dropView(db *sql.DB, dbName, schema, viewName string) error {
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTableSchema(schema, viewName))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTableSchema(schema, viewName)))
 }
 
 func (p *sqlserverProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
@@ -454,7 +450,7 @@ func (p *sqlserverProvider) TruncateTableSchema(db *sql.DB, dbName, schema, tabl
 }
 
 func (p *sqlserverProvider) truncateTable(db *sql.DB, dbName, schema, tableName string) error {
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTableSchema(schema, tableName))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTableSchema(schema, tableName)))
 }
 
 // CopyTable clones structure and data via SELECT INTO (no indexes/constraints).
@@ -467,8 +463,8 @@ func (p *sqlserverProvider) CopyTableSchema(db *sql.DB, dbName, schema, tableNam
 }
 
 func (p *sqlserverProvider) copyTable(db *sql.DB, dbName, schema, tableName, newTableName string) error {
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("SELECT * INTO %s FROM %s",
-		p.qualifiedTableSchema(schema, newTableName), p.qualifiedTableSchema(schema, tableName))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("SELECT * INTO %s FROM %s",
+		p.qualifiedTableSchema(schema, newTableName), p.qualifiedTableSchema(schema, tableName)))
 }
 
 // ── DDL: Column ──
@@ -487,7 +483,7 @@ func (p *sqlserverProvider) addColumn(db *sql.DB, dbName, schema, tableName stri
 	if err != nil {
 		return err
 	}
-	return execDDL(db, p.withUse(dbName, p.buildColumnSQL("ADD", schema, tableName, col)))
+	return p.execDDLOnDB(db, dbName, p.buildColumnSQL("ADD", schema, tableName, col))
 }
 
 func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
@@ -519,7 +515,7 @@ func (p *sqlserverProvider) modifyColumn(db *sql.DB, dbName, schema, tableName s
 	}
 
 	for _, s := range stmts {
-		if err := execDDL(db, p.withUse(dbName, s)); err != nil {
+		if err := p.execDDLOnDB(db, dbName, s); err != nil {
 			return err
 		}
 	}
@@ -540,16 +536,16 @@ func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, schema, tableNam
 	if schema != "" {
 		args = append(args, schema)
 	}
-	rows, err := db.Query(p.withUse(dbName, `
+	rows, closeRows, err := p.queryRowsOnDB(db, dbName, `
 		SELECT dc.name
 		FROM sys.default_constraints dc
 		JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
 		JOIN sys.tables t ON c.object_id = t.object_id
-		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema)), args...)
+		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema), args...)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer closeRows()
 	var names []string
 	for rows.Next() {
 		var n string
@@ -564,8 +560,8 @@ func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, schema, tableNam
 	rows.Close()
 
 	for _, n := range names {
-		if err := execDDL(db, p.withUse(dbName,
-			fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.qualifiedTableSchema(schema, tableName), p.Quote(n)))); err != nil {
+		if err := p.execDDLOnDB(db, dbName,
+			fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.qualifiedTableSchema(schema, tableName), p.Quote(n))); err != nil {
 			return err
 		}
 	}
@@ -574,9 +570,9 @@ func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, schema, tableNam
 	if len(constraint) > 120 {
 		constraint = constraint[:120]
 	}
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s DEFAULT %s FOR %s",
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s DEFAULT %s FOR %s",
 		p.qualifiedTableSchema(schema, tableName), p.Quote(constraint),
-		RenderDefaultLiteral(col.DefaultVal), p.Quote(col.Name))))
+		RenderDefaultLiteral(col.DefaultVal), p.Quote(col.Name)))
 }
 
 func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
@@ -593,16 +589,16 @@ func (p *sqlserverProvider) dropColumn(db *sql.DB, dbName, schema, tableName, co
 	if schema != "" {
 		args = append(args, schema)
 	}
-	rows, err := db.Query(p.withUse(dbName, `
+	rows, closeRows, err := p.queryRowsOnDB(db, dbName, `
 		SELECT dc.name
 		FROM sys.default_constraints dc
 		JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
 		JOIN sys.tables t ON c.object_id = t.object_id
-		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema)), args...)
+		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema), args...)
 	if err != nil {
 		return fmt.Errorf("find default constraints: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows()
 
 	var constraints []string
 	for rows.Next() {
@@ -618,12 +614,12 @@ func (p *sqlserverProvider) dropColumn(db *sql.DB, dbName, schema, tableName, co
 
 	qt := p.qualifiedTableSchema(schema, tableName)
 	for _, name := range constraints {
-		if err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, p.Quote(name)))); err != nil {
+		if err := p.execDDLOnDB(db, dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, p.Quote(name))); err != nil {
 			return fmt.Errorf("drop default constraint %s: %w", name, err)
 		}
 	}
 
-	err = execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qt, p.Quote(colName))))
+	err = p.execDDLOnDB(db, dbName, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qt, p.Quote(colName)))
 	return err
 }
 
@@ -655,7 +651,7 @@ func (p *sqlserverProvider) addIndex(db *sql.DB, dbName, schema, tableName strin
 		for i, c := range idx.Columns {
 			cols[i] = q(c)
 		}
-		return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt, strings.Join(cols, ", "))))
+		return p.execDDLOnDB(db, dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt, strings.Join(cols, ", ")))
 	}
 	uniqueStr := ""
 	if idx.Unique {
@@ -665,7 +661,7 @@ func (p *sqlserverProvider) addIndex(db *sql.DB, dbName, schema, tableName strin
 	for i, c := range idx.Columns {
 		cols[i] = q(c)
 	}
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt, strings.Join(cols, ", "))))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt, strings.Join(cols, ", ")))
 }
 
 func (p *sqlserverProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
@@ -680,24 +676,79 @@ func (p *sqlserverProvider) dropIndex(db *sql.DB, dbName, schema, tableName, idx
 	q := p.Quote
 	qt := p.qualifiedTableSchema(schema, tableName)
 	if isPrimary {
-		return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, q(idxName))))
+		return p.execDDLOnDB(db, dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, q(idxName)))
 	}
-	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt)))
+	return p.execDDLOnDB(db, dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt))
 }
 
 // ── Helpers ──
+//
+// All database-scoped work (DDL and the sys.*/INFORMATION_SCHEMA probes)
+// runs on a DEDICATED connection with USE applied to it (DB-24). The old
+// withUse batch — `USE [db];\n<statement>` executed on whatever pooled
+// connection came back — left that connection sitting in a different
+// database after it was returned to the pool, so any later unqualified
+// statement landed on "whatever the pool last touched".
 
-// withUse prepends a USE [dbName] statement to the query so that it
-// always runs against the correct database, regardless of which connection
-// the pool picks. This is the SQL Server equivalent of MySQL's
-// SHOW FULL TABLES FROM `dbName` — both schema-discovery queries and
-// parameterised CRUD use it because SQL Server's sys.* / INFORMATION_SCHEMA
-// views are database-scoped.
-func (p *sqlserverProvider) withUse(dbName, query string) string {
-	if dbName == "" {
-		return query
+// onDB returns a dedicated connection with the target database selected.
+func (p *sqlserverProvider) onDB(ctx context.Context, db *sql.DB, dbName string) (*sql.Conn, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf("USE %s;\n%s", p.Quote(dbName), query)
+	if err := p.PrepareExec(conn, dbName); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// execDDLOnDB runs one DDL statement on a dedicated connection (DDL budget).
+func (p *sqlserverProvider) execDDLOnDB(db *sql.DB, dbName, query string) error {
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.onDB(ctx, db, dbName)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.ExecContext(ctx, query)
+	return err
+}
+
+// queryStringsOnDB runs a metadata probe on a dedicated connection (query budget).
+func (p *sqlserverProvider) queryStringsOnDB(db *sql.DB, dbName, query string, args ...any) ([]map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	conn, err := p.onDB(ctx, db, dbName)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return queryStringsCtx(ctx, conn, query, args...)
+}
+
+// queryRowsOnDB runs a metadata probe on a dedicated connection and returns
+// the open rows plus a cleanup func that closes rows, connection and context.
+func (p *sqlserverProvider) queryRowsOnDB(db *sql.DB, dbName, query string, args ...any) (*sql.Rows, func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	conn, err := p.onDB(ctx, db, dbName)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		conn.Close()
+		cancel()
+		return nil, nil, err
+	}
+	cleanup := func() {
+		rows.Close()
+		conn.Close()
+		cancel()
+	}
+	return rows, cleanup, nil
 }
 
 func (p *sqlserverProvider) buildColumnSQL(action, schema, tableName string, col ColumnDef) string {

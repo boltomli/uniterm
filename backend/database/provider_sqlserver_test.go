@@ -2,6 +2,7 @@ package database
 
 import (
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -87,5 +88,29 @@ func TestSqlserverDSN(t *testing.T) {
 				t.Errorf("password not preserved")
 			}
 		})
+	}
+}
+
+// TestSqlServerNoPooledUseBatch guards DB-24: the old withUse helper ran
+// `USE [db];\n<statement>` on an arbitrary POOLED connection, so the
+// database switch survived the statement and polluted whatever session the
+// pool handed out next. All database-scoped work must go through the
+// dedicated-connection helpers instead.
+func TestSqlServerNoPooledUseBatch(t *testing.T) {
+	src, err := os.ReadFile("provider_sqlserver.go")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	text := string(src)
+	if strings.Contains(text, "func (p *sqlserverProvider) withUse(") {
+		t.Fatal("withUse is back — it poisons pooled connections (DB-24)")
+	}
+	if strings.Contains(text, `"USE %s;\n%s"`) {
+		t.Fatal("string-batched USE statement found — use a pinned connection (DB-24)")
+	}
+	for _, helper := range []string{"func (p *sqlserverProvider) onDB(", "execDDLOnDB(", "queryStringsOnDB("} {
+		if !strings.Contains(text, helper) {
+			t.Errorf("missing dedicated-connection helper %q (DB-24)", helper)
+		}
 	}
 }

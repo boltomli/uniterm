@@ -766,7 +766,7 @@ revert(state, rowIdx)
 | DB-21 | 已修 | | | 2026-10-25：sqlite Quote 改为 `"`+双写；测试矩阵改遍历 providers 注册表（长度哨兵防新方言漏测）+ 包裹/转义双重断言 |
 | DB-22 | 已修 | | | 2026-10-25：共享 RenderDefaultLiteral 白名单（数字/NULL/CURRENT_* 带精度/带参函数白名单/PG cast/括号表达式，其余转义为字符串）；MySQL 读路径改 information_schema（空串默认不再丢失）；MSSQL ModifyColumn 会替换默认值约束；Oracle 括号直通规则移除；测试 coldefault_test.go |
 | DB-23 | 待修 | | | |
-| DB-24 | 待修 | | | |
+| DB-24 | 已修 | | | 2026-10-25：删除 withUse 字符串批处理；全部元数据/DDL 走专用连接（onDB/execDDLOnDB/queryStringsOnDB/queryRowsOnDB）；queryStrings 重构出 queryer 接口；守卫测试 TestSqlServerNoPooledUseBatch |
 | DB-25 | 已修 | | | 2026-10-25：命名实例 DSN 无条件忽略显式端口（走 SQL Browser）；表单端口置灰 + db.namedInstancePortHint 提示；测试 TestSqlserverDSN + namedInstance.test.ts |
 | DB-26 | 已决（删除） | | | 2026-10-25：删除无调用方的 QueryRowsStream / QueryResultToJSON / PagedTableQuery / DBPagedTableQuery；分页统一走 DefaultTableQuery |
 | DB-27 | 已决（告知） | | | 2026-10-25：脚本模式保留全量执行（导入场景）；含查询语句时结果面板显示 db.scriptNoResults 明确告知不返回结果集；测试 scriptNotice.test.ts |
