@@ -748,10 +748,10 @@ revert(state, rowIdx)
 | DB-03 | 已修 | | | 2026-10-25：canEditRows = browseMode && PK 存在；onExecute 用 DefaultTableQuery 比对决定 browseMode，手工执行立即只读；测试 DBQueryEditor.editability.test.ts |
 | DB-04 | 已修 | | | 2026-10-25：rowIndexOf 只按行对象身份定位；有 pending 的行拒绝删除/整行编辑（db.saveOrDiscardFirst）；网格暴露 isRowPending；测试 DBQueryEditor.rowActions.test.ts |
 | DB-05 | 待修 | | | 依赖 DB-01 的 affected 返回值 |
-| DB-06 | 待修 | | | 依赖 DB-09 设计 |
-| DB-07 | 待修 | | | 依赖 DB-09 设计 |
+| DB-06 | 已修 | | | 2026-10-25：TableInfo.Schema + TableRef/SchemaDDL（tableref.go）；PG/MSSQL 元数据探测按 schema 钉死；浏览 SQL/行级 CRUD/全部 DDL 带 schema 限定；树/对象列表/结构页/编辑器全线透传；测试 schema_qualification_test.go + schemaThreading.test.ts |
+| DB-07 | 已修 | | | 2026-10-25：MSSQL 同上（TABLE_SCHEMA 过滤 + [schema].[table] + GetTables 发布 SCHEMA_NAME）；随 DB-06 一并验证 |
 | DB-08 | 已修 | | | 2026-10-25：缓存抽到 postgres_schema_cache.go；key 含连接池指针 + 30s TTL；全部 PG DDL 成功后 pgSchemaCacheInvalidate；测试重写（跨池隔离/失效/过期/并发） |
-| DB-09 | 待设计 | | | 需先出接口草案 |
+| DB-09 | 已修（第一阶段） | | | 2026-10-25：TableRef + SchemaDDL 能力接口（backend/database/tableref.go），旧签名保留为包装；PG/MSSQL 实现已覆盖元数据/浏览/行 CRUD/DDL；MySQL/SQLite/Oracle 不实现（USE/文件/owner 约定不变）。遗留：Dump 导出限定名归 DB-23，剩余方言随需求推进 |
 | DB-10 | 已修 | | | 2026-10-25：MySQL DSN readTimeout/writeTimeout=0（交给 ctx），dial 保持10s；预算顺序 query<ddl<dump 由测试守护 |
 | DB-11 | 已修 | | | 2026-10-25：新增 timeout.go（ddlCtx/dumpCtx/execDDL，60s/10m）；六方言全部 DDL/导出/PrepareExec/行 CRUD 均带预算；守护测试 timeout_contract_test.go |
 | DB-12 | 待修 | | | |

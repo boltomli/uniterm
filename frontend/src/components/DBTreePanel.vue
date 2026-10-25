@@ -41,17 +41,17 @@
         <template v-if="expandedDbs.has(db.name)">
           <div
             v-for="t in db.tables"
-            :key="t.name"
+            :key="(t.schema || '') + '/' + t.name"
             class="table-item"
-            :data-table-row="db.name + '/' + t.name"
+            :data-table-row="db.name + '/' + (t.schema || '') + '/' + t.name"
             :class="{ selected: selectedTable === t.name && selectedDb === db.name }"
-            @click="onTableClick(db.name, t.name)"
+            @click="onTableClick(db.name, t.name, t.schema || '')"
             @dblclick="onTableDblClick(db.name, t)"
             @contextmenu.prevent="onTableContextMenu($event, db.name, t)"
           >
             <span class="table-icon-spacer" />
             <component :is="t.type === 'view' ? Eye : Table2" class="table-icon" :size="lucideSize('0.875rem')" />
-            <span class="table-name">{{ t.name }}</span>
+            <span class="table-name">{{ tableLabel(t) }}</span>
           </div>
           <div v-if="db.tables.length === 0" class="empty-hint">
             {{ t('db.noTables') }}
@@ -222,9 +222,9 @@ watch(() => props.sessionId, () => {
 }, { immediate: true })
 
 const emit = defineEmits<{
-  selectTable: [dbName: string, tableName: string, isView?: boolean]
+  selectTable: [dbName: string, tableName: string, isView?: boolean, schema?: string]
   openDatabase: [dbName: string, tab?: 'query' | 'objects']
-  viewStructure: [dbName: string, tableName: string]
+  viewStructure: [dbName: string, tableName: string, schema?: string]
   newQuery: [dbName?: string]
   objectRemoved: [payload: { dbName: string; tableName?: string; kind: 'table' | 'view' | 'database' }]
 }>()
@@ -394,17 +394,23 @@ async function onToggleDb(dbName: string) {
   await ensureDbExpanded(dbName)
 }
 
-function onTableClick(dbName: string, tableName: string) {
-  const table = databases.value.find(d => d.name === dbName)?.tables.find(t => t.name === tableName)
+function onTableClick(dbName: string, tableName: string, schema = '') {
+  const table = databases.value.find(d => d.name === dbName)?.tables.find(t => t.name === tableName && (t.schema || '') === schema)
   selectedDb.value = dbName
   selectedTable.value = tableName
-  emit('selectTable', dbName, tableName, table?.type === 'view')
+  emit('selectTable', dbName, tableName, table?.type === 'view', schema)
 }
 
 function onTableDblClick(dbName: string, table: TableInfo) {
   selectedDb.value = dbName
   selectedTable.value = table.name
-  emit('selectTable', dbName, table.name, table.type === 'view')
+  emit('selectTable', dbName, table.name, table.type === 'view', table.schema || '')
+}
+
+/** Tree label: a schema-qualified name where the dialect has schemas
+ *  (DB-06/DB-07) so two schemas' `users` are no longer indistinguishable. */
+function tableLabel(tb: { name: string; schema?: string }) {
+  return tb.schema ? `${tb.schema}.${tb.name}` : tb.name
 }
 
 const filteredDbs = computed(() => {
@@ -412,7 +418,7 @@ const filteredDbs = computed(() => {
   if (!q) return databases.value
   return databases.value.map(db => ({
     ...db,
-    tables: db.tables.filter(t => t.name.toLowerCase().includes(q))
+    tables: db.tables.filter(t => t.name.toLowerCase().includes(q) || (t.schema || '').toLowerCase().includes(q))
   }))
 })
 
@@ -448,6 +454,8 @@ const ctxMenuVisible = ref(false)
 const ctxMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const ctxDbName = ref('')
 const ctxTableName = ref('')
+// Schema of the right-clicked table (DB-06/DB-07): drop/view/truncate/copy// must act on the table the user pointed at, not a namesake elsewhere.
+const ctxTableSchema = ref('')
 const ctxTableType = ref('')
 
 function openDbMenu(e: MouseEvent, item: DbMenuCtx) {
@@ -464,9 +472,10 @@ function onTableContextMenu(e: MouseEvent, dbName: string, table: TableInfo) {
   selectedDb.value = dbName
   selectedTable.value = table.name
   // 右键表节点时直接切换到该表数据页，同时弹出菜单
-  emit('selectTable', dbName, table.name, table.type === 'view')
+  emit('selectTable', dbName, table.name, table.type === 'view', table.schema || '')
   ctxDbName.value = dbName
   ctxTableName.value = table.name
+  ctxTableSchema.value = table.schema || ''
   ctxTableType.value = table.type || ''
   openDbMenu(e, { type: 'table', dbName, tableName: table.name, tableType: table.type || '' })
 }
@@ -495,12 +504,12 @@ function onCtxNewQueryBlank() {
 }
 
 function onCtxViewData() {
-  emit('selectTable', ctxDbName.value, ctxTableName.value, ctxTableType.value === 'view')
+  emit('selectTable', ctxDbName.value, ctxTableName.value, ctxTableType.value === 'view', ctxTableSchema.value)
   ctxMenuVisible.value = false
 }
 
 function onCtxViewStructure() {
-  emit('viewStructure', ctxDbName.value, ctxTableName.value)
+  emit('viewStructure', ctxDbName.value, ctxTableName.value, ctxTableSchema.value)
   ctxMenuVisible.value = false
 }
 
@@ -629,10 +638,11 @@ function onCtxCopyTable() {
 
 async function onCopyTable() {
   const dbName = ctxDbName.value
+  const schema = ctxTableSchema.value
   const newName = copyTableName.value.trim()
   if (!copySourceTable.value || !newName) return
   try {
-    await CopyTable(props.sessionId, dbName, copySourceTable.value, newName)
+    await CopyTable(props.sessionId, dbName, schema, copySourceTable.value, newName)
     copyTableVisible.value = false
     msg.success(t('db.copyTableDone', { name: newName }))
     await refreshDb(dbName)
@@ -697,12 +707,13 @@ function onCtxDropDatabase() {
 function onCtxDropTable() {
   const dbName = ctxDbName.value
   const tableName = ctxTableName.value
+  const schema = ctxTableSchema.value
   showConfirm(
     t('db.dropTable'),
     t('db.dropTableConfirm', { name: tableName }),
     tableName,
     async () => {
-      await DropTable(props.sessionId, dbName, tableName)
+      await DropTable(props.sessionId, dbName, schema, tableName)
       emit('objectRemoved', { dbName, tableName, kind: 'table' })
     }
   )
@@ -711,23 +722,25 @@ function onCtxDropTable() {
 function onCtxDropView() {
   const dbName = ctxDbName.value
   const tableName = ctxTableName.value
+  const schema = ctxTableSchema.value
   showConfirm(
     t('db.dropView'),
     t('db.dropViewConfirm', { name: tableName }),
     tableName,
     async () => {
-      await DropView(props.sessionId, dbName, tableName)
+      await DropView(props.sessionId, dbName, schema, tableName)
       emit('objectRemoved', { dbName, tableName, kind: 'view' })
     }
   )
 }
 
 function onCtxTruncateTable() {
+  const schema = ctxTableSchema.value
   showConfirm(
     t('db.truncateTable'),
     t('db.truncateTableConfirm', { name: ctxTableName.value }),
     ctxTableName.value,
-    async () => { await TruncateTable(props.sessionId, ctxDbName.value, ctxTableName.value) }
+    async () => { await TruncateTable(props.sessionId, ctxDbName.value, schema, ctxTableName.value) }
   )
 }
 

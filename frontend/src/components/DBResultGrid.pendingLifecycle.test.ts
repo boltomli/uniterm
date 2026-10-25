@@ -51,7 +51,7 @@ describe('DBQueryEditor result-set identity (DB-02)', () => {
     const queryBranch = bodyOf(
       editorScript,
       'else if (isQuerySql(toRun))',
-      'const result = await ExecuteStatement',
+      'const call = ExecuteStatement',
     )
     expect(queryBranch).toMatch(/resultSeq\.value\+\+/)
   })

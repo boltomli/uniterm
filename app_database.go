@@ -65,10 +65,27 @@ func (a *App) GetTables(sessionID string, dbName string) ([]database.TableInfo, 
 	return tables, nil
 }
 
-func (a *App) GetTableSchema(sessionID string, dbName string, tableName string) (*database.SchemaResult, error) {
+// schemaDDL returns the schema-aware implementation of the provider, if it
+// has one (DB-09/DB-06/DB-07). PostgreSQL and SQL Server qualify
+// schema.table; MySQL selects the database per connection, SQLite has no
+// schemas, and Oracle keeps its long-standing owner-in-dbName convention —
+// those fall through to the plain Provider methods.
+func schemaDDL(p database.Provider) (database.SchemaDDL, bool) {
+	sd, ok := p.(database.SchemaDDL)
+	return sd, ok
+}
+
+// GetTableSchema resolves columns/PK/indexes. With a schema the dialect is
+// pinned to it (DB-06/DB-07); without it the historical resolution applies.
+func (a *App) GetTableSchema(sessionID string, dbName string, schema string, tableName string) (*database.SchemaResult, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return nil, err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.GetTableSchemaRef(ds.DB(), database.TableRef{Database: dbName, Schema: schema, Name: tableName})
+		}
 	}
 	return p.GetTableSchema(ds.DB(), dbName, tableName)
 }
@@ -89,34 +106,54 @@ func (a *App) DropDatabase(sessionID string, dbName string) error {
 	return p.DropDatabase(ds.DB(), dbName)
 }
 
-func (a *App) CreateTable(sessionID string, dbName string, tableName string) error {
+func (a *App) CreateTable(sessionID string, dbName string, schema string, tableName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.CreateTableSchema(ds.DB(), dbName, schema, tableName)
+		}
 	}
 	return p.CreateTable(ds.DB(), dbName, tableName)
 }
 
-func (a *App) DropTable(sessionID string, dbName string, tableName string) error {
+func (a *App) DropTable(sessionID string, dbName string, schema string, tableName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DropTableSchema(ds.DB(), dbName, schema, tableName)
+		}
 	}
 	return p.DropTable(ds.DB(), dbName, tableName)
 }
 
-func (a *App) DropView(sessionID string, dbName string, viewName string) error {
+func (a *App) DropView(sessionID string, dbName string, schema string, viewName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
 	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DropViewSchema(ds.DB(), dbName, schema, viewName)
+		}
+	}
 	return p.DropView(ds.DB(), dbName, viewName)
 }
 
-func (a *App) TruncateTable(sessionID string, dbName string, tableName string) error {
+func (a *App) TruncateTable(sessionID string, dbName string, schema string, tableName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.TruncateTableSchema(ds.DB(), dbName, schema, tableName)
+		}
 	}
 	return p.TruncateTable(ds.DB(), dbName, tableName)
 }
@@ -141,7 +178,7 @@ func (a *App) ExecuteStatement(ctx context.Context, sessionID string, dbName str
 	return database.ExecuteStatementCtx(ctx, p, ds.DB(), dbName, sql)
 }
 
-func (a *App) DBDefaultTableQuery(sessionID string, dbName string, tableName string, limit int, offset int) (string, error) {
+func (a *App) DBDefaultTableQuery(sessionID string, dbName string, schema string, tableName string, limit int, offset int) (string, error) {
 	_, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return "", err
@@ -151,6 +188,11 @@ func (a *App) DBDefaultTableQuery(sessionID string, dbName string, tableName str
 	}
 	if offset < 0 {
 		offset = 0
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DefaultTableQueryRef(database.TableRef{Database: dbName, Schema: schema, Name: tableName}, limit, offset), nil
+		}
 	}
 	return p.DefaultTableQuery(dbName, tableName, limit, offset), nil
 }
@@ -179,18 +221,28 @@ func (a *App) DumpTable(sessionID string, dbName string, tableName string, withS
 	return p.DumpTable(ds.DB(), dbName, tableName, database.DumpOptions{Structure: withStructure, Data: withData})
 }
 
-func (a *App) CopyTable(sessionID string, dbName string, tableName string, newTableName string) error {
+func (a *App) CopyTable(sessionID string, dbName string, schema string, tableName string, newTableName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
 	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.CopyTableSchema(ds.DB(), dbName, schema, tableName, newTableName)
+		}
+	}
 	return p.CopyTable(ds.DB(), dbName, tableName, newTableName)
 }
 
-func (a *App) DBInsertRow(sessionID string, dbName string, tableName string, values map[string]any) error {
+func (a *App) DBInsertRow(sessionID string, dbName string, schema string, tableName string, values map[string]any) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.InsertRowSchema(ds.DB(), dbName, schema, tableName, values)
+		}
 	}
 	return p.InsertRow(ds.DB(), dbName, tableName, values)
 }
@@ -198,60 +250,95 @@ func (a *App) DBInsertRow(sessionID string, dbName string, tableName string, val
 // DBUpdateRow writes one cell/row edit and returns the number of rows the
 // UPDATE affected. 0 means the WHERE clause matched nothing (DB-01): the
 // frontend must not report such a write as saved.
-func (a *App) DBUpdateRow(sessionID string, dbName string, tableName string, set map[string]any, where map[string]any) (int64, error) {
+func (a *App) DBUpdateRow(sessionID string, dbName string, schema string, tableName string, set map[string]any, where map[string]any) (int64, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return 0, err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.UpdateRowSchema(ds.DB(), dbName, schema, tableName, set, where)
+		}
 	}
 	return p.UpdateRow(ds.DB(), dbName, tableName, set, where)
 }
 
 // DBDeleteRow deletes rows by snapshot WHERE and returns the affected count
 // (0 = the row is already gone / was changed elsewhere).
-func (a *App) DBDeleteRow(sessionID string, dbName string, tableName string, where map[string]any) (int64, error) {
+func (a *App) DBDeleteRow(sessionID string, dbName string, schema string, tableName string, where map[string]any) (int64, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return 0, err
 	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DeleteRowSchema(ds.DB(), dbName, schema, tableName, where)
+		}
+	}
 	return p.DeleteRow(ds.DB(), dbName, tableName, where)
 }
 
-func (a *App) AddColumn(sessionID string, dbName string, tableName string, col database.ColumnDef) error {
+func (a *App) AddColumn(sessionID string, dbName string, schema string, tableName string, col database.ColumnDef) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.AddColumnSchema(ds.DB(), dbName, schema, tableName, col)
+		}
 	}
 	return p.AddColumn(ds.DB(), dbName, tableName, col)
 }
 
-func (a *App) ModifyColumn(sessionID string, dbName string, tableName string, col database.ColumnDef) error {
+func (a *App) ModifyColumn(sessionID string, dbName string, schema string, tableName string, col database.ColumnDef) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.ModifyColumnSchema(ds.DB(), dbName, schema, tableName, col)
+		}
 	}
 	return p.ModifyColumn(ds.DB(), dbName, tableName, col)
 }
 
-func (a *App) DropColumn(sessionID string, dbName string, tableName string, colName string) error {
+func (a *App) DropColumn(sessionID string, dbName string, schema string, tableName string, colName string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DropColumnSchema(ds.DB(), dbName, schema, tableName, colName)
+		}
 	}
 	return p.DropColumn(ds.DB(), dbName, tableName, colName)
 }
 
-func (a *App) AddIndex(sessionID string, dbName string, tableName string, idx database.IndexDef) error {
+func (a *App) AddIndex(sessionID string, dbName string, schema string, tableName string, idx database.IndexDef) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
 	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.AddIndexSchema(ds.DB(), dbName, schema, tableName, idx)
+		}
+	}
 	return p.AddIndex(ds.DB(), dbName, tableName, idx)
 }
 
-func (a *App) DropIndexOp(sessionID string, dbName string, tableName string, idxName string, isPrimary bool, autoIncCols []string) error {
+func (a *App) DropIndexOp(sessionID string, dbName string, schema string, tableName string, idxName string, isPrimary bool, autoIncCols []string) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.DropIndexSchema(ds.DB(), dbName, schema, tableName, idxName, isPrimary, autoIncCols)
+		}
 	}
 	return p.DropIndex(ds.DB(), dbName, tableName, idxName, isPrimary, autoIncCols)
 }

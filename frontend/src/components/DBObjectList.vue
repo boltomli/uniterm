@@ -21,7 +21,7 @@
         <template #default="{ row }">
           <span class="object-name" @click="onRowClick(row)">
             <component :is="row.type === 'view' ? Eye : Table2" :size="lucideSize('0.875rem')" class="object-icon" />
-            {{ row.name }}
+            {{ row.schema ? `${row.schema}.${row.name}` : row.name }}
           </span>
         </template>
       </el-table-column>
@@ -110,7 +110,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  open: [dbName: string, tableName: string, isView?: boolean]
+  open: [dbName: string, tableName: string, isView?: boolean, schema?: string]
   changed: [dbName: string]
   objectRemoved: [payload: { dbName: string; tableName?: string; kind: 'table' | 'view' | 'database' }]
 }>()
@@ -140,7 +140,7 @@ const filtered = computed(() => {
 })
 
 function onRowClick(row: TableInfo) {
-  emit('open', props.dbName, row.name, row.type === 'view')
+  emit('open', props.dbName, row.name, row.type === 'view', row.schema || '')
 }
 
 // ── Confirm dialog (type-to-confirm) ──
@@ -178,7 +178,7 @@ function askTruncate(row: TableInfo) {
     t('db.truncateTableConfirm', { name: row.name }),
     row.name,
     async () => {
-      await TruncateTable(props.sessionId, props.dbName, row.name)
+      await TruncateTable(props.sessionId, props.dbName, row.schema || '', row.name)
       emit('changed', props.dbName)
     }
   )
@@ -190,7 +190,7 @@ function askDrop(row: TableInfo) {
     t('db.dropTableConfirm', { name: row.name }),
     row.name,
     async () => {
-      await DropTable(props.sessionId, props.dbName, row.name)
+      await DropTable(props.sessionId, props.dbName, row.schema || '', row.name)
       await load()
       emit('changed', props.dbName)
       emit('objectRemoved', { dbName: props.dbName, tableName: row.name, kind: 'table' })
@@ -204,7 +204,7 @@ function askDropView(row: TableInfo) {
     t('db.dropViewConfirm', { name: row.name }),
     row.name,
     async () => {
-      await DropView(props.sessionId, props.dbName, row.name)
+      await DropView(props.sessionId, props.dbName, row.schema || '', row.name)
       await load()
       emit('changed', props.dbName)
       emit('objectRemoved', { dbName: props.dbName, tableName: row.name, kind: 'view' })

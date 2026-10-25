@@ -133,6 +133,7 @@
                   :session-id="sessionId"
                   :table-name="doc.tableName"
                   :db-name="doc.dbName"
+                  :schema="doc.schema"
                   :db-type="dbType"
                   :primary-keys="doc.primaryKeys"
                   :table-columns="doc.tableColumns"
@@ -142,6 +143,7 @@
                   v-show="doc.subTab === 'structure' && !doc.isView"
                   :session-id="sessionId"
                   :db-name="doc.dbName"
+                  :schema="doc.schema"
                   :table-name="doc.tableName"
                   :load-trigger="doc.structureLoadTrigger"
                   @schema-loaded="(pks) => onSchemaLoaded(doc, pks)"
@@ -242,6 +244,9 @@ interface DocTab {
   id: string
   kind: DocKind
   dbName: string
+  // Schema of the table (PostgreSQL / SQL Server, DB-06/DB-07); empty for
+  // dialects where dbName already pins the namespace.
+  schema: string
   tableName: string
   isView: boolean
   subTab: 'data' | 'structure'
@@ -447,8 +452,10 @@ function scrollToDoc(id: string) {
   el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
 }
 
-function findTableDoc(dbName: string, tableName: string) {
-  return docs.value.find(d => d.kind === 'table' && d.dbName === dbName && d.tableName === tableName)
+function findTableDoc(dbName: string, schema: string, tableName: string) {
+  // Schema participates (DB-06): audit.users and public.users are different
+  // tables and must not share a doc (nor each other's primary keys).
+  return docs.value.find(d => d.kind === 'table' && d.dbName === dbName && (d.schema || '') === schema && d.tableName === tableName)
 }
 
 function findDbDoc(kind: 'db-query' | 'db-objects', dbName: string) {
@@ -457,7 +464,7 @@ function findDbDoc(kind: 'db-query' | 'db-objects', dbName: string) {
 
 async function loadSchema(doc: DocTab) {
   try {
-    const schema = await GetTableSchema(props.sessionId, doc.dbName, doc.tableName)
+    const schema = await GetTableSchema(props.sessionId, doc.dbName, doc.schema || '', doc.tableName)
     doc.tableColumns = schema.columns
     doc.primaryKeys = schema.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
   } catch (e: any) {
@@ -467,9 +474,9 @@ async function loadSchema(doc: DocTab) {
   }
 }
 
-async function onSelectTable(dbName: string, tableName: string, isView = false) {
+async function onSelectTable(dbName: string, tableName: string, isView = false, schema = '') {
   closeTree()
-  const existing = findTableDoc(dbName, tableName)
+  const existing = findTableDoc(dbName, schema, tableName)
   if (existing) {
     existing.subTab = 'data'
     // Retry the schema load in the background — never block the click on it.
@@ -481,6 +488,7 @@ async function onSelectTable(dbName: string, tableName: string, isView = false) 
     id: nextId('table'),
     kind: 'table',
     dbName,
+    schema,
     tableName,
     isView,
     subTab: 'data',
@@ -496,9 +504,9 @@ async function onSelectTable(dbName: string, tableName: string, isView = false) 
   await loadSchema(doc)
 }
 
-async function onViewStructure(dbName: string, tableName: string) {
+async function onViewStructure(dbName: string, tableName: string, schema = '') {
   closeTree()
-  const existing = findTableDoc(dbName, tableName)
+  const existing = findTableDoc(dbName, schema, tableName)
   if (existing) {
     existing.isView = false
     openStructureSub(existing)
@@ -509,6 +517,7 @@ async function onViewStructure(dbName: string, tableName: string) {
     id: nextId('table'),
     kind: 'table',
     dbName,
+    schema,
     tableName,
     isView: false,
     subTab: 'structure',
@@ -540,6 +549,7 @@ function onOpenDatabase(dbName: string, tab: 'query' | 'objects' = 'objects') {
     id: nextId(kind),
     kind,
     dbName,
+    schema: '',
     tableName: '',
     isView: false,
     subTab: 'data',
@@ -558,6 +568,7 @@ function onNewQuery(dbName?: string) {
     id: nextId('query'),
     kind: 'db-query',
     dbName: db,
+    schema: '',
     tableName: '',
     isView: false,
     subTab: 'data',

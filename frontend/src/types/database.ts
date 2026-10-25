@@ -1,5 +1,9 @@
 export interface TableInfo {
   name: string
+  /** Schema/namespace of the table in dialects that have one (PostgreSQL,
+   *  SQL Server) — DB-06/DB-07. Empty where the name is already unique
+   *  within the connection's database. */
+  schema?: string
   type?: string  // "table" or "view"
   comment?: string
 }

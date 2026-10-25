@@ -236,6 +236,9 @@ const props = withDefaults(defineProps<{
   sessionId: string
   tableName?: string
   dbName?: string
+  /** Schema of the table in dialects that have one (DB-06/DB-07); every
+   *  metadata, browse and row-CRUD call carries it through. */
+  schema?: string
   dbType?: string
   primaryKeys?: string[]
   tableColumns?: ColumnInfo[]
@@ -429,6 +432,7 @@ async function loadBrowseSql(offset = 0) {
   sql.value = await DBDefaultTableQuery(
     props.sessionId,
     props.dbName || '',
+    props.schema || '',
     props.tableName,
     pageSize.value,
     offset,
@@ -492,7 +496,9 @@ async function generateSQL() {
     for (const name of preferred.slice(0, 12)) {
       if (schemas[name]) continue
       try {
-        const schema = await GetTableSchema(props.sessionId, dbName, name)
+        // Only the CURRENT table's probe carries the doc's schema; the
+        // neighbouring tables are best-effort name lookups (DB-06).
+        const schema = await GetTableSchema(props.sessionId, dbName, name === props.tableName ? (props.schema || '') : '', name)
         schemas[name] = schema.columns?.map((c: ColumnInfo) => ({
           name: c.name,
           type: c.type,
@@ -583,6 +589,7 @@ async function onExecute() {
       const expected = await DBDefaultTableQuery(
         props.sessionId,
         props.dbName || '',
+        props.schema || '',
         props.tableName,
         pageSize.value,
         page.value * pageSize.value,
@@ -762,6 +769,7 @@ async function onSaveEdits() {
         const affected = await DBUpdateRow(
           props.sessionId,
           props.dbName || '',
+          props.schema || '',
           props.tableName,
           { [ed.field]: ed.newValue },
           ed.where,
@@ -888,7 +896,7 @@ async function onDeleteRow(rowIndex: number) {
   }
 
   try {
-    const affected = await DBDeleteRow(props.sessionId, props.dbName || '', props.tableName, where)
+    const affected = await DBDeleteRow(props.sessionId, props.dbName || '', props.schema || '', props.tableName, where)
     if (affected === 0) {
       // Snapshot matched nothing: someone changed or deleted the row already.
       // The local copy is stale either way — tell the user (DB-01).
@@ -914,7 +922,7 @@ const insertColumns = ref<string[]>([])
 async function startInsertRow() {
   let cols: ColumnInfo[]
   try {
-    const schema = await GetTableSchema(props.sessionId, props.dbName || '', props.tableName || '')
+    const schema = await GetTableSchema(props.sessionId, props.dbName || '', props.schema || '', props.tableName || '')
     cols = schema.columns
   } catch {
     cols = queryResult.value!.columns.map(c => ({ name: c.name, type: c.type, nullable: true, defaultVal: '', defaultType: 'none', isPrimary: false, collation: '', comment: '', onUpdate: false }))
@@ -949,7 +957,7 @@ async function onInsertConfirm() {
   }
 
   try {
-    await DBInsertRow(props.sessionId, props.dbName || '', props.tableName, values)
+    await DBInsertRow(props.sessionId, props.dbName || '', props.schema || '', props.tableName, values)
     error.value = ''
     insertingRow.value = false
     emit('cellUpdated')
@@ -1048,7 +1056,7 @@ async function onEditRowConfirm() {
   }
 
   try {
-    const affected = await DBUpdateRow(props.sessionId, props.dbName || '', props.tableName, set, where)
+    const affected = await DBUpdateRow(props.sessionId, props.dbName || '', props.schema || '', props.tableName, set, where)
     if (affected === 0) {
       // Snapshot WHERE matched nothing (DB-01): keep the dialog open with the
       // user's values so they can compare against fresh data after reloading.

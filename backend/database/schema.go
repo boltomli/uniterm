@@ -4,7 +4,12 @@ package database
 // ── Shared types ──
 
 type TableInfo struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	// Schema qualifies Name in dialects where one name can exist in several
+	// namespaces (PostgreSQL, SQL Server) — DB-09/DB-06. Empty for dialects
+	// where the database/owner already travels elsewhere (MySQL, SQLite,
+	// Oracle — owner in dbName).
+	Schema  string `json:"schema"`
 	Type    string `json:"type"` // "table" or "view"
 	Comment string `json:"comment"`
 }

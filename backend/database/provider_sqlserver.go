@@ -75,9 +75,14 @@ func (p *sqlserverProvider) PrepareExec(db execer, dbName string) error {
 }
 
 func (p *sqlserverProvider) DefaultTableQuery(dbName, tableName string, limit, offset int) string {
+	return p.DefaultTableQueryRef(TableRef{Database: dbName, Name: tableName}, limit, offset)
+}
+
+// DefaultTableQueryRef qualifies the browse SELECT with the schema (DB-07).
+func (p *sqlserverProvider) DefaultTableQueryRef(ref TableRef, limit, offset int) string {
 	return fmt.Sprintf(
 		"SELECT * FROM %s ORDER BY (SELECT NULL) OFFSET %d ROWS FETCH NEXT %d ROWS ONLY",
-		p.qualifiedTable(tableName), offset, limit,
+		p.qualifiedTableSchema(ref.Schema, ref.Name), offset, limit,
 	)
 }
 
@@ -87,6 +92,16 @@ func (p *sqlserverProvider) PagedTableQuery(dbName, tableName string, limit, off
 
 func (p *sqlserverProvider) qualifiedTable(tableName string) string {
 	return p.Quote(tableName)
+}
+
+// qualifiedTableSchema renders [schema].[table] (DB-07); an empty schema
+// keeps the bare name — the login's default schema resolves it (dbo for
+// standard logins), exactly as before.
+func (p *sqlserverProvider) qualifiedTableSchema(schema, tableName string) string {
+	if schema == "" {
+		return p.qualifiedTable(tableName)
+	}
+	return p.Quote(schema) + "." + p.qualifiedTable(tableName)
 }
 
 // ── CRUD ──
@@ -102,6 +117,14 @@ func (p *sqlserverProvider) qualifiedTable(tableName string) string {
 // PrepareExec, which issues USE [dbName] on the pinned connection.
 
 func (p *sqlserverProvider) InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error {
+	return p.insertRow(db, dbName, "", tableName, values)
+}
+
+func (p *sqlserverProvider) InsertRowSchema(db *sql.DB, dbName, schema, tableName string, values map[string]any) error {
+	return p.insertRow(db, dbName, schema, tableName, values)
+}
+
+func (p *sqlserverProvider) insertRow(db *sql.DB, dbName, schema, tableName string, values map[string]any) error {
 	cols := sortedKeys(values)
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
@@ -112,11 +135,19 @@ func (p *sqlserverProvider) InsertRow(db *sql.DB, dbName, tableName string, valu
 		args = append(args, values[c])
 	}
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		p.qualifiedTable(tableName), strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
+		p.qualifiedTableSchema(schema, tableName), strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
 	return execPrepared(p, db, dbName, sql, args)
 }
 
 func (p *sqlserverProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
+	return p.updateRow(db, dbName, "", tableName, set, where)
+}
+
+func (p *sqlserverProvider) UpdateRowSchema(db *sql.DB, dbName, schema, tableName string, set, where map[string]any) (int64, error) {
+	return p.updateRow(db, dbName, schema, tableName, set, where)
+}
+
+func (p *sqlserverProvider) updateRow(db *sql.DB, dbName, schema, tableName string, set, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(set)+len(where))
 	phIdx := 1
 
@@ -142,7 +173,7 @@ func (p *sqlserverProvider) UpdateRow(db *sql.DB, dbName, tableName string, set,
 		}
 	}
 
-	sql := fmt.Sprintf("UPDATE %s SET %s", p.qualifiedTable(tableName), strings.Join(setParts, ", "))
+	sql := fmt.Sprintf("UPDATE %s SET %s", p.qualifiedTableSchema(schema, tableName), strings.Join(setParts, ", "))
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
@@ -150,6 +181,14 @@ func (p *sqlserverProvider) UpdateRow(db *sql.DB, dbName, tableName string, set,
 }
 
 func (p *sqlserverProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {
+	return p.deleteRow(db, dbName, "", tableName, where)
+}
+
+func (p *sqlserverProvider) DeleteRowSchema(db *sql.DB, dbName, schema, tableName string, where map[string]any) (int64, error) {
+	return p.deleteRow(db, dbName, schema, tableName, where)
+}
+
+func (p *sqlserverProvider) deleteRow(db *sql.DB, dbName, schema, tableName string, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(where))
 	phIdx := 1
 	whereParts := make([]string, 0, len(where))
@@ -163,7 +202,7 @@ func (p *sqlserverProvider) DeleteRow(db *sql.DB, dbName, tableName string, wher
 		}
 	}
 
-	sql := fmt.Sprintf("DELETE FROM %s", p.qualifiedTable(tableName))
+	sql := fmt.Sprintf("DELETE FROM %s", p.qualifiedTableSchema(schema, tableName))
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
@@ -201,21 +240,23 @@ func (p *sqlserverProvider) GetDatabases(db *sql.DB) ([]string, error) {
 }
 
 func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {
+	// Schema is included (DB-07): dbo.users and sales.users must be
+	// distinguishable in the tree and resolvable by the structure page.
 	query := `
-		SELECT t.name AS table_name, 'TABLE' AS type_desc,
+		SELECT t.name AS table_name, SCHEMA_NAME(t.schema_id) AS table_schema, 'TABLE' AS type_desc,
 		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
 		FROM sys.tables t
 		LEFT JOIN sys.extended_properties ep
 		  ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
 		WHERE t.is_ms_shipped = 0
 		UNION ALL
-		SELECT v.name AS table_name, 'VIEW' AS type_desc,
+		SELECT v.name AS table_name, SCHEMA_NAME(v.schema_id) AS table_schema, 'VIEW' AS type_desc,
 		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
 		FROM sys.views v
 		LEFT JOIN sys.extended_properties ep
 		  ON ep.major_id = v.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
 		WHERE v.is_ms_shipped = 0
-		ORDER BY table_name`
+		ORDER BY table_schema, table_name`
 	results, err := queryStrings(db, p.withUse(dbName, query))
 	if err != nil {
 		return nil, fmt.Errorf("get tables: %w", err)
@@ -228,6 +269,7 @@ func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, e
 		}
 		infos = append(infos, TableInfo{
 			Name:    row["table_name"],
+			Schema:  row["table_schema"],
 			Type:    tp,
 			Comment: row["table_comment"],
 		})
@@ -236,24 +278,41 @@ func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, e
 }
 
 func (p *sqlserverProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {
-	colRows, err := queryStrings(db, p.withUse(dbName, `
+	return p.GetTableSchemaRef(db, TableRef{Database: dbName, Name: tableName})
+}
+
+// GetTableSchemaRef pins every probe to TABLE_SCHEMA (DB-07): an empty
+// schema keeps the historical name-only resolution, a set one can no longer
+// merge columns/PK/indexes of a same-named table in another schema.
+func (p *sqlserverProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*SchemaResult, error) {
+	schemaFilter := ""
+	args := []any{ref.Name}
+	if ref.Schema != "" {
+		schemaFilter = " AND TABLE_SCHEMA = @p2"
+		args = append(args, ref.Schema)
+	}
+	colRows, err := queryStrings(db, p.withUse(ref.Database, `
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
 		       CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE
 		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_NAME = @p1
-		ORDER BY ORDINAL_POSITION`), tableName)
+		WHERE TABLE_NAME = @p1`+schemaFilter+`
+		ORDER BY ORDINAL_POSITION`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get columns: %w", err)
 	}
 
-	pkRows, err := queryStrings(db, p.withUse(dbName, `
+	pkSchemaFilter := ""
+	if ref.Schema != "" {
+		pkSchemaFilter = " AND tc.TABLE_SCHEMA = @p2 AND kcu.TABLE_SCHEMA = @p2"
+	}
+	pkRows, err := queryStrings(db, p.withUse(ref.Database, `
 		SELECT kcu.COLUMN_NAME
 		FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
 		JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
 		  ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
 		  AND tc.TABLE_NAME = kcu.TABLE_NAME
 		WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
-		  AND tc.TABLE_NAME = @p1`), tableName)
+		  AND tc.TABLE_NAME = @p1`+pkSchemaFilter), args...)
 	pkCols := make(map[string]bool)
 	if err == nil {
 		for _, row := range pkRows {
@@ -289,14 +348,18 @@ func (p *sqlserverProvider) GetTableSchema(db *sql.DB, dbName, tableName string)
 		})
 	}
 
-	idxRows, err := queryStrings(db, p.withUse(dbName, `
+	idxSchemaFilter := ""
+	if ref.Schema != "" {
+		idxSchemaFilter = " AND SCHEMA_NAME(t.schema_id) = @p2"
+	}
+	idxRows, err := queryStrings(db, p.withUse(ref.Database, `
 		SELECT i.name AS index_name, i.is_unique, i.is_primary_key, c.name AS column_name
 		FROM sys.indexes i
 		JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
 		JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
 		JOIN sys.tables t ON i.object_id = t.object_id
-		WHERE t.name = @p1
-		ORDER BY i.name, ic.key_ordinal`), tableName)
+		WHERE t.name = @p1`+idxSchemaFilter+`
+		ORDER BY i.name, ic.key_ordinal`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get indexes: %w", err)
 	}
@@ -339,63 +402,118 @@ func (p *sqlserverProvider) DropDatabase(db *sql.DB, dbName string) error {
 }
 
 // ── DDL: Table ──
+//
+// Plain methods keep the historical default-schema resolution; the *Schema
+// variants (SchemaDDL, DB-09) qualify [schema].[table] so DDL can no longer
+// land on a same-named table in another schema (DB-07).
 
 func (p *sqlserverProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTable(tableName))))
-	return err
+	return p.createTable(db, dbName, "", tableName)
+}
+
+func (p *sqlserverProvider) CreateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return p.createTable(db, dbName, schema, tableName)
+}
+
+func (p *sqlserverProvider) createTable(db *sql.DB, dbName, schema, tableName string) error {
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTableSchema(schema, tableName))))
 }
 
 func (p *sqlserverProvider) DropTable(db *sql.DB, dbName, tableName string) error {
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTable(tableName))))
-	return err
+	return p.dropTable(db, dbName, "", tableName)
+}
+
+func (p *sqlserverProvider) DropTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return p.dropTable(db, dbName, schema, tableName)
+}
+
+func (p *sqlserverProvider) dropTable(db *sql.DB, dbName, schema, tableName string) error {
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTableSchema(schema, tableName))))
 }
 
 func (p *sqlserverProvider) DropView(db *sql.DB, dbName, viewName string) error {
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTable(viewName))))
-	return err
+	return p.dropView(db, dbName, "", viewName)
+}
+
+func (p *sqlserverProvider) DropViewSchema(db *sql.DB, dbName, schema, viewName string) error {
+	return p.dropView(db, dbName, schema, viewName)
+}
+
+func (p *sqlserverProvider) dropView(db *sql.DB, dbName, schema, viewName string) error {
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTableSchema(schema, viewName))))
 }
 
 func (p *sqlserverProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTable(tableName))))
-	return err
+	return p.truncateTable(db, dbName, "", tableName)
+}
+
+func (p *sqlserverProvider) TruncateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return p.truncateTable(db, dbName, schema, tableName)
+}
+
+func (p *sqlserverProvider) truncateTable(db *sql.DB, dbName, schema, tableName string) error {
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTableSchema(schema, tableName))))
 }
 
 // CopyTable clones structure and data via SELECT INTO (no indexes/constraints).
 func (p *sqlserverProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("SELECT * INTO %s FROM %s", p.qualifiedTable(newTableName), p.qualifiedTable(tableName))))
-	return err
+	return p.copyTable(db, dbName, "", tableName, newTableName)
+}
+
+func (p *sqlserverProvider) CopyTableSchema(db *sql.DB, dbName, schema, tableName, newTableName string) error {
+	return p.copyTable(db, dbName, schema, tableName, newTableName)
+}
+
+func (p *sqlserverProvider) copyTable(db *sql.DB, dbName, schema, tableName, newTableName string) error {
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("SELECT * INTO %s FROM %s",
+		p.qualifiedTableSchema(schema, newTableName), p.qualifiedTableSchema(schema, tableName))))
 }
 
 // ── DDL: Column ──
 
 func (p *sqlserverProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	return p.addColumn(db, dbName, "", tableName, col)
+}
+
+func (p *sqlserverProvider) AddColumnSchema(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
+	return p.addColumn(db, dbName, schema, tableName, col)
+}
+
+func (p *sqlserverProvider) addColumn(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
 	// F-11: the type is free text in the UI — validate before interpolation.
 	col, err := safeColumnTypeFor(col)
 	if err != nil {
 		return err
 	}
-	err = execDDL(db, p.withUse(dbName, p.buildColumnSQL("ADD", tableName, col)))
-	return err
+	return execDDL(db, p.withUse(dbName, p.buildColumnSQL("ADD", schema, tableName, col)))
 }
 
 func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	return p.modifyColumn(db, dbName, "", tableName, col)
+}
+
+func (p *sqlserverProvider) ModifyColumnSchema(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
+	return p.modifyColumn(db, dbName, schema, tableName, col)
+}
+
+func (p *sqlserverProvider) modifyColumn(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
 	// F-11: the type is free text in the UI — validate before interpolation.
 	col, err := safeColumnTypeFor(col)
 	if err != nil {
 		return err
 	}
-	q := p.qualifiedTable
+	qt := p.qualifiedTableSchema(schema, tableName)
 	stmts := []string{}
 
 	stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s %s",
-		q(tableName), p.Quote(col.Name), col.Type))
+		qt, p.Quote(col.Name), col.Type))
 
 	if col.Nullable {
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s %s NULL",
-			q(tableName), p.Quote(col.Name), col.Type))
+			qt, p.Quote(col.Name), col.Type))
 	} else {
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s %s NOT NULL",
-			q(tableName), p.Quote(col.Name), col.Type))
+			qt, p.Quote(col.Name), col.Type))
 	}
 
 	for _, s := range stmts {
@@ -407,7 +525,7 @@ func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, c
 	// left the old default silently in place and there was no way to set a
 	// new one. Swap the default constraint the same way DropColumn does.
 	if col.DefaultType == "value" {
-		return p.setDefaultValue(db, dbName, tableName, col)
+		return p.setDefaultValue(db, dbName, schema, tableName, col)
 	}
 	return nil
 }
@@ -415,13 +533,17 @@ func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, c
 // setDefaultValue drops the column's current DEFAULT constraint (if any) and
 // adds the new one. SQL Server binds defaults to the column through a named
 // constraint, so an UPDATE of the default is really DROP + ADD.
-func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
+	args := []any{tableName, col.Name}
+	if schema != "" {
+		args = append(args, schema)
+	}
 	rows, err := db.Query(p.withUse(dbName, `
 		SELECT dc.name
 		FROM sys.default_constraints dc
 		JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
 		JOIN sys.tables t ON c.object_id = t.object_id
-		WHERE t.name = @p1 AND c.name = @p2`), tableName, col.Name)
+		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema)), args...)
 	if err != nil {
 		return err
 	}
@@ -441,7 +563,7 @@ func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, tableName string
 
 	for _, n := range names {
 		if err := execDDL(db, p.withUse(dbName,
-			fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.qualifiedTable(tableName), p.Quote(n)))); err != nil {
+			fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.qualifiedTableSchema(schema, tableName), p.Quote(n)))); err != nil {
 			return err
 		}
 	}
@@ -451,18 +573,30 @@ func (p *sqlserverProvider) setDefaultValue(db *sql.DB, dbName, tableName string
 		constraint = constraint[:120]
 	}
 	return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s DEFAULT %s FOR %s",
-		p.qualifiedTable(tableName), p.Quote(constraint),
+		p.qualifiedTableSchema(schema, tableName), p.Quote(constraint),
 		RenderDefaultLiteral(col.DefaultVal), p.Quote(col.Name))))
 }
 
 func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
+	return p.dropColumn(db, dbName, "", tableName, colName)
+}
+
+func (p *sqlserverProvider) DropColumnSchema(db *sql.DB, dbName, schema, tableName, colName string) error {
+	return p.dropColumn(db, dbName, schema, tableName, colName)
+}
+
+func (p *sqlserverProvider) dropColumn(db *sql.DB, dbName, schema, tableName, colName string) error {
 	// Drop any default constraint bound to the column first.
+	args := []any{tableName, colName}
+	if schema != "" {
+		args = append(args, schema)
+	}
 	rows, err := db.Query(p.withUse(dbName, `
 		SELECT dc.name
 		FROM sys.default_constraints dc
 		JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
 		JOIN sys.tables t ON c.object_id = t.object_id
-		WHERE t.name = @p1 AND c.name = @p2`), tableName, colName)
+		WHERE t.name = @p1 AND c.name = @p2`+sqlserverSchemaFilter(schema)), args...)
 	if err != nil {
 		return fmt.Errorf("find default constraints: %w", err)
 	}
@@ -480,7 +614,7 @@ func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName st
 		return err
 	}
 
-	qt := p.qualifiedTable(tableName)
+	qt := p.qualifiedTableSchema(schema, tableName)
 	for _, name := range constraints {
 		if err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, p.Quote(name)))); err != nil {
 			return fmt.Errorf("drop default constraint %s: %w", name, err)
@@ -491,18 +625,35 @@ func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName st
 	return err
 }
 
+// sqlserverSchemaFilter renders the optional TABLE_SCHEMA/sys.schema filter
+// for the metadata probes, and schemaArg the matching variadic argument —
+// both no-ops for an empty schema (DB-07).
+func sqlserverSchemaFilter(schema string) string {
+	if schema == "" {
+		return ""
+	}
+	return " AND SCHEMA_NAME(t.schema_id) = @p3"
+}
+
 // ── DDL: Index ──
 
 func (p *sqlserverProvider) AddIndex(db *sql.DB, dbName, tableName string, idx IndexDef) error {
+	return p.addIndex(db, dbName, "", tableName, idx)
+}
+
+func (p *sqlserverProvider) AddIndexSchema(db *sql.DB, dbName, schema, tableName string, idx IndexDef) error {
+	return p.addIndex(db, dbName, schema, tableName, idx)
+}
+
+func (p *sqlserverProvider) addIndex(db *sql.DB, dbName, schema, tableName string, idx IndexDef) error {
 	q := p.Quote
-	qt := p.qualifiedTable
+	qt := p.qualifiedTableSchema(schema, tableName)
 	if idx.IsPrimary {
 		cols := make([]string, len(idx.Columns))
 		for i, c := range idx.Columns {
 			cols[i] = q(c)
 		}
-		err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt(tableName), strings.Join(cols, ", "))))
-		return err
+		return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt, strings.Join(cols, ", "))))
 	}
 	uniqueStr := ""
 	if idx.Unique {
@@ -512,19 +663,24 @@ func (p *sqlserverProvider) AddIndex(db *sql.DB, dbName, tableName string, idx I
 	for i, c := range idx.Columns {
 		cols[i] = q(c)
 	}
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt(tableName), strings.Join(cols, ", "))))
-	return err
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt, strings.Join(cols, ", "))))
 }
 
 func (p *sqlserverProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
+	return p.dropIndex(db, dbName, "", tableName, idxName, isPrimary)
+}
+
+func (p *sqlserverProvider) DropIndexSchema(db *sql.DB, dbName, schema, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
+	return p.dropIndex(db, dbName, schema, tableName, idxName, isPrimary)
+}
+
+func (p *sqlserverProvider) dropIndex(db *sql.DB, dbName, schema, tableName, idxName string, isPrimary bool) error {
 	q := p.Quote
-	qt := p.qualifiedTable
+	qt := p.qualifiedTableSchema(schema, tableName)
 	if isPrimary {
-		err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt(tableName), q(idxName))))
-		return err
+		return execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, q(idxName))))
 	}
-	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt(tableName))))
-	return err
+	return execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt)))
 }
 
 // ── Helpers ──
@@ -542,7 +698,7 @@ func (p *sqlserverProvider) withUse(dbName, query string) string {
 	return fmt.Sprintf("USE %s;\n%s", p.Quote(dbName), query)
 }
 
-func (p *sqlserverProvider) buildColumnSQL(action, tableName string, col ColumnDef) string {
+func (p *sqlserverProvider) buildColumnSQL(action, schema, tableName string, col ColumnDef) string {
 	q := p.Quote
 	parts := []string{q(col.Name), col.Type}
 
@@ -563,7 +719,7 @@ func (p *sqlserverProvider) buildColumnSQL(action, tableName string, col ColumnD
 		parts = append(parts, "IDENTITY(1,1)")
 	}
 
-	return fmt.Sprintf("ALTER TABLE %s %s %s", p.qualifiedTable(tableName), action, strings.Join(parts, " "))
+	return fmt.Sprintf("ALTER TABLE %s %s %s", p.qualifiedTableSchema(schema, tableName), action, strings.Join(parts, " "))
 }
 
 func sqlserverFormatType(dataType, charMaxLen, numericPrecision, numericScale string) string {

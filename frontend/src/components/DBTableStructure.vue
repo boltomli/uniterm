@@ -229,6 +229,8 @@ const props = defineProps<{
   sessionId: string
   tableName: string
   dbName: string
+  /** Schema of the table (DB-06/DB-07); empty for dialects without schemas. */
+  schema?: string
   loadTrigger: number
 }>()
 
@@ -258,7 +260,7 @@ async function loadSchema() {
   loading.value = true
   cancelled = false
   try {
-    const result = await GetTableSchema(props.sessionId, props.dbName, props.tableName)
+    const result = await GetTableSchema(props.sessionId, props.dbName, props.schema || '', props.tableName)
     if (!cancelled) {
       schema.value = result
       const pks = result.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
@@ -301,7 +303,7 @@ async function onSaveColumnEdit() {
     }
   }
   try {
-    await ModifyColumn(props.sessionId, props.dbName, props.tableName, {
+    await ModifyColumn(props.sessionId, props.dbName, props.schema || '', props.tableName, {
       name: editingColumn.value.name,
       type: editColumnType.value,
       nullable: editColumnNullable.value,
@@ -330,7 +332,7 @@ async function onDropColumn(colName: string) {
     return
   }
   try {
-    await DropColumn(props.sessionId, props.dbName, props.tableName, colName)
+    await DropColumn(props.sessionId, props.dbName, props.schema || '', props.tableName, colName)
     await loadSchema()
     emit('refresh')
   } catch (e: any) {
@@ -354,7 +356,7 @@ async function onDropIndex(idx: IndexInfo) {
     : []
 
   try {
-    await DropIndexOp(props.sessionId, props.dbName, props.tableName, idx.name, idx.isPrimary, autoIncCols)
+    await DropIndexOp(props.sessionId, props.dbName, props.schema || '', props.tableName, idx.name, idx.isPrimary, autoIncCols)
     await loadSchema()
     emit('refresh')
   } catch (e: any) {
@@ -396,7 +398,7 @@ async function onAddColumn() {
     }
   }
   try {
-    await AddColumn(props.sessionId, props.dbName, props.tableName, {
+    await AddColumn(props.sessionId, props.dbName, props.schema || '', props.tableName, {
       name: addColName.value.trim(),
       type: addColType.value || 'VARCHAR(255)',
       nullable: addColNullable.value,
@@ -499,7 +501,7 @@ async function onAddIndex() {
     }
 
     try {
-      await AddIndex(props.sessionId, props.dbName, props.tableName, {
+      await AddIndex(props.sessionId, props.dbName, props.schema || '', props.tableName, {
         name: '',
         columns: addIdxColumns.value,
         unique: false,
@@ -515,7 +517,7 @@ async function onAddIndex() {
   }
   if (!addIdxName.value.trim() || addIdxColumns.value.length === 0) return
   try {
-    await AddIndex(props.sessionId, props.dbName, props.tableName, {
+    await AddIndex(props.sessionId, props.dbName, props.schema || '', props.tableName, {
       name: addIdxName.value.trim(),
       columns: addIdxColumns.value,
       unique: addIdxUnique.value,

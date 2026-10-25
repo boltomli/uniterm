@@ -74,10 +74,20 @@ func (p *postgresProvider) PrepareExec(db execer, dbName string) error {
 }
 
 func (p *postgresProvider) DefaultTableQuery(dbName, tableName string, limit, offset int) string {
-	if offset > 0 {
-		return fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", p.Quote(tableName), limit, offset)
+	return p.DefaultTableQueryRef(TableRef{Database: dbName, Name: tableName}, limit, offset)
+}
+
+// DefaultTableQueryRef qualifies the browse SELECT with the schema (DB-06):
+// two schemas' `users` must not resolve to the same search_path hit.
+func (p *postgresProvider) DefaultTableQueryRef(ref TableRef, limit, offset int) string {
+	from := p.Quote(ref.Name)
+	if ref.Schema != "" {
+		from = p.Quote(ref.Schema) + "." + from
 	}
-	return fmt.Sprintf("SELECT * FROM %s LIMIT %d", p.Quote(tableName), limit)
+	if offset > 0 {
+		return fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", from, limit, offset)
+	}
+	return fmt.Sprintf("SELECT * FROM %s LIMIT %d", from, limit)
 }
 
 func (p *postgresProvider) PagedTableQuery(dbName, tableName string, limit, offset int) string {
@@ -85,6 +95,14 @@ func (p *postgresProvider) PagedTableQuery(dbName, tableName string, limit, offs
 }
 
 func (p *postgresProvider) InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error {
+	return p.insertRow(db, "", tableName, values)
+}
+
+func (p *postgresProvider) InsertRowSchema(db *sql.DB, dbName, schema, tableName string, values map[string]any) error {
+	return p.insertRow(db, schema, tableName, values)
+}
+
+func (p *postgresProvider) insertRow(db *sql.DB, schema, tableName string, values map[string]any) error {
 	cols := sortedKeys(values)
 	quotedCols := make([]string, len(cols))
 	placeholders := make([]string, len(cols))
@@ -95,11 +113,19 @@ func (p *postgresProvider) InsertRow(db *sql.DB, dbName, tableName string, value
 		args = append(args, values[c])
 	}
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		p.Quote(tableName), strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
-	return execPrepared(p, db, dbName, sql, args)
+		p.pgQual(schema, tableName), strings.Join(quotedCols, ", "), strings.Join(placeholders, ", "))
+	return execPrepared(p, db, "", sql, args)
 }
 
 func (p *postgresProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
+	return p.updateRow(db, "", tableName, set, where)
+}
+
+func (p *postgresProvider) UpdateRowSchema(db *sql.DB, dbName, schema, tableName string, set, where map[string]any) (int64, error) {
+	return p.updateRow(db, schema, tableName, set, where)
+}
+
+func (p *postgresProvider) updateRow(db *sql.DB, schema, tableName string, set, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(set)+len(where))
 	phIdx := 1
 
@@ -125,14 +151,22 @@ func (p *postgresProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, 
 		}
 	}
 
-	sql := fmt.Sprintf("UPDATE %s SET %s", p.Quote(tableName), strings.Join(setParts, ", "))
+	sql := fmt.Sprintf("UPDATE %s SET %s", p.pgQual(schema, tableName), strings.Join(setParts, ", "))
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPreparedAffected(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, "", sql, args)
 }
 
 func (p *postgresProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {
+	return p.deleteRow(db, "", tableName, where)
+}
+
+func (p *postgresProvider) DeleteRowSchema(db *sql.DB, dbName, schema, tableName string, where map[string]any) (int64, error) {
+	return p.deleteRow(db, schema, tableName, where)
+}
+
+func (p *postgresProvider) deleteRow(db *sql.DB, schema, tableName string, where map[string]any) (int64, error) {
 	args := make([]any, 0, len(where))
 	phIdx := 1
 	whereParts := make([]string, 0, len(where))
@@ -146,11 +180,11 @@ func (p *postgresProvider) DeleteRow(db *sql.DB, dbName, tableName string, where
 		}
 	}
 
-	sql := fmt.Sprintf("DELETE FROM %s", p.Quote(tableName))
+	sql := fmt.Sprintf("DELETE FROM %s", p.pgQual(schema, tableName))
 	if len(whereParts) > 0 {
 		sql += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPreparedAffected(p, db, dbName, sql, args)
+	return execPreparedAffected(p, db, "", sql, args)
 }
 
 func (p *postgresProvider) GetCapabilities() DBCapabilities {
@@ -188,13 +222,14 @@ func (p *postgresProvider) GetDatabases(db *sql.DB) ([]string, error) {
 func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {
 	results, err := queryStrings(db, `
 		SELECT c.relname AS table_name,
+		       n.nspname AS table_schema,
 		       CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type,
 		       COALESCE(obj_description(c.oid, 'pg_class'), '') AS table_comment
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE c.relkind IN ('r', 'p', 'v')
 		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-		ORDER BY c.relname`)
+		ORDER BY n.nspname, c.relname`)
 	if err != nil {
 		return nil, fmt.Errorf("get tables: %w", err)
 	}
@@ -206,6 +241,7 @@ func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, er
 		}
 		infos = append(infos, TableInfo{
 			Name:    row["table_name"],
+			Schema:  row["table_schema"],
 			Type:    tp,
 			Comment: row["table_comment"],
 		})
@@ -214,31 +250,59 @@ func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, er
 }
 
 func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {
-	// DB-08: the cache is keyed by (pool, dbName, tableName) and expires —
+	return p.GetTableSchemaRef(db, TableRef{Database: dbName, Name: tableName})
+}
+
+// GetTableSchemaRef resolves columns/PK/indexes for ONE schema (DB-06).
+// Without an explicit schema the historical search_path behaviour is
+// preserved (all schemas merged — same-name tables stay ambiguous); with
+// one, every probe is pinned to it and can no longer pick up a namesake in
+// another schema.
+func (p *postgresProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*SchemaResult, error) {
+	// DB-08: the cache is keyed by (pool, db|schema, table) and expires —
 	// see postgres_schema_cache.go; every DDL method invalidates on success.
-	if cached, ok := pgSchemaCacheLoad(db, dbName, tableName); ok {
+	cacheKey := ref.Schema
+	if cached, ok := pgSchemaCacheLoad(db, cacheKey, ref.Name); ok {
 		return cached, nil
 	}
-
 	var (
 		colRows []map[string]string
 		pkRows  []map[string]string
 		idxRows []map[string]string
 	)
+	colSQL := `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+		        COALESCE(pgd.description, '') AS column_comment
+		 FROM information_schema.columns c
+		 LEFT JOIN pg_catalog.pg_statio_all_tables st
+		   ON c.table_schema = st.schemaname AND c.table_name = st.relname
+		 LEFT JOIN pg_catalog.pg_description pgd
+		   ON pgd.objoid = st.relid AND pgd.objsubid = c.ordinal_position
+		 WHERE c.table_name = $1`
+	pkSQL := `SELECT a.attname FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		JOIN pg_class t ON t.oid = i.indrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		WHERE t.relname = $1 AND i.indisprimary`
+	idxSQL := `SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, a.attname AS column_name
+		FROM pg_class t
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_index ix ON t.oid = ix.indrelid
+		JOIN pg_class i ON i.oid = ix.indexrelid
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+		WHERE t.relname = $1`
+	args := []any{ref.Name}
+	if ref.Schema != "" {
+		colSQL += " AND c.table_schema = $2"
+		pkSQL += " AND n.nspname = $2"
+		idxSQL += " AND n.nspname = $2"
+		args = append(args, ref.Schema)
+	}
+	colSQL += " ORDER BY c.ordinal_position"
+	idxSQL += " ORDER BY i.relname, a.attnum"
+
 	g, _ := errgroup.WithContext(context.Background())
 	g.Go(func() error {
-		r, err := queryStrings(db,
-			`SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
-			        COALESCE(pgd.description, '') AS column_comment
-			 FROM information_schema.columns c
-			 LEFT JOIN pg_catalog.pg_statio_all_tables st
-			   ON c.table_schema = st.schemaname AND c.table_name = st.relname
-			 LEFT JOIN pg_catalog.pg_description pgd
-			   ON pgd.objoid = st.relid AND pgd.objsubid = c.ordinal_position
-			 WHERE c.table_name = $1
-			 ORDER BY c.ordinal_position`,
-			tableName,
-		)
+		r, err := queryStrings(db, colSQL, args...)
 		if err != nil {
 			return fmt.Errorf("get columns: %w", err)
 		}
@@ -246,10 +310,7 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 		return nil
 	})
 	g.Go(func() error {
-		r, err := queryStrings(db,
-			"SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = $1::regclass AND i.indisprimary",
-			tableName,
-		)
+		r, err := queryStrings(db, pkSQL, args...)
 		if err != nil {
 			return nil // PKs are non-fatal like before
 		}
@@ -257,10 +318,7 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 		return nil
 	})
 	g.Go(func() error {
-		r, err := queryStrings(db,
-			"SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, a.attname AS column_name FROM pg_class t JOIN pg_index ix ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) WHERE t.relname = $1 ORDER BY i.relname, a.attnum",
-			tableName,
-		)
+		r, err := queryStrings(db, idxSQL, args...)
 		if err != nil {
 			return fmt.Errorf("get indexes: %w", err)
 		}
@@ -323,7 +381,7 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 	}
 
 	result := &SchemaResult{Columns: columns, Indexes: indexes}
-	pgSchemaCacheStore(db, dbName, tableName, result)
+	pgSchemaCacheStore(db, cacheKey, ref.Name, result)
 	return result, nil
 }
 
@@ -341,45 +399,90 @@ func (p *postgresProvider) DropDatabase(db *sql.DB, dbName string) error {
 	return err
 }
 
+// pgQual renders a schema-qualified table reference (DB-06/DB-09). An empty
+// schema keeps the historical search_path-relative name.
+func (p *postgresProvider) pgQual(schema, tableName string) string {
+	if schema == "" {
+		return p.Quote(tableName)
+	}
+	return p.Quote(schema) + "." + p.Quote(tableName)
+}
+
 // ── DDL: Table ──
+//
+// Each operation comes in a plain (search_path resolution) and a
+// schema-aware variant; the App layer picks the latter when the frontend
+// carries a schema (SchemaDDL, DB-09). All internals take the schema — an
+// empty one reproduces the old behaviour exactly.
 
 func (p *postgresProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	q := p.Quote
-	if err := execDDL(db, fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", q(tableName))); err != nil {
+	return p.createTable(db, "", tableName)
+}
+
+func (p *postgresProvider) CreateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return p.createTable(db, schema, tableName)
+}
+
+func (p *postgresProvider) createTable(db *sql.DB, schema, tableName string) error {
+	if err := execDDL(db, fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", p.pgQual(schema, tableName))); err != nil {
 		return err
 	}
 	// A recreated table may differ from whatever the cache holds under this name.
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 func (p *postgresProvider) DropTable(db *sql.DB, dbName, tableName string) error {
-	q := p.Quote
-	if err := execDDL(db, fmt.Sprintf("DROP TABLE %s", q(tableName))); err != nil {
+	return p.dropTable(db, "", tableName)
+}
+
+func (p *postgresProvider) DropTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return p.dropTable(db, schema, tableName)
+}
+
+func (p *postgresProvider) dropTable(db *sql.DB, schema, tableName string) error {
+	if err := execDDL(db, fmt.Sprintf("DROP TABLE %s", p.pgQual(schema, tableName))); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 func (p *postgresProvider) DropView(db *sql.DB, dbName, viewName string) error {
-	q := p.Quote
-	if err := execDDL(db, fmt.Sprintf("DROP VIEW %s", q(viewName))); err != nil {
+	return p.dropView(db, "", viewName)
+}
+
+func (p *postgresProvider) DropViewSchema(db *sql.DB, dbName, schema, viewName string) error {
+	return p.dropView(db, schema, viewName)
+}
+
+func (p *postgresProvider) dropView(db *sql.DB, schema, viewName string) error {
+	if err := execDDL(db, fmt.Sprintf("DROP VIEW %s", p.pgQual(schema, viewName))); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, viewName)
+	pgSchemaCacheInvalidate(db, schema, viewName)
 	return nil
 }
 
 func (p *postgresProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	q := p.Quote
-	err := execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", q(tableName)))
-	return err
+	return execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.pgQual("", tableName)))
+}
+
+func (p *postgresProvider) TruncateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
+	return execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.pgQual(schema, tableName)))
 }
 
 // CopyTable clones structure and data in one statement. It resolves the
 // current schema because dbName is the database, not a schema (same as DumpTable).
 func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
+	return p.copyTable(db, "", dbName, tableName, newTableName)
+}
+
+func (p *postgresProvider) CopyTableSchema(db *sql.DB, dbName, schema, tableName, newTableName string) error {
+	return p.copyTable(db, schema, dbName, tableName, newTableName)
+}
+
+func (p *postgresProvider) copyTable(db *sql.DB, schema, dbName, tableName, newTableName string) error {
 	// CREATE TABLE AS SELECT may copy a whole table — export budget (DB-11).
 	ctx, cancel := dumpCtx()
 	defer cancel()
@@ -389,26 +492,38 @@ func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName
 	}
 	defer conn.Close()
 
-	schema := "public"
-	if dbName != "" {
-		schema = dbName
-	}
-	if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
-		schema = curSchema
+	srcSchema := schema
+	if srcSchema == "" {
+		srcSchema = "public"
+		if dbName != "" {
+			srcSchema = dbName
+		}
+		if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
+			srcSchema = curSchema
+		}
 	}
 
 	q := p.Quote
-	_, err = conn.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s.%s", q(newTableName), q(schema), q(tableName)))
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s.%s",
+		p.pgQual(schema, newTableName), q(srcSchema), q(tableName)))
 	if err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, newTableName)
+	pgSchemaCacheInvalidate(db, schema, newTableName)
 	return nil
 }
 
 // ── DDL: Column ──
 
 func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	return p.addColumn(db, "", tableName, col)
+}
+
+func (p *postgresProvider) AddColumnSchema(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
+	return p.addColumn(db, schema, tableName, col)
+}
+
+func (p *postgresProvider) addColumn(db *sql.DB, schema, tableName string, col ColumnDef) error {
 	// F-11: the type is free text in the UI — validate before interpolation.
 	col, err := safeColumnTypeFor(col)
 	if err != nil {
@@ -433,49 +548,58 @@ func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col C
 		parts = append(parts, "DEFAULT "+RenderDefaultLiteral(col.DefaultVal))
 	}
 
-	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	if err = execDDL(db, sql); err != nil {
+	sqlText := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", p.pgQual(schema, tableName), strings.Join(parts, " "))
+	if err = execDDL(db, sqlText); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
+	return p.modifyColumn(db, "", tableName, col)
+}
+
+func (p *postgresProvider) ModifyColumnSchema(db *sql.DB, dbName, schema, tableName string, col ColumnDef) error {
+	return p.modifyColumn(db, schema, tableName, col)
+}
+
+func (p *postgresProvider) modifyColumn(db *sql.DB, schema, tableName string, col ColumnDef) error {
 	// F-11: the type is free text in the UI — validate before interpolation.
 	col, err := safeColumnTypeFor(col)
 	if err != nil {
 		return err
 	}
 	q := p.Quote
+	qt := p.pgQual(schema, tableName)
 	var stmts []string
 
 	stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE %s",
-		q(tableName), q(col.Name), col.Type))
+		qt, q(col.Name), col.Type))
 
 	if col.Nullable {
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s DROP NOT NULL",
-			q(tableName), q(col.Name)))
+			qt, q(col.Name)))
 	} else {
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL",
-			q(tableName), q(col.Name)))
+			qt, q(col.Name)))
 	}
 
 	switch col.DefaultType {
 	case "null":
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT NULL",
-			q(tableName), q(col.Name)))
+			qt, q(col.Name)))
 	case "value":
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s",
-			q(tableName), q(col.Name), RenderDefaultLiteral(col.DefaultVal)))
+			qt, q(col.Name), RenderDefaultLiteral(col.DefaultVal)))
 	default:
 		stmts = append(stmts, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s DROP DEFAULT",
-			q(tableName), q(col.Name)))
+			qt, q(col.Name)))
 	}
 
 	if col.Comment != "" {
 		stmts = append(stmts, fmt.Sprintf("COMMENT ON COLUMN %s.%s IS '%s'",
-			q(tableName), q(col.Name), strings.ReplaceAll(col.Comment, "'", "''")))
+			qt, q(col.Name), strings.ReplaceAll(col.Comment, "'", "''")))
 	}
 
 	for _, s := range stmts {
@@ -483,30 +607,45 @@ func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, co
 			return err
 		}
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 func (p *postgresProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
-	q := p.Quote
-	if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName))); err != nil {
+	return p.dropColumn(db, "", tableName, colName)
+}
+
+func (p *postgresProvider) DropColumnSchema(db *sql.DB, dbName, schema, tableName, colName string) error {
+	return p.dropColumn(db, schema, tableName, colName)
+}
+
+func (p *postgresProvider) dropColumn(db *sql.DB, schema, tableName, colName string) error {
+	if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", p.pgQual(schema, tableName), p.Quote(colName))); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 // ── DDL: Index ──
 
 func (p *postgresProvider) AddIndex(db *sql.DB, dbName, tableName string, idx IndexDef) error {
+	return p.addIndex(db, "", tableName, idx)
+}
+
+func (p *postgresProvider) AddIndexSchema(db *sql.DB, dbName, schema, tableName string, idx IndexDef) error {
+	return p.addIndex(db, schema, tableName, idx)
+}
+
+func (p *postgresProvider) addIndex(db *sql.DB, schema, tableName string, idx IndexDef) error {
 	q := p.Quote
-	var sql string
+	var sqlText string
 	if idx.IsPrimary {
 		cols := make([]string, len(idx.Columns))
 		for i, c := range idx.Columns {
 			cols[i] = q(c)
 		}
-		sql = fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", q(tableName), strings.Join(cols, ", "))
+		sqlText = fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", p.pgQual(schema, tableName), strings.Join(cols, ", "))
 	} else {
 		uniqueStr := ""
 		if idx.Unique {
@@ -516,29 +655,35 @@ func (p *postgresProvider) AddIndex(db *sql.DB, dbName, tableName string, idx In
 		for i, c := range idx.Columns {
 			cols[i] = q(c)
 		}
-		sql = fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", "))
+		sqlText = fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), p.pgQual(schema, tableName), strings.Join(cols, ", "))
 	}
-	err := execDDL(db, sql)
-	if err != nil {
+	if err := execDDL(db, sqlText); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
 func (p *postgresProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
-	q := p.Quote
+	return p.dropIndex(db, "", tableName, idxName, isPrimary)
+}
+
+func (p *postgresProvider) DropIndexSchema(db *sql.DB, dbName, schema, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
+	return p.dropIndex(db, schema, tableName, idxName, isPrimary)
+}
+
+func (p *postgresProvider) dropIndex(db *sql.DB, schema, tableName, idxName string, isPrimary bool) error {
 	if isPrimary {
-		if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", q(tableName), q(idxName))); err != nil {
+		if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", p.pgQual(schema, tableName), p.Quote(idxName))); err != nil {
 			return err
 		}
-		pgSchemaCacheInvalidate(db, dbName, tableName)
+		pgSchemaCacheInvalidate(db, schema, tableName)
 		return nil
 	}
-	if err := execDDL(db, fmt.Sprintf("DROP INDEX %s", q(idxName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("DROP INDEX %s", p.pgQual(schema, idxName))); err != nil {
 		return err
 	}
-	pgSchemaCacheInvalidate(db, dbName, tableName)
+	pgSchemaCacheInvalidate(db, schema, tableName)
 	return nil
 }
 
