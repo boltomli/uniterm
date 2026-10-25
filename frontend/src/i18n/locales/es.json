@@ -1778,6 +1778,7 @@
   "db.discardEditsConfirm": "Ejecutar esta consulta descartará {n} cambio(s) sin guardar. ¿Continuar?",
   "db.saveOrDiscardFirst": "Esta fila tiene cambios sin guardar. Guárdalos o descártalos primero.",
   "db.treeLoadFailed": "No se pudo cargar el árbol de bases de datos: {msg}",
+  "db.schemaLoadFailed": "No se pudo cargar la estructura de la tabla: {msg}",
   "sftp.editExternal": "Abrir en editor externo",
   "sftp.editExternalStart": "Editando {path} en editor externo",
   "sftp.editExternalUploaded": "Subido automáticamente al remoto: {path}",

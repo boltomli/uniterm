@@ -1778,6 +1778,7 @@
   "db.discardEditsConfirm": "このクエリを実行すると未保存の変更 {n} 件が破棄されます。続行しますか？",
   "db.saveOrDiscardFirst": "この行には未保存の変更があります。先に保存するか元に戻してください。",
   "db.treeLoadFailed": "データベースツリーの読み込みに失敗しました：{msg}",
+  "db.schemaLoadFailed": "テーブル構造の読み込みに失敗しました：{msg}",
   "sftp.editExternal": "外部エディタで開く",
   "sftp.editExternalStart": "外部エディタで {path} を編集中",
   "sftp.editExternalUploaded": "リモートへ自動アップロードしました: {path}",

@@ -1781,6 +1781,7 @@
   "db.discardEditsConfirm": "Running this query will discard {n} unsaved edit(s). Continue?",
   "db.saveOrDiscardFirst": "This row has unsaved edits. Save or undo them first.",
   "db.treeLoadFailed": "Failed to load the database tree: {msg}",
+  "db.schemaLoadFailed": "Failed to load the table structure: {msg}",
   "sftp.editExternal": "Open in External Editor",
   "sftp.editExternalStart": "Editing {path} in external editor",
   "sftp.editExternalUploaded": "Auto-uploaded to remote: {path}",

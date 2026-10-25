@@ -760,8 +760,8 @@ revert(state, rowIdx)
 | DB-15 | 已修 | | | 2026-10-25：抽 `utils/sqlStatements.ts`（引号/行注释/块注释/dollar-quote 感知），firstStatement 与多语句判定共用；注释片段不计为语句；纯函数单测 14 例 |
 | DB-16 | 已修 | | | 2026-10-25：前端 runSeq 令牌 + activeCall.cancel()；App.ExecuteQuery/Statement/SQLScript 接收请求 ctx（Wails 注入），database 层新增 Ctx 变体；CancelError 不报错；测试 executor_cancel_test.go + executionToken.test.ts |
 | DB-17 | 已修 | | | 2026-10-25：loadTree 加 treeSeq 令牌（每次 await 后校验）；sessionId 切换清空树状态并作废在飞请求；autoOpen 仅首次加载 emit；失败 msg.error(db.treeLoadFailed)；测试 DBTreePanel.loadOrder.test.ts |
-| DB-18 | 待修 | | | |
-| DB-19 | 待修 | | | |
+| DB-18 | 已修 | | | 2026-10-25：watch([sessionId, dbType]) 清空 docs/activeDocId；树在 sessionId 变化时同步清状态（DB-17） |
+| DB-19 | 已修 | | | 2026-10-25：onSelectTable 先 push doc 再后台 loadSchema；失败 toast（db.schemaLoadFailed）且可重试；测试 DBTabContent.sessionReset.test.ts |
 | DB-20 | 待修 | | | |
 | DB-21 | 待修 | | | 顺手补测试矩阵 |
 | DB-22 | 待修 | | | |

@@ -222,6 +222,7 @@ import DBTableStructure from './DBTableStructure.vue'
 import DBQueryEditor from './DBQueryEditor.vue'
 import DBObjectList from './DBObjectList.vue'
 import { GetTableSchema } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { msg } from '../services/message'
 import type { ColumnInfo } from '../types/database'
 
 defineOptions({ name: 'DBTabContent' })
@@ -253,6 +254,15 @@ const docs = ref<DocTab[]>([])
 const activeDocId = ref('')
 const treeRef = ref<InstanceType<typeof DBTreePanel> | null>(null)
 let docSeq = 0
+
+// DB-18: docs carry dbName/tableName/primaryKeys of ONE connection. A
+// reconnect reuses this component with a NEW sessionId (or another dbType),
+// and stale docs would keep issuing queries against the old database name
+// while the grid's edit gating trusts the old table's primary keys.
+watch([() => props.sessionId, () => props.dbType], () => {
+  docs.value = []
+  activeDocId.value = ''
+})
 
 const activeDoc = computed(() => docs.value.find(d => d.id === activeDocId.value) || null)
 const activeDb = computed(() => activeDoc.value?.dbName || '')
@@ -450,7 +460,11 @@ async function loadSchema(doc: DocTab) {
     const schema = await GetTableSchema(props.sessionId, doc.dbName, doc.tableName)
     doc.tableColumns = schema.columns
     doc.primaryKeys = schema.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
-  } catch { /* ignore */ }
+  } catch (e: any) {
+    // A silent failure left a read-only grid with no clue why (DB-19);
+    // re-selecting the table retries the load (primaryKeys still empty).
+    msg.error(t('db.schemaLoadFailed', { msg: e?.message || String(e) }))
+  }
 }
 
 async function onSelectTable(dbName: string, tableName: string, isView = false) {
@@ -458,7 +472,8 @@ async function onSelectTable(dbName: string, tableName: string, isView = false) 
   const existing = findTableDoc(dbName, tableName)
   if (existing) {
     existing.subTab = 'data'
-    if (!existing.primaryKeys.length) await loadSchema(existing)
+    // Retry the schema load in the background — never block the click on it.
+    if (!existing.primaryKeys.length) loadSchema(existing)
     activateDoc(existing.id)
     return
   }
@@ -473,10 +488,12 @@ async function onSelectTable(dbName: string, tableName: string, isView = false) 
     tableColumns: [],
     structureLoadTrigger: 0,
   }
-  // Load schema first so the result grid opens with canEdit already true
-  await loadSchema(doc)
+  // Open the tab immediately; the schema fills in when it arrives (DB-19).
+  // Waiting for the round-trip first made the click feel dead, and a failure
+  // used to leave a silently read-only grid.
   docs.value.push(doc)
   activateDoc(doc.id)
+  await loadSchema(doc)
 }
 
 async function onViewStructure(dbName: string, tableName: string) {
