@@ -1761,7 +1761,7 @@
   "companion.upload": "업로드",
   "companion.uptime": "가동 시간",
   "db.aiEmptyResult": "결과 없음",
-  "db.filterResults": "결과 필터링",
+  "db.filterResults": "이 페이지의 행 필터…",
   "db.newQuery": "새 쿼리",
   "db.noHistory": "기록이 없습니다",
   "db.openData": "데이터 열기",

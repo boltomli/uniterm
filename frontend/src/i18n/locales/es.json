@@ -1761,7 +1761,7 @@
   "companion.upload": "Subir",
   "companion.uptime": "Tiempo activo",
   "db.aiEmptyResult": "Resultado vacío",
-  "db.filterResults": "Filtrar resultados",
+  "db.filterResults": "Filtrar filas de esta página…",
   "db.newQuery": "Nueva consulta",
   "db.noHistory": "Sin historial",
   "db.openData": "Abrir datos",

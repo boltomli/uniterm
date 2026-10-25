@@ -643,6 +643,17 @@ async function onExecute() {
       queryResult.value = result
       resultSeq.value++
       browseHasMore.value = browseMode.value && result.rows.length >= pageSize.value
+      if (browseMode.value && result.rows.length === 0 && page.value > 0) {
+        // DB-20: the page total is estimated, so the pager can offer one
+        // page past the end (an exactly-full last page sets hasMore). Never
+        // strand the user on an empty page — step back and load the real
+        // last page instead. The retry loads a page that was already shown,
+        // so it cannot loop.
+        page.value -= 1
+        await loadBrowseSql(page.value * pageSize.value)
+        await onExecute()
+        return
+      }
       lastDurationMs.value = Math.round(performance.now() - started)
       history.value = pushSqlHistory(props.sessionId, {
         sql: toRun,

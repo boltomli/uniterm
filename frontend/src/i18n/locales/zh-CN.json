@@ -1764,7 +1764,7 @@
   "companion.upload": "上传",
   "companion.uptime": "运行时间",
   "db.aiEmptyResult": "空结果",
-  "db.filterResults": "筛选结果",
+  "db.filterResults": "筛选本页行…",
   "db.newQuery": "新建查询",
   "db.noHistory": "暂无历史",
   "db.openData": "打开数据",

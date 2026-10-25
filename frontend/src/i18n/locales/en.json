@@ -1764,7 +1764,7 @@
   "companion.upload": "Upload",
   "companion.uptime": "Uptime",
   "db.aiEmptyResult": "Empty result",
-  "db.filterResults": "Filter results",
+  "db.filterResults": "Filter rows on this page…",
   "db.newQuery": "New Query",
   "db.noHistory": "No query history",
   "db.openData": "Open Data",

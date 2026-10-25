@@ -1761,7 +1761,7 @@
   "companion.upload": "Загрузить",
   "companion.uptime": "Время работы",
   "db.aiEmptyResult": "Пустой результат",
-  "db.filterResults": "Фильтровать результаты",
+  "db.filterResults": "Фильтровать строки этой страницы…",
   "db.newQuery": "Новый запрос",
   "db.noHistory": "Нет истории",
   "db.openData": "Открыть данные",

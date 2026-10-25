@@ -1755,7 +1755,7 @@
   "companion.upload": "Enviar",
   "companion.uptime": "Tempo de atividade",
   "db.aiEmptyResult": "Resultado vazio",
-  "db.filterResults": "Filtrar resultados",
+  "db.filterResults": "Filtrar linhas desta página…",
   "db.newQuery": "Nova consulta",
   "db.noHistory": "Sem histórico de consultas",
   "db.openData": "Abrir dados",

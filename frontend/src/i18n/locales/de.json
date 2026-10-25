@@ -1761,7 +1761,7 @@
   "companion.upload": "Hochladen",
   "companion.uptime": "Betriebszeit",
   "db.aiEmptyResult": "Leeres Ergebnis",
-  "db.filterResults": "Ergebnisse filtern",
+  "db.filterResults": "Zeilen dieser Seite filtern…",
   "db.newQuery": "Neue Abfrage",
   "db.noHistory": "Kein Verlauf",
   "db.openData": "Daten öffnen",

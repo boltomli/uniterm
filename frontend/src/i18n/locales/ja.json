@@ -1761,7 +1761,7 @@
   "companion.upload": "アップロード",
   "companion.uptime": "稼働時間",
   "db.aiEmptyResult": "結果なし",
-  "db.filterResults": "結果を絞り込み",
+  "db.filterResults": "このページの行を絞り込む…",
   "db.newQuery": "新しいクエリ",
   "db.noHistory": "履歴がありません",
   "db.openData": "データを開く",

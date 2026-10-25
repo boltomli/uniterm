@@ -1755,7 +1755,7 @@
   "companion.upload": "Tải lên",
   "companion.uptime": "Thời gian hoạt động",
   "db.aiEmptyResult": "Kết quả trống",
-  "db.filterResults": "Lọc kết quả",
+  "db.filterResults": "Lọc các dòng trên trang này…",
   "db.newQuery": "Truy vấn mới",
   "db.noHistory": "Không có lịch sử truy vấn",
   "db.openData": "Mở dữ liệu",

@@ -762,7 +762,7 @@ revert(state, rowIdx)
 | DB-17 | 已修 | | | 2026-10-25：loadTree 加 treeSeq 令牌（每次 await 后校验）；sessionId 切换清空树状态并作废在飞请求；autoOpen 仅首次加载 emit；失败 msg.error(db.treeLoadFailed)；测试 DBTreePanel.loadOrder.test.ts |
 | DB-18 | 已修 | | | 2026-10-25：watch([sessionId, dbType]) 清空 docs/activeDocId；树在 sessionId 变化时同步清状态（DB-17） |
 | DB-19 | 已修 | | | 2026-10-25：onSelectTable 先 push doc 再后台 loadSchema；失败 toast（db.schemaLoadFailed）且可重试；测试 DBTabContent.sessionReset.test.ts |
-| DB-20 | 待修 | | | |
+| DB-20 | 已修 | | | 2026-10-25：空尾页自动回退到真实最后一页（不入历史）；过滤框文案改 db.filterResults 为“本页”范围（11 locale）；测试 pageScoping.test.ts |
 | DB-21 | 已修 | | | 2026-10-25：sqlite Quote 改为 `"`+双写；测试矩阵改遍历 providers 注册表（长度哨兵防新方言漏测）+ 包裹/转义双重断言 |
 | DB-22 | 已修 | | | 2026-10-25：共享 RenderDefaultLiteral 白名单（数字/NULL/CURRENT_* 带精度/带参函数白名单/PG cast/括号表达式，其余转义为字符串）；MySQL 读路径改 information_schema（空串默认不再丢失）；MSSQL ModifyColumn 会替换默认值约束；Oracle 括号直通规则移除；测试 coldefault_test.go |
 | DB-23 | 待修 | | | |
