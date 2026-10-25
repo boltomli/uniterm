@@ -709,7 +709,16 @@ func (p *mysqlProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Dum
 	}
 
 	var b strings.Builder
+	// Library-qualified reference (DB-23): the replay must not depend on the
+	// importing connection's default database. The identifier comes from the
+	// connection config, and SafeMyIdent validated it above via PrepareExec
+	// only for dbName — qualify defensively with the same quoting rule.
 	quotedTable := p.Quote(tableName)
+	if dbName != "" {
+		if qDb, qerr := SafeMyIdent(dbName); qerr == nil {
+			quotedTable = qDb + "." + quotedTable
+		}
+	}
 
 	if opts.Structure {
 		createStmt, kind, derr := showCreateStatement(conn, dbName, tableName, quotedTable)

@@ -667,7 +667,9 @@ func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 	}
 
 	var b strings.Builder
-	quotedTable := p.Quote(tableName)
+	// Owner-qualified reference (DB-23): the replay must not depend on the
+	// importing session's current schema.
+	quotedTable := p.qualifiedTable(owner, tableName)
 
 	if opts.Structure {
 		kind := oracleTableKind(conn, ctx, owner, tableName)
@@ -680,7 +682,13 @@ func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 		}
 		b.WriteString("--\n-- Structure for ")
 		b.WriteString(tableName)
-		b.WriteString("\n--\nDROP " + kind + " IF EXISTS " + quotedTable + ";\n")
+		b.WriteString("\n--\n")
+		// `DROP … IF EXISTS` only exists on 23ai+ (DB-23): wrap the drop in
+		// PL/SQL so the script replays on older servers too. The identifier
+		// is server-produced (owner/table), never user text.
+		b.WriteString("BEGIN\n  EXECUTE IMMEDIATE 'DROP " + kind + " " + quotedTable +
+			"';\nEXCEPTION\n  WHEN OTHERS THEN NULL;\nEND;\n/")
+		b.WriteString("\n")
 		b.WriteString(createSQL)
 		b.WriteString(";\n\n")
 	}

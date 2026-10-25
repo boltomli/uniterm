@@ -843,23 +843,44 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 	}
 
 	var b strings.Builder
-	quotedTable := p.Quote(tableName)
+	// Schema-qualified reference (DB-23/DB-07): resolve the object's schema
+	// so DROP/CREATE/INSERT replay against the same namesake.
+	schema, isView := sqlserverObjectSchema(conn, ctx, dbName, tableName)
+	quotedTable := p.qualifiedTableSchema(schema, tableName)
 
 	if opts.Structure {
-		createSQL, derr := sqlserverCreateTableSQL(conn, ctx, dbName, tableName, quotedTable)
-		if derr != nil {
-			return "", derr
+		if isView {
+			// A view must stay a view (DB-23): export its module body instead
+			// of a synthesized CREATE TABLE.
+			viewDef, derr := sqlserverViewDef(conn, ctx, dbName, tableName)
+			if derr != nil {
+				return "", derr
+			}
+			b.WriteString("--\n-- Structure for view ")
+			b.WriteString(tableName)
+			b.WriteString("\n--\nDROP VIEW IF EXISTS ")
+			b.WriteString(quotedTable)
+			b.WriteString(";\nCREATE VIEW ")
+			b.WriteString(quotedTable)
+			b.WriteString(" AS\n")
+			b.WriteString(strings.TrimSuffix(strings.TrimSpace(viewDef), ";"))
+			b.WriteString(";\n\n")
+		} else {
+			createSQL, derr := sqlserverCreateTableSQL(conn, ctx, dbName, tableName, quotedTable)
+			if derr != nil {
+				return "", derr
+			}
+			b.WriteString("--\n-- Structure for ")
+			b.WriteString(tableName)
+			b.WriteString("\n--\nDROP TABLE IF EXISTS ")
+			b.WriteString(quotedTable)
+			b.WriteString(";\n")
+			b.WriteString(createSQL)
+			if !strings.HasSuffix(createSQL, ";") {
+				b.WriteByte(';')
+			}
+			b.WriteString("\n\n")
 		}
-		b.WriteString("--\n-- Structure for ")
-		b.WriteString(tableName)
-		b.WriteString("\n--\nDROP TABLE IF EXISTS ")
-		b.WriteString(quotedTable)
-		b.WriteString(";\n")
-		b.WriteString(createSQL)
-		if !strings.HasSuffix(createSQL, ";") {
-			b.WriteByte(';')
-		}
-		b.WriteString("\n\n")
 	}
 
 	if opts.Data {
@@ -913,6 +934,33 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 }
 
 // sqlserverCreateTableSQL builds a CREATE TABLE statement from INFORMATION_SCHEMA.
+// sqlserverObjectSchema resolves the schema an object lives in and whether
+// it is a view. Both default to the login's default (dbo / table) on miss.
+func sqlserverObjectSchema(conn *sql.Conn, ctx context.Context, dbName, tableName string) (string, bool) {
+	var schema, typeDesc string
+	err := conn.QueryRowContext(ctx, `
+		SELECT SCHEMA_NAME(schema_id), 'VIEW' FROM sys.views WHERE name = @p1
+		UNION ALL
+		SELECT SCHEMA_NAME(schema_id), 'TABLE' FROM sys.tables WHERE name = @p1
+		ORDER BY 2`, tableName).Scan(&schema, &typeDesc)
+	if err != nil || schema == "" {
+		return "", false
+	}
+	return schema, typeDesc == "VIEW"
+}
+
+// sqlserverViewDef returns the CREATE VIEW body (module definition).
+func sqlserverViewDef(conn *sql.Conn, ctx context.Context, dbName, tableName string) (string, error) {
+	var def string
+	err := conn.QueryRowContext(ctx,
+		`SELECT m.definition FROM sys.sql_modules m
+		 JOIN sys.views v ON v.object_id = m.object_id WHERE v.name = @p1`, tableName).Scan(&def)
+	if err != nil {
+		return "", err
+	}
+	return def, nil
+}
+
 func sqlserverCreateTableSQL(conn *sql.Conn, ctx context.Context, dbName, tableName, quotedTable string) (string, error) {
 	rows, err := conn.QueryContext(ctx, `
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,

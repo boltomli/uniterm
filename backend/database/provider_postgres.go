@@ -741,7 +741,6 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	}
 
 	var b strings.Builder
-	quotedTable := p.Quote(tableName)
 
 	// PG connections bind a single database; tables resolve via the session
 	// search_path (default public). dbName on this connection is the database
@@ -749,22 +748,44 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
 		schema = curSchema
 	}
+	// Schema-qualified reference (DB-23): the replay must not depend on the
+	// importing session's search_path.
+	quotedTable := p.pgQual(schema, tableName)
 
 	if opts.Structure {
-		createSQL, derr := pgCreateTableSQL(conn, ctx, schema, tableName, quotedTable)
-		if derr != nil {
-			return "", derr
+		// A view must be exported AS A VIEW (DB-23): the old fixed
+		// DROP TABLE + CREATE TABLE turned views into tables and made the
+		// DROP fail against a view on replay.
+		if pgIsView(conn, ctx, schema, tableName) {
+			viewDef, derr := pgViewDef(conn, ctx, schema, tableName)
+			if derr != nil {
+				return "", derr
+			}
+			b.WriteString("--\n-- Structure for view ")
+			b.WriteString(tableName)
+			b.WriteString("\n--\nDROP VIEW IF EXISTS ")
+			b.WriteString(quotedTable)
+			b.WriteString(" CASCADE;\nCREATE VIEW ")
+			b.WriteString(quotedTable)
+			b.WriteString(" AS\n")
+			b.WriteString(strings.TrimSuffix(strings.TrimSpace(viewDef), ";"))
+			b.WriteString(";\n\n")
+		} else {
+			createSQL, derr := pgCreateTableSQL(conn, ctx, schema, tableName, quotedTable)
+			if derr != nil {
+				return "", derr
+			}
+			b.WriteString("--\n-- Structure for ")
+			b.WriteString(tableName)
+			b.WriteString("\n--\nDROP TABLE IF EXISTS ")
+			b.WriteString(quotedTable)
+			b.WriteString(" CASCADE;\n")
+			b.WriteString(createSQL)
+			if !strings.HasSuffix(createSQL, ";") {
+				b.WriteByte(';')
+			}
+			b.WriteString("\n\n")
 		}
-		b.WriteString("--\n-- Structure for ")
-		b.WriteString(tableName)
-		b.WriteString("\n--\nDROP TABLE IF EXISTS ")
-		b.WriteString(quotedTable)
-		b.WriteString(" CASCADE;\n")
-		b.WriteString(createSQL)
-		if !strings.HasSuffix(createSQL, ";") {
-			b.WriteByte(';')
-		}
-		b.WriteString("\n\n")
 	}
 
 	if opts.Data {
@@ -815,6 +836,27 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	}
 
 	return b.String(), nil
+}
+
+// pgIsView reports whether (schema, name) is a view.
+func pgIsView(conn *sql.Conn, ctx context.Context, schema, name string) bool {
+	var relkind string
+	err := conn.QueryRowContext(ctx,
+		`SELECT c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = $1 AND c.relname = $2`, schema, name).Scan(&relkind)
+	return err == nil && relkind == "v"
+}
+
+// pgViewDef returns the CREATE VIEW body (pg_get_viewdef output).
+func pgViewDef(conn *sql.Conn, ctx context.Context, schema, name string) (string, error) {
+	var def string
+	err := conn.QueryRowContext(ctx,
+		`SELECT pg_get_viewdef(c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = $1 AND c.relname = $2`, schema, name).Scan(&def)
+	if err != nil {
+		return "", err
+	}
+	return def, nil
 }
 
 // pgCurrentSchema returns the first schema on the session search_path.
