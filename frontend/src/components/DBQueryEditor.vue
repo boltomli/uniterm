@@ -122,6 +122,7 @@
           ref="resultGridRef"
           :key="`grid-${canEditRows ? 1 : 0}-${queryResult.columns.map(c => c.name).join('|')}`"
           :rows="displayRows"
+          :result-key="resultSeq"
           :columns="queryResult.columns"
           :can-edit="canEditRows"
           :primary-keys="resolvedPrimaryKeys"
@@ -251,6 +252,11 @@ const sql = ref('')
 const nlInput = ref('')
 const aiGenerating = ref(false)
 const queryResult = shallowRef<QueryResult | null>(null)
+// Monotonic key identifying the current result SET. The result grid clears
+// staged (unsaved) edits only when this changes (DB-02): filter/sort derive a
+// new rows array without replacing the result set, and clearing pending there
+// used to silently drop edits while their values stayed rendered.
+const resultSeq = ref(0)
 const execResult = ref<ExecResult | null>(null)
 const error = ref('')
 const loading = ref(false)
@@ -570,6 +576,20 @@ async function onExecute() {
   const selected = editorRef.value?.getSelectedOrAll?.() ?? sql.value
   const toRun = selected.trim()
   if (!toRun) return
+  if (pendingCount.value > 0) {
+    // Running a new query replaces the result set the staged edits belong to;
+    // ask instead of dropping them on the floor (DB-02).
+    try {
+      await ElMessageBox.confirm(t('db.discardEditsConfirm', { n: pendingCount.value }), t('common.confirm'), {
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning',
+      })
+    } catch {
+      return
+    }
+  }
+  pendingCount.value = 0
   error.value = ''
   queryResult.value = null
   execResult.value = null
@@ -612,6 +632,7 @@ async function onExecute() {
       const result = await ExecuteQuery(props.sessionId, props.dbName || '', firstStatement(toRun))
       if (!cancelled) {
         queryResult.value = result
+        resultSeq.value++
         browseHasMore.value = browseMode.value && result.rows.length >= pageSize.value
         lastDurationMs.value = Math.round(performance.now() - started)
         history.value = pushSqlHistory(props.sessionId, {

@@ -134,6 +134,10 @@ const props = defineProps<{
   /** Positional rows; cell (row r, column c) is rows[r][c]. Duplicate
    *  column names are legal, so cells are addressed by column index. */
   rows: DbRow[]
+  /** Identity of the result set behind `rows` (a counter owned by the
+   *  parent). Staged edits are cleared when — and only when — this changes;
+   *  filter/sort produce a new `rows` array without changing the set. */
+  resultKey?: number
   columns: QueryResultColumn[]
   canEdit: boolean
   primaryKeys?: string[]
@@ -488,12 +492,22 @@ function clearEdit() {
 
 onBeforeUnmount(onEditDismissCleanup)
 
-watch(() => props.rows, () => {
+// A NEW result set invalidates staged edits: their row objects no longer
+// exist in the database's answer. Derived views (filter/sort) must NOT clear
+// pending (DB-02) — they only re-order the same rows, and clearing here used
+// to turn a later save into a phantom no-op while the edited value stayed on
+// screen.
+watch(() => props.resultKey, () => {
   if (pending.size) {
     pending.clear()
     bumpPending()
   }
-  // 新结果集到达：旧选中单元格已失效。
+  selectedCell.value = null
+})
+
+// The rows array identity also changes for derived views; the only thing that
+// can go stale there is the selected cell (its row object may be gone).
+watch(() => props.rows, () => {
   selectedCell.value = null
 })
 

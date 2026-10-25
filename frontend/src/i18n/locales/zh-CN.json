@@ -1778,6 +1778,7 @@
   "db.unsavedChanges": "未保存的更改",
   "db.updateNoMatch": "更新匹配到 0 行。数据可能已被其他位置修改，请刷新后再保存。",
   "db.rowGone": "该行与加载时的数据已不一致（可能已被其他位置修改或删除），将为你刷新。",
+  "db.discardEditsConfirm": "执行该查询将丢弃 {n} 处未保存的修改，确定继续？",
   "sftp.editExternal": "用外部编辑器打开",
   "sftp.editExternalStart": "正在外部编辑器中编辑 {path}",
   "sftp.editExternalUploaded": "已自动上传到远程：{path}",

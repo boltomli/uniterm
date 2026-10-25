@@ -744,7 +744,7 @@ revert(state, rowIdx)
 | ID | 状态 | 负责 | PR | 备注 |
 |---|---|---|---|---|
 | DB-01 | 已修 | | | 2026-10-25：网格先 snapshotPk 再写行；Provider UpdateRow/DeleteRow 返回 affected（execPreparedAffected，-1=驱动不支持）；MySQL DSN 加 clientFoundRows；前端 0 行不 markCommitted；测试 backend/database/row_affected_test.go + DBResultGrid.pkSnapshot.test.ts |
-| DB-02 | 待修 | | | 与 DB-01 同批 |
+| DB-02 | 已修 | | | 2026-10-25：pending 清理从 watch(props.rows) 移到 watch(props.resultKey)（父层 resultSeq 随新结果集递增）；过滤/排序不再丢草稿；执行新查询前弹 db.discardEditsConfirm 确认；测试 DBResultGrid.pendingLifecycle.test.ts |
 | DB-03 | 待修 | | | |
 | DB-04 | 待修 | | | |
 | DB-05 | 待修 | | | 依赖 DB-01 的 affected 返回值 |
