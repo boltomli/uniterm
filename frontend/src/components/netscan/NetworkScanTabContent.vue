@@ -109,15 +109,15 @@
             @row-click="onHostRowClick"
             @row-contextmenu="onIpCtxMenu"
           >
-            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(150)" sortable :sort-method="compareIp">
+            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(120)" sortable :sort-method="compareIp">
               <template #default="{ row }">
                 <span class="host-ip">{{ row.ip }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(140)">
+            <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(120)">
               <template #default="{ row }">{{ row.mac || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(140)" show-overflow-tooltip>
+            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" show-overflow-tooltip>
               <template #default="{ row }">{{ row.hostname || '-' }}</template>
             </el-table-column>
             <el-table-column
@@ -125,7 +125,7 @@
               :key="sp.port"
               :label="`${sp.port} (${sp.name})`"
               align="center"
-              :width="sp.name === 'telnet' ? uiPx(120) : uiPx(100)"
+              :width="sp.name === 'telnet' ? uiPx(108) : uiPx(88)"
             >
               <template #default="{ row }">
                 <el-tag :type="row.ports && row.ports[sp.port] ? 'success' : 'info'" size="small" effect="plain">
@@ -831,13 +831,19 @@ onUnmounted(() => {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   border-bottom: 1px solid var(--border-subtle);
-  padding: 0.375rem 0.5rem;
+  padding: 0.375rem 0.25rem;
+}
+.scan-table :deep(.el-table__header-wrapper th.el-table__cell .cell) {
+  padding: 0;
 }
 .scan-table :deep(.el-table__body td.el-table__cell) {
-  padding: 0.3125rem 0.5rem;
+  padding: 0.3125rem 0.25rem;
   font-size: 0.75rem;
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-subtle);
+}
+.scan-table :deep(.el-table__body td.el-table__cell .cell) {
+  padding: 0;
 }
 .scan-table :deep(.el-table__row) {
   cursor: pointer;
