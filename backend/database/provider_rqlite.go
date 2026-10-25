@@ -79,8 +79,14 @@ func (p *rqliteProvider) InsertRow(db *sql.DB, dbName, tableName string, values 
 }
 
 func (p *rqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
+	sqlText, args := p.buildUpdateSQL(tableName, set, where)
+	return execPreparedAffected(p, db, dbName, sqlText, args)
+}
+
+// buildUpdateSQL renders one UPDATE (DB-05 shares it with the transactional
+// batch path so both build byte-identical statements).
+func (p *rqliteProvider) buildUpdateSQL(tableName string, set, where map[string]any) (string, []any) {
 	args := make([]any, 0, len(set)+len(where))
-	phIdx := 1
 
 	setParts := make([]string, 0, len(set))
 	for _, c := range sortedKeys(set) {
@@ -89,7 +95,6 @@ func (p *rqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, wh
 		} else {
 			setParts = append(setParts, fmt.Sprintf("%s = ?", p.Quote(c)))
 			args = append(args, set[c])
-			phIdx++
 		}
 	}
 
@@ -100,15 +105,20 @@ func (p *rqliteProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, wh
 		} else {
 			whereParts = append(whereParts, fmt.Sprintf("%s = ?", p.Quote(c)))
 			args = append(args, where[c])
-			phIdx++
 		}
 	}
 
-	sql := fmt.Sprintf("UPDATE %s SET %s", p.Quote(tableName), strings.Join(setParts, ", "))
+	sqlText := fmt.Sprintf("UPDATE %s SET %s", p.Quote(tableName), strings.Join(setParts, ", "))
 	if len(whereParts) > 0 {
-		sql += " WHERE " + strings.Join(whereParts, " AND ")
+		sqlText += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPreparedAffected(p, db, dbName, sql, args)
+	return sqlText, args
+}
+
+func (p *rqliteProvider) UpdateRows(db *sql.DB, dbName, tableName string, edits []RowEdit) ([]int64, error) {
+	return updateRowsTx(p, db, dbName, tableName, edits, func(t string, set, where map[string]any) (string, []any) {
+		return p.buildUpdateSQL(t, set, where)
+	})
 }
 
 func (p *rqliteProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {

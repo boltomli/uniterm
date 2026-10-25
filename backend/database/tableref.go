@@ -55,6 +55,7 @@ type SchemaDDL interface {
 	InsertRowSchema(db *sql.DB, dbName, schema, tableName string, values map[string]any) error
 	UpdateRowSchema(db *sql.DB, dbName, schema, tableName string, set, where map[string]any) (int64, error)
 	DeleteRowSchema(db *sql.DB, dbName, schema, tableName string, where map[string]any) (int64, error)
+	UpdateRowsSchema(db *sql.DB, dbName, schema, tableName string, edits []RowEdit) ([]int64, error)
 }
 
 // Compile-time proof that the two schema-sensitive dialects carry the full

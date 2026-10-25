@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"time"
 )
 
 // sortedKeys returns the sorted keys of a map; deterministic ordering makes
@@ -75,6 +76,11 @@ type Provider interface {
 	// treat it as "unknown", never as zero.
 	UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error)
 	DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error)
+	// UpdateRows applies a batch of staged row edits in ONE transaction
+	// (DB-05): per-row affected counts come back in order, a statement
+	// failure rolls the whole batch back. WHERE always carries the snapshot
+	// the row was read with.
+	UpdateRows(db *sql.DB, dbName, tableName string, edits []RowEdit) ([]int64, error)
 
 	// DDL: Database
 	CreateDatabase(db *sql.DB, dbName string) error
@@ -140,6 +146,60 @@ func execPreparedAffected(p Provider, db *sql.DB, dbName, sql string, args []any
 		return -1, nil
 	}
 	return n, nil
+}
+
+// RowEdit is one row's staged changes for a batch update: SET carries the
+// new column values, WHERE the snapshot the grid read the row with.
+type RowEdit struct {
+	Set   map[string]any `json:"set"`
+	Where map[string]any `json:"where"`
+}
+
+// batchTimeout bounds a whole batch update (DB-05) — several statements in
+// one interactive save.
+const batchTimeout = 2 * time.Minute
+
+// updateRowsTx applies a batch of staged row edits in ONE transaction on a
+// pinned connection (DB-05). The caller supplies the dialect's statement
+// builder; a failing statement rolls the WHOLE batch back (no half-committed
+// edits) and the returned error names the failing row. A row whose snapshot
+// WHERE matched nothing is not an error — it reports affected 0 while the
+// other rows commit, so the frontend can warn per row.
+func updateRowsTx(p Provider, db *sql.DB, dbName, tableName string, edits []RowEdit, build func(tableName string, set, where map[string]any) (string, []any)) ([]int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), batchTimeout)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if err := p.PrepareExec(conn, dbName); err != nil {
+		return nil, err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]int64, len(edits))
+	for i, e := range edits {
+		q, args := build(tableName, e.Set, e.Where)
+		res, err := tx.ExecContext(ctx, q, args...)
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("update row %d: %w", i+1, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			n = -1 // driver cannot report — unknown, never "zero"
+		}
+		out[i] = n
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 var providers = map[string]Provider{}

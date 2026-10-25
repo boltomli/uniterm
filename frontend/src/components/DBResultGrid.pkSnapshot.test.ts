@@ -32,17 +32,20 @@ describe('DBResultGrid PK snapshot ordering (DB-01)', () => {
   })
 })
 
-describe('DBQueryEditor affected-row checks (DB-01)', () => {
-  it('does not mark a staged edit committed when UPDATE affected 0 rows', () => {
+describe('DBQueryEditor affected-row checks (DB-01 / DB-05)', () => {
+  it('does not mark a staged edit committed when its row UPDATE affected 0', () => {
     const save = editorScript.slice(
       editorScript.indexOf('async function onSaveEdits'),
       editorScript.indexOf('function onUndoEdits'),
     )
-    expect(save).toMatch(/const affected = await DBUpdateRow\(/)
-    expect(save).toMatch(/if \(affected === 0\)/)
+    // The save is one transactional batch (DB-05) carrying per-row counts.
+    expect(save).toMatch(/counts = await DBUpdateRows\(/)
+    expect(save).toMatch(/const affected = counts\[i\]/)
     expect(save).toMatch(/db\.updateNoMatch/)
-    // markCommitted must only run on the success path, after the zero check.
+    // markCommitted must only run on rows whose UPDATE reported a count.
     expect(save.indexOf('if (affected === 0)')).toBeLessThan(save.indexOf('markCommitted'))
+    // A failing statement rolls the batch back: everything stays staged.
+    expect(save).toMatch(/The transaction rolled back/)
   })
 
   it('keeps the row-edit dialog open when the snapshot WHERE matched nothing', () => {

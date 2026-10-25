@@ -226,7 +226,7 @@ import SyntaxEditor from './SyntaxEditor.vue'
 import DBResultGrid from './DBResultGrid.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
-import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBInsertRow, DBUpdateRow, DBUpdateRows, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
@@ -798,47 +798,70 @@ function onPendingChange(count: number) {
   pendingCount.value = count
 }
 
-/** Persist every staged cell edit via UPDATE ... WHERE original primary keys. */
+/** Persist every staged cell edit as ONE transactional batch (DB-05).
+ *  Staged edits are grouped per row (multiple cells of the same row become
+ *  a single UPDATE), the WHERE always carries the row's read snapshot, and
+ *  per-row affected counts decide who is committed: a 0 means the snapshot
+ *  went stale and the row stays staged (DB-01), a statement error rolls
+ *  the whole save back and everything stays staged. */
 async function onSaveEdits() {
   const edits = resultGridRef.value?.getPendingEdits() || []
   if (!edits.length || savingRows.value) return
   savingRows.value = true
-  let ok = true
   try {
+    const groups = new Map<DbRow, {
+      row: DbRow
+      set: Record<string, DbCellValue>
+      where: Record<string, DbCellValue>
+      fields: number[]
+    }>()
     for (const ed of edits) {
-      try {
-        const affected = await DBUpdateRow(
-          props.sessionId,
-          props.dbName || '',
-          props.schema || '',
-          props.tableName,
-          { [ed.field]: ed.newValue },
-          ed.where,
-        )
-        if (affected === 0) {
-          // The snapshot WHERE matched nothing (DB-01): the row changed or
-          // was deleted elsewhere. Do NOT mark committed — the edit stays
-          // staged (visible, undoable) and the user is told to refresh.
-          ok = false
-          const m = t('db.updateNoMatch')
-          error.value = m
-          msg.error(m)
-          break
-        }
-        resultGridRef.value?.markCommitted(ed.row, ed.fieldIndex)
-      } catch (e: any) {
-        ok = false
-        resultGridRef.value?.revertRow(ed.row)
-        const m = e?.message || String(e)
-        error.value = m
-        msg.error(m)
-        break
+      let g = groups.get(ed.row)
+      if (!g) {
+        g = { row: ed.row, set: {}, where: ed.where, fields: [] }
+        groups.set(ed.row, g)
       }
+      g.set[ed.field] = ed.newValue
+      g.fields.push(ed.fieldIndex)
     }
-    if (ok) {
-      error.value = ''
-      emit('cellUpdated')
+    const list = [...groups.values()]
+
+    let counts: number[]
+    try {
+      counts = await DBUpdateRows(
+        props.sessionId,
+        props.dbName || '',
+        props.schema || '',
+        props.tableName,
+        list.map(g => ({ set: g.set, where: g.where })),
+      )
+    } catch (e: any) {
+      // The transaction rolled back — nothing committed, so every staged
+      // edit stays staged; the user can fix or undo.
+      const m = e?.message || String(e)
+      error.value = m
+      msg.error(m)
+      return
     }
+
+    let stale = 0
+    list.forEach((g, i) => {
+      const affected = counts[i]
+      if (affected === 0) {
+        // Snapshot matched nothing (DB-01): keep the row staged.
+        stale += 1
+        return
+      }
+      for (const f of g.fields) resultGridRef.value?.markCommitted(g.row, f)
+    })
+    if (stale > 0) {
+      const m = t('db.updateNoMatch')
+      error.value = m
+      msg.error(m)
+      return
+    }
+    error.value = ''
+    emit('cellUpdated')
   } finally {
     savingRows.value = false
   }

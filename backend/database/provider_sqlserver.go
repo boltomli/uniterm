@@ -146,6 +146,13 @@ func (p *sqlserverProvider) UpdateRowSchema(db *sql.DB, dbName, schema, tableNam
 }
 
 func (p *sqlserverProvider) updateRow(db *sql.DB, dbName, schema, tableName string, set, where map[string]any) (int64, error) {
+	sqlText, args := p.buildUpdateSQL(schema, tableName, set, where)
+	return execPreparedAffected(p, db, dbName, sqlText, args)
+}
+
+// buildUpdateSQL renders one UPDATE (DB-05 shares it with the transactional
+// batch path so both build byte-identical statements).
+func (p *sqlserverProvider) buildUpdateSQL(schema, tableName string, set, where map[string]any) (string, []any) {
 	args := make([]any, 0, len(set)+len(where))
 	phIdx := 1
 
@@ -171,11 +178,25 @@ func (p *sqlserverProvider) updateRow(db *sql.DB, dbName, schema, tableName stri
 		}
 	}
 
-	sql := fmt.Sprintf("UPDATE %s SET %s", p.qualifiedTableSchema(schema, tableName), strings.Join(setParts, ", "))
+	sqlText := fmt.Sprintf("UPDATE %s SET %s", p.qualifiedTableSchema(schema, tableName), strings.Join(setParts, ", "))
 	if len(whereParts) > 0 {
-		sql += " WHERE " + strings.Join(whereParts, " AND ")
+		sqlText += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPreparedAffected(p, db, dbName, sql, args)
+	return sqlText, args
+}
+
+func (p *sqlserverProvider) UpdateRows(db *sql.DB, dbName, tableName string, edits []RowEdit) ([]int64, error) {
+	return p.updateRows(db, dbName, "", tableName, edits)
+}
+
+func (p *sqlserverProvider) UpdateRowsSchema(db *sql.DB, dbName, schema, tableName string, edits []RowEdit) ([]int64, error) {
+	return p.updateRows(db, dbName, schema, tableName, edits)
+}
+
+func (p *sqlserverProvider) updateRows(db *sql.DB, dbName, schema, tableName string, edits []RowEdit) ([]int64, error) {
+	return updateRowsTx(p, db, dbName, tableName, edits, func(t string, set, where map[string]any) (string, []any) {
+		return p.buildUpdateSQL(schema, t, set, where)
+	})
 }
 
 func (p *sqlserverProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {

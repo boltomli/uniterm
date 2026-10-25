@@ -60,7 +60,10 @@ describe('DBQueryEditor positional row handling', () => {
   })
 
   it('stages grid edits against the column index', () => {
-    expect(script).toMatch(/markCommitted\(ed\.row, ed\.fieldIndex\)/)
+    // The batch save carries the positional handle through to commit time
+    // (now grouped per row: fieldIndex → fields[] → markCommitted(g.row, f)).
+    expect(script).toMatch(/g\.fields\.push\(ed\.fieldIndex\)/)
+    expect(script).toMatch(/markCommitted\(g\.row, f\)/)
   })
 })
 

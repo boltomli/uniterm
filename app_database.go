@@ -255,6 +255,22 @@ func (a *App) DBUpdateRow(sessionID string, dbName string, schema string, tableN
 	return p.UpdateRow(ds.DB(), dbName, tableName, set, where)
 }
 
+// DBUpdateRows applies a whole save as ONE transaction (DB-05): per-row
+// affected counts come back in order; a statement failure rolls everything
+// back so no edit half-commits.
+func (a *App) DBUpdateRows(sessionID string, dbName string, schema string, tableName string, edits []database.RowEdit) ([]int64, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if schema != "" {
+		if sd, ok := schemaDDL(p); ok {
+			return sd.UpdateRowsSchema(ds.DB(), dbName, schema, tableName, edits)
+		}
+	}
+	return p.UpdateRows(ds.DB(), dbName, tableName, edits)
+}
+
 // DBDeleteRow deletes rows by snapshot WHERE and returns the affected count
 // (0 = the row is already gone / was changed elsewhere).
 func (a *App) DBDeleteRow(sessionID string, dbName string, schema string, tableName string, where map[string]any) (int64, error) {

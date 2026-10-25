@@ -103,7 +103,14 @@ func (p *oracleProvider) InsertRow(db *sql.DB, dbName, tableName string, values 
 
 func (p *oracleProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, where map[string]any) (int64, error) {
 	raw := p.rawColumns(db, dbName, tableName)
-	set, where = applyRaw(raw, set), applyRaw(raw, where)
+	sqlText, args := p.buildUpdateSQL(tableName, applyRaw(raw, set), applyRaw(raw, where))
+	return execPreparedAffected(p, db, dbName, sqlText, args)
+}
+
+// buildUpdateSQL renders one UPDATE (DB-05 shares it with the transactional
+// batch path so both build byte-identical statements). RAW conversion is
+// the caller's job — it needs the table's schema, see UpdateRow/UpdateRows.
+func (p *oracleProvider) buildUpdateSQL(tableName string, set, where map[string]any) (string, []any) {
 	args := make([]any, 0, len(set)+len(where))
 	phIdx := 1
 
@@ -129,11 +136,22 @@ func (p *oracleProvider) UpdateRow(db *sql.DB, dbName, tableName string, set, wh
 		}
 	}
 
-	sql := fmt.Sprintf("UPDATE %s SET %s", p.Quote(tableName), strings.Join(setParts, ", "))
+	sqlText := fmt.Sprintf("UPDATE %s SET %s", p.Quote(tableName), strings.Join(setParts, ", "))
 	if len(whereParts) > 0 {
-		sql += " WHERE " + strings.Join(whereParts, " AND ")
+		sqlText += " WHERE " + strings.Join(whereParts, " AND ")
 	}
-	return execPreparedAffected(p, db, dbName, sql, args)
+	return sqlText, args
+}
+
+func (p *oracleProvider) UpdateRows(db *sql.DB, dbName, tableName string, edits []RowEdit) ([]int64, error) {
+	raw := p.rawColumns(db, dbName, tableName)
+	for i := range edits {
+		edits[i].Set = applyRaw(raw, edits[i].Set)
+		edits[i].Where = applyRaw(raw, edits[i].Where)
+	}
+	return updateRowsTx(p, db, dbName, tableName, edits, func(t string, set, where map[string]any) (string, []any) {
+		return p.buildUpdateSQL(t, set, where)
+	})
 }
 
 func (p *oracleProvider) DeleteRow(db *sql.DB, dbName, tableName string, where map[string]any) (int64, error) {

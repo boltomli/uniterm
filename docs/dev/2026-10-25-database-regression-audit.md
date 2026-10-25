@@ -747,7 +747,7 @@ revert(state, rowIdx)
 | DB-02 | 已修 | | | 2026-10-25：pending 清理从 watch(props.rows) 移到 watch(props.resultKey)（父层 resultSeq 随新结果集递增）；过滤/排序不再丢草稿；执行新查询前弹 db.discardEditsConfirm 确认；测试 DBResultGrid.pendingLifecycle.test.ts |
 | DB-03 | 已修 | | | 2026-10-25：canEditRows = browseMode && PK 存在；onExecute 用 DefaultTableQuery 比对决定 browseMode，手工执行立即只读；测试 DBQueryEditor.editability.test.ts |
 | DB-04 | 已修 | | | 2026-10-25：rowIndexOf 只按行对象身份定位；有 pending 的行拒绝删除/整行编辑（db.saveOrDiscardFirst）；网格暴露 isRowPending；测试 DBQueryEditor.rowActions.test.ts |
-| DB-05 | 待修 | | | 依赖 DB-01 的 affected 返回值 |
+| DB-05 | 已修 | | | 2026-10-25：Provider.UpdateRows 单事务批量（updateRowsTx，失败整批回滚，逐行 affected）；六方言抽出 buildUpdateSQL 与单行路径共用；SchemaDDL 增 UpdateRowsSchema；前端按行合并为单条 UPDATE，0 affected 行保留草稿；测试 update_rows_test.go + batchSave.test.ts |
 | DB-06 | 已修 | | | 2026-10-25：TableInfo.Schema + TableRef/SchemaDDL（tableref.go）；PG/MSSQL 元数据探测按 schema 钉死；浏览 SQL/行级 CRUD/全部 DDL 带 schema 限定；树/对象列表/结构页/编辑器全线透传；测试 schema_qualification_test.go + schemaThreading.test.ts |
 | DB-07 | 已修 | | | 2026-10-25：MSSQL 同上（TABLE_SCHEMA 过滤 + [schema].[table] + GetTables 发布 SCHEMA_NAME）；随 DB-06 一并验证 |
 | DB-08 | 已修 | | | 2026-10-25：缓存抽到 postgres_schema_cache.go；key 含连接池指针 + 30s TTL；全部 PG DDL 成功后 pgSchemaCacheInvalidate；测试重写（跨池隔离/失效/过期/并发） |
