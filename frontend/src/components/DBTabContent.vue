@@ -138,6 +138,7 @@
                   :primary-keys="doc.primaryKeys"
                   :table-columns="doc.tableColumns"
                   :is-view="doc.isView"
+                  :active="doc.subTab === 'data'"
                 />
                 <DBTableStructure
                   v-show="doc.subTab === 'structure' && !doc.isView"

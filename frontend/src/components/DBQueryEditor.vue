@@ -244,8 +244,13 @@ const props = withDefaults(defineProps<{
   tableColumns?: ColumnInfo[]
   isView?: boolean
   autoRun?: boolean
+  /** Whether this editor's sub-tab is the visible one (DB-14). Opening a
+   *  table on its structure page must not fire the browse SELECT — the
+   *  query runs on the first activation of the data tab instead. */
+  active?: boolean
 }>(), {
   autoRun: true,
+  active: true,
 })
 
 const emit = defineEmits<{
@@ -446,7 +451,22 @@ watch(() => props.tableName, async (name) => {
   if (!name) return
   page.value = 0
   await loadBrowseSql(0)
-  if (props.autoRun) await onExecute()
+  if (props.autoRun && props.active) await onExecute()
+})
+
+// DB-14: the editor stays mounted while the user is on the structure tab
+// (so staged edits survive the sub-tab switch), but it must not run the
+// browse SELECT until the data tab is actually shown. The run happens once —
+// only when there is no result yet, so re-activating a tab that already has
+// a result (and possibly staged edits) never re-executes.
+watch(() => props.active, async (active) => {
+  if (!active || !props.tableName || !props.autoRun) return
+  if (queryResult.value || scriptResult.value || execResult.value) return
+  if (!sql.value) {
+    page.value = 0
+    await loadBrowseSql(0)
+  }
+  await onExecute()
 })
 
 onMounted(async () => {
@@ -454,7 +474,7 @@ onMounted(async () => {
   if (!props.tableName) return
   page.value = 0
   await loadBrowseSql(0)
-  if (props.autoRun) await onExecute()
+  if (props.autoRun && props.active) await onExecute()
 })
 
 async function generateSQL() {
