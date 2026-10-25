@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"time"
 
 	"github.com/ys-ll/uniterm/backend/database"
 	"github.com/ys-ll/uniterm/backend/log"
@@ -59,9 +58,9 @@ func (s *DatabaseSession) Connect(config ConnectionConfig) error {
 		return err
 	}
 
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	// Pool sizing lives ONLY in database.NewDB (backend/database/engine.go) —
+	// F-116 tuned it there (20/5 + idle caps); overriding it here made that
+	// fix dead code and left multi-tab queries queueing on 5 connections (DB-13).
 
 	log.Writef("[DatabaseSession.Connect] db opened, pinging...")
 
