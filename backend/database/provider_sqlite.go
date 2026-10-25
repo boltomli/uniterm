@@ -85,9 +85,13 @@ func escapeSQLiteToken(s string) string {
 	return strings.NewReplacer("%", "%25", "&", "%26", "=", "%3D", "?", "%3F", "#", "%23").Replace(s)
 }
 
+// Quote wraps the name in double quotes with embedded quotes doubled (DB-21):
+// SQLite accepts `CREATE TABLE "a/b"`, and the old implementation discarded
+// SafePgIdent's error, returning "" for names it rejects (dot segments,
+// slashes, over-long) and rendering the table un-browsable (`SELECT * FROM `).
+// Doubling keeps ANY name inert inside its quotes — same rule as rqlite.
 func (p *sqliteProvider) Quote(name string) string {
-	q, _ := SafePgIdent(name)
-	return q
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func (p *sqliteProvider) PrepareExec(db execer, dbName string) error {
