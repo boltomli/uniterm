@@ -27,7 +27,9 @@ var serviceNames = map[int]string{
 
 const (
 	portScanWorkers   = 128
-	portProbeTimeout  = 500 * time.Millisecond
+	// portProbeTimeout tolerates the slow first TCP connect to a target (DNS /
+	// ARP resolution, routing table warm-up) so a cold scan isn't lost to timeouts.
+	portProbeTimeout  = 1200 * time.Millisecond
 	progressInterval  = 200 * time.Millisecond
 	progressBatchSize = 512
 )

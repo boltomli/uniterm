@@ -2005,6 +2005,12 @@
   "netscan.portScan.portHint": "输入目标 IP 查看哪些端口开放。点击上方扫描到的主机可自动填充。",
   "netscan.portScan.missingHost": "请先输入目标 IP",
   "netscan.portScan.startFailed": "启动端口扫描失败",
-  "netscan.export.csv": "导出 CSV",
-  "netscan.export.txt": "导出 TXT"
+  "netscan.export.results": "导出扫描结果",
+  "netscan.export.title": "导出扫描结果",
+  "netscan.export.filterCsv": "CSV 文件 (*.csv)",
+  "netscan.export.saved": "扫描结果已导出",
+  "netscan.export.failed": "导出失败：",
+  "netscan.export.copy": "复制",
+  "netscan.export.copied": "扫描结果已复制到剪贴板",
+  "netscan.export.copyFailed": "复制失败："
 }

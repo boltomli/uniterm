@@ -109,7 +109,7 @@
             @row-click="onHostRowClick"
             @row-contextmenu="onIpCtxMenu"
           >
-            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(126)">
+            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(150)" sortable :sort-method="compareIp">
               <template #default="{ row }">
                 <span class="host-ip">{{ row.ip }}</span>
               </template>
@@ -117,7 +117,7 @@
             <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(140)">
               <template #default="{ row }">{{ row.mac || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" show-overflow-tooltip>
+            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(140)" show-overflow-tooltip>
               <template #default="{ row }">{{ row.hostname || '-' }}</template>
             </el-table-column>
             <el-table-column
@@ -125,7 +125,7 @@
               :key="sp.port"
               :label="`${sp.port} (${sp.name})`"
               align="center"
-              :width="uiPx(100)"
+              :width="sp.name === 'telnet' ? uiPx(120) : uiPx(100)"
             >
               <template #default="{ row }">
                 <el-tag :type="row.ports && row.ports[sp.port] ? 'success' : 'info'" size="small" effect="plain">
@@ -163,7 +163,7 @@
             class="scan-table"
             @row-contextmenu="onPortCtxMenu"
           >
-            <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(126)">
+            <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(150)">
               <template #default="{ row }">
                 <span class="host-ip">{{ row.host }}</span>
               </template>
@@ -191,13 +191,6 @@
     </div>
     <!-- end .netscan-content -->
 
-    <template #footer>
-      <div class="netscan-footer">
-        <span class="footer-note">{{ t('netscan.portScan.portHint') }}</span>
-        <el-button class="go-btn" @click="close">{{ t('common.cancel') }}</el-button>
-      </div>
-    </template>
-
     <!-- ── Right-click export context menu (for both result tables) ── -->
     <Teleport to="body">
       <ul
@@ -207,13 +200,11 @@
         @contextmenu.prevent
         @click="hideCtxMenu"
       >
-        <li
-          v-for="fmt in (['csv', 'txt'] as const)"
-          :key="fmt"
-          class="ctx-item"
-          @click.stop="exportResults(ctxMenu.kind, fmt)"
-        >
-          <span class="ctx-label">{{ exportLabel(fmt) }}</span>
+        <li class="ctx-item" @click.stop="copyResults(ctxMenu.kind)">
+          <span class="ctx-label">{{ t('netscan.export.copy') }}</span>
+        </li>
+        <li class="ctx-item" @click.stop="exportResults(ctxMenu.kind)">
+          <span class="ctx-label">{{ t('netscan.export.results') }}</span>
         </li>
       </ul>
     </Teleport>
@@ -223,10 +214,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Events } from '@wailsio/runtime'
-import { StartIPScan, StopIPScan, StartPortScan, StopPortScan } from '../../../bindings/github.com/ys-ll/uniterm/app'
+import { StartIPScan, StopIPScan, StartPortScan, StopPortScan, SaveFileDialogFiltered, WriteFileBase64 } from '../../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../../services/message'
 import { useI18n } from '../../i18n'
 import { uiPx } from '../../utils/uiScale'
+import { utf8ToBase64 } from '../../utils/base64'
 
 defineOptions({ name: 'NetworkScanTabContent' })
 
@@ -280,8 +272,16 @@ const portScanTargets = new Map<string, string>()
 const ipProgressPercent = computed(() => ipTotal.value > 0 ? Math.round((ipDone.value / ipTotal.value) * 100) : 0)
 const portProgressPercent = computed(() => portTotal.value > 0 ? Math.round((portDone.value / portTotal.value) * 100) : 0)
 
-function close() {
-  emit('update:visible', false)
+// Compare two IPv4 strings segment-by-segment by numeric value, so that
+// 192.168.1.10 sorts after 192.168.1.2 instead of lexicographically first.
+function compareIp(a: { ip: string }, b: { ip: string }): number {
+  const pa = (a.ip || '').split('.').map(Number)
+  const pb = (b.ip || '').split('.').map(Number)
+  for (let i = 0; i < 4; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0)
+    if (diff !== 0) return diff
+  }
+  return 0
 }
 
 async function startIPScan() {
@@ -362,7 +362,7 @@ function showCtxMenu(event: MouseEvent, kind: 'ip' | 'port') {
   event.preventDefault()
   event.stopPropagation()
   const menuW = 140
-  const menuH = 64
+  const menuH = 34
   const margin = 8
   let x = event.clientX
   let y = event.clientY
@@ -373,14 +373,11 @@ function showCtxMenu(event: MouseEvent, kind: 'ip' | 'port') {
 function hideCtxMenu() {
   ctxMenu.value.visible = false
 }
-function exportLabel(fmt: 'csv' | 'txt') {
-  return fmt === 'csv' ? t('netscan.export.csv') : t('netscan.export.txt')
-}
 
-// ── Export current result table as CSV or TXT via a Blob download ──
-function exportResults(kind: 'ip' | 'port', fmt: 'csv' | 'txt') {
+// ── Export the current result table as CSV via the native save dialog ──
+async function exportResults(kind: 'ip' | 'port') {
   hideCtxMenu()
-  const sep = fmt === 'csv' ? ',' : '\t'
+  const sep = ','
   const now = new Date()
   const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
 
@@ -388,7 +385,7 @@ function exportResults(kind: 'ip' | 'port', fmt: 'csv' | 'txt') {
   let content: string
 
   if (kind === 'ip') {
-    fileName = `ip_scan_${stamp}.${fmt}`
+    fileName = `ip_scan_${stamp}.csv`
     const header = [
       t('netscan.ipScan.columns.ip'),
       t('netscan.ipScan.columns.mac'),
@@ -407,7 +404,7 @@ function exportResults(kind: 'ip' | 'port', fmt: 'csv' | 'txt') {
     )
     content = [header, ...body].join('\n')
   } else {
-    fileName = `port_scan_${stamp}.${fmt}`
+    fileName = `port_scan_${stamp}.csv`
     const header = [
       t('netscan.portScan.columns.host'),
       t('netscan.portScan.columns.port'),
@@ -420,32 +417,77 @@ function exportResults(kind: 'ip' | 'port', fmt: 'csv' | 'txt') {
     content = [header, ...body].join('\n')
   }
 
-  if (fmt === 'csv') {
-    // Escape fields so the CSV stays valid even if a value contains a delimiter.
-    const escapeCell = (cell: string) => {
-      const s = String(cell ?? '')
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    const lines = content.split('\n').map(line => line.split(sep).map(escapeCell).join(','))
-    content = '\uFEFF' + lines.join('\n') // BOM helps Excel open UTF-8 CSV
-  } else {
-    content = '\uFEFF' + content
+  // Escape fields so the CSV stays valid even if a value contains a delimiter.
+  const escapeCell = (cell: string) => {
+    const s = String(cell ?? '')
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
+  const lines = content.split('\n').map(line => line.split(sep).map(escapeCell).join(','))
+  content = '\uFEFF' + lines.join('\n') // BOM helps Excel open UTF-8 CSV
 
-  const blob = new Blob([content], { type: fmt === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // Ask the user where to save via the native save dialog, then write the file.
+  try {
+    const path = await SaveFileDialogFiltered(t('netscan.export.title'), fileName, t('netscan.export.filterCsv'), '*.csv')
+    if (!path) return // user dismissed the dialog
+    await WriteFileBase64(path, utf8ToBase64(content))
+    msg.success(t('netscan.export.saved'))
+  } catch (e) {
+    msg.error(`${t('netscan.export.failed')} ${(e as Error)?.message ?? ''}`)
+  }
+}
+
+// Copy the visible result table (IP or port) to the clipboard as
+// tab-separated text so it pastes cleanly into spreadsheets/editors.
+async function copyResults(kind: 'ip' | 'port') {
+  hideCtxMenu()
+  const sep = '\t'
+  let lines: string[][]
+  if (kind === 'ip') {
+    const header = [
+      t('netscan.ipScan.columns.ip'),
+      t('netscan.ipScan.columns.mac'),
+      t('netscan.ipScan.columns.hostname'),
+      ...serviceColumns.map(sp => `${sp.port} (${sp.name})`)
+    ]
+    const openTag = t('netscan.ipScan.open')
+    const closedTag = t('netscan.ipScan.closed')
+    const body = ipHosts.value.map(h => [
+      h.ip || '',
+      h.mac || '',
+      h.hostname || '',
+      ...serviceColumns.map(sp => (h.ports && h.ports[sp.port] ? openTag : closedTag))
+    ])
+    lines = [header, ...body]
+  } else {
+    const header = [
+      t('netscan.portScan.columns.host'),
+      t('netscan.portScan.columns.port'),
+      t('netscan.portScan.columns.service'),
+      t('netscan.portScan.columns.state')
+    ]
+    const body = portResults.value.map(r => [r.host || '', r.port ?? '', r.service || '', r.state || ''])
+    lines = [header, ...body]
+  }
+  try {
+    await navigator.clipboard.writeText(lines.map(row => row.join(sep)).join('\n'))
+    msg.success(t('netscan.export.copied'))
+  } catch (e) {
+    msg.error(`${t('netscan.export.copyFailed')} ${(e as Error)?.message ?? ''}`)
+  }
+}
+
+// A netscan event belongs to us if we have registered its id, OR (as a
+// race-proof fallback for events that can arrive just before ownedScans.add
+// runs after the await) it matches the id of the scan we most recently
+// started. This prevents the occasional first run from dropping everything.
+function isOwnedScan(id: string): boolean {
+  if (ownedScans.has(id)) return true
+  return !!portScanId.value && id === portScanId.value || !!ipScanId.value && id === ipScanId.value
 }
 
 function handleHostFound(ev: any) {
   const d = ev?.data
-  if (!d || !ownedScans.has(d.scanId)) return
+  if (!d || !isOwnedScan(d.scanId)) return
   const host = d.host
   if (!host?.ip) return
   const idx = ipHosts.value.findIndex(h => h.ip === host.ip)
@@ -455,7 +497,7 @@ function handleHostFound(ev: any) {
 
 function handleProgress(ev: any) {
   const d = ev?.data
-  if (!d || !ownedScans.has(d.scanId)) return
+  if (!d || !isOwnedScan(d.scanId)) return
   const done = Number(d.done) || 0
   const total = Number(d.total) || 0
   if (d.kind === 'ip') {
@@ -469,7 +511,7 @@ function handleProgress(ev: any) {
 
 function handlePortOpen(ev: any) {
   const d = ev?.data
-  if (!d || !ownedScans.has(d.scanId)) return
+  if (!d || !isOwnedScan(d.scanId)) return
   const host = portScanTargets.get(d.scanId) || portHost.value || ''
   // Avoid duplicate rows for the same host+port.
   if (!portResults.value.some(r => r.host === host && r.port === d.port)) {
@@ -479,7 +521,7 @@ function handlePortOpen(ev: any) {
 
 function handleDone(ev: any) {
   const d = ev?.data
-  if (!d || !ownedScans.has(d.scanId)) return
+  if (!d || !isOwnedScan(d.scanId)) return
   ownedScans.delete(d.scanId)
   if (d.kind === 'ip') {
     ipScanning.value = false
@@ -650,8 +692,7 @@ onUnmounted(() => {
 }
 
 /* ── Buttons: flat, accent-primary / danger-secondary ── */
-.netscan-toolbar .el-button,
-.netscan-footer .el-button {
+.netscan-toolbar .el-button {
   --el-button-border-radius: var(--radius-sm);
   font-family: var(--font-ui);
 }
@@ -846,19 +887,6 @@ onUnmounted(() => {
   color: var(--text-muted);
   font-size: 0.75rem;
   pointer-events: none;
-}
-
-/* ── Dialog footer ── */
-.netscan-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-.footer-note {
-  color: var(--text-muted);
-  font-size: 0.6875rem;
-  font-family: var(--font-ui);
 }
 
 /* ── Right-click export context menu (teleported to <body>) ── */

@@ -2005,6 +2005,12 @@
   "netscan.portScan.portHint": "Enter a target IP to see which ports are open. Click a scanned host above to fill it in.",
   "netscan.portScan.missingHost": "Please enter a target IP",
   "netscan.portScan.startFailed": "Failed to start port scan",
-  "netscan.export.csv": "Export CSV",
-  "netscan.export.txt": "Export TXT"
+  "netscan.export.results": "Export scan results",
+  "netscan.export.title": "Export scan results",
+  "netscan.export.filterCsv": "CSV files (*.csv)",
+  "netscan.export.saved": "Scan results exported",
+  "netscan.export.failed": "Export failed: ",
+  "netscan.export.copy": "Copy",
+  "netscan.export.copied": "Scan results copied to clipboard",
+  "netscan.export.copyFailed": "Copy failed: "
 }
