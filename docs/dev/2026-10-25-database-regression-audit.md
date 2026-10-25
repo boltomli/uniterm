@@ -758,7 +758,7 @@ revert(state, rowIdx)
 | DB-13 | 已修 | | | 2026-10-25：删除 session 层 SetMaxOpenConns/SetMaxIdleConns/ConnMaxLifetime 覆盖，engine.go 为唯一出处；守卫测试 database_session_pool_test.go |
 | DB-14 | 待修 | | | |
 | DB-15 | 已修 | | | 2026-10-25：抽 `utils/sqlStatements.ts`（引号/行注释/块注释/dollar-quote 感知），firstStatement 与多语句判定共用；注释片段不计为语句；纯函数单测 14 例 |
-| DB-16 | 待修 | | | 需要后端取消 API |
+| DB-16 | 已修 | | | 2026-10-25：前端 runSeq 令牌 + activeCall.cancel()；App.ExecuteQuery/Statement/SQLScript 接收请求 ctx（Wails 注入），database 层新增 Ctx 变体；CancelError 不报错；测试 executor_cancel_test.go + executionToken.test.ts |
 | DB-17 | 待修 | | | |
 | DB-18 | 待修 | | | |
 | DB-19 | 待修 | | | |

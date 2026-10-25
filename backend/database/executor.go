@@ -46,7 +46,15 @@ type ExecResult struct {
 }
 
 func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	return ExecuteQueryCtx(context.Background(), p, db, dbName, sqlStr)
+}
+
+// ExecuteQueryCtx is ExecuteQuery with a caller-owned parent context. The
+// bound App method passes the request context here, so the frontend's cancel
+// button aborts the in-flight statement instead of only hiding the result
+// (DB-16); the per-query budget still applies on top of it.
+func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, error) {
+	ctx, cancel := context.WithTimeout(parent, queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -109,7 +117,13 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 }
 
 func ExecuteStatement(p Provider, db *sql.DB, dbName, sqlStr string) (*ExecResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	return ExecuteStatementCtx(context.Background(), p, db, dbName, sqlStr)
+}
+
+// ExecuteStatementCtx is ExecuteStatement with a caller-owned parent context
+// (see ExecuteQueryCtx, DB-16).
+func ExecuteStatementCtx(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string) (*ExecResult, error) {
+	ctx, cancel := context.WithTimeout(parent, queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -151,10 +165,17 @@ type ScriptResult struct {
 // statement's line. Routines defined via DELIMITER are supported because the
 // splitter already merged their bodies into a single statement.
 func ExecuteScript(p Provider, db *sql.DB, dbName, script string) (*ScriptResult, error) {
+	return ExecuteScriptCtx(context.Background(), p, db, dbName, script)
+}
+
+// ExecuteScriptCtx is ExecuteScript with a caller-owned parent context (see
+// ExecuteQueryCtx, DB-16). Cancelling it stops the run between statements
+// and aborts the statement in flight.
+func ExecuteScriptCtx(parent context.Context, p Provider, db *sql.DB, dbName, script string) (*ScriptResult, error) {
 	stmts := SplitScript(script, p.DBType())
 	res := &ScriptResult{}
 
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+	ctx, cancel := context.WithTimeout(parent, scriptTimeout)
 	defer cancel()
 
 	conn, err := db.Conn(ctx)

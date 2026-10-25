@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -120,20 +121,24 @@ func (a *App) TruncateTable(sessionID string, dbName string, tableName string) e
 	return p.TruncateTable(ds.DB(), dbName, tableName)
 }
 
-func (a *App) ExecuteQuery(sessionID string, dbName string, sql string) (*database.QueryResult, error) {
+// ExecuteQuery runs one statement through the query pipeline and returns a
+// positional result set. The leading context is the binding call's request
+// context: cancelling the promise in the frontend aborts the statement
+// (DB-16); the 30s query budget is applied on top of it.
+func (a *App) ExecuteQuery(ctx context.Context, sessionID string, dbName string, sql string) (*database.QueryResult, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return database.ExecuteQuery(p, ds.DB(), dbName, sql)
+	return database.ExecuteQueryCtx(ctx, p, ds.DB(), dbName, sql)
 }
 
-func (a *App) ExecuteStatement(sessionID string, dbName string, sql string) (*database.ExecResult, error) {
+func (a *App) ExecuteStatement(ctx context.Context, sessionID string, dbName string, sql string) (*database.ExecResult, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return database.ExecuteStatement(p, ds.DB(), dbName, sql)
+	return database.ExecuteStatementCtx(ctx, p, ds.DB(), dbName, sql)
 }
 
 func (a *App) DBDefaultTableQuery(sessionID string, dbName string, tableName string, limit int, offset int) (string, error) {
@@ -158,12 +163,12 @@ func (a *App) DBPagedTableQuery(sessionID string, dbName string, tableName strin
 	return p.PagedTableQuery(dbName, tableName, limit, offset), nil
 }
 
-func (a *App) ExecuteSQLScript(sessionID string, dbName string, script string) (*database.ScriptResult, error) {
+func (a *App) ExecuteSQLScript(ctx context.Context, sessionID string, dbName string, script string) (*database.ScriptResult, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return database.ExecuteScript(p, ds.DB(), dbName, script)
+	return database.ExecuteScriptCtx(ctx, p, ds.DB(), dbName, script)
 }
 
 func (a *App) DumpTable(sessionID string, dbName string, tableName string, withStructure bool, withData bool) (string, error) {

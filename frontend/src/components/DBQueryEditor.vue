@@ -263,7 +263,15 @@ const error = ref('')
 const loading = ref(false)
 const lastDurationMs = ref<number | null>(null)
 const editorRef = ref<InstanceType<typeof SyntaxEditor> | null>(null)
-let cancelled = false
+// Monotonic execution token (DB-16): each run captures ++runSeq and checks
+// it before touching any state, so a slow first query can never overwrite
+// the result of a second click, and cancelling invalidates everything that
+// is still in flight.
+let runSeq = 0
+// The in-flight cancellable binding call, so the cancel button can abort the
+// backend statement (through the call's request context) instead of merely
+// hiding the result while the query keeps occupying a connection.
+let activeCall: { cancel: () => unknown } | null = null
 
 const page = ref(0)
 const pageSize = ref(100)
@@ -556,12 +564,12 @@ async function onExecute() {
     }
   }
   pendingCount.value = 0
+  const myRun = ++runSeq
   error.value = ''
   queryResult.value = null
   execResult.value = null
   scriptResult.value = null
   loading.value = true
-  cancelled = false
   resultFilter.value = ''
   // Sorting is positional now; the next result may have a different column
   // layout, so an index carried over could point at the wrong column.
@@ -589,56 +597,73 @@ async function onExecute() {
     // Multi-statement scripts must run as a script: ExecuteQuery/Statement
     // would only send the first statement (multiStatements is off in the DSN).
     if (hasMultipleStatements(toRun)) {
-      const result = await ExecuteSQLScript(props.sessionId, props.dbName || '', toRun)
-      if (!cancelled) {
-        scriptResult.value = result
-        if (result?.failedLine) emit('cellUpdated')
-      }
+      const call = ExecuteSQLScript(props.sessionId, props.dbName || '', toRun)
+      activeCall = call
+      const result = await call
+      if (myRun !== runSeq) return
+      scriptResult.value = result
+      if (result?.failedLine) emit('cellUpdated')
     } else if (isQuerySql(toRun)) {
-      const result = await ExecuteQuery(props.sessionId, props.dbName || '', firstStatement(toRun))
-      if (!cancelled) {
-        queryResult.value = result
-        resultSeq.value++
-        browseHasMore.value = browseMode.value && result.rows.length >= pageSize.value
-        lastDurationMs.value = Math.round(performance.now() - started)
-        history.value = pushSqlHistory(props.sessionId, {
-          sql: toRun,
-          executedAt: new Date().toISOString(),
-          durationMs: lastDurationMs.value,
-          rowCount: result.rows.length,
-        })
-      }
-    } else {
-      const result = await ExecuteStatement(props.sessionId, props.dbName || '', toRun)
-      if (!cancelled) {
-        execResult.value = result
-        lastDurationMs.value = Math.round(performance.now() - started)
-        history.value = pushSqlHistory(props.sessionId, {
-          sql: toRun,
-          executedAt: new Date().toISOString(),
-          durationMs: lastDurationMs.value,
-          rowCount: result.affected,
-        })
-      }
-    }
-  } catch (e: any) {
-    if (!cancelled) {
-      error.value = e?.message || String(e)
+      const call = ExecuteQuery(props.sessionId, props.dbName || '', firstStatement(toRun))
+      activeCall = call
+      const result = await call
+      if (myRun !== runSeq) return
+      queryResult.value = result
+      resultSeq.value++
+      browseHasMore.value = browseMode.value && result.rows.length >= pageSize.value
       lastDurationMs.value = Math.round(performance.now() - started)
       history.value = pushSqlHistory(props.sessionId, {
         sql: toRun,
         executedAt: new Date().toISOString(),
         durationMs: lastDurationMs.value,
-        error: error.value,
+        rowCount: result.rows.length,
+      })
+    } else {
+      const call = ExecuteStatement(props.sessionId, props.dbName || '', toRun)
+      activeCall = call
+      const result = await call
+      if (myRun !== runSeq) return
+      execResult.value = result
+      lastDurationMs.value = Math.round(performance.now() - started)
+      history.value = pushSqlHistory(props.sessionId, {
+        sql: toRun,
+        executedAt: new Date().toISOString(),
+        durationMs: lastDurationMs.value,
+        rowCount: result.affected,
       })
     }
+  } catch (e: any) {
+    // A cancelled call rejects with CancelError — the user asked for it, so
+    // it is not an error; stale runs (superseded by a newer click) are silent.
+    if (myRun !== runSeq || isCancelError(e)) return
+    error.value = e?.message || String(e)
+    lastDurationMs.value = Math.round(performance.now() - started)
+    history.value = pushSqlHistory(props.sessionId, {
+      sql: toRun,
+      executedAt: new Date().toISOString(),
+      durationMs: lastDurationMs.value,
+      error: error.value,
+    })
   } finally {
-    loading.value = false
+    if (myRun === runSeq) {
+      loading.value = false
+      activeCall = null
+    }
   }
 }
 
+/** Wails rejects a cancelled binding call with a CancelError. */
+function isCancelError(e: unknown): boolean {
+  const err = e as { name?: string; message?: string } | null
+  return err?.name === 'CancelError' || String(err?.message || '').toLowerCase().includes('cancel')
+}
+
 function onCancelQuery() {
-  cancelled = true
+  // Bump the token FIRST so every in-flight assignment becomes a no-op, then
+  // abort the backend statement itself (DB-16).
+  runSeq++
+  activeCall?.cancel()
+  activeCall = null
   loading.value = false
 }
 
@@ -671,14 +696,16 @@ async function onOpenScriptFile() {
     scriptResult.value = null
     if (text.length <= sqlFileEditorLimit) sql.value = text
     loading.value = true
-    cancelled = false
-    const result = await ExecuteSQLScript(props.sessionId, props.dbName || '', text)
-    if (!cancelled) {
-      scriptResult.value = result
-      if (result?.failedLine) emit('cellUpdated')
-    }
+    const myRun = ++runSeq
+    const call = ExecuteSQLScript(props.sessionId, props.dbName || '', text)
+    activeCall = call
+    const result = await call
+    if (myRun !== runSeq) return
+    scriptResult.value = result
+    if (result?.failedLine) emit('cellUpdated')
   } catch (e: any) {
-    if (!cancelled) error.value = e?.message || String(e)
+    if (isCancelError(e)) return
+    error.value = e?.message || String(e)
   } finally {
     loading.value = false
   }
