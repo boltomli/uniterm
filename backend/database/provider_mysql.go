@@ -26,12 +26,21 @@ func (p *mysqlProvider) DSN(host string, port int, user, password, dbName string
 	cfg.Addr = fmt.Sprintf("%s:%d", host, port)
 	cfg.DBName = dbName
 	cfg.Params = map[string]string{
-		"charset":      "utf8mb4",
-		"parseTime":    "true",
-		"loc":          "Local",
+		"charset":   "utf8mb4",
+		"parseTime": "true",
+		"loc":       "Local",
+		// "timeout" only bounds the TCP dial — 10s is fine there.
+		// readTimeout/writeTimeout are per-SOCKET-READ/WRITE deadlines in
+		// go-sql-driver; they must NEVER be shorter than the statement
+		// budget (queryTimeout=30s, ddlTimeout=60s, dumpTimeout=10m), or a
+		// query that legitimately takes longer dies with "invalid connection"
+		// while its context still had time left — and raising queryTimeout
+		// cannot help (DB-10). 0 defers every deadline to the per-call
+		// context: the driver aborts a blocked read by closing the
+		// connection once that context expires.
 		"timeout":      "10s",
-		"readTimeout":  "10s",
-		"writeTimeout": "10s",
+		"readTimeout":  "0",
+		"writeTimeout": "0",
 		// clientFoundRows makes RowsAffected count MATCHED rows instead of
 		// CHANGED rows. DBUpdateRow/DBDeleteRow surface the count so a 0
 		// means "your WHERE matched nothing" (DB-01); without this flag an
@@ -70,7 +79,11 @@ func (p *mysqlProvider) PrepareExec(db execer, dbName string) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(context.Background(), "USE "+q)
+	// Bounded: this runs on every statement path; a wedged server must not
+	// pin the goroutine (DB-11).
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	_, err = db.ExecContext(ctx, "USE "+q)
 	return err
 }
 
@@ -297,8 +310,9 @@ func (p *mysqlProvider) DropDatabase(db *sql.DB, dbName string) error {
 // All DDL helpers below return this conn so the subsequent DDL runs on the
 // same physical connection (the database/sql pool might otherwise hand out
 // different connections for USE and DDL, racing the session state).
-func (p *mysqlProvider) mysqlUseDB(db *sql.DB, dbName string) (*sql.Conn, error) {
-	conn, err := db.Conn(context.Background())
+// The caller owns the deadline: ctx is usually ddlCtx() (DB-11).
+func (p *mysqlProvider) mysqlUseDB(ctx context.Context, db *sql.DB, dbName string) (*sql.Conn, error) {
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +322,7 @@ func (p *mysqlProvider) mysqlUseDB(db *sql.DB, dbName string) (*sql.Conn, error)
 			conn.Close()
 			return nil, err
 		}
-		if _, err := conn.ExecContext(context.Background(), "USE "+q); err != nil {
+		if _, err := conn.ExecContext(ctx, "USE "+q); err != nil {
 			conn.Close()
 			return nil, err
 		}
@@ -319,7 +333,9 @@ func (p *mysqlProvider) mysqlUseDB(db *sql.DB, dbName string) (*sql.Conn, error)
 // ── DDL: Table ──
 
 func (p *mysqlProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -328,12 +344,14 @@ func (p *mysqlProvider) CreateTable(db *sql.DB, dbName, tableName string) error 
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(context.Background(), "CREATE TABLE "+qTbl+" (id INT AUTO_INCREMENT PRIMARY KEY)")
+	_, err = conn.ExecContext(ctx, "CREATE TABLE "+qTbl+" (id INT AUTO_INCREMENT PRIMARY KEY)")
 	return err
 }
 
 func (p *mysqlProvider) DropTable(db *sql.DB, dbName, tableName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -342,12 +360,14 @@ func (p *mysqlProvider) DropTable(db *sql.DB, dbName, tableName string) error {
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(context.Background(), "DROP TABLE "+qTbl)
+	_, err = conn.ExecContext(ctx, "DROP TABLE "+qTbl)
 	return err
 }
 
 func (p *mysqlProvider) DropView(db *sql.DB, dbName, viewName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -356,12 +376,14 @@ func (p *mysqlProvider) DropView(db *sql.DB, dbName, viewName string) error {
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(context.Background(), "DROP VIEW "+qView)
+	_, err = conn.ExecContext(ctx, "DROP VIEW "+qView)
 	return err
 }
 
 func (p *mysqlProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -370,14 +392,17 @@ func (p *mysqlProvider) TruncateTable(db *sql.DB, dbName, tableName string) erro
 	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE "+qTbl)
+	_, err = conn.ExecContext(ctx, "TRUNCATE TABLE "+qTbl)
 	return err
 }
 
 // CopyTable clones structure via CREATE TABLE ... LIKE and bulk-copies rows
 // with INSERT ... SELECT, both native server-side statements.
 func (p *mysqlProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	// Bulk INSERT … SELECT can run long; the export budget applies.
+	ctx, cancel := dumpCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -390,10 +415,10 @@ func (p *mysqlProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName st
 	if err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(context.Background(), "CREATE TABLE "+qDst+" LIKE "+qSrc); err != nil {
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE "+qDst+" LIKE "+qSrc); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(context.Background(), "INSERT INTO "+qDst+" SELECT * FROM "+qSrc); err != nil {
+	if _, err := conn.ExecContext(ctx, "INSERT INTO "+qDst+" SELECT * FROM "+qSrc); err != nil {
 		// Keep the empty clone so the user can inspect it; report the copy error.
 		return err
 	}
@@ -409,13 +434,15 @@ func (p *mysqlProvider) AddColumn(db *sql.DB, dbName, tableName string, col Colu
 	if err != nil {
 		return err
 	}
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	sql := p.buildColumnSQL("ADD COLUMN", tableName, col)
-	_, err = conn.ExecContext(context.Background(), sql)
+	_, err = conn.ExecContext(ctx, sql)
 	return err
 }
 
@@ -426,30 +453,36 @@ func (p *mysqlProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col C
 	if err != nil {
 		return err
 	}
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	sql := p.buildColumnSQL("MODIFY COLUMN", tableName, col)
-	_, err = conn.ExecContext(context.Background(), sql)
+	_, err = conn.ExecContext(ctx, sql)
 	return err
 }
 
 func (p *mysqlProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_, err = conn.ExecContext(context.Background(), fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", p.Quote(tableName), p.Quote(colName)))
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", p.Quote(tableName), p.Quote(colName)))
 	return err
 }
 
 // ── DDL: Index ──
 
 func (p *mysqlProvider) AddIndex(db *sql.DB, dbName, tableName string, idx IndexDef) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
@@ -474,26 +507,28 @@ func (p *mysqlProvider) AddIndex(db *sql.DB, dbName, tableName string, idx Index
 		}
 		sql = fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", "))
 	}
-	_, err = conn.ExecContext(context.Background(), sql)
+	_, err = conn.ExecContext(ctx, sql)
 	return err
 }
 
 func (p *mysqlProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
-	conn, err := p.mysqlUseDB(db, dbName)
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	conn, err := p.mysqlUseDB(ctx, db, dbName)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	q := p.Quote
 	if isPrimary {
-		sql, err := p.buildDropPK(conn, tableName, autoIncCols)
+		sql, err := p.buildDropPK(ctx, conn, tableName, autoIncCols)
 		if err != nil {
 			return err
 		}
-		_, err = conn.ExecContext(context.Background(), sql)
+		_, err = conn.ExecContext(ctx, sql)
 		return err
 	}
-	_, err = conn.ExecContext(context.Background(), fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), q(tableName)))
+	_, err = conn.ExecContext(ctx, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), q(tableName)))
 	return err
 }
 
@@ -539,10 +574,10 @@ func (p *mysqlProvider) buildColumnSQL(action, tableName string, col ColumnDef) 
 }
 
 // buildDropPK handles AUTO_INCREMENT columns that must be modified before dropping PK.
-func (p *mysqlProvider) buildDropPK(conn *sql.Conn, tableName string, autoIncCols []string) (string, error) {
+func (p *mysqlProvider) buildDropPK(ctx context.Context, conn *sql.Conn, tableName string, autoIncCols []string) (string, error) {
 	q := p.Quote
 	if len(autoIncCols) > 0 {
-		rows, err := conn.QueryContext(context.Background(), fmt.Sprintf("SHOW FULL COLUMNS FROM %s", q(tableName)))
+		rows, err := conn.QueryContext(ctx, fmt.Sprintf("SHOW FULL COLUMNS FROM %s", q(tableName)))
 		if err != nil {
 			return "", fmt.Errorf("get columns for PK drop: %w", err)
 		}
@@ -616,7 +651,10 @@ var mysqlBinaryTypes = map[string]bool{
 }
 
 func (p *mysqlProvider) DumpTable(db *sql.DB, dbName, tableName string, opts DumpOptions) (string, error) {
-	ctx := context.Background()
+	// Whole-table export: bounded, but by the export budget, not the query
+	// one (DB-11). DB-12 will add streaming/row caps on top.
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", err
@@ -697,7 +735,9 @@ func (p *mysqlProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Dum
 // name shared across databases resolves to the right object.
 func tableKind(conn *sql.Conn, dbName, tableName string) string {
 	var t string
-	err := conn.QueryRowContext(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	err := conn.QueryRowContext(ctx,
 		"SELECT TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1", dbName, tableName).Scan(&t)
 	if err == nil && strings.HasPrefix(t, "VIEW") {
 		return "VIEW"
@@ -709,7 +749,9 @@ func tableKind(conn *sql.Conn, dbName, tableName string) string {
 // and the object kind ("TABLE" or "VIEW").
 func showCreateStatement(conn *sql.Conn, dbName, tableName, quotedTable string) (string, string, error) {
 	kind := tableKind(conn, dbName, tableName)
-	row := conn.QueryRowContext(context.Background(), "SHOW CREATE "+kind+" "+quotedTable)
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	row := conn.QueryRowContext(ctx, "SHOW CREATE "+kind+" "+quotedTable)
 	if kind == "VIEW" {
 		var name, createSQL, charset, collation string
 		if err := row.Scan(&name, &createSQL, &charset, &collation); err != nil {
@@ -729,7 +771,9 @@ func showCreateStatement(conn *sql.Conn, dbName, tableName, quotedTable string) 
 // a name shared across schemas mixes in foreign columns and the SELECT below
 // fails with "Unknown column".
 func tableColumns(conn *sql.Conn, dbName, tableName, quotedTable string) ([]string, []string, error) {
-	rows, err := conn.QueryContext(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	rows, err := conn.QueryContext(ctx,
 		"SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION", dbName, tableName)
 	if err != nil {
 		return nil, nil, err

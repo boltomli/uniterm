@@ -331,13 +331,13 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 
 func (p *postgresProvider) CreateDatabase(db *sql.DB, dbName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", q(dbName)))
+	err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", q(dbName)))
 	return err
 }
 
 func (p *postgresProvider) DropDatabase(db *sql.DB, dbName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DROP DATABASE %s", q(dbName)))
+	err := execDDL(db, fmt.Sprintf("DROP DATABASE %s", q(dbName)))
 	return err
 }
 
@@ -345,7 +345,7 @@ func (p *postgresProvider) DropDatabase(db *sql.DB, dbName string) error {
 
 func (p *postgresProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	if _, err := db.Exec(fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", q(tableName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", q(tableName))); err != nil {
 		return err
 	}
 	// A recreated table may differ from whatever the cache holds under this name.
@@ -355,7 +355,7 @@ func (p *postgresProvider) CreateTable(db *sql.DB, dbName, tableName string) err
 
 func (p *postgresProvider) DropTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	if _, err := db.Exec(fmt.Sprintf("DROP TABLE %s", q(tableName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("DROP TABLE %s", q(tableName))); err != nil {
 		return err
 	}
 	pgSchemaCacheInvalidate(db, dbName, tableName)
@@ -364,7 +364,7 @@ func (p *postgresProvider) DropTable(db *sql.DB, dbName, tableName string) error
 
 func (p *postgresProvider) DropView(db *sql.DB, dbName, viewName string) error {
 	q := p.Quote
-	if _, err := db.Exec(fmt.Sprintf("DROP VIEW %s", q(viewName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("DROP VIEW %s", q(viewName))); err != nil {
 		return err
 	}
 	pgSchemaCacheInvalidate(db, dbName, viewName)
@@ -373,14 +373,16 @@ func (p *postgresProvider) DropView(db *sql.DB, dbName, viewName string) error {
 
 func (p *postgresProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s", q(tableName)))
+	err := execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", q(tableName)))
 	return err
 }
 
 // CopyTable clones structure and data in one statement. It resolves the
 // current schema because dbName is the database, not a schema (same as DumpTable).
 func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
-	ctx := context.Background()
+	// CREATE TABLE AS SELECT may copy a whole table — export budget (DB-11).
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
@@ -391,7 +393,7 @@ func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName
 	if dbName != "" {
 		schema = dbName
 	}
-	if curSchema, err := pgCurrentSchema(conn); err == nil && curSchema != "" {
+	if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
 		schema = curSchema
 	}
 
@@ -438,7 +440,7 @@ func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col C
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	if _, err = db.Exec(sql); err != nil {
+	if err = execDDL(db, sql); err != nil {
 		return err
 	}
 	pgSchemaCacheInvalidate(db, dbName, tableName)
@@ -492,7 +494,7 @@ func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, co
 	}
 
 	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
+		if err := execDDL(db, s); err != nil {
 			return err
 		}
 	}
@@ -502,7 +504,7 @@ func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, co
 
 func (p *postgresProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
 	q := p.Quote
-	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName))); err != nil {
 		return err
 	}
 	pgSchemaCacheInvalidate(db, dbName, tableName)
@@ -531,7 +533,7 @@ func (p *postgresProvider) AddIndex(db *sql.DB, dbName, tableName string, idx In
 		}
 		sql = fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", "))
 	}
-	_, err := db.Exec(sql)
+	err := execDDL(db, sql)
 	if err != nil {
 		return err
 	}
@@ -542,13 +544,13 @@ func (p *postgresProvider) AddIndex(db *sql.DB, dbName, tableName string, idx In
 func (p *postgresProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
 	q := p.Quote
 	if isPrimary {
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", q(tableName), q(idxName))); err != nil {
+		if err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", q(tableName), q(idxName))); err != nil {
 			return err
 		}
 		pgSchemaCacheInvalidate(db, dbName, tableName)
 		return nil
 	}
-	if _, err := db.Exec(fmt.Sprintf("DROP INDEX %s", q(idxName))); err != nil {
+	if err := execDDL(db, fmt.Sprintf("DROP INDEX %s", q(idxName))); err != nil {
 		return err
 	}
 	pgSchemaCacheInvalidate(db, dbName, tableName)
@@ -577,7 +579,8 @@ var postgresIntTypes = []string{
 }
 
 func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts DumpOptions) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", err
@@ -595,12 +598,12 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	// PG connections bind a single database; tables resolve via the session
 	// search_path (default public). dbName on this connection is the database
 	// name, not a schema — resolve the actual current schema instead.
-	if curSchema, err := pgCurrentSchema(conn); err == nil && curSchema != "" {
+	if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
 		schema = curSchema
 	}
 
 	if opts.Structure {
-		createSQL, derr := pgCreateTableSQL(conn, schema, tableName, quotedTable)
+		createSQL, derr := pgCreateTableSQL(conn, ctx, schema, tableName, quotedTable)
 		if derr != nil {
 			return "", derr
 		}
@@ -617,7 +620,7 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	}
 
 	if opts.Data {
-		cols, colTypes, derr := pgTableColumns(conn, schema, tableName)
+		cols, colTypes, derr := pgTableColumns(conn, ctx, schema, tableName)
 		if derr != nil {
 			return "", derr
 		}
@@ -667,17 +670,17 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 }
 
 // pgCurrentSchema returns the first schema on the session search_path.
-func pgCurrentSchema(conn *sql.Conn) (string, error) {
+func pgCurrentSchema(conn *sql.Conn, ctx context.Context) (string, error) {
 	var s string
-	err := conn.QueryRowContext(context.Background(), "SELECT current_schema()").Scan(&s)
+	err := conn.QueryRowContext(ctx, "SELECT current_schema()").Scan(&s)
 	return s, err
 }
 
 // pgCreateTableSQL builds a CREATE TABLE statement from pg_catalog, including
 // column types (via format_type), defaults, NOT NULL, and table constraints
 // (PK / UNIQUE / CHECK / FK) via pg_get_constraintdef.
-func pgCreateTableSQL(conn *sql.Conn, schema, tableName, quotedTable string) (string, error) {
-	rows, err := conn.QueryContext(context.Background(), `
+func pgCreateTableSQL(conn *sql.Conn, ctx context.Context, schema, tableName, quotedTable string) (string, error) {
+	rows, err := conn.QueryContext(ctx, `
 		SELECT a.attname,
 		       format_type(a.atttypid, a.atttypmod),
 		       a.attnotnull,
@@ -721,7 +724,7 @@ func pgCreateTableSQL(conn *sql.Conn, schema, tableName, quotedTable string) (st
 		return "", err
 	}
 
-	constraints, err := pgConstraintDefs(conn, schema, tableName)
+	constraints, err := pgConstraintDefs(conn, ctx, schema, tableName)
 	if err != nil {
 		return "", err
 	}
@@ -734,8 +737,8 @@ func pgCreateTableSQL(conn *sql.Conn, schema, tableName, quotedTable string) (st
 
 // pgConstraintDefs returns table constraint clauses (PK/UNIQUE/CHECK/FK)
 // via pg_get_constraintdef.
-func pgConstraintDefs(conn *sql.Conn, schema, tableName string) ([]string, error) {
-	rows, err := conn.QueryContext(context.Background(), `
+func pgConstraintDefs(conn *sql.Conn, ctx context.Context, schema, tableName string) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, `
 		SELECT pg_get_constraintdef(c.oid)
 		FROM pg_constraint c
 		JOIN pg_class t ON c.conrelid = t.oid
@@ -760,8 +763,8 @@ func pgConstraintDefs(conn *sql.Conn, schema, tableName string) ([]string, error
 }
 
 // pgTableColumns returns column names and types for a table.
-func pgTableColumns(conn *sql.Conn, schema, tableName string) ([]string, []string, error) {
-	rows, err := conn.QueryContext(context.Background(), `
+func pgTableColumns(conn *sql.Conn, ctx context.Context, schema, tableName string) ([]string, []string, error) {
+	rows, err := conn.QueryContext(ctx, `
 		SELECT a.attname, format_type(a.atttypid, a.atttypmod)
 		FROM pg_attribute a
 		JOIN pg_class t ON a.attrelid = t.oid

@@ -104,7 +104,7 @@ func TestPgDumpDDLQuotingIdentifiers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := openPgDumpDDLConn(t, []string{tc.input})
-			out, err := pgCreateTableSQL(conn, "public", "t", `"t"`)
+			out, err := pgCreateTableSQL(conn, context.Background(), "public", "t", `"t"`)
 			if err != nil {
 				t.Fatalf("pgCreateTableSQL: %v", err)
 			}
@@ -131,7 +131,7 @@ func TestPgDumpDDLEmptyIdentifierNeverAppears(t *testing.T) {
 	for _, in := range inputs {
 		t.Run(fmt.Sprintf("%q", in), func(t *testing.T) {
 			conn := openPgDumpDDLConn(t, []string{in})
-			out, err := pgCreateTableSQL(conn, "public", "t", `"t"`)
+			out, err := pgCreateTableSQL(conn, context.Background(), "public", "t", `"t"`)
 			if err != nil {
 				t.Fatalf("pgCreateTableSQL: %v", err)
 			}

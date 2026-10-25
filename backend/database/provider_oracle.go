@@ -59,7 +59,10 @@ func (p *oracleProvider) PrepareExec(db execer, dbName string) error {
 	// not necessarily a schema. Only switch CURRENT_SCHEMA when the name
 	// really exists as a user; otherwise keep the session on the login
 	// user's default schema instead of failing every query with ORA-01435.
-	if rows, err := db.QueryContext(context.Background(),
+	// Bounded: this runs on every statement path (DB-11).
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	if rows, err := db.QueryContext(ctx,
 		"SELECT COUNT(*) FROM all_users WHERE username = :1", strings.ToUpper(dbName)); err == nil {
 		var n int
 		if rows.Next() {
@@ -70,7 +73,7 @@ func (p *oracleProvider) PrepareExec(db execer, dbName string) error {
 			return nil
 		}
 	}
-	_, err := db.ExecContext(context.Background(), fmt.Sprintf("ALTER SESSION SET CURRENT_SCHEMA = %s", p.Quote(dbName)))
+	_, err := db.ExecContext(ctx, fmt.Sprintf("ALTER SESSION SET CURRENT_SCHEMA = %s", p.Quote(dbName)))
 	return err
 }
 
@@ -352,22 +355,22 @@ func (p *oracleProvider) DropDatabase(db *sql.DB, dbName string) error {
 // ── DDL: Table ──
 
 func (p *oracleProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(p.createTableSQL(dbName, tableName))
+	err := execDDL(db, p.createTableSQL(dbName, tableName))
 	return err
 }
 
 func (p *oracleProvider) DropTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(fmt.Sprintf("DROP TABLE %s", p.qualifiedTable(dbName, tableName)))
+	err := execDDL(db, fmt.Sprintf("DROP TABLE %s", p.qualifiedTable(dbName, tableName)))
 	return err
 }
 
 func (p *oracleProvider) DropView(db *sql.DB, dbName, viewName string) error {
-	_, err := db.Exec(fmt.Sprintf("DROP VIEW %s", p.qualifiedTable(dbName, viewName)))
+	err := execDDL(db, fmt.Sprintf("DROP VIEW %s", p.qualifiedTable(dbName, viewName)))
 	return err
 }
 
 func (p *oracleProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTable(dbName, tableName)))
+	err := execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTable(dbName, tableName)))
 	return err
 }
 
@@ -378,7 +381,7 @@ func (p *oracleProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName s
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s", p.Quote(newTableName), p.qualifiedTable(owner, tableName)))
+	err = execDDL(db, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s", p.Quote(newTableName), p.qualifiedTable(owner, tableName)))
 	return err
 }
 
@@ -390,11 +393,11 @@ func (p *oracleProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(p.buildColumnSQL("ADD", dbName, tableName, col)); err != nil {
+	if err := execDDL(db, p.buildColumnSQL("ADD", dbName, tableName, col)); err != nil {
 		return err
 	}
 	if col.Comment != "" {
-		_, err := db.Exec(p.commentOnColumnSQL(dbName, tableName, col.Name, col.Comment))
+		err := execDDL(db, p.commentOnColumnSQL(dbName, tableName, col.Name, col.Comment))
 		return err
 	}
 	return nil
@@ -411,7 +414,7 @@ func (p *oracleProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col 
 		stmts = append(stmts, p.commentOnColumnSQL(dbName, tableName, col.Name, col.Comment))
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if err := execDDL(db, stmt); err != nil {
 			return err
 		}
 	}
@@ -419,7 +422,7 @@ func (p *oracleProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col 
 }
 
 func (p *oracleProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
-	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", p.qualifiedTable(dbName, tableName), p.Quote(colName)))
+	err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", p.qualifiedTable(dbName, tableName), p.Quote(colName)))
 	return err
 }
 
@@ -431,23 +434,23 @@ func (p *oracleProvider) AddIndex(db *sql.DB, dbName, tableName string, idx Inde
 		cols[i] = p.Quote(c)
 	}
 	if idx.IsPrimary {
-		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", p.qualifiedTable(dbName, tableName), strings.Join(cols, ", ")))
+		err := execDDL(db, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", p.qualifiedTable(dbName, tableName), strings.Join(cols, ", ")))
 		return err
 	}
 	uniqueStr := ""
 	if idx.Unique {
 		uniqueStr = "UNIQUE "
 	}
-	_, err := db.Exec(fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, p.Quote(idx.Name), p.qualifiedTable(dbName, tableName), strings.Join(cols, ", ")))
+	err := execDDL(db, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, p.Quote(idx.Name), p.qualifiedTable(dbName, tableName), strings.Join(cols, ", ")))
 	return err
 }
 
 func (p *oracleProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
 	if isPrimary {
-		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP PRIMARY KEY", p.qualifiedTable(dbName, tableName)))
+		err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP PRIMARY KEY", p.qualifiedTable(dbName, tableName)))
 		return err
 	}
-	_, err := db.Exec(fmt.Sprintf("DROP INDEX %s", p.qualifiedIndex(dbName, idxName)))
+	err := execDDL(db, fmt.Sprintf("DROP INDEX %s", p.qualifiedIndex(dbName, idxName)))
 	return err
 }
 
@@ -631,7 +634,8 @@ var oracleIntTypes = []string{
 }
 
 func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts DumpOptions) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", err
@@ -654,7 +658,7 @@ func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 	quotedTable := p.Quote(tableName)
 
 	if opts.Structure {
-		kind := oracleTableKind(conn, owner, tableName)
+		kind := oracleTableKind(conn, ctx, owner, tableName)
 		var createSQL string
 		err := conn.QueryRowContext(ctx,
 			"SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL",
@@ -670,7 +674,7 @@ func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 	}
 
 	if opts.Data {
-		cols, colTypes, derr := oracleTableColumns(conn, owner, tableName)
+		cols, colTypes, derr := oracleTableColumns(conn, ctx, owner, tableName)
 		if derr != nil {
 			return "", derr
 		}
@@ -720,9 +724,9 @@ func (p *oracleProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 }
 
 // oracleTableKind returns "TABLE" or "VIEW" by querying all_objects.
-func oracleTableKind(conn *sql.Conn, owner, tableName string) string {
+func oracleTableKind(conn *sql.Conn, ctx context.Context, owner, tableName string) string {
 	var t string
-	err := conn.QueryRowContext(context.Background(),
+	err := conn.QueryRowContext(ctx,
 		"SELECT object_type FROM all_objects WHERE owner = ? AND object_name = ? AND object_type IN ('TABLE','VIEW')",
 		strings.ToUpper(owner), strings.ToUpper(tableName)).Scan(&t)
 	if err == nil && t == "VIEW" {
@@ -732,8 +736,8 @@ func oracleTableKind(conn *sql.Conn, owner, tableName string) string {
 }
 
 // oracleTableColumns returns column names and types for a table.
-func oracleTableColumns(conn *sql.Conn, owner, tableName string) ([]string, []string, error) {
-	rows, err := conn.QueryContext(context.Background(),
+func oracleTableColumns(conn *sql.Conn, ctx context.Context, owner, tableName string) ([]string, []string, error) {
+	rows, err := conn.QueryContext(ctx,
 		`SELECT column_name, data_type || DECODE(data_length, 0, '', '(' || data_length || ')')
 		 FROM all_tab_columns WHERE owner = ? AND table_name = ? ORDER BY column_id`,
 		strings.ToUpper(owner), strings.ToUpper(tableName))

@@ -121,7 +121,8 @@ func execPrepared(p Provider, db *sql.DB, dbName, sql string, args []any) error 
 // statement itself already committed, so it must not be reported as
 // "matched nothing".
 func execPreparedAffected(p Provider, db *sql.DB, dbName, sql string, args []any) (int64, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return 0, err

@@ -752,8 +752,8 @@ revert(state, rowIdx)
 | DB-07 | 待修 | | | 依赖 DB-09 设计 |
 | DB-08 | 已修 | | | 2026-10-25：缓存抽到 postgres_schema_cache.go；key 含连接池指针 + 30s TTL；全部 PG DDL 成功后 pgSchemaCacheInvalidate；测试重写（跨池隔离/失效/过期/并发） |
 | DB-09 | 待设计 | | | 需先出接口草案 |
-| DB-10 | 待修 | | | |
-| DB-11 | 待修 | | | |
+| DB-10 | 已修 | | | 2026-10-25：MySQL DSN readTimeout/writeTimeout=0（交给 ctx），dial 保持10s；预算顺序 query<ddl<dump 由测试守护 |
+| DB-11 | 已修 | | | 2026-10-25：新增 timeout.go（ddlCtx/dumpCtx/execDDL，60s/10m）；六方言全部 DDL/导出/PrepareExec/行 CRUD 均带预算；守护测试 timeout_contract_test.go |
 | DB-12 | 待修 | | | |
 | DB-13 | 已修 | | | 2026-10-25：删除 session 层 SetMaxOpenConns/SetMaxIdleConns/ConnMaxLifetime 覆盖，engine.go 为唯一出处；守卫测试 database_session_pool_test.go |
 | DB-14 | 待修 | | | |

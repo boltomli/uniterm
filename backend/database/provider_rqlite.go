@@ -249,25 +249,25 @@ func (p *rqliteProvider) DropDatabase(db *sql.DB, dbName string) error {
 
 func (p *rqliteProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT)", q(tableName)))
+	err := execDDL(db, fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT)", q(tableName)))
 	return err
 }
 
 func (p *rqliteProvider) DropTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DROP TABLE %s", q(tableName)))
+	err := execDDL(db, fmt.Sprintf("DROP TABLE %s", q(tableName)))
 	return err
 }
 
 func (p *rqliteProvider) DropView(db *sql.DB, dbName, viewName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DROP VIEW %s", q(viewName)))
+	err := execDDL(db, fmt.Sprintf("DROP VIEW %s", q(viewName)))
 	return err
 }
 
 func (p *rqliteProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DELETE FROM %s", q(tableName)))
+	err := execDDL(db, fmt.Sprintf("DELETE FROM %s", q(tableName)))
 	return err
 }
 
@@ -279,7 +279,8 @@ func (p *rqliteProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName s
 		return err
 	}
 	stmts := SplitScript(dump, "rqlite")
-	ctx := context.Background()
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	for _, st := range stmts {
 		// Skip the DROP guard emitted by DumpTable — the destination must be
 		// created fresh or fail loudly if it already exists.
@@ -337,7 +338,7 @@ func (p *rqliteProvider) AddColumn(db *sql.DB, dbName, tableName string, col Col
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	_, err := db.Exec(sql)
+	err := execDDL(db, sql)
 	return err
 }
 
@@ -347,7 +348,7 @@ func (p *rqliteProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col 
 
 func (p *rqliteProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName)))
+	err := execDDL(db, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName)))
 	return err
 }
 
@@ -366,7 +367,7 @@ func (p *rqliteProvider) AddIndex(db *sql.DB, dbName, tableName string, idx Inde
 	for i, c := range idx.Columns {
 		cols[i] = q(c)
 	}
-	_, err := db.Exec(fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", ")))
+	err := execDDL(db, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", ")))
 	return err
 }
 
@@ -374,7 +375,7 @@ func (p *rqliteProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string
 	if isPrimary {
 		return fmt.Errorf("rqlite does not support dropping PRIMARY KEY")
 	}
-	_, err := db.Exec(fmt.Sprintf("DROP INDEX %s", p.Quote(idxName)))
+	err := execDDL(db, fmt.Sprintf("DROP INDEX %s", p.Quote(idxName)))
 	return err
 }
 
@@ -395,7 +396,8 @@ var rqliteIntTypes = []string{
 }
 
 func (p *rqliteProvider) DumpTable(db *sql.DB, dbName, tableName string, opts DumpOptions) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", err
@@ -407,7 +409,7 @@ func (p *rqliteProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 
 	if opts.Structure {
 		var createSQL string
-		kind := tableKindSQLite(conn, tableName)
+		kind := tableKindSQLite(conn, ctx, tableName)
 		err := conn.QueryRowContext(ctx,
 			"SELECT sql FROM sqlite_master WHERE type=? AND name=? AND name NOT LIKE 'sqlite_%' LIMIT 1",
 			kind, tableName).Scan(&createSQL)
@@ -435,7 +437,7 @@ func (p *rqliteProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 	}
 
 	if opts.Data {
-		cols, derr := sqliteTableColumns(conn, tableName, quotedTable)
+		cols, derr := sqliteTableColumns(conn, ctx, tableName, quotedTable)
 		if derr != nil {
 			return "", derr
 		}
@@ -485,9 +487,9 @@ func (p *rqliteProvider) DumpTable(db *sql.DB, dbName, tableName string, opts Du
 }
 
 // tableKindSQLite returns "table" or "view" from sqlite_master.
-func tableKindSQLite(conn *sql.Conn, tableName string) string {
+func tableKindSQLite(conn *sql.Conn, ctx context.Context, tableName string) string {
 	var t string
-	err := conn.QueryRowContext(context.Background(),
+	err := conn.QueryRowContext(ctx,
 		"SELECT type FROM sqlite_master WHERE name=? AND name NOT LIKE 'sqlite_%' LIMIT 1", tableName).Scan(&t)
 	if err == nil && t == "view" {
 		return "view"
@@ -496,8 +498,8 @@ func tableKindSQLite(conn *sql.Conn, tableName string) string {
 }
 
 // sqliteTableColumns returns column names via PRAGMA table_info.
-func sqliteTableColumns(conn *sql.Conn, tableName, quotedTable string) ([]string, error) {
-	rows, err := conn.QueryContext(context.Background(), "PRAGMA table_info("+quotedTable+")")
+func sqliteTableColumns(conn *sql.Conn, ctx context.Context, tableName, quotedTable string) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, "PRAGMA table_info("+quotedTable+")")
 	if err != nil {
 		return nil, err
 	}

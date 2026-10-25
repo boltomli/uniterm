@@ -67,7 +67,10 @@ func (p *sqlserverProvider) PrepareExec(db execer, dbName string) error {
 	if dbName == "" {
 		return nil
 	}
-	_, err := db.ExecContext(context.Background(), fmt.Sprintf("USE %s", p.Quote(dbName)))
+	// Bounded: this runs on every statement path (DB-11).
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	_, err := db.ExecContext(ctx, fmt.Sprintf("USE %s", p.Quote(dbName)))
 	return err
 }
 
@@ -325,41 +328,41 @@ func (p *sqlserverProvider) GetTableSchema(db *sql.DB, dbName, tableName string)
 // ── DDL: Database ──
 
 func (p *sqlserverProvider) CreateDatabase(db *sql.DB, dbName string) error {
-	_, err := db.Exec(fmt.Sprintf("CREATE DATABASE %s", p.Quote(dbName)))
+	err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", p.Quote(dbName)))
 	return err
 }
 
 func (p *sqlserverProvider) DropDatabase(db *sql.DB, dbName string) error {
-	_, _ = db.Exec(fmt.Sprintf("ALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE", p.Quote(dbName)))
-	_, err := db.Exec(fmt.Sprintf("DROP DATABASE %s", p.Quote(dbName)))
+	_ = execDDL(db, fmt.Sprintf("ALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE", p.Quote(dbName)))
+	err := execDDL(db, fmt.Sprintf("DROP DATABASE %s", p.Quote(dbName)))
 	return err
 }
 
 // ── DDL: Table ──
 
 func (p *sqlserverProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTable(tableName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTable(tableName))))
 	return err
 }
 
 func (p *sqlserverProvider) DropTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTable(tableName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP TABLE %s", p.qualifiedTable(tableName))))
 	return err
 }
 
 func (p *sqlserverProvider) DropView(db *sql.DB, dbName, viewName string) error {
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTable(viewName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP VIEW %s", p.qualifiedTable(viewName))))
 	return err
 }
 
 func (p *sqlserverProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTable(tableName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("TRUNCATE TABLE %s", p.qualifiedTable(tableName))))
 	return err
 }
 
 // CopyTable clones structure and data via SELECT INTO (no indexes/constraints).
 func (p *sqlserverProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("SELECT * INTO %s FROM %s", p.qualifiedTable(newTableName), p.qualifiedTable(tableName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("SELECT * INTO %s FROM %s", p.qualifiedTable(newTableName), p.qualifiedTable(tableName))))
 	return err
 }
 
@@ -371,7 +374,7 @@ func (p *sqlserverProvider) AddColumn(db *sql.DB, dbName, tableName string, col 
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(p.withUse(dbName, p.buildColumnSQL("ADD", tableName, col)))
+	err = execDDL(db, p.withUse(dbName, p.buildColumnSQL("ADD", tableName, col)))
 	return err
 }
 
@@ -396,7 +399,7 @@ func (p *sqlserverProvider) ModifyColumn(db *sql.DB, dbName, tableName string, c
 	}
 
 	for _, s := range stmts {
-		if _, err := db.Exec(p.withUse(dbName, s)); err != nil {
+		if err := execDDL(db, p.withUse(dbName, s)); err != nil {
 			return err
 		}
 	}
@@ -430,12 +433,12 @@ func (p *sqlserverProvider) DropColumn(db *sql.DB, dbName, tableName, colName st
 
 	qt := p.qualifiedTable(tableName)
 	for _, name := range constraints {
-		if _, err := db.Exec(p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, p.Quote(name)))); err != nil {
+		if err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt, p.Quote(name)))); err != nil {
 			return fmt.Errorf("drop default constraint %s: %w", name, err)
 		}
 	}
 
-	_, err = db.Exec(p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qt, p.Quote(colName))))
+	err = execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qt, p.Quote(colName))))
 	return err
 }
 
@@ -449,7 +452,7 @@ func (p *sqlserverProvider) AddIndex(db *sql.DB, dbName, tableName string, idx I
 		for i, c := range idx.Columns {
 			cols[i] = q(c)
 		}
-		_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt(tableName), strings.Join(cols, ", "))))
+		err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s ADD PRIMARY KEY (%s)", qt(tableName), strings.Join(cols, ", "))))
 		return err
 	}
 	uniqueStr := ""
@@ -460,7 +463,7 @@ func (p *sqlserverProvider) AddIndex(db *sql.DB, dbName, tableName string, idx I
 	for i, c := range idx.Columns {
 		cols[i] = q(c)
 	}
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt(tableName), strings.Join(cols, ", "))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), qt(tableName), strings.Join(cols, ", "))))
 	return err
 }
 
@@ -468,10 +471,10 @@ func (p *sqlserverProvider) DropIndex(db *sql.DB, dbName, tableName, idxName str
 	q := p.Quote
 	qt := p.qualifiedTable
 	if isPrimary {
-		_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt(tableName), q(idxName))))
+		err := execDDL(db, p.withUse(dbName, fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qt(tableName), q(idxName))))
 		return err
 	}
-	_, err := db.Exec(p.withUse(dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt(tableName))))
+	err := execDDL(db, p.withUse(dbName, fmt.Sprintf("DROP INDEX %s ON %s", q(idxName), qt(tableName))))
 	return err
 }
 
@@ -550,7 +553,8 @@ var sqlserverIntTypes = []string{
 }
 
 func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts DumpOptions) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := dumpCtx()
+	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return "", err
@@ -565,7 +569,7 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 	quotedTable := p.Quote(tableName)
 
 	if opts.Structure {
-		createSQL, derr := sqlserverCreateTableSQL(conn, dbName, tableName, quotedTable)
+		createSQL, derr := sqlserverCreateTableSQL(conn, ctx, dbName, tableName, quotedTable)
 		if derr != nil {
 			return "", derr
 		}
@@ -582,7 +586,7 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 	}
 
 	if opts.Data {
-		cols, colTypes, derr := sqlserverTableColumns(conn, dbName, tableName)
+		cols, colTypes, derr := sqlserverTableColumns(conn, ctx, dbName, tableName)
 		if derr != nil {
 			return "", derr
 		}
@@ -632,8 +636,8 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 }
 
 // sqlserverCreateTableSQL builds a CREATE TABLE statement from INFORMATION_SCHEMA.
-func sqlserverCreateTableSQL(conn *sql.Conn, dbName, tableName, quotedTable string) (string, error) {
-	rows, err := conn.QueryContext(context.Background(), `
+func sqlserverCreateTableSQL(conn *sql.Conn, ctx context.Context, dbName, tableName, quotedTable string) (string, error) {
+	rows, err := conn.QueryContext(ctx, `
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
 		       CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE
 		FROM INFORMATION_SCHEMA.COLUMNS
@@ -682,8 +686,8 @@ func sqlserverCreateTableSQL(conn *sql.Conn, dbName, tableName, quotedTable stri
 }
 
 // sqlserverTableColumns returns column names and raw type tokens.
-func sqlserverTableColumns(conn *sql.Conn, dbName, tableName string) ([]string, []string, error) {
-	rows, err := conn.QueryContext(context.Background(), `
+func sqlserverTableColumns(conn *sql.Conn, ctx context.Context, dbName, tableName string) ([]string, []string, error) {
+	rows, err := conn.QueryContext(ctx, `
 		SELECT COLUMN_NAME, DATA_TYPE
 		FROM INFORMATION_SCHEMA.COLUMNS
 		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
