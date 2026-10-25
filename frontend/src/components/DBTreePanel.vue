@@ -178,11 +178,12 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
+import { detectPlatformSync } from '../utils/platform'
 import { ref, watch, computed, nextTick, h } from 'vue'
 import { Database, Table2, Eye, ChevronRight, ChevronDown, RefreshCw, MoreHorizontal } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { ElMessageBox } from 'element-plus'
-import { GetDatabases, GetTables, CreateDatabase, DropDatabase, CreateTable, DropTable, DropView, TruncateTable, CopyTable, GetDBCapabilities, DumpTable, SaveFileDialogFiltered, WriteFileBase64, OpenFileDialogFiltered, ReadFileBase64, ExecuteSQLScript } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { GetDatabases, GetTables, CreateDatabase, DropDatabase, CreateTable, DropTable, DropView, TruncateTable, CopyTable, GetDBCapabilities, DumpTable, DumpTableToFile, SaveFileDialogFiltered, OpenFileDialogFiltered, ReadFileBase64, ExecuteSQLScript } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -520,24 +521,32 @@ function onCtxCopyName() {
 
 // ── Export table as .sql ──
 
+// Rows beyond this cap are not exported (DB-12): the backend streams
+// straight to disk, so the cap bounds time/disk rather than memory — but an
+// unbounded export of a partition-sized table is still a foot-gun.
+const EXPORT_MAX_ROWS = 1_000_000
+
 async function exportTable(withStructure: boolean, withData: boolean) {
   ctxMenuVisible.value = false
   const dbName = ctxDbName.value
   const tableName = ctxTableName.value
   try {
-    const sql = await DumpTable(props.sessionId, dbName, tableName, withStructure, withData)
-    const b64 = encodeBase64(sql)
-    // Android: save through the system "save to" picker instead of the
-    // (unsupported) native save dialog.
-    const androidOutcome = await tryAndroidSave(tableName + '.sql', 'text/plain', b64)
-    if (androidOutcome !== 'fallback') {
-      if (androidOutcome === 'saved') msg.success(t('db.exportDone', { name: tableName }))
+    // Android: save through the system "save to" picker, which needs the
+    // bytes up front — the streamed backend path writes to a filesystem
+    // path the picker flow cannot supply, so this platform keeps the
+    // in-memory round trip.
+    if (detectPlatformSync() === 'android') {
+      const sql = await DumpTable(props.sessionId, dbName, tableName, withStructure, withData)
+      const outcome = await tryAndroidSave(tableName + '.sql', 'text/plain', encodeBase64(sql))
+      if (outcome === 'saved') msg.success(t('db.exportDone', { name: tableName }))
       return
     }
     const path = await SaveFileDialogFiltered(t('db.exportSQL'), tableName + '.sql', 'SQL File', '*.sql')
     if (!path) return
-    await WriteFileBase64(path, b64)
-    msg.success(t('db.exportDone', { name: tableName }))
+    // The backend streams the dump straight to the file (DB-12) — nothing
+    // round-trips through the webview as base64 anymore.
+    const rows = await DumpTableToFile(props.sessionId, dbName, tableName, withStructure, withData, path, EXPORT_MAX_ROWS)
+    msg.success(t('db.exportDone', { name: `${path.split(/[\\/]/).pop()} (${rows})` }))
   } catch (e: any) {
     msg.error(e?.message || String(e))
   }

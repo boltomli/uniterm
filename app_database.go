@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/ys-ll/uniterm/backend/database"
@@ -211,6 +213,36 @@ func (a *App) DumpTable(sessionID string, dbName string, tableName string, withS
 		return "", err
 	}
 	return p.DumpTable(ds.DB(), dbName, tableName, database.DumpOptions{Structure: withStructure, Data: withData})
+}
+
+// DumpTableToFile streams a table export straight to disk (DB-12): the SQL
+// never accumulates in one giant string, is never marshalled through the
+// webview, and comes back as a single row count instead of megabytes of
+// base64. maxRows <= 0 means "no cap".
+func (a *App) DumpTableToFile(sessionID string, dbName string, tableName string, withStructure bool, withData bool, path string, maxRows int64) (int64, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	bw := bufio.NewWriter(f)
+	n, err := database.DumpTableTo(p, ds.DB(), dbName, tableName,
+		database.DumpOptions{Structure: withStructure, Data: withData}, maxRows, bw)
+	if werr := bw.Flush(); err == nil {
+		err = werr
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return n, err
+	}
+	log.Writef("[DumpTableToFile] %s.%s → %s (%d rows)", dbName, tableName, path, n)
+	return n, nil
 }
 
 func (a *App) CopyTable(sessionID string, dbName string, schema string, tableName string, newTableName string) error {

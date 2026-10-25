@@ -754,7 +754,7 @@ revert(state, rowIdx)
 | DB-09 | 已修（第一阶段） | | | 2026-10-25：TableRef + SchemaDDL 能力接口（backend/database/tableref.go），旧签名保留为包装；PG/MSSQL 实现已覆盖元数据/浏览/行 CRUD/DDL；MySQL/SQLite/Oracle 不实现（USE/文件/owner 约定不变）。遗留：Dump 导出限定名归 DB-23，剩余方言随需求推进 |
 | DB-10 | 已修 | | | 2026-10-25：MySQL DSN readTimeout/writeTimeout=0（交给 ctx），dial 保持10s；预算顺序 query<ddl<dump 由测试守护 |
 | DB-11 | 已修 | | | 2026-10-25：新增 timeout.go（ddlCtx/dumpCtx/execDDL，60s/10m）；六方言全部 DDL/导出/PrepareExec/行 CRUD 均带预算；守护测试 timeout_contract_test.go |
-| DB-12 | 待修 | | | |
+| DB-12 | 已修 | | | 2026-10-25：新增 DumpTableTo（io.Writer 流式 + MaxRows 上限 + 截断标记）与 App.DumpTableToFile 后端直接落盘；前端桌面路径改调后端导出，不再经 base64 往返；Android 保留原路径；测试 dump_to_file_test.go |
 | DB-13 | 已修 | | | 2026-10-25：删除 session 层 SetMaxOpenConns/SetMaxIdleConns/ConnMaxLifetime 覆盖，engine.go 为唯一出处；守卫测试 database_session_pool_test.go |
 | DB-14 | 已修 | | | 2026-10-25：编辑器新增 active prop；子页为结构页时不 autoRun，首次切到数据页才跑且已有结果不重跑；测试 activation.test.ts |
 | DB-15 | 已修 | | | 2026-10-25：抽 `utils/sqlStatements.ts`（引号/行注释/块注释/dollar-quote 感知），firstStatement 与多语句判定共用；注释片段不计为语句；纯函数单测 14 例 |

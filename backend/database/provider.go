@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -29,6 +32,54 @@ type execer interface {
 type DumpOptions struct {
 	Structure bool // include CREATE TABLE/VIEW statement
 	Data      bool // include INSERT statements for rows
+}
+
+// DumpTableTo streams a table export into w instead of building one giant
+// in-memory string (DB-12). maxRows > 0 caps the data section; hitting the
+// cap writes a trailing marker comment rather than silently truncating.
+// Returns the number of data rows written.
+//
+// The generic implementation wraps the dialect's DumpTable (string form);
+// dialects whose row loop can write incrementally override it.
+func DumpTableTo(p Provider, db *sql.DB, dbName, tableName string, opts DumpOptions, maxRows int64, w io.Writer) (int64, error) {
+	dump, err := p.DumpTable(db, dbName, tableName, opts)
+	if err != nil {
+		return 0, err
+	}
+	if maxRows <= 0 {
+		if _, err := io.WriteString(w, dump); err != nil {
+			return 0, err
+		}
+		return int64(strings.Count(dump, "INSERT INTO")), nil
+	}
+	return filterDumpInserts(dump, maxRows, w)
+}
+
+// filterDumpInserts writes dump to w keeping at most maxRows INSERT
+// statements; the structure section passes through untouched.
+func filterDumpInserts(dump string, maxRows int64, w io.Writer) (int64, error) {
+	var kept, dropped int64
+	for _, line := range strings.SplitAfter(dump, "\n") {
+		if strings.HasPrefix(line, "INSERT INTO ") {
+			if kept >= maxRows {
+				dropped++
+				continue
+			}
+			kept++
+		}
+		if _, err := io.WriteString(w, line); err != nil {
+			return kept, err
+		}
+	}
+	// Only claim truncation when rows were actually dropped — a table with
+	// exactly maxRows rows is a complete export.
+	if dropped > 0 {
+		if _, err := io.WriteString(w, "-- truncated: dropped "+strconv.FormatInt(dropped, 10)+
+			" rows after the "+strconv.FormatInt(maxRows, 10)+" row export cap (DB-12)\n"); err != nil {
+			return kept, err
+		}
+	}
+	return kept, nil
 }
 
 // errDumpUnsupported is returned by providers that do not implement export yet.
