@@ -109,15 +109,15 @@
             @row-click="onHostRowClick"
             @row-contextmenu="onIpCtxMenu"
           >
-            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(120)" sortable :sort-method="compareIp">
+            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(120)" align="center" sortable :sort-method="compareIp">
               <template #default="{ row }">
                 <span class="host-ip">{{ row.ip }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(120)">
+            <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(120)" align="center">
               <template #default="{ row }">{{ row.mac || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" show-overflow-tooltip>
+            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" align="center" show-overflow-tooltip>
               <template #default="{ row }">{{ row.hostname || '-' }}</template>
             </el-table-column>
             <el-table-column
@@ -163,20 +163,20 @@
             class="scan-table"
             @row-contextmenu="onPortCtxMenu"
           >
-            <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(150)">
+            <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(150)" align="center">
               <template #default="{ row }">
                 <span class="host-ip">{{ row.host }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="port" :label="t('netscan.portScan.columns.port')" sortable :width="uiPx(90)">
+            <el-table-column prop="port" :label="t('netscan.portScan.columns.port')" sortable :width="uiPx(90)" align="center">
               <template #default="{ row }">
                 <span class="port-num-text">#{{ row.port }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="service" :label="t('netscan.portScan.columns.service')" :width="uiPx(160)">
+            <el-table-column prop="service" :label="t('netscan.portScan.columns.service')" :width="uiPx(160)" align="center">
               <template #default="{ row }">{{ row.service || '-' }}</template>
             </el-table-column>
-            <el-table-column :label="t('netscan.portScan.columns.state')" :width="uiPx(160)">
+            <el-table-column :label="t('netscan.portScan.columns.state')" :width="uiPx(160)" align="center">
               <template #default="{ row }">
                 <el-tag type="success" size="small">{{ row.state }}</el-tag>
               </template>
