@@ -90,9 +90,6 @@ func (p *postgresProvider) DefaultTableQueryRef(ref TableRef, limit, offset int)
 	return fmt.Sprintf("SELECT * FROM %s LIMIT %d", from, limit)
 }
 
-func (p *postgresProvider) PagedTableQuery(dbName, tableName string, limit, offset int) string {
-	return fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", p.Quote(tableName), limit, offset)
-}
 
 func (p *postgresProvider) InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error {
 	return p.insertRow(db, "", tableName, values)

@@ -57,11 +57,9 @@ type Provider interface {
 	GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error)
 
 	// DefaultTableQuery returns the default SELECT used when browsing a table.
-	// offset is 0-based; limit is the page size.
+	// offset is 0-based; limit is the page size. Browsing and pagination share
+	// this one entry point (DB-26 removed the unused PagedTableQuery twin).
 	DefaultTableQuery(dbName, tableName string, limit, offset int) string
-
-	// PagedTableQuery returns a SELECT with LIMIT/OFFSET for paginated browsing.
-	PagedTableQuery(dbName, tableName string, limit, offset int) string
 
 	// DumpTable produces SQL text for a table: its CREATE statement and/or
 	// INSERT statements for all rows. Used for the "export as .sql" feature.

@@ -86,9 +86,6 @@ func (p *sqlserverProvider) DefaultTableQueryRef(ref TableRef, limit, offset int
 	)
 }
 
-func (p *sqlserverProvider) PagedTableQuery(dbName, tableName string, limit, offset int) string {
-	return fmt.Sprintf("SELECT * FROM %s ORDER BY (SELECT NULL) OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", p.qualifiedTable(tableName), offset, limit)
-}
 
 func (p *sqlserverProvider) qualifiedTable(tableName string) string {
 	return p.Quote(tableName)

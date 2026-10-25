@@ -768,7 +768,7 @@ revert(state, rowIdx)
 | DB-23 | 待修 | | | |
 | DB-24 | 待修 | | | |
 | DB-25 | 待修 | | | 需与 ConnectionForm 同步 |
-| DB-26 | 待决 | | | 接入或删除 |
+| DB-26 | 已决（删除） | | | 2026-10-25：删除无调用方的 QueryRowsStream / QueryResultToJSON / PagedTableQuery / DBPagedTableQuery；分页统一走 DefaultTableQuery |
 | DB-27 | 待决 | | | 先定产品行为 |
 | DB-28 | 待修 | | | |
 

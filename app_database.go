@@ -197,14 +197,6 @@ func (a *App) DBDefaultTableQuery(sessionID string, dbName string, schema string
 	return p.DefaultTableQuery(dbName, tableName, limit, offset), nil
 }
 
-func (a *App) DBPagedTableQuery(sessionID string, dbName string, tableName string, limit int, offset int) (string, error) {
-	_, p, err := a.dbProvider(sessionID)
-	if err != nil {
-		return "", err
-	}
-	return p.PagedTableQuery(dbName, tableName, limit, offset), nil
-}
-
 func (a *App) ExecuteSQLScript(ctx context.Context, sessionID string, dbName string, script string) (*database.ScriptResult, error) {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {

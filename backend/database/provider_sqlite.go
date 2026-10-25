@@ -105,9 +105,6 @@ func (p *sqliteProvider) DefaultTableQuery(dbName, tableName string, limit, offs
 	return fmt.Sprintf("SELECT * FROM %s LIMIT %d", p.Quote(tableName), limit)
 }
 
-func (p *sqliteProvider) PagedTableQuery(dbName, tableName string, limit, offset int) string {
-	return fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", p.Quote(tableName), limit, offset)
-}
 
 // ── Row-level CRUD ──
 

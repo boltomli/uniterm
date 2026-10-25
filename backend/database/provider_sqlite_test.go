@@ -99,9 +99,9 @@ func TestSQLiteSchemaAndCRUD(t *testing.T) {
 	if _, err := p.DeleteRow(db, "main", "items", map[string]any{"id": int64(1)}); err != nil {
 		t.Fatalf("DeleteRow: %v", err)
 	}
-	rows, err = queryStrings(db, p.PagedTableQuery("main", "items", 50, 0))
+	rows, err = queryStrings(db, p.DefaultTableQuery("main", "items", 50, 0))
 	if err != nil {
-		t.Fatalf("PagedTableQuery: %v", err)
+		t.Fatalf("DefaultTableQuery: %v", err)
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected empty table, got %v", rows)

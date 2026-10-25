@@ -3,7 +3,6 @@ package database
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"strings"
 	"time"
 )
@@ -144,11 +143,6 @@ func ExecuteStatementCtx(parent context.Context, p Provider, db *sql.DB, dbName,
 	lastID, _ := result.LastInsertId()
 
 	return &ExecResult{Affected: affected, LastInsertID: lastID}, nil
-}
-
-// QueryResultToJSON serializes a QueryResult to JSON bytes.
-func QueryResultToJSON(qr *QueryResult) ([]byte, error) {
-	return json.Marshal(qr)
 }
 
 // ScriptResult is the outcome of running a multi-statement SQL script.
