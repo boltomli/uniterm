@@ -1620,6 +1620,7 @@
   "db.runSqlFile": "Выполнить SQL-файл",
   "db.scriptExecuted": "Выполнено инструкций: {n}",
   "db.scriptFailedLine": "Ошибка в строке {line}",
+  "db.scriptNoResults": "Запросы в скрипте выполняются без возврата результата — запускайте их по одному, чтобы увидеть строки.",
   "db.affectedRowsTotal": "Всего затронуто строк",
   "db.exportSQL": "Экспорт SQL",
   "db.exportStructure": "Экспорт только структуру",

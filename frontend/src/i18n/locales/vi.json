@@ -1614,6 +1614,7 @@
   "db.runSqlFile": "Chạy tệp SQL",
   "db.scriptExecuted": "Đã thực thi {n} câu lệnh",
   "db.scriptFailedLine": "Lỗi tại dòng {line}",
+  "db.scriptNoResults": "Các truy vấn trong script được chạy mà không trả về kết quả — chạy từng câu để xem dữ liệu.",
   "db.affectedRowsTotal": "Tổng số hàng bị ảnh hưởng",
   "db.exportSQL": "Xuất SQL",
   "db.exportStructure": "Chỉ xuất cấu trúc",

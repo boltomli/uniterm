@@ -1620,6 +1620,7 @@
   "db.runSqlFile": "SQL 파일 실행",
   "db.scriptExecuted": "{n}개 문 실행됨",
   "db.scriptFailedLine": "{line}번째 줄 오류",
+  "db.scriptNoResults": "스크립트의 쿼리는 결과集을 반환하지 않습니다. 행을 보려면 한 문장씩 실행하세요.",
   "db.affectedRowsTotal": "영향 받은 행(합계)",
   "db.exportSQL": "SQL 내보내기",
   "db.exportStructure": "구조만 내보내기",

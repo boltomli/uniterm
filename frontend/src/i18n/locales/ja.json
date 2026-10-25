@@ -1620,6 +1620,7 @@
   "db.runSqlFile": "SQLファイルを実行",
   "db.scriptExecuted": "{n} 件の文を実行しました",
   "db.scriptFailedLine": "{line} 行目でエラー",
+  "db.scriptNoResults": "スクリプト内のクエリは結果セットを返しません。行を表示するには1文ずつ実行してください。",
   "db.affectedRowsTotal": "影響行数（合計）",
   "db.exportSQL": "SQLエクスポート",
   "db.exportStructure": "構造のみエクスポート",

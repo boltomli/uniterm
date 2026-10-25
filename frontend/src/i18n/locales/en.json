@@ -1623,6 +1623,7 @@
   "db.runSqlFile": "Run SQL File",
   "db.scriptExecuted": "{n} statements executed",
   "db.scriptFailedLine": "Error at line {line}",
+  "db.scriptNoResults": "Query statements in a script run without returning their result sets — execute them one at a time to see rows.",
   "db.affectedRowsTotal": "Total affected rows",
   "db.exportSQL": "Export SQL",
   "db.exportStructure": "Export structure only",

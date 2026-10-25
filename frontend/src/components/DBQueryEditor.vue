@@ -74,6 +74,10 @@
         <template v-else>
           <span class="script-ok">{{ t('db.scriptExecuted', { n: scriptResult.executed }) }}</span>
           <span class="script-affected">{{ t('db.affectedRowsTotal') }}: {{ scriptResult.affectedTotal }}</span>
+          <!-- DB-27: scripts run through ExecContext — SELECT statements
+               execute but their result sets are discarded. Say so instead of
+               pretending the run returned nothing interesting. -->
+          <span v-if="scriptHadQueries" class="script-hint">{{ t('db.scriptNoResults') }}</span>
         </template>
       </div>
       <div v-if="execResult" class="result-info">
@@ -226,7 +230,7 @@ import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTab
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
-import { firstStatement, hasMultipleStatements, isQuerySql } from '../utils/sqlStatements'
+import { firstStatement, hasMultipleStatements, isQuerySql, splitScriptLike } from '../utils/sqlStatements'
 import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult, DbRow, DbCellValue } from '../types/database'
 import { tryAndroidSave } from '../utils/androidSave'
 
@@ -624,6 +628,7 @@ async function onExecute() {
     // Multi-statement scripts must run as a script: ExecuteQuery/Statement
     // would only send the first statement (multiStatements is off in the DSN).
     if (hasMultipleStatements(toRun)) {
+      scriptHadQueries.value = splitScriptLike(toRun).some(isQuerySql)
       const call = ExecuteSQLScript(props.sessionId, props.dbName || '', toRun)
       activeCall = call
       const result = await call
@@ -695,6 +700,10 @@ function onCancelQuery() {
 }
 
 const scriptResult = shallowRef<ScriptResult | null>(null)
+// True when the last executed script contained query-shaped statements —
+// their result sets are discarded by the script runner (DB-27), so the
+// result panel tells the user instead of going quiet.
+const scriptHadQueries = ref(false)
 
 // Wails v3 rejects the picker promise with "cancelled by user" when the
 // dialog is dismissed, instead of resolving with an empty path.
@@ -724,6 +733,7 @@ async function onOpenScriptFile() {
     if (text.length <= sqlFileEditorLimit) sql.value = text
     loading.value = true
     const myRun = ++runSeq
+    scriptHadQueries.value = splitScriptLike(text).some(isQuerySql)
     const call = ExecuteSQLScript(props.sessionId, props.dbName || '', text)
     activeCall = call
     const result = await call
@@ -1296,6 +1306,7 @@ function onEditRowCancel() {
 }
 .script-ok { color: var(--text-primary); }
 .script-affected { margin-left: 0.75rem; }
+.script-hint { margin-left: 0.75rem; color: var(--text-muted); font-style: italic; }
 .script-error-head { font-weight: 600; }
 .script-error-detail { margin-top: 0.25rem; font-family: var(--font-mono); font-size: 0.75rem; word-break: break-word; }
 .script-error-sql {

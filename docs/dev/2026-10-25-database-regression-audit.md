@@ -769,7 +769,7 @@ revert(state, rowIdx)
 | DB-24 | 待修 | | | |
 | DB-25 | 已修 | | | 2026-10-25：命名实例 DSN 无条件忽略显式端口（走 SQL Browser）；表单端口置灰 + db.namedInstancePortHint 提示；测试 TestSqlserverDSN + namedInstance.test.ts |
 | DB-26 | 已决（删除） | | | 2026-10-25：删除无调用方的 QueryRowsStream / QueryResultToJSON / PagedTableQuery / DBPagedTableQuery；分页统一走 DefaultTableQuery |
-| DB-27 | 待决 | | | 先定产品行为 |
+| DB-27 | 已决（告知） | | | 2026-10-25：脚本模式保留全量执行（导入场景）；含查询语句时结果面板显示 db.scriptNoResults 明确告知不返回结果集；测试 scriptNotice.test.ts |
 | DB-28 | 待修 | | | |
 
 ---

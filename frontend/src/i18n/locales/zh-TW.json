@@ -1623,6 +1623,7 @@
   "db.runSqlFile": "執行 SQL 檔案",
   "db.scriptExecuted": "已執行 {n} 個敘述",
   "db.scriptFailedLine": "第 {line} 行執行失敗",
+  "db.scriptNoResults": "指令碼中的查詢陳述式不會傳回結果集；如需查看結果請逐條執行。",
   "db.affectedRowsTotal": "累計影響行數",
   "db.exportSQL": "匯出 SQL",
   "db.exportStructure": "匯出（僅結構）",

@@ -1620,6 +1620,7 @@
   "db.runSqlFile": "Ejecutar archivo SQL",
   "db.scriptExecuted": "{n} sentencias ejecutadas",
   "db.scriptFailedLine": "Error en la línea {line}",
+  "db.scriptNoResults": "Las consultas de un script se ejecutan sin devolver resultados: ejecútalas una a una para ver filas.",
   "db.affectedRowsTotal": "Total filas afectadas",
   "db.exportSQL": "Exportar SQL",
   "db.exportStructure": "Exportar solo estructura",

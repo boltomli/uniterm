@@ -1623,6 +1623,7 @@
   "db.runSqlFile": "运行 SQL 文件",
   "db.scriptExecuted": "已执行 {n} 条语句",
   "db.scriptFailedLine": "第 {line} 行执行失败",
+  "db.scriptNoResults": "脚本中的查询语句不会返回结果集；如需查看结果请逐条执行。",
   "db.affectedRowsTotal": "累计影响行数",
   "db.exportSQL": "导出 SQL",
   "db.exportStructure": "导出（仅结构）",
