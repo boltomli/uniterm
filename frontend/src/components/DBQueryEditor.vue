@@ -773,14 +773,24 @@ function onUndoEdits() {
 }
 
 function rowIndexOf(row: DbRow): number {
-  const rows = queryResult.value?.rows
-  if (!rows?.length) return -1
-  const direct = rows.indexOf(row)
-  if (direct >= 0) return direct
-  return rows.findIndex(r => r.length === row.length && r.every((v, i) => v === row[i]))
+  // Identity only (DB-04): the old value-by-value fallback could hit the
+  // WRONG row among duplicates (views / deduplicated results), building the
+  // row dialog's and the DELETE's WHERE clause from another row's values.
+  return queryResult.value?.rows.indexOf(row) ?? -1
+}
+
+/** Row-level actions build their WHERE from the row's committed PK values,
+ *  so a row carrying staged cell edits must be saved or reverted first. */
+function refusePendingRow(row: DbRow): boolean {
+  if (!resultGridRef.value?.isRowPending(row)) return false
+  const m = t('db.saveOrDiscardFirst')
+  error.value = m
+  msg.error(m)
+  return true
 }
 
 function startEditRowByRow(row: DbRow) {
+  if (refusePendingRow(row)) return
   const idx = rowIndexOf(row)
   if (idx < 0) {
     error.value = t('db.noPrimaryKey')
@@ -790,6 +800,7 @@ function startEditRowByRow(row: DbRow) {
 }
 
 async function onDeleteRowByRow(row: DbRow) {
+  if (refusePendingRow(row)) return
   const idx = rowIndexOf(row)
   if (idx < 0) {
     error.value = t('db.noPrimaryKey')

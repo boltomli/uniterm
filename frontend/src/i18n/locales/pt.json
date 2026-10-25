@@ -1770,6 +1770,7 @@
   "db.updateNoMatch": "A atualização afetou 0 linhas. Os dados podem ter sido alterados em outro lugar — atualize antes de salvar novamente.",
   "db.rowGone": "Esta linha não corresponde mais aos dados carregados (alterada ou excluída em outro lugar). Ela será atualizada.",
   "db.discardEditsConfirm": "Executar esta consulta descartará {n} alteração(ões) não salva(s). Continuar?",
+  "db.saveOrDiscardFirst": "Esta linha tem alterações não salvas. Salve-as ou desfaça-as primeiro.",
   "sftp.editExternal": "Abrir no editor externo",
   "sftp.editExternalStart": "Editando {path} no editor externo",
   "sftp.editExternalUploaded": "Enviado automaticamente ao remoto: {path}",

@@ -1779,6 +1779,7 @@
   "db.updateNoMatch": "Update matched 0 rows. The data may have been changed elsewhere — refresh before saving again.",
   "db.rowGone": "This row no longer matches the loaded data (changed or deleted elsewhere). It will be refreshed.",
   "db.discardEditsConfirm": "Running this query will discard {n} unsaved edit(s). Continue?",
+  "db.saveOrDiscardFirst": "This row has unsaved edits. Save or undo them first.",
   "sftp.editExternal": "Open in External Editor",
   "sftp.editExternalStart": "Editing {path} in external editor",
   "sftp.editExternalUploaded": "Auto-uploaded to remote: {path}",

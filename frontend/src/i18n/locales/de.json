@@ -1776,6 +1776,7 @@
   "db.updateNoMatch": "Das Update hat 0 Zeilen betroffen. Die Daten wurden möglicherweise woanders geändert — bitte aktualisieren und erneut speichern.",
   "db.rowGone": "Diese Zeile stimmt nicht mehr mit den geladenen Daten überein (anderweitig geändert/gelöscht). Sie wird aktualisiert.",
   "db.discardEditsConfirm": "Diese Abfrage ausführen verwirft {n} nicht gespeicherte Änderung(en). Fortfahren?",
+  "db.saveOrDiscardFirst": "Diese Zeile hat ungespeicherte Änderungen. Zuerst speichern oder rückgängig machen.",
   "sftp.editExternal": "In externem Editor öffnen",
   "sftp.editExternalStart": "Bearbeite {path} im externen Editor",
   "sftp.editExternalUploaded": "Automatisch auf Remote hochgeladen: {path}",

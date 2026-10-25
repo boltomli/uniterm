@@ -321,6 +321,13 @@ function isPending(row: DbRow, fieldIdx: number) {
   return pending.get(row)?.fields.has(fieldIdx) ?? false
 }
 
+/** True when the row carries staged (unsaved) cell edits. Row-level actions
+ *  (delete / whole-row edit) must refuse these rows: their WHERE clauses are
+ *  built from COMMITTED values (DB-04). */
+function isRowPending(row: DbRow) {
+  return pending.has(row)
+}
+
 function startEdit(row: DbRow, fieldIdx: number) {
   if (editingRow.value === row && editingField.value === fieldIdx) return
   if (editingRow.value) onCellEditConfirm() // stage pending edit first
@@ -517,6 +524,7 @@ defineExpose({
   revertAll,
   markCommitted,
   clearEdit,
+  isRowPending,
   getSelectedRows: () => [],
 })
 </script>
