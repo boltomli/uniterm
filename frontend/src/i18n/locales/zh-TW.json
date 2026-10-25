@@ -1125,6 +1125,7 @@
   "db.serviceNamePlaceholder": "服務名，如 FREEPDB1",
   "db.serviceNameRequired": "Oracle 必須填寫服務名稱",
   "db.pgDbNameRequired": "PostgreSQL 必須填寫資料庫名稱",
+  "db.namedInstancePortHint": "具名執行個體：連接埠由 SQL Browser 解析，無需填寫連接埠。",
   "db.sqlitePath": "資料庫檔案",
   "db.sqlitePathPlaceholder": ".sqlite / .db 檔案路徑",
   "db.sqliteBrowse": "瀏覽…",

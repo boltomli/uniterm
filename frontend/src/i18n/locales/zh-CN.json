@@ -1125,6 +1125,7 @@
   "db.serviceNamePlaceholder": "服务名，如 FREEPDB1",
   "db.serviceNameRequired": "Oracle 必须填写服务名",
   "db.pgDbNameRequired": "PostgreSQL 必须填写数据库名",
+  "db.namedInstancePortHint": "命名实例：端口由 SQL Browser 解析，无需填写端口。",
   "db.sqlitePath": "数据库文件",
   "db.sqlitePathPlaceholder": ".sqlite / .db 文件路径",
   "db.sqliteBrowse": "浏览…",

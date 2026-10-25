@@ -1125,6 +1125,7 @@
   "db.serviceNamePlaceholder": "Service name, e.g. FREEPDB1",
   "db.serviceNameRequired": "Oracle requires a service name",
   "db.pgDbNameRequired": "PostgreSQL requires a database name",
+  "db.namedInstancePortHint": "Named instance: the port is resolved by SQL Browser — leave the port empty.",
   "db.sqlitePath": "Database File",
   "db.sqlitePathPlaceholder": "Path to the .sqlite / .db file",
   "db.sqliteBrowse": "Browse...",

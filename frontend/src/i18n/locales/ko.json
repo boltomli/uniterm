@@ -1122,6 +1122,7 @@
   "db.serviceNamePlaceholder": "서비스 이름 (예: FREEPDB1)",
   "db.serviceNameRequired": "Oracle에는 서비스 이름이 필요합니다",
   "db.pgDbNameRequired": "PostgreSQL에는 데이터베이스 이름이 필요합니다",
+  "db.namedInstancePortHint": "명명된 인스턴스: 포트는 SQL Browser이 확인합니다. 포트를 비워 두세요.",
   "db.sqlitePath": "데이터베이스 파일",
   "db.sqlitePathPlaceholder": ".sqlite / .db 파일 경로",
   "db.sqliteBrowse": "찾아보기…",

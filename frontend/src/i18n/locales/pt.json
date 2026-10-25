@@ -1119,6 +1119,7 @@
   "db.serviceNamePlaceholder": "Nome do serviço, ex.: FREEPDB1",
   "db.serviceNameRequired": "O Oracle exige um nome de serviço",
   "db.pgDbNameRequired": "O PostgreSQL exige um nome de banco de dados",
+  "db.namedInstancePortHint": "Instância nomeada: a porta é resolvida pelo SQL Browser — deixe o campo vazio.",
   "db.sqlitePath": "Arquivo de banco de dados",
   "db.sqlitePathPlaceholder": "Caminho do arquivo .sqlite / .db",
   "db.sqliteBrowse": "Procurar…",

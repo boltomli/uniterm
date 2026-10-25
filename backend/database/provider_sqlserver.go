@@ -29,6 +29,11 @@ func (p *sqlserverProvider) DSN(host string, port int, user, password, dbName st
 	if server, instance, found := strings.Cut(host, `\`); found {
 		u.Path = "/" + instance
 		host = server
+		// Named instance: the port ALWAYS comes from SQL Browser (DB-25).
+		// The connection form prefills 1433 on type switch, so keeping the
+		// explicit port here made the fixed-port path unreachable in the UI
+		// and the Browser lookup was bypassed — connection failed.
+		port = 0
 	} else if port <= 0 {
 		port = 1433
 	}

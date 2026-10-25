@@ -46,12 +46,17 @@ func TestSqlserverDSN(t *testing.T) {
 			noPort:       true,
 		},
 		{
-			name:         "named instance with explicit port keeps port",
+			// DB-25: the form prefills 1433 on type switch, so the explicit
+			// port must be ignored for named instances — otherwise the fixed
+			// port path is the only reachable one in the UI and SQL Browser
+			// is bypassed.
+			name:         "named instance ignores an explicit port (DB-25)",
 			host:         `192.168.1.5\SQL2019`,
 			port:         21433,
-			wantHost:     "192.168.1.5:21433",
+			wantHost:     "192.168.1.5",
 			wantInstance: "/SQL2019",
 			wantRawQuery: "database=mydb",
+			noPort:       true,
 		},
 	}
 

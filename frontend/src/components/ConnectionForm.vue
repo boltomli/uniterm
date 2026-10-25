@@ -70,9 +70,12 @@
                 <el-input ref="hostInputRef" v-model="form.host" class="host-input" :placeholder="form.type === 's3' ? 'e.g. https://s3.amazonaws.com' : form.type === 'webdav' ? 'https://dav.example.com/dav/' : t('conn.hostPlaceholder')" />
                 <template v-if="form.type !== 's3' && form.type !== 'webdav'">
                   <span class="host-port-sep">:</span>
-                  <el-input-number v-model="form.port" :min="0" :max="65535" class="port-input" controls-position="right" />
+                  <el-input-number v-model="form.port" :min="0" :max="65535" class="port-input" controls-position="right" :disabled="isSqlNamedInstance" />
                 </template>
               </div>
+              <!-- SQL Server named instance (DB-25): the port is resolved by
+                   SQL Browser — an explicit port would bypass it. -->
+              <div v-if="isSqlNamedInstance" class="port-hint">{{ t('db.namedInstancePortHint') }}</div>
             </el-form-item>
             <el-form-item v-if="isSqliteDb" :label="t('db.sqlitePath')" required>
               <div class="host-port-row">
@@ -1021,6 +1024,11 @@ function onDialogOpened() {
 }
 
 const isEdit = computed(() => !!props.editConfig?.id)
+
+/** SQL Server named instance (`server\instance`): the port comes from SQL
+ *  Browser, so the port field is disabled and explained (DB-25). */
+const isSqlNamedInstance = computed(() =>
+  form.type === 'database' && form.dbType === 'sqlserver' && form.host.includes('\\'))
 
 // Category comes from the connectionTypes registry; only the discriminated
 // 'database' type needs the dbType check (SQL vs NoSQL).
@@ -2155,6 +2163,12 @@ function onConnect() {
 .host-port-sep {
   color: var(--text-muted);
   font-weight: 500;
+}
+
+.port-hint {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .port-input {

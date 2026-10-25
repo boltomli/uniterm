@@ -1122,6 +1122,7 @@
   "db.serviceNamePlaceholder": "Имя службы, напр. FREEPDB1",
   "db.serviceNameRequired": "Oracle требует указания имени службы",
   "db.pgDbNameRequired": "PostgreSQL требует указания имени базы данных",
+  "db.namedInstancePortHint": "Именованный экземпляр: порт определяется SQL Browser — оставьте поле пустым.",
   "db.sqlitePath": "Файл базы данных",
   "db.sqlitePathPlaceholder": "Путь к файлу .sqlite / .db",
   "db.sqliteBrowse": "Обзор…",

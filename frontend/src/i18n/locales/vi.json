@@ -1119,6 +1119,7 @@
   "db.serviceNamePlaceholder": "Tên dịch vụ, vd: FREEPDB1",
   "db.serviceNameRequired": "Oracle yêu cầu tên dịch vụ",
   "db.pgDbNameRequired": "PostgreSQL yêu cầu tên cơ sở dữ liệu",
+  "db.namedInstancePortHint": "Phiên có tên: cổng do SQL Browser xác định — để trống ô cổng.",
   "db.sqlitePath": "Tệp cơ sở dữ liệu",
   "db.sqlitePathPlaceholder": "Đường dẫn tệp .sqlite / .db",
   "db.sqliteBrowse": "Duyệt…",
