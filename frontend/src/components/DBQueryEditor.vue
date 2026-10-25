@@ -288,7 +288,14 @@ const resolvedPrimaryKeys = computed(() => {
   return resolved
 })
 
-const canEditRows = computed(() => resolvedPrimaryKeys.value.length > 0)
+// Inline editing is only safe in BROWSE mode (DB-03): the editor lets the
+// user rewrite the SQL, and after a JOIN or arbitrary query the primary-key
+// columns in the result no longer identify a row of one base table — saving
+// would issue `UPDATE base SET <same-named column> WHERE id = …` against
+// whichever table the doc happens to point at. onExecute() re-derives
+// browseMode by comparing the buffer with DefaultTableQuery, so any manual
+// SQL execution flips this read-only immediately.
+const canEditRows = computed(() => browseMode.value && resolvedPrimaryKeys.value.length > 0)
 
 const displayRows = computed(() => {
   let rows = queryResult.value?.rows || []
