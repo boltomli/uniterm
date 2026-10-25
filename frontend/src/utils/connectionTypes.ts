@@ -94,6 +94,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   // Pure UI tab kinds — no connection session behind them, icon/label only.
   { type: 'workspace', label: 'Workspace', icon: LayoutDashboard, category: 'other', formHidden: true, connectMenuKey: 'workspace.openSaved' },
   { type: 'settings', label: 'Settings', icon: Settings, category: 'other', formHidden: true },
+  { type: 'netscan', label: 'Network Scan', icon: Activity, category: 'other', formHidden: true },
   { type: 'start', label: 'Start', icon: SquarePlus, category: 'other', formHidden: true },
 ]
 
