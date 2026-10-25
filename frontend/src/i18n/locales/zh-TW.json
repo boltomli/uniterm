@@ -1780,6 +1780,7 @@
   "db.rowGone": "該行與載入時的資料已不一致（可能已被其他位置修改或刪除），將為你重新整理。",
   "db.discardEditsConfirm": "執行該查詢將捨棄 {n} 處未儲存的修改，確定繼續？",
   "db.saveOrDiscardFirst": "該行有未儲存的修改，請先儲存或復原。",
+  "db.treeLoadFailed": "載入資料庫樹失敗：{msg}",
   "sftp.editExternal": "以外部編輯器開啟",
   "sftp.editExternalStart": "正在外部編輯器中編輯 {path}",
   "sftp.editExternalUploaded": "已自動上傳至遠端：{path}",

@@ -1777,6 +1777,7 @@
   "db.rowGone": "Esta fila ya no coincide con los datos cargados (se modificó o eliminó en otro lugar). Se actualizará.",
   "db.discardEditsConfirm": "Ejecutar esta consulta descartará {n} cambio(s) sin guardar. ¿Continuar?",
   "db.saveOrDiscardFirst": "Esta fila tiene cambios sin guardar. Guárdalos o descártalos primero.",
+  "db.treeLoadFailed": "No se pudo cargar el árbol de bases de datos: {msg}",
   "sftp.editExternal": "Abrir en editor externo",
   "sftp.editExternalStart": "Editando {path} en editor externo",
   "sftp.editExternalUploaded": "Subido automáticamente al remoto: {path}",

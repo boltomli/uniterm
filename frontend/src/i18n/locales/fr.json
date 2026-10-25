@@ -1777,6 +1777,7 @@
   "db.rowGone": "Cette ligne ne correspond plus aux données chargées (modifiée ou supprimée ailleurs). Elle va être actualisée.",
   "db.discardEditsConfirm": "Exécuter cette requête abandonnera {n} modification(s) non enregistrée(s). Continuer ?",
   "db.saveOrDiscardFirst": "Cette ligne comporte des modifications non enregistrées. Enregistrez-les ou annulez-les d’abord.",
+  "db.treeLoadFailed": "Échec du chargement de l'arborescence des bases de données : {msg}",
   "sftp.editExternal": "Ouvrir dans l'éditeur externe",
   "sftp.editExternalStart": "Modification de {path} dans un éditeur externe",
   "sftp.editExternalUploaded": "Téléversé automatiquement vers le distant : {path}",

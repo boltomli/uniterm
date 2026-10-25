@@ -1780,6 +1780,7 @@
   "db.rowGone": "该行与加载时的数据已不一致（可能已被其他位置修改或删除），将为你刷新。",
   "db.discardEditsConfirm": "执行该查询将丢弃 {n} 处未保存的修改，确定继续？",
   "db.saveOrDiscardFirst": "该行有未保存的修改，请先保存或撤销。",
+  "db.treeLoadFailed": "加载数据库树失败：{msg}",
   "sftp.editExternal": "用外部编辑器打开",
   "sftp.editExternalStart": "正在外部编辑器中编辑 {path}",
   "sftp.editExternalUploaded": "已自动上传到远程：{path}",

@@ -235,19 +235,33 @@ const selectedDb = ref('')
 const selectedTable = ref('')
 const searchQuery = ref('')
 const loading = ref(false)
+// DB-17: loadTree's awaits have no ordering guarantee — a rapid session
+// switch or repeated refresh can interleave GetDatabases/GetTables calls and
+// an old response would repaint the tree for the new session. Each run owns a
+// token; starting a newer run (or switching session) invalidates the older.
+let treeSeq = 0
+// Auto-opening a database also focuses the objects tab in the parent — that
+// must happen only on the FIRST successful load of a session; a refresh must
+// not steal the user back from the table/query they are looking at.
+let autoOpened = false
 const treeContentRef = ref<HTMLElement | null>(null)
 
 async function loadTree() {
   if (!props.sessionId) return
+  const myTree = ++treeSeq
+  const sid = props.sessionId
   loading.value = true
   try {
-    const dbs: string[] = await GetDatabases(props.sessionId)
+    const dbs: string[] = await GetDatabases(sid)
+    // Stale response (newer refresh / session switch already started).
+    if (myTree !== treeSeq || sid !== props.sessionId) return
     // Auto-expand the connection's default db only when it's actually a real
     // entry in the list. Oracle's dbName is the service name and never
     // matches — that case falls through to the oracle branch below.
     let autoOpen = ''
     if (props.defaultDbName && dbs.includes(props.defaultDbName)) {
-      const tables = await GetTables(props.sessionId, props.defaultDbName)
+      const tables = await GetTables(sid, props.defaultDbName)
+      if (myTree !== treeSeq || sid !== props.sessionId) return
       // 默认库置顶并展开（已加载表），其余可访问的数据库折叠显示，
       // 点击展开时再懒加载表（见 ensureDbExpanded）。
       const otherDbs = dbs.filter(d => d !== props.defaultDbName)
@@ -260,7 +274,8 @@ async function loadTree() {
     } else if (dbs.length === 1) {
       // Single schema/db (e.g. Oracle showing only the current schema) — expand it.
       const only = dbs[0]
-      const tables = await GetTables(props.sessionId, only)
+      const tables = await GetTables(sid, only)
+      if (myTree !== treeSeq || sid !== props.sessionId) return
       databases.value = [{ name: only, tables, loaded: true }]
       expandedDbs.value = new Set([only])
       autoOpen = only
@@ -270,7 +285,8 @@ async function loadTree() {
       // collapsed. Expand and open the first schema (the login user's
       // default) and lazy-load the rest.
       const first = dbs[0]
-      const tables = await GetTables(props.sessionId, first)
+      const tables = await GetTables(sid, first)
+      if (myTree !== treeSeq || sid !== props.sessionId) return
       databases.value = [
         { name: first, tables, loaded: true },
         ...dbs.slice(1).map((d: string) => ({ name: d, tables: [] as TableInfo[], loaded: false }))
@@ -281,20 +297,34 @@ async function loadTree() {
       databases.value = dbs.map((db: string) => ({ name: db, tables: [], loaded: false }))
       expandedDbs.value = new Set()
     }
-    if (autoOpen) {
+    if (autoOpen && !autoOpened) {
+      // First load of this session only: open the db AND move the parent's
+      // focus to the objects tab. Refreshes just repaint the tree.
+      autoOpened = true
       selectedDb.value = autoOpen
       selectedTable.value = ''
       emit('openDatabase', autoOpen, 'objects')
     }
   } catch (e) {
+    if (myTree !== treeSeq) return // a newer run owns the UI now
     console.error('Failed to load tree:', e)
+    // A silent console-only failure leaves an empty tree with no clue why (DB-17).
+    msg.error(t('db.treeLoadFailed', { msg: (e as any)?.message || String(e) }))
   } finally {
-    loading.value = false
+    if (myTree === treeSeq) loading.value = false
   }
 }
 
 watch(() => props.sessionId, (newId) => {
-
+  // Switching sessions invalidates everything the old one loaded: drop
+  // in-flight responses (DB-17) and clear the visible tree so no stale
+  // databases/selection from the previous connection linger (DB-18 neighbour).
+  treeSeq++
+  autoOpened = false
+  databases.value = []
+  expandedDbs.value = new Set()
+  selectedDb.value = ''
+  selectedTable.value = ''
   if (newId) loadTree()
 }, { immediate: true })
 

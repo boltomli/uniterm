@@ -1780,6 +1780,7 @@
   "db.rowGone": "This row no longer matches the loaded data (changed or deleted elsewhere). It will be refreshed.",
   "db.discardEditsConfirm": "Running this query will discard {n} unsaved edit(s). Continue?",
   "db.saveOrDiscardFirst": "This row has unsaved edits. Save or undo them first.",
+  "db.treeLoadFailed": "Failed to load the database tree: {msg}",
   "sftp.editExternal": "Open in External Editor",
   "sftp.editExternalStart": "Editing {path} in external editor",
   "sftp.editExternalUploaded": "Auto-uploaded to remote: {path}",
