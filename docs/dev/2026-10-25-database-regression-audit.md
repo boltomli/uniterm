@@ -750,7 +750,7 @@ revert(state, rowIdx)
 | DB-05 | 待修 | | | 依赖 DB-01 的 affected 返回值 |
 | DB-06 | 待修 | | | 依赖 DB-09 设计 |
 | DB-07 | 待修 | | | 依赖 DB-09 设计 |
-| DB-08 | 待修 | | | 可独立先做（删缓存即可止血） |
+| DB-08 | 已修 | | | 2026-10-25：缓存抽到 postgres_schema_cache.go；key 含连接池指针 + 30s TTL；全部 PG DDL 成功后 pgSchemaCacheInvalidate；测试重写（跨池隔离/失效/过期/并发） |
 | DB-09 | 待设计 | | | 需先出接口草案 |
 | DB-10 | 待修 | | | |
 | DB-11 | 待修 | | | |

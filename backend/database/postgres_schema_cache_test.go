@@ -1,113 +1,118 @@
 package database
 
 import (
+	"database/sql"
 	"sync"
 	"testing"
+	"time"
 )
 
-// TestPostgresSchemaCacheKey verifies the cache is keyed by "dbName.tableName"
-// so two tables in the same database have distinct entries, and the same
-// (dbName, tableName) tuple maps to the same SchemaResult pointer.
-func TestPostgresSchemaCacheKey(t *testing.T) {
-	// Use distinct keys to avoid stomping on entries left by other tests.
-	const dbName = "test_cache_db_key"
-	const tbl1 = "users_key"
-	const tbl2 = "orders_key"
+// The schema cache was the "越修越坏" hot spot of the 2026-10-25 regression
+// audit (DB-08): keyed only by "dbName.tableName", never invalidated, no
+// TTL. These tests pin the corrected contract:
+//   - entries are scoped to a connection pool (no cross-server sharing),
+//   - DDL invalidation drops them,
+//   - stale entries expire.
 
-	// Wipe any prior state for these keys so the test is hermetic.
-	postgresSchemaCache.Delete(dbName + "." + tbl1)
-	postgresSchemaCache.Delete(dbName + "." + tbl2)
+// dbHandle returns a distinct *sql.DB pointer purely for keying; no
+// connection is ever opened.
+func dbHandle() *sql.DB { return &sql.DB{} }
+
+func TestPostgresSchemaCacheScopedPerPool(t *testing.T) {
+	const dbName = "app"
+	const tbl = "users_key"
+	db1, db2 := dbHandle(), dbHandle()
 
 	r1 := &SchemaResult{Columns: []ColumnInfo{{Name: "id", Type: "int"}}}
-	r2 := &SchemaResult{Columns: []ColumnInfo{{Name: "qty", Type: "int"}}}
+	pgSchemaCacheStore(db1, dbName, tbl, r1)
+	t.Cleanup(func() { pgSchemaCacheInvalidate(db1, dbName, tbl) })
 
-	postgresSchemaCache.Store(dbName+"."+tbl1, r1)
-	postgresSchemaCache.Store(dbName+"."+tbl2, r2)
-
-	// Same key returns same pointer.
-	if got, ok := postgresSchemaCache.Load(dbName + "." + tbl1); !ok || got != r1 {
-		t.Errorf("cache miss for %s.%s after Store", dbName, tbl1)
+	// Same pool, same names → the memoised pointer comes back.
+	if got, ok := pgSchemaCacheLoad(db1, dbName, tbl); !ok || got != r1 {
+		t.Fatalf("cache miss for %s.%s on the storing pool", dbName, tbl)
 	}
-	if got, ok := postgresSchemaCache.Load(dbName + "." + tbl2); !ok || got != r2 {
-		t.Errorf("cache miss for %s.%s after Store", dbName, tbl2)
+	// A different pool (another server with the same database name) must NOT
+	// see the first pool's column list.
+	if _, ok := pgSchemaCacheLoad(db2, dbName, tbl); ok {
+		t.Fatalf("cache hit across connection pools for %s.%s", dbName, tbl)
 	}
-
-	// Different tables do not collide.
-	if r1 == r2 {
-		t.Fatal("r1 and r2 must be distinct pointers")
-	}
-
-	// Clean up so we don't leak across runs.
-	postgresSchemaCache.Delete(dbName + "." + tbl1)
-	postgresSchemaCache.Delete(dbName + "." + tbl2)
 }
 
-// TestPostgresSchemaCacheParallel exercises the cache under concurrent
-// Store / Load from many goroutines. With -race, this catches any
-// non-atomic access to the sync.Map itself or any unsynchronised
-// mutation of shared SchemaResult.
+func TestPostgresSchemaCacheInvalidate(t *testing.T) {
+	const dbName = "app"
+	const tbl = "users_inv"
+	db := dbHandle()
+
+	pgSchemaCacheStore(db, dbName, tbl, &SchemaResult{})
+	pgSchemaCacheInvalidate(db, dbName, tbl)
+	if _, ok := pgSchemaCacheLoad(db, dbName, tbl); ok {
+		t.Fatalf("DDL invalidation left a stale schema for %s.%s", dbName, tbl)
+	}
+}
+
+func TestPostgresSchemaCacheExpires(t *testing.T) {
+	const dbName = "app"
+	const tbl = "users_ttl"
+	db := dbHandle()
+	key := pgSchemaCacheKey(db, dbName, tbl)
+
+	// Store an entry whose TTL has already elapsed.
+	postgresSchemaCache.Store(key, pgSchemaCacheEntry{
+		result:   &SchemaResult{},
+		storedAt: time.Now().Add(-pgSchemaCacheTTL - time.Second),
+	})
+	t.Cleanup(func() { pgSchemaCacheInvalidate(db, dbName, tbl) })
+
+	if _, ok := pgSchemaCacheLoad(db, dbName, tbl); ok {
+		t.Fatalf("expired entry served for %s.%s", dbName, tbl)
+	}
+	// Loading an expired entry must also remove it.
+	if _, ok := postgresSchemaCache.Load(key); ok {
+		t.Fatalf("expired entry not evicted for %s.%s", dbName, tbl)
+	}
+}
+
+// TestPostgresSchemaCacheParallel exercises concurrent Load/Store/Invalidate;
+// with -race this catches unsynchronised access to the cache or a shared
+// SchemaResult.
 func TestPostgresSchemaCacheParallel(t *testing.T) {
-	const dbName = "test_cache_db_par"
+	const dbName = "app"
 	const tbl = "users_par"
-	key := dbName + "." + tbl
-	postgresSchemaCache.Delete(key)
+	db := dbHandle()
+	t.Cleanup(func() { pgSchemaCacheInvalidate(db, dbName, tbl) })
 
 	expected := &SchemaResult{Columns: []ColumnInfo{{Name: "id", Type: "int"}}}
-	postgresSchemaCache.Store(key, expected)
+	pgSchemaCacheStore(db, dbName, tbl, expected)
 
 	const N = 64
 	var wg sync.WaitGroup
 	wg.Add(N)
 	for i := 0; i < N; i++ {
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				if got, ok := postgresSchemaCache.Load(key); !ok || got != expected {
-					t.Errorf("concurrent Load returned %v ok=%v, want %v", got, ok, expected)
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	postgresSchemaCache.Delete(key)
-}
-
-// TestPostgresSchemaCacheSameTableParallel verifies the design intent of
-// F-115: parallel callers requesting the same (dbName, tableName) get
-// the same SchemaResult pointer. We simulate the post-GetTableSchema
-// cache write and confirm a parallel Load picks it up.
-func TestPostgresSchemaCacheSameTableParallel(t *testing.T) {
-	const dbName = "test_cache_db_same"
-	const tbl = "users_same"
-	key := dbName + "." + tbl
-	postgresSchemaCache.Delete(key)
-
-	expected := &SchemaResult{Indexes: []IndexInfo{{Name: "pk", IsPrimary: true}}}
-
-	const N = 32
-	var wg sync.WaitGroup
-	wg.Add(N)
-
-	// Half the goroutines write, half read; they must converge.
-	for i := 0; i < N; i++ {
 		i := i
 		go func() {
 			defer wg.Done()
-			if i%2 == 0 {
-				postgresSchemaCache.Store(key, expected)
-			} else {
-				if got, ok := postgresSchemaCache.Load(key); ok && got != expected {
-					t.Errorf("got unexpected pointer %p (want %p)", got, expected)
+			for j := 0; j < 100; j++ {
+				switch i % 4 {
+				case 0:
+					pgSchemaCacheStore(db, dbName, tbl, expected)
+				case 1:
+					pgSchemaCacheInvalidate(db, dbName, tbl)
+				default:
+					// A miss is legal here (a concurrent invalidator ran);
+					// a hit must be the exact pointer we stored.
+					if got, ok := pgSchemaCacheLoad(db, dbName, tbl); ok && got != expected {
+						t.Errorf("concurrent Load returned %p, want %p", got, expected)
+						return
+					}
 				}
 			}
 		}()
 	}
 	wg.Wait()
 
-	// Final value must be the one we stored.
-	if got, ok := postgresSchemaCache.Load(key); !ok || got != expected {
-		t.Errorf("final cache state: got=%v ok=%v, want %v", got, ok, expected)
+	// Final value must be the one last stored.
+	pgSchemaCacheStore(db, dbName, tbl, expected)
+	if got, ok := pgSchemaCacheLoad(db, dbName, tbl); !ok || got != expected {
+		t.Fatalf("final cache state: got=%v ok=%v, want %v", got, ok, expected)
 	}
-	postgresSchemaCache.Delete(key)
 }

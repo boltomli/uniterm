@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -14,11 +13,6 @@ import (
 )
 
 type postgresProvider struct{}
-
-// postgresSchemaCache memoises GetTableSchema results per "dbName.tableName".
-// The schema-tree panel walks every table on every refresh; without this cache
-// each browse issues 3*N serial round-trips even when nothing changed.
-var postgresSchemaCache sync.Map
 
 func init() {
 	Register("postgres", &postgresProvider{})
@@ -220,9 +214,10 @@ func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, er
 }
 
 func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {
-	cacheKey := dbName + "." + tableName
-	if cached, ok := postgresSchemaCache.Load(cacheKey); ok {
-		return cached.(*SchemaResult), nil
+	// DB-08: the cache is keyed by (pool, dbName, tableName) and expires —
+	// see postgres_schema_cache.go; every DDL method invalidates on success.
+	if cached, ok := pgSchemaCacheLoad(db, dbName, tableName); ok {
+		return cached, nil
 	}
 
 	var (
@@ -328,7 +323,7 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 	}
 
 	result := &SchemaResult{Columns: columns, Indexes: indexes}
-	postgresSchemaCache.Store(cacheKey, result)
+	pgSchemaCacheStore(db, dbName, tableName, result)
 	return result, nil
 }
 
@@ -350,20 +345,30 @@ func (p *postgresProvider) DropDatabase(db *sql.DB, dbName string) error {
 
 func (p *postgresProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", q(tableName)))
-	return err
+	if _, err := db.Exec(fmt.Sprintf("CREATE TABLE %s (id SERIAL PRIMARY KEY)", q(tableName))); err != nil {
+		return err
+	}
+	// A recreated table may differ from whatever the cache holds under this name.
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 func (p *postgresProvider) DropTable(db *sql.DB, dbName, tableName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DROP TABLE %s", q(tableName)))
-	return err
+	if _, err := db.Exec(fmt.Sprintf("DROP TABLE %s", q(tableName))); err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 func (p *postgresProvider) DropView(db *sql.DB, dbName, viewName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("DROP VIEW %s", q(viewName)))
-	return err
+	if _, err := db.Exec(fmt.Sprintf("DROP VIEW %s", q(viewName))); err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, viewName)
+	return nil
 }
 
 func (p *postgresProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
@@ -392,7 +397,11 @@ func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName
 
 	q := p.Quote
 	_, err = conn.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s.%s", q(newTableName), q(schema), q(tableName)))
-	return err
+	if err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, newTableName)
+	return nil
 }
 
 // ── DDL: Column ──
@@ -429,8 +438,11 @@ func (p *postgresProvider) AddColumn(db *sql.DB, dbName, tableName string, col C
 	}
 
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(tableName), strings.Join(parts, " "))
-	_, err = db.Exec(sql)
-	return err
+	if _, err = db.Exec(sql); err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, col ColumnDef) error {
@@ -484,13 +496,17 @@ func (p *postgresProvider) ModifyColumn(db *sql.DB, dbName, tableName string, co
 			return err
 		}
 	}
+	pgSchemaCacheInvalidate(db, dbName, tableName)
 	return nil
 }
 
 func (p *postgresProvider) DropColumn(db *sql.DB, dbName, tableName, colName string) error {
 	q := p.Quote
-	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName)))
-	return err
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", q(tableName), q(colName))); err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 // ── DDL: Index ──
@@ -516,17 +532,27 @@ func (p *postgresProvider) AddIndex(db *sql.DB, dbName, tableName string, idx In
 		sql = fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", uniqueStr, q(idx.Name), q(tableName), strings.Join(cols, ", "))
 	}
 	_, err := db.Exec(sql)
-	return err
+	if err != nil {
+		return err
+	}
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 func (p *postgresProvider) DropIndex(db *sql.DB, dbName, tableName, idxName string, isPrimary bool, autoIncCols []string) error {
 	q := p.Quote
 	if isPrimary {
-		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", q(tableName), q(idxName)))
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", q(tableName), q(idxName))); err != nil {
+			return err
+		}
+		pgSchemaCacheInvalidate(db, dbName, tableName)
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf("DROP INDEX %s", q(idxName))); err != nil {
 		return err
 	}
-	_, err := db.Exec(fmt.Sprintf("DROP INDEX %s", q(idxName)))
-	return err
+	pgSchemaCacheInvalidate(db, dbName, tableName)
+	return nil
 }
 
 var postgresTypes = []string{
