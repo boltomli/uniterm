@@ -217,12 +217,14 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, shallowRef, computed, watch, nextTick, onMounted, defineAsyncComponent } from 'vue'
 import { Sparkles, History, FolderOpen, Download, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 import DBResultGrid from './DBResultGrid.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'

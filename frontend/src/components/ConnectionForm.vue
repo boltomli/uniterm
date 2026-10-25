@@ -750,7 +750,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { reactive, computed, watch, ref, nextTick, onMounted } from 'vue'
+import { reactive, computed, watch, ref, nextTick, onMounted, defineAsyncComponent } from 'vue'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useIdentityStore } from '../stores/identityStore'
@@ -762,7 +762,9 @@ import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
 import { Plus, Trash2, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, CircleCheck, CircleX, KeyRound } from '@lucide/vue'
 import { listContexts } from '../services/k8sClient'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'

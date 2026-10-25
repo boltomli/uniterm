@@ -17,10 +17,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, defineAsyncComponent } from 'vue'
 import { ElDialog, ElButton } from 'element-plus'
 import { useI18n } from '../i18n'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 
 const props = defineProps<{ modelValue: boolean; title: string; template: string; saving?: boolean; error?: string }>()
 const emit = defineEmits<{

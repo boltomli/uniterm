@@ -1,7 +1,10 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
+// Element Plus: components + their CSS are pulled in on demand by
+// unplugin-vue-components (vite.config.ts). The full `element-plus/dist/index.css`
+// (~360 kB) and `app.use(ElementPlus)` global install are gone; styles for
+// script-side / programmatic usage live in elementPlusOnDemand.ts.
+import './elementPlusOnDemand'
 import '@fontsource-variable/jetbrains-mono'
 import { ElDialog } from 'element-plus'
 import App from './App.vue'
@@ -20,13 +23,19 @@ if (ElDialog.props) {
 const app = createApp(App)
 const pinia = createPinia()
 app.use(pinia)
-app.use(ElementPlus)
+// No app.use(ElementPlus): components/styles are resolved on demand by
+// unplugin-vue-components (vite.config.ts), and only what is used actually
+// ships — the global install + full stylesheet were ~740 kB of JS and
+// ~360 kB of CSS on the startup critical path.
+
+// Kick the locale load off first: the JSON/element-plus tables arrive as
+// their own chunks (i18n/index.ts), and starting the fetch here overlaps it
+// with the app construction below. Sync locale from navigator (default
+// 'system' → navigator.language, zero IPC); init() re-resolves with the
+// persisted preference once loaded.
+const localeReady = setLocale('system')
 
 const settingsStore = useSettingsStore()
-// Sync locale from navigator before mount (default 'system' → resolves from
-// navigator.language, zero IPC) so the first paint is already in the user's
-// language; init() re-resolves with the persisted preference once loaded.
-setLocale('system')
 // Fire settings init without awaiting: top-level await here used to block the
 // module's completion, which delayed the page load event, which delayed Wails'
 // window Show() — seconds of dock-icon-but-no-window on slow first paint. All
@@ -34,6 +43,11 @@ setLocale('system')
 // themselves once init lands. applyTheme() on the loaded defaults runs before
 // mount anyway (init() calls it synchronously after its awaits settle).
 settingsStore.init()
+
+// Wait for the locale chunks only (a few tens of kB from the embedded asset
+// server — no IPC), so the first paint is already in the user's language
+// instead of flashing English. Everything else stays non-blocking.
+await localeReady
 
 app.mount('#app')
 

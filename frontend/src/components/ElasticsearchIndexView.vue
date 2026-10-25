@@ -169,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { lucideSize } from '../utils/lucideSize'
 import { uiPx } from '../utils/uiScale'
 import { Pencil, Trash2, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
@@ -186,7 +186,9 @@ import {
   EsDeleteDoc,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { EsSearchResult } from '../types/elasticsearch'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 
 defineOptions({ name: 'ElasticsearchIndexView' })
 

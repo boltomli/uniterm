@@ -83,7 +83,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { ElButton, ElIcon, ElMessage, ElSelect, ElOption, ElCheckbox } from 'element-plus'
 import { Close } from '@element-plus/icons-vue'
 import { dump, load } from 'js-yaml'
@@ -91,7 +91,9 @@ import { getResource, genericDetailSections, type DetailSection } from '../servi
 import { requestJSON, startLogStream, type LogHandle } from '../services/k8sClient'
 import { useI18n } from '../i18n'
 import Menu from './Menu.vue'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 import { Clipboard } from '@wailsio/runtime'
 import MenuItem from './MenuItem.vue'
 

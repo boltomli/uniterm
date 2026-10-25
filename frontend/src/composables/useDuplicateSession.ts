@@ -9,7 +9,7 @@ import {
 import { usePanelStore } from '../stores/panelStore'
 import { useTabStore } from '../stores/tabStore'
 import { useSessionStore } from '../stores/sessionStore'
-import { waitForTerminalSize } from '../services/terminalManager'
+import { waitForTerminalSize } from '../services/terminalSize'
 import { fileTransferProto } from '../utils/fileTransferUtils'
 import type { ConnectionConfig } from '../types/session'
 

@@ -124,7 +124,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, defineAsyncComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
@@ -135,7 +135,9 @@ import {
   SftpGetContent, SftpLocalGetContent, SftpPutContent, SftpLocalPutContent,
   SftpOpenExternalEditor, OpenExternalEditorLocal,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuSubmenu from './MenuSubmenu.vue'

@@ -1,10 +1,24 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 const version = process.env.VITE_VERSION || 'dev'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // Element Plus on demand: every <el-*> used in a template gets its own
+    // import (and CSS) injected instead of bundling the whole library
+    // (~740 kB of JS + the full 360 kB stylesheet were on the critical path).
+    // dirs: [] — local components are always imported explicitly, there is
+    // nothing to scan; dts off so no components.d.ts is generated.
+    Components({
+      dirs: [],
+      dts: false,
+      resolvers: [ElementPlusResolver({ importStyle: 'css' })],
+    }),
+  ],
   define: {
     'import.meta.env.VITE_VERSION': JSON.stringify(version)
   },

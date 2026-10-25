@@ -208,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue'
 import { lucideSize } from '../utils/lucideSize'
 import { Pencil, Trash2, Sparkles, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
@@ -227,7 +227,9 @@ import {
   MongoDropIndex,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { MongoIndexInfo, MongoQueryResult } from '../types/mongodb'
-import SyntaxEditor from './SyntaxEditor.vue'
+// CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
+// when this view actually opens.
+const SyntaxEditor = defineAsyncComponent(() => import('./SyntaxEditor.vue'))
 
 defineOptions({ name: 'MongoDBCollectionView' })
 

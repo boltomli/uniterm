@@ -161,41 +161,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted, provide, h } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, provide, h, defineAsyncComponent } from 'vue'
 import { remoteDesktopOwnsKey } from './utils/remoteKeyboard'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import zhTw from 'element-plus/es/locale/lang/zh-tw'
+// element-plus ships one table per language; only English is bundled here
+// (it doubles as the fallback), the rest arrive with the app locale from
+// i18n/index.ts.
 import enUs from 'element-plus/es/locale/lang/en'
-import ja from 'element-plus/es/locale/lang/ja'
-import ko from 'element-plus/es/locale/lang/ko'
-import de from 'element-plus/es/locale/lang/de'
-import es from 'element-plus/es/locale/lang/es'
-import fr from 'element-plus/es/locale/lang/fr'
-import ru from 'element-plus/es/locale/lang/ru'
 import AppHeader from './components/AppHeader.vue'
 import Sidebar from './components/Sidebar.vue'
-import TerminalTabContent from './components/TerminalTabContent.vue'
 import MobileKeyBar from './components/MobileKeyBar.vue'
 import { isMobilePlatform } from './utils/platform'
 import { startAndroidKeepAlive, stopAndroidKeepAlive } from './utils/androidKeepAlive'
 import { writeClipboard } from './composables/useClipboardWrite'
 import { installExternalLinkGuard } from './utils/externalLinks'
-import SettingsTabContent from './components/SettingsTabContent.vue'
-import WorkspaceContent from './components/WorkspaceContent.vue'
-import FileTabContent from './components/FileTabContent.vue'
-import RDPTabContent from './components/RDPTabContent.vue'
-import VNCTabContent from './components/VNCTabContent.vue'
-import SPICETabContent from './components/SPICETabContent.vue'
-import X11DesktopTabContent from './components/X11DesktopTabContent.vue'
-import DBTabContent from './components/DBTabContent.vue'
-import RedisTabContent from './components/RedisTabContent.vue'
-import MongoDBTabContent from './components/MongoDBTabContent.vue'
-import ElasticsearchTabContent from './components/ElasticsearchTabContent.vue'
-import MonitorTabContent from './components/MonitorTabContent.vue'
-import K8sTabContent from './components/K8sTabContent.vue'
-import ContainerTabContent from './components/ContainerTabContent.vue'
-import StartTabContent from './components/StartTabContent.vue'
-import ConnectionForm from './components/ConnectionForm.vue'
 import AISidebar from './components/AISidebar.vue'
 import SyncConflictDialog from './components/SyncConflictDialog.vue'
 import WorkspaceSaveDialog from './components/WorkspaceSaveDialog.vue'
@@ -235,9 +213,9 @@ import { focusPanelTerminal, installTerminalFocusRestore } from './composables/u
 import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
 import type { ShortcutAction } from './types/settings'
-import { useI18n } from './i18n'
+import { useI18n, elementPlusLocale } from './i18n'
 import { CreateSession, CloseSession, RecordRecentConnection, GetPlatform, GetBackgroundImage, SessionStart, RelaunchApp, ResolveMCPApproval, SessionGetCwd } from '../bindings/github.com/ys-ll/uniterm/app'
-import { waitForTerminalSize } from './services/terminalManager'
+import { waitForTerminalSize } from './services/terminalSize'
 import { msg } from './services/message'
 import { unregisterTransferRoute } from './services/transferTaskCenter'
 import type { ConnectionConfig } from './types/session'
@@ -250,6 +228,35 @@ import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowse
 import { openSavedWorkspace } from './composables/savedWorkspace'
 import { installTabSnapshotSaver, restoreTabsSnapshot } from './composables/tabSnapshot'
 import { createWorkspaceFromSelection } from './composables/createWorkspace'
+
+// ── Deferred tab bodies ────────────────────────────────────────
+// Exactly one of these renders at a time (v-else-if in the template) and none
+// of them is needed to paint the shell (header / sidebar / tab bar), so each
+// loads its own chunk on first use. This keeps the heavy stacks off the
+// startup path: xterm + WebGL renderer (terminal), CodeMirror (DB editor,
+// file editor, connection form), the RDP/VNC/SPICE clients, the Kubernetes
+// and container views, ... The shell itself renders immediately; the first
+// tab body follows a few milliseconds later.
+
+const TerminalTabContent = defineAsyncComponent(() => import('./components/TerminalTabContent.vue'))
+const SettingsTabContent = defineAsyncComponent(() => import('./components/SettingsTabContent.vue'))
+const WorkspaceContent = defineAsyncComponent(() => import('./components/WorkspaceContent.vue'))
+const FileTabContent = defineAsyncComponent(() => import('./components/FileTabContent.vue'))
+const RDPTabContent = defineAsyncComponent(() => import('./components/RDPTabContent.vue'))
+const VNCTabContent = defineAsyncComponent(() => import('./components/VNCTabContent.vue'))
+const SPICETabContent = defineAsyncComponent(() => import('./components/SPICETabContent.vue'))
+const X11DesktopTabContent = defineAsyncComponent(() => import('./components/X11DesktopTabContent.vue'))
+const DBTabContent = defineAsyncComponent(() => import('./components/DBTabContent.vue'))
+const RedisTabContent = defineAsyncComponent(() => import('./components/RedisTabContent.vue'))
+const MongoDBTabContent = defineAsyncComponent(() => import('./components/MongoDBTabContent.vue'))
+const ElasticsearchTabContent = defineAsyncComponent(() => import('./components/ElasticsearchTabContent.vue'))
+const MonitorTabContent = defineAsyncComponent(() => import('./components/MonitorTabContent.vue'))
+const K8sTabContent = defineAsyncComponent(() => import('./components/K8sTabContent.vue'))
+const ContainerTabContent = defineAsyncComponent(() => import('./components/ContainerTabContent.vue'))
+const StartTabContent = defineAsyncComponent(() => import('./components/StartTabContent.vue'))
+// Hidden until the user creates/edits a connection (v-model), so it never
+// belongs on the startup path either.
+const ConnectionForm = defineAsyncComponent(() => import('./components/ConnectionForm.vue'))
 
 const bgDataUrl = ref('')
 
@@ -391,11 +398,10 @@ let unsubTrayOpenSettings: (() => void) | null = null
 let unsubTrayOpenAbout: (() => void) | null = null
 // Records every terminal's cwd reports app-wide (see companionStore.sessionCwd).
 let unsubTerminalCwd: (() => void) | null = null
-const { t, locale } = useI18n()
-const EL_LOCALE_MAP: Record<string, typeof enUs> = {
-  'zh-CN': zhCn, 'zh-TW': zhTw, en: enUs, ja, ko, de, es, fr, ru,
-}
-const elLocale = computed(() => EL_LOCALE_MAP[locale.value] || enUs)
+const { t } = useI18n()
+// element-plus table for the current language, fetched together with the app
+// table by i18n/index.ts; enUs covers the window before the first load lands.
+const elLocale = computed(() => elementPlusLocale.value ?? enUs)
 
 // ── Credential / first-run flow ─────────────────────────────────
 const credStore = useCredentialStore()
