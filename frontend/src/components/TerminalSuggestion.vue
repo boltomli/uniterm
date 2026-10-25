@@ -37,7 +37,9 @@
             <span :class="{ 'match-char': item.matchIndices?.includes(charIdx) }">{{ char }}</span>
           </template>
         </span>
-        <button class="delete-btn" :class="{ visible: item.type === 'history' }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
+        <!-- Entries read from the login shell's own history file are not
+             uniTerm's to delete, so they get no delete button. -->
+        <button class="delete-btn" :class="{ visible: item.type === 'history' && !item.readonly }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
       </div>
     </div>
     <!-- AI section (fixed at bottom) -->

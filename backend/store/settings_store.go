@@ -23,6 +23,7 @@ type TerminalSettings struct {
 	MiddleClickAction string `json:"middleClickAction"`
 	MaxHistoryLines   int    `json:"maxHistoryLines"`
 	SmartCompletion   *bool  `json:"smartCompletion"`
+	SuggestionPopup   *bool  `json:"suggestionPopup"`
 	AiTranscription   *bool  `json:"aiTranscription"`
 	HighlightEnabled  *bool  `json:"highlightEnabled"`
 	// CursorBlink controls xterm.js's cursor blink. Pointer + omitempty so

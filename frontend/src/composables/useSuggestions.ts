@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { SaveTerminalHistory, LoadTerminalHistory } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { SaveTerminalHistory, LoadTerminalHistory, LoadShellHistory } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { useQuickCommandStore } from '../stores/quickCommandStore'
 import { useI18n } from '../i18n'
@@ -26,6 +26,9 @@ export interface SuggestionItem {
   matchIndices?: number[]
   commandMatchIndices?: number[]  // For quick-command items when match is on command text
   id?: string  // For history items only
+  // Read from the login shell's own history file. uniTerm does not own that
+  // file, so these cannot be deleted from the popup.
+  readonly?: boolean
 }
 
 export interface SuggestionsState {
@@ -41,6 +44,12 @@ const MAX_COMMAND_LENGTH = 200
 const historyCache = new Map<string, HistoryEntry>() // key = command
 let historyLoaded = false
 const historyEntries = ref<HistoryEntry[]>([])
+
+// The login shell's own history (~/.zsh_history etc.), newest first. Read once
+// per app run: it is only consulted for local panels, where the file barely
+// moves while uniTerm is open, and re-reading it per keystroke would be waste.
+let shellHistory: string[] = []
+let shellHistoryLoaded = false
 
 function syncHistoryEntries() {
   // Reverse: newest first
@@ -78,6 +87,18 @@ export function useSuggestions() {
     }
   }
 
+  async function loadShellHistory(): Promise<void> {
+    if (shellHistoryLoaded) return
+    shellHistoryLoaded = true
+    try {
+      shellHistory = await LoadShellHistory()
+    } catch {
+      // No shell history is a normal state (unknown shell, unreadable file);
+      // uniTerm's own history still works.
+      shellHistory = []
+    }
+  }
+
   async function saveHistory(entries: HistoryEntry[]) {
     try {
       await SaveTerminalHistory(entries)
@@ -99,8 +120,6 @@ export function useSuggestions() {
     // System control / dangerous commands
     if (/^\s*(reboot|shutdown|halt|poweroff)(\s+.*)?$/i.test(trimmed)) return true
     if (/^\s*init\s+(0|6)\b/i.test(trimmed)) return true
-    // History viewing commands
-    if (/^history(\s+.*)?$/i.test(trimmed)) return true
     // Commands with potential sensitive info (passwords, tokens, secrets, keys)
     if (/\b(password|passwd|token|api[_-]?key|secret|private[_-]?key)\s*[=:]\s*\S+/i.test(trimmed)) return true
     if (/\b(-p|--password)\s+\S+/i.test(trimmed)) return true
@@ -213,11 +232,23 @@ export function useSuggestions() {
     return indices
   }
 
-  function getHistorySuggestions(prefix: string): SuggestionItem[] {
+  function getHistorySuggestions(prefix: string, includeShell = false): SuggestionItem[] {
     if (!prefix) return []
     const lowerPrefix = prefix.toLowerCase()
     const matches: SuggestionItem[] = []
-    const entries = Array.from(historyCache.values()).reverse()
+    type Candidate = { id: string; command: string; readonly?: boolean }
+    let entries: Candidate[] = Array.from(historyCache.values()).reverse()
+    if (includeShell) {
+      // Appended, so commands actually run in uniTerm still rank first. The
+      // login shell's history belongs to this machine, hence local panels only
+      // — see LoadShellHistory. shouldSkipCommand is the same secret/noise
+      // filter uniTerm's own history is recorded through.
+      entries = entries.concat(
+        shellHistory
+          .filter(command => !historyCache.has(command) && !shouldSkipCommand(command))
+          .map(command => ({ id: `shell:${command}`, command, readonly: true })),
+      )
+    }
 
     // First pass: exact prefix matches (higher priority)
     for (const entry of entries) {
@@ -235,6 +266,7 @@ export function useSuggestions() {
           description: t('terminal.suggestionHistory'),
           matchIndices: indices,
           id: entry.id,
+          readonly: entry.readonly,
         })
       }
     }
@@ -253,6 +285,7 @@ export function useSuggestions() {
           description: t('terminal.suggestionHistory'),
           matchIndices: indices,
           id: entry.id,
+          readonly: entry.readonly,
         })
       }
     }
@@ -349,7 +382,7 @@ export function useSuggestions() {
     }
   }
 
-  async function updateSuggestions(token: string, aiTranscriptionEnabled?: boolean) {
+  async function updateSuggestions(token: string, aiTranscriptionEnabled?: boolean, includeShellHistory = false) {
     if (debounceTimer) {
       clearTimeout(debounceTimer)
     }
@@ -360,7 +393,7 @@ export function useSuggestions() {
     }
     debounceTimer = setTimeout(async () => {
       if (state.value.loading || !token) return
-      const historyItems = getHistorySuggestions(token)
+      const historyItems = getHistorySuggestions(token, includeShellHistory)
       const quickCommandItems = getQuickCommandSuggestions(token)
       const items: SuggestionItem[] = [...quickCommandItems, ...historyItems]
       if (aiTranscriptionEnabled !== false) {
@@ -439,6 +472,7 @@ export function useSuggestions() {
     state,
     historyEntries,
     loadHistory,
+    loadShellHistory,
     addHistoryCommand,
     removeHistoryCommandById,
     removeHistoryCommandsById,

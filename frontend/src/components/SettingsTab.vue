@@ -646,6 +646,18 @@
 
           <div class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.suggestionPopup') }}</div>
+              <div class="setting-desc">{{ t('settings.suggestionPopupDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <!-- ?? true: settings saved before this option existed have no
+                   value for it, and the popup was always on back then. -->
+              <el-switch :model-value="settingsStore.settings.terminal.suggestionPopup ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.suggestionPopup = v; settingsStore.save() }" />
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.aiTranscription') }}</div>
               <div class="setting-desc">{{ t('settings.aiTranscriptionDesc') }}</div>
             </div>
