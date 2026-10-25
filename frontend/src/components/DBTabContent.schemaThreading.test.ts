@@ -29,7 +29,7 @@ describe('DBTreePanel schema disambiguation (DB-06/DB-07)', () => {
   it('carries the schema into drop/view/truncate/copy', () => {
     expect(tree).toMatch(/await DropTable\(props\.sessionId, dbName, schema, tableName\)/)
     expect(tree).toMatch(/await DropView\(props\.sessionId, dbName, schema, tableName\)/)
-    expect(tree).toMatch(/await TruncateTable\(props\.sessionId, ctxDbName\.value, schema, ctxTableName\.value\)/)
+    expect(tree).toMatch(/await TruncateTable\(props\.sessionId, dbName, schema, tableName\)/)
     expect(tree).toMatch(/await CopyTable\(props\.sessionId, dbName, schema, copySourceTable\.value, newName\)/)
   })
 })

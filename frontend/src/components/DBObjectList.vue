@@ -97,6 +97,7 @@ import { Table2, Eye, Eraser, Trash2, Plus } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { GetTables, CreateTable, DropTable, DropView, TruncateTable } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
+import { useDbObjectActions } from '../composables/useDbObjectActions'
 import type { TableInfo } from '../types/database'
 import { uiPx } from '../utils/uiScale'
 
@@ -143,72 +144,40 @@ function onRowClick(row: TableInfo) {
   emit('open', props.dbName, row.name, row.type === 'view', row.schema || '')
 }
 
-// ── Confirm dialog (type-to-confirm) ──
+// ── Confirm dialog (type-to-confirm, shared object-action flow, DB-28) ──
 
-const confirmVisible = ref(false)
-const confirmTitle = ref('')
-const confirmText = ref('')
-const confirmName = ref('')
-const confirmInput = ref('')
-let confirmAction: (() => Promise<void>) | null = null
-
-function showConfirm(title: string, text: string, name: string, action: () => Promise<void>) {
-  confirmTitle.value = title
-  confirmText.value = text
-  confirmName.value = name
-  confirmInput.value = ''
-  confirmAction = action
-  confirmVisible.value = true
-}
-
-async function onConfirm() {
-  if (confirmAction) {
-    try {
-      await confirmAction()
-    } catch (e: any) {
-      msg.error(e?.message || String(e))
-    }
-  }
-  confirmVisible.value = false
-}
+const { confirmVisible, confirmTitle, confirmText, confirmName, confirmInput, onConfirm, runObjectAction } =
+  useDbObjectActions({
+    // One refresh path for every destructive action (DB-28): reload the
+    // list, tell the parent, bubble the removal.
+    onRefresh: async (dbName) => {
+      await load()
+      emit('changed', dbName)
+    },
+    onObjectRemoved: (payload) => emit('objectRemoved', payload),
+  })
 
 function askTruncate(row: TableInfo) {
-  showConfirm(
-    t('db.truncateTable'),
-    t('db.truncateTableConfirm', { name: row.name }),
-    row.name,
-    async () => {
-      await TruncateTable(props.sessionId, props.dbName, row.schema || '', row.name)
-      emit('changed', props.dbName)
-    }
+  runObjectAction(
+    { dbName: props.dbName, tableName: row.name, kind: 'table' },
+    { title: t('db.truncateTable'), text: t('db.truncateTableConfirm', { name: row.name }), name: row.name },
+    async () => { await TruncateTable(props.sessionId, props.dbName, row.schema || '', row.name) },
   )
 }
 
 function askDrop(row: TableInfo) {
-  showConfirm(
-    t('db.dropTable'),
-    t('db.dropTableConfirm', { name: row.name }),
-    row.name,
-    async () => {
-      await DropTable(props.sessionId, props.dbName, row.schema || '', row.name)
-      await load()
-      emit('changed', props.dbName)
-      emit('objectRemoved', { dbName: props.dbName, tableName: row.name, kind: 'table' })
-    }
+  runObjectAction(
+    { dbName: props.dbName, tableName: row.name, kind: 'table' },
+    { title: t('db.dropTable'), text: t('db.dropTableConfirm', { name: row.name }), name: row.name },
+    async () => { await DropTable(props.sessionId, props.dbName, row.schema || '', row.name) },
   )
 }
 
 function askDropView(row: TableInfo) {
-  showConfirm(
-    t('db.dropView'),
-    t('db.dropViewConfirm', { name: row.name }),
-    row.name,
-    async () => {
-      await DropView(props.sessionId, props.dbName, row.schema || '', row.name)
-      await load()
-      emit('changed', props.dbName)
-      emit('objectRemoved', { dbName: props.dbName, tableName: row.name, kind: 'view' })
-    }
+  runObjectAction(
+    { dbName: props.dbName, tableName: row.name, kind: 'view' },
+    { title: t('db.dropView'), text: t('db.dropViewConfirm', { name: row.name }), name: row.name },
+    async () => { await DropView(props.sessionId, props.dbName, row.schema || '', row.name) },
   )
 }
 

@@ -185,6 +185,7 @@ import { useI18n } from '../i18n'
 import { ElMessageBox } from 'element-plus'
 import { GetDatabases, GetTables, CreateDatabase, DropDatabase, CreateTable, DropTable, DropView, TruncateTable, CopyTable, GetDBCapabilities, DumpTable, DumpTableToFile, SaveFileDialogFiltered, OpenFileDialogFiltered, ReadFileBase64, ExecuteSQLScript } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
+import { useDbObjectActions } from '../composables/useDbObjectActions'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
@@ -668,88 +669,66 @@ function encodeBase64(text: string): string {
   return btoa(bin)
 }
 
-// ── Confirm dialog ──
+// ── Confirm dialog (shared object-action flow, DB-28) ──
 
-const confirmVisible = ref(false)
-const confirmTitle = ref('')
-const confirmText = ref('')
-const confirmName = ref('')
-const confirmInput = ref('')
-let confirmAction: (() => Promise<void>) | null = null
-
-function showConfirm(title: string, text: string, name: string, action: () => Promise<void>) {
-  confirmTitle.value = title
-  confirmText.value = text
-  confirmName.value = name
-  confirmInput.value = ''
-  confirmAction = action
-  confirmVisible.value = true
-  ctxMenuVisible.value = false
-}
-
-async function onConfirm() {
-  if (confirmAction) {
-    try {
-      await confirmAction()
-      await loadTree()
-    } catch (e: any) {
-      console.error(e)
-      msg.error(e?.message || String(e))
-    }
-  }
-  confirmVisible.value = false
-}
+const {
+  confirmVisible,
+  confirmTitle,
+  confirmText,
+  confirmName,
+  confirmInput,
+  onConfirm,
+  runObjectAction,
+} = useDbObjectActions({
+  // Refreshing the tree is the single post-action step; objectRemoved is
+  // bubbled per action through the same composable flow.
+  onRefresh: () => loadTree(),
+  onObjectRemoved: (payload) => emit('objectRemoved', payload),
+})
 
 function onCtxDropDatabase() {
+  ctxMenuVisible.value = false
   const dbName = ctxDbName.value
-  showConfirm(
-    t('db.dropDatabase'),
-    t('db.dropDatabaseConfirm', { name: dbName }),
-    dbName,
-    async () => {
-      await DropDatabase(props.sessionId, dbName)
-      emit('objectRemoved', { dbName, kind: 'database' })
-    }
+  runObjectAction(
+    { dbName, kind: 'database' },
+    { title: t('db.dropDatabase'), text: t('db.dropDatabaseConfirm', { name: dbName }), name: dbName },
+    async () => { await DropDatabase(props.sessionId, dbName) },
   )
 }
 
 function onCtxDropTable() {
+  ctxMenuVisible.value = false
   const dbName = ctxDbName.value
   const tableName = ctxTableName.value
   const schema = ctxTableSchema.value
-  showConfirm(
-    t('db.dropTable'),
-    t('db.dropTableConfirm', { name: tableName }),
-    tableName,
-    async () => {
-      await DropTable(props.sessionId, dbName, schema, tableName)
-      emit('objectRemoved', { dbName, tableName, kind: 'table' })
-    }
+  runObjectAction(
+    { dbName, tableName, kind: 'table' },
+    { title: t('db.dropTable'), text: t('db.dropTableConfirm', { name: tableName }), name: tableName },
+    async () => { await DropTable(props.sessionId, dbName, schema, tableName) },
   )
 }
 
 function onCtxDropView() {
+  ctxMenuVisible.value = false
   const dbName = ctxDbName.value
   const tableName = ctxTableName.value
   const schema = ctxTableSchema.value
-  showConfirm(
-    t('db.dropView'),
-    t('db.dropViewConfirm', { name: tableName }),
-    tableName,
-    async () => {
-      await DropView(props.sessionId, dbName, schema, tableName)
-      emit('objectRemoved', { dbName, tableName, kind: 'view' })
-    }
+  runObjectAction(
+    { dbName, tableName, kind: 'view' },
+    { title: t('db.dropView'), text: t('db.dropViewConfirm', { name: tableName }), name: tableName },
+    async () => { await DropView(props.sessionId, dbName, schema, tableName) },
   )
 }
 
 function onCtxTruncateTable() {
+  ctxMenuVisible.value = false
+  const dbName = ctxDbName.value
+  const tableName = ctxTableName.value
   const schema = ctxTableSchema.value
-  showConfirm(
-    t('db.truncateTable'),
-    t('db.truncateTableConfirm', { name: ctxTableName.value }),
-    ctxTableName.value,
-    async () => { await TruncateTable(props.sessionId, ctxDbName.value, schema, ctxTableName.value) }
+  runObjectAction(
+    { dbName, tableName, kind: 'table' },
+    { title: t('db.truncateTable'), text: t('db.truncateTableConfirm', { name: tableName }), name: tableName },
+    async () => { await TruncateTable(props.sessionId, dbName, schema, tableName) },
   )
 }
 
