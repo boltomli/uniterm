@@ -17,10 +17,6 @@ vi.mock('../services/message', () => ({
 const treeSrc = readSrc('components/DBTreePanel.vue')
 const listSrc = readSrc('components/DBObjectList.vue')
 
-async function flush() {
-  await new Promise(resolve => setTimeout(resolve, 0))
-}
-
 describe('useDbObjectActions flow', () => {
   it('runs execute → refresh → notify in order on confirm', async () => {
     const order: string[] = []
