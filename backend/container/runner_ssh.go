@@ -18,22 +18,32 @@ type SSHRunner struct {
 func NewSSHRunner(client *ssh.Client) *SSHRunner { return &SSHRunner{client: client} }
 func (r *SSHRunner) Client() *ssh.Client         { return r.client }
 
-func (r *SSHRunner) Run(_ context.Context, argv []string) ([]byte, error) {
-	return r.run(argv, nil)
+func (r *SSHRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
+	return r.run(ctx, argv, nil)
 }
 
-func (r *SSHRunner) RunStdin(_ context.Context, argv []string, stdin []byte) ([]byte, error) {
-	return r.run(argv, stdin)
+func (r *SSHRunner) RunStdin(ctx context.Context, argv []string, stdin []byte) ([]byte, error) {
+	return r.run(ctx, argv, stdin)
 }
 
 // RunStdinStream 带流式标准输入执行：本机 tar 流经 SSH stdin 直达远端容器。
 // 写完 stdin 并关闭后等退出，stdout 全量收集（导入类命令 stdout 近似为空）。
-func (r *SSHRunner) RunStdinStream(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+func (r *SSHRunner) RunStdinStream(ctx context.Context, argv []string, stdin io.Reader) (out []byte, retErr error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			retErr = ctx.Err()
+		}
+	}()
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
 	}
 	defer sess.Close()
+	stop := closeSSHSessionOnCancel(ctx, sess)
+	defer stop()
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
@@ -116,12 +126,22 @@ func (r *SSHRunner) RunRaw(_ context.Context, argv []string) (RawStream, error) 
 	return &sshRawStream{Reader: stdout, sess: sess, stderr: stderrBuf}, nil
 }
 
-func (r *SSHRunner) run(argv []string, stdin []byte) ([]byte, error) {
+func (r *SSHRunner) run(ctx context.Context, argv []string, stdin []byte) (out []byte, retErr error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			retErr = ctx.Err()
+		}
+	}()
 	sess, err := r.client.NewSession()
 	if err != nil {
 		return nil, err
 	}
 	defer sess.Close()
+	stop := closeSSHSessionOnCancel(ctx, sess)
+	defer stop()
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
@@ -276,4 +296,18 @@ func (p *sshPTY) Close() error {
 	var err error
 	p.once.Do(func() { err = p.sess.Close() })
 	return err
+}
+
+// Closing the command channel interrupts blocked writes and Wait without
+// closing the shared SSH client used by the rest of the connection.
+func closeSSHSessionOnCancel(ctx context.Context, sess *ssh.Session) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
 }

@@ -2016,5 +2016,20 @@
   "netscan.export.failed": "Falha na exportação: ",
   "netscan.export.copy": "Copiar",
   "netscan.export.copied": "Resultados da verificação copiados para a área de transferência",
-  "netscan.export.copyFailed": "Falha ao copiar: "
+  "netscan.export.copyFailed": "Falha ao copiar: ",
+  "container.loadArchive": "Carregar arquivo de imagem",
+  "container.archiveHint": "Carregue um arquivo criado por docker save, incluindo formatos comprimidos suportados pelo Docker. Não importa sistemas de arquivos raiz de docker export.",
+  "container.archiveFile": "Arquivo",
+  "container.archivePathHint": "Caminho do arquivo no computador que executa uniTerm",
+  "container.chooseArchive": "Escolher arquivo",
+  "container.loadingArchive": "Carregando arquivo de imagem…",
+  "container.imageCancelHint": "Cancelar interrompe a solicitação; alterações já aplicadas pelo Docker não são desfeitas.",
+  "container.archiveLoaded": "Arquivo de imagem carregado",
+  "container.commitImage": "Salvar como imagem",
+  "container.commitHint": "Os dados de volumes montados não são incluídos. O Docker pausa os processos do contêiner em execução durante a criação.",
+  "container.commitTarget": "Imagem de destino (repositório:tag)",
+  "container.commitAuthor": "Autor (opcional)",
+  "container.commitMessage": "Mensagem (opcional)",
+  "container.committingImage": "Criando imagem do contêiner…",
+  "container.imageCommitted": "Imagem criada a partir do contêiner"
 }

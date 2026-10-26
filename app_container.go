@@ -488,3 +488,20 @@ func (a *App) createContainerFileSession(config session.ConnectionConfig) (*sess
 	a.sessionManager.Add(sess)
 	return &session.SessionInfo{ID: id, Type: "container-file", Title: config.Name, Status: session.StatusConnected}, nil
 }
+
+// ContainerPrepareImageOperation allocates a cancellable operation on a Docker connection.
+func (a *App) ContainerPrepareImageOperation(connectionID string) (string, error) {
+	return a.containerManager.PrepareImageOperation(connectionID)
+}
+
+func (a *App) ContainerCancelImageOperation(operationID string) {
+	a.containerManager.CancelImageOperation(operationID)
+}
+
+func (a *App) ContainerLoadImage(operationID, archivePath string) (string, error) {
+	return a.containerManager.LoadImageFile(operationID, archivePath)
+}
+
+func (a *App) ContainerCommitImage(operationID, containerID string, opts container.CommitOptions) (string, error) {
+	return a.containerManager.CommitImage(operationID, containerID, opts)
+}

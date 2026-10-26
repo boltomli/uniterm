@@ -2016,5 +2016,20 @@
   "netscan.export.failed": "Export fehlgeschlagen: ",
   "netscan.export.copy": "Kopieren",
   "netscan.export.copied": "Scanergebnisse in die Zwischenablage kopiert",
-  "netscan.export.copyFailed": "Kopieren fehlgeschlagen: "
+  "netscan.export.copyFailed": "Kopieren fehlgeschlagen: ",
+  "container.loadArchive": "Image-Archiv laden",
+  "container.archiveHint": "Lädt ein mit docker save erstelltes Archiv, auch von Docker unterstützte komprimierte Archive. Kein Import eines mit docker export erstellten Root-Dateisystems.",
+  "container.archiveFile": "Archivdatei",
+  "container.archivePathHint": "Archivpfad auf dem Computer, auf dem uniTerm läuft",
+  "container.chooseArchive": "Datei auswählen",
+  "container.loadingArchive": "Image-Archiv wird geladen…",
+  "container.imageCancelHint": "Abbrechen stoppt die Anfrage. Bereits von Docker ausgeführte Änderungen werden nicht rückgängig gemacht.",
+  "container.archiveLoaded": "Image-Archiv geladen",
+  "container.commitImage": "Als Image speichern",
+  "container.commitHint": "Daten eingehängter Volumes sind nicht enthalten. Docker pausiert laufende Containerprozesse während des Commits.",
+  "container.commitTarget": "Ziel-Image (Repository:Tag)",
+  "container.commitAuthor": "Autor (optional)",
+  "container.commitMessage": "Nachricht (optional)",
+  "container.committingImage": "Container wird als Image gespeichert…",
+  "container.imageCommitted": "Image aus Container erstellt"
 }

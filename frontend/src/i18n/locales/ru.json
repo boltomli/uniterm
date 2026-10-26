@@ -2016,5 +2016,20 @@
   "netscan.export.failed": "Ошибка экспорта: ",
   "netscan.export.copy": "Копировать",
   "netscan.export.copied": "Результаты сканирования скопированы в буфер обмена",
-  "netscan.export.copyFailed": "Ошибка копирования: "
+  "netscan.export.copyFailed": "Ошибка копирования: ",
+  "container.loadArchive": "Загрузить архив образа",
+  "container.archiveHint": "Загрузите архив, созданный docker save, включая поддерживаемые Docker сжатые форматы. Импорт корневой файловой системы из docker export не выполняется.",
+  "container.archiveFile": "Файл архива",
+  "container.archivePathHint": "Путь к архиву на компьютере, где запущен uniTerm",
+  "container.chooseArchive": "Выбрать файл",
+  "container.loadingArchive": "Загрузка архива образа…",
+  "container.imageCancelHint": "Отмена останавливает запрос, но не отменяет изменения, уже применённые Docker.",
+  "container.archiveLoaded": "Архив образа загружен",
+  "container.commitImage": "Сохранить как образ",
+  "container.commitHint": "Данные подключённых томов не включаются. Во время создания образа Docker приостанавливает процессы работающего контейнера.",
+  "container.commitTarget": "Целевой образ (репозиторий:тег)",
+  "container.commitAuthor": "Автор (необязательно)",
+  "container.commitMessage": "Сообщение (необязательно)",
+  "container.committingImage": "Создание образа из контейнера…",
+  "container.imageCommitted": "Образ создан из контейнера"
 }
