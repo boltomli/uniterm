@@ -415,6 +415,8 @@
   "settings.ai": "KI-Modelle",
   "settings.mcp": "uniTerm MCP",
   "settings.groupApp": "Anwendung",
+  "settings.localData": "Lokale Daten",
+  "settings.groupData": "Konfiguration",
   "settings.groupAI": "KI",
   "settings.groupNetwork": "Verbindungen",
   "settings.groupOther": "Über",

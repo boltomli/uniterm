@@ -312,11 +312,15 @@
           </div>
         </div>
 
-        <!-- Hidden entirely on mobile: data dir is OS-managed and keychain
-             encryption is the only supported mode, so nothing is configurable -->
-        <template v-if="!isMobile">
-          <h2 class="section-title">{{ t('settings.storageSecurity') }}</h2>
-          <div class="settings-group">
+      </div>
+
+      <!-- 本地数据: where the configuration lives (data dir) and how it is
+           protected (encryption mode, master password). Desktop-only tab — on
+           mobile the data dir is OS-managed and keychain encryption is the
+           only supported mode, so nothing is configurable. -->
+      <div v-if="settingsStore.activeCategory === 'local-data'" class="settings-section">
+        <h2 class="section-title">{{ t('settings.localData') }}</h2>
+        <div class="settings-group">
           <div class="setting-card">
             <div class="setting-info">
               <div class="setting-title">{{ t('config.dataDir') }}</div>
@@ -361,8 +365,7 @@
               <el-button size="small" @click="openChangePassword">{{ t('config.changePassword') }}</el-button>
             </div>
           </div>
-          </div>
-        </template>
+        </div>
       </div>
 
       <!-- 终端配置 -->
@@ -1666,7 +1669,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated } from 'vue'
-import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, SquareSlash, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server } from '@lucide/vue'
+import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, SquareSlash, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server, HardDrive } from '@lucide/vue'
 import { msg } from '../services/message'
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -2787,7 +2790,12 @@ const categories = computed(() => {
     { key: 'identities', label: t('settings.identities'), icon: Key, group: 'net' },
     { key: 'proxies', label: t('settings.proxies'), icon: Network, group: 'net' },
     { key: 'tunnels', label: t('settings.tunnels'), icon: ArrowRightLeft, group: 'net' },
-    { key: 'sync', label: t('settings.sync'), icon: RefreshCw, group: 'other' },
+    // Local data (data dir / encryption / master password) and cloud sync both
+    // manage where configuration lives, so they share a group. The local-data
+    // tab is desktop-only: on mobile the data dir is OS-managed and keychain
+    // encryption is the only supported mode, so nothing is configurable there.
+    ...(!isMobile ? [{ key: 'local-data', label: t('settings.localData'), icon: HardDrive, group: 'data' }] : []),
+    { key: 'sync', label: t('settings.sync'), icon: RefreshCw, group: 'data' },
     { key: 'about', label: t('settings.about'), icon: Info, group: 'other' },
   ]
   return cats
@@ -2800,6 +2808,7 @@ const categoryGroups = computed(() => {
   const cats = categories.value as { key: string; label: string; icon: any; group?: string }[]
   const defs = [
     { key: 'app', title: t('settings.groupApp') },
+    { key: 'data', title: t('settings.groupData') },
     { key: 'net', title: t('settings.groupNetwork') },
     { key: 'ai', title: t('settings.groupAI') },
     { key: 'other', title: t('settings.groupOther') },
@@ -2812,10 +2821,10 @@ const categoryGroups = computed(() => {
   return groups
 })
 
-// A persisted 'keyboard' active category would show an empty settings page on
-// mobile — fall back to basic.
+// A persisted desktop-only active category would show an empty settings page
+// on mobile — fall back to basic.
 watch(categories, (cats) => {
-  if (isMobile && settingsStore.activeCategory === 'keyboard' && !cats.some(c => c.key === 'keyboard')) {
+  if (isMobile && ['keyboard', 'local-data', 'mcp-client', 'mcp'].includes(settingsStore.activeCategory) && !cats.some(c => c.key === settingsStore.activeCategory)) {
     settingsStore.activeCategory = 'basic'
   }
 }, { immediate: true })

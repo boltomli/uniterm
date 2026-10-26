@@ -415,6 +415,8 @@
   "settings.ai": "Mô hình AI",
   "settings.mcp": "uniTerm MCP",
   "settings.groupApp": "Ứng dụng",
+  "settings.localData": "Dữ liệu cục bộ",
+  "settings.groupData": "Cấu hình",
   "settings.groupAI": "AI",
   "settings.groupNetwork": "Kết nối",
   "settings.groupOther": "Giới thiệu",
