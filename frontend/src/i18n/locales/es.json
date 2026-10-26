@@ -415,6 +415,8 @@
   "settings.ai": "Modelos de IA",
   "settings.mcp": "uniTerm MCP",
   "settings.groupApp": "Aplicación",
+  "settings.localData": "Datos locales",
+  "settings.groupData": "Configuración",
   "settings.groupAI": "IA",
   "settings.groupNetwork": "Conexiones",
   "settings.groupOther": "Acerca de",

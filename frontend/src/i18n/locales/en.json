@@ -418,6 +418,8 @@
   "settings.ai": "AI Models",
   "settings.mcp": "uniTerm MCP",
   "settings.groupApp": "App",
+  "settings.localData": "Local Data",
+  "settings.groupData": "Configuration",
   "settings.groupAI": "AI",
   "settings.groupNetwork": "Connections",
   "settings.groupOther": "About",

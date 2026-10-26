@@ -415,6 +415,8 @@
   "settings.ai": "ИИ-модели",
   "settings.mcp": "uniTerm MCP",
   "settings.groupApp": "Приложение",
+  "settings.localData": "Локальные данные",
+  "settings.groupData": "Конфигурация",
   "settings.groupAI": "ИИ",
   "settings.groupNetwork": "Подключения",
   "settings.groupOther": "О программе",
