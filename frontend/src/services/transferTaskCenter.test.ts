@@ -193,4 +193,32 @@ describe('transferTaskCenter event details', () => {
     expect(() => unregisterTransferRoute('sid-unknown')).not.toThrow()
     expect(() => unregisterTransferRoute('')).not.toThrow()
   })
+
+  it('task lists are reactive for consumers that capture the array once (issue #1227 regression)', async () => {
+    // FileTabContent grabs the task array once at setup and renders from it;
+    // the router pushes into that same array. If the store Map is not deep
+    // reactive, the push is invisible to Vue and the transfer panel stays on
+    // its empty state even though events flow.
+    const { watch, nextTick } = await import('vue')
+    registerTransferRoute('sid-r1', 'key-r1')
+    const tasks = usePanelStore().getTransferTasks('key-r1')
+    const onListChange = vi.fn()
+    watch(() => tasks.map(t => t.id).join('|'), onListChange)
+    await nextTick()
+    expect(onListChange).not.toHaveBeenCalled()
+
+    fireTransfer({ sessionId: 'sid-r1', type: 'sftp:transfer', taskId: 'up-r1', event: 'start', tfType: 'upload', name: 'big.bin', total: 100 })
+    await nextTick()
+    expect(onListChange).toHaveBeenCalledTimes(1)
+
+    // A later in-place status write on an existing task must stay visible too
+    // (the watch is registered after the push so the push itself doesn't count).
+    const onStatusChange = vi.fn()
+    watch(() => tasks.map(t => t.status).join('|'), onStatusChange)
+    await nextTick()
+
+    fireTransfer({ sessionId: 'sid-r1', type: 'sftp:transfer', taskId: 'up-r1', event: 'complete', status: 'done' })
+    await nextTick()
+    expect(onStatusChange).toHaveBeenCalledTimes(1)
+  })
 })
