@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { shallowReactive } from 'vue'
+import { reactive, shallowReactive } from 'vue'
 import type { Panel, PanelStatus, ConnectionConfig } from '../types/workspace'
 import { DisableSessionOutputLog, RegisterSessionForPanel, UnregisterSession } from '../../bindings/github.com/ys-ll/uniterm/app'
 
@@ -42,16 +42,19 @@ export interface SPICECache {
 }
 
 // shallowReactive: vncCaches/spiceCaches 持有 RFB/DOM 实例，深层 reactive 代理会破坏实例方法且浪费性能。
-// panels Map is individually wrapped with shallowReactive so that
-// Map.get/set/delete have reactive tracking (shallowReactive on the
-// outer object does NOT proxy Map internals — the Map is returned as-is).
+// panels is a deep reactive Map (v1.10 semantics): components hold the panel
+// objects long-term (props, watches on panel.sessionId), so in-place property
+// mutations must propagate. shallowReactive here made Map values raw objects
+// whose mutations were invisible to Vue — reconnect's bindSession then never
+// reached BaseTerminal's sessionId watch (issue #1232).
 const panelState = shallowReactive<{
   panels: Map<string, Panel>
   transferTasks: Map<string, TransferTaskUI[]>
   proxyAddrs: Map<string, string>
   vncCaches: Map<string, VNCCache>
+  spiceCaches: Map<string, SPICECache>
 }>({
-  panels: shallowReactive(new Map()),
+  panels: reactive(new Map()),
   transferTasks: new Map(),
   proxyAddrs: shallowReactive(new Map()),
   vncCaches: new Map(),
@@ -113,15 +116,9 @@ export const usePanelStore = defineStore('panel', () => {
     const p = panelState.panels.get(panelId)
     if (!p) return
     const prev = p.sessionId
+    // panels is a deep reactive Map, so the property mutation itself notifies
+    // every subscriber (props.sessionId bindings, watches).
     p.sessionId = sessionId
-    // shallowReactive does not track deep property mutations on Map values.
-    // Re-setting the same object reference is a no-op (Vue checks oldValue ===
-    // value), so we must delete + set to force the Map trigger.  Without this,
-    // the database tree panel never loads on first connect: the tab opens with
-    // sessionId='' before CreateSession completes, and bindSession's mutation
-    // is invisible to Vue's reactivity system.
-    panelState.panels.delete(panelId)
-    panelState.panels.set(panelId, p)
 
     // Tell the backend which panel this session belongs to so per-panel
     // output logging survives reconnects. The previous session's binding
@@ -136,37 +133,23 @@ export const usePanelStore = defineStore('panel', () => {
 
   function updateStatus(panelId: string, status: PanelStatus) {
     const p = panelState.panels.get(panelId)
-    if (p) {
-      p.status = status
-      panelState.panels.delete(panelId)
-      panelState.panels.set(panelId, p)
-    }
+    if (p) p.status = status
   }
 
   function updateTitle(panelId: string, title: string) {
     const p = panelState.panels.get(panelId)
     if (!p) return
     p.title = makeTitleUnique(title, panelId)
-    panelState.panels.delete(panelId)
-    panelState.panels.set(panelId, p)
   }
 
   function setOutputLog(panelId: string, state: { enabled: boolean; path: string }) {
     const p = panelState.panels.get(panelId)
-    if (p) {
-      p.outputLog = state
-      panelState.panels.delete(panelId)
-      panelState.panels.set(panelId, p)
-    }
+    if (p) p.outputLog = state
   }
 
   function movePanelToTab(panelId: string, tabId: string) {
     const p = panelState.panels.get(panelId)
-    if (p) {
-      p.tabId = tabId
-      panelState.panels.delete(panelId)
-      panelState.panels.set(panelId, p)
-    }
+    if (p) p.tabId = tabId
   }
 
   function getTransferTasks(panelId: string): TransferTaskUI[] {
