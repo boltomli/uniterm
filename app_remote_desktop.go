@@ -256,7 +256,7 @@ func (a *App) setDesktopKeyboardCapture(sessionID, captureID string, enabled boo
 	if !ok {
 		return false, fmt.Errorf("%s session unavailable", strings.ToUpper(sessionType))
 	}
-	if s.Type() != sessionType || s.Status() != session.StatusConnected {
+	if (s.Type() != sessionType && !(sessionType == "vnc" && s.Type() == "ard")) || s.Status() != session.StatusConnected {
 		return false, fmt.Errorf("%s session is not connected", strings.ToUpper(sessionType))
 	}
 	a.rdpKeyboardMu.Lock()

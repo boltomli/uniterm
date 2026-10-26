@@ -22,6 +22,15 @@ import (
 )
 
 func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
+	testDesktopSessionThroughSSHTunnel(t, "spice", 3, 5903, []string{"main", "display", "inputs", "cursor"})
+}
+
+func TestCreateARDSessionThroughSSHTunnel(t *testing.T) {
+	testDesktopSessionThroughSSHTunnel(t, "ard", 5900, 5900, []string{"rfb"})
+}
+
+func testDesktopSessionThroughSSHTunnel(t *testing.T, protocol string, port, targetPort int, channels []string) {
+	t.Helper()
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -93,8 +102,8 @@ func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
 	}
 	a := &App{sessionManager: session.NewSessionManager(), tunnelService: session.NewTunnelService(), connectionStore: connections}
 	t.Cleanup(a.tunnelService.Shutdown)
-	info, err := a.CreateSession("spice", session.ConnectionConfig{
-		Type: "spice", Host: "spice.internal.invalid", Port: 3,
+	info, err := a.CreateSession(protocol, session.ConnectionConfig{
+		Type: protocol, Host: protocol + ".internal.invalid", Port: port,
 		TunnelSSHConnID: "jump", TunnelSSHPassword: "jump-pw",
 	})
 	if err != nil {
@@ -105,12 +114,12 @@ func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint.Hostname() != "127.0.0.1" || info.Status != session.StatusConnected {
-		t.Fatalf("SPICE did not return a connected local proxy: %+v", info)
+	if endpoint.Hostname() != "127.0.0.1" || info.Status != session.StatusConnected || info.Type != protocol {
+		t.Fatalf("%s did not return a connected local proxy: %+v", protocol, info)
 	}
 	dialer := websocket.Dialer{Subprotocols: []string{"binary"}, HandshakeTimeout: 3 * time.Second}
 	var sockets []*websocket.Conn
-	for _, channel := range []string{"main", "display", "inputs", "cursor"} {
+	for _, channel := range channels {
 		ws, _, err := dialer.Dial(info.ProxyAddr, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -123,15 +132,15 @@ func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
 		}
 		kind, echoed, err := ws.ReadMessage()
 		if err != nil || kind != websocket.BinaryMessage || string(echoed) != payload {
-			t.Fatalf("SPICE %s channel did not travel through SSH: %q, %v", channel, echoed, err)
+			t.Fatalf("%s %s channel did not travel through SSH: %q, %v", protocol, channel, echoed, err)
 		}
 		select {
 		case target := <-targets:
-			if target != "spice.internal.invalid:5903" {
+			if target != net.JoinHostPort(protocol+".internal.invalid", fmt.Sprint(targetPort)) {
 				t.Fatalf("SSH channel reached %q", target)
 			}
 		case <-time.After(3 * time.Second):
-			t.Fatal("SPICE channel bypassed the SSH tunnel")
+			t.Fatalf("%s channel bypassed the SSH tunnel", protocol)
 		}
 		sockets = append(sockets, ws)
 	}
@@ -140,7 +149,7 @@ func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
 	}
 	for _, ws := range sockets {
 		if _, _, err := ws.ReadMessage(); err == nil {
-			t.Fatal("SPICE channel survived session/tunnel shutdown")
+			t.Fatalf("%s channel survived session/tunnel shutdown", protocol)
 		}
 	}
 }

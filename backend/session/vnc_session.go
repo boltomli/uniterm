@@ -2,12 +2,23 @@ package session
 
 import (
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 )
 
 type VNCSession struct {
 	baseSession
 	proxy     *VNCProxy
 	proxyAddr string
+}
+
+// ARD shares the VNC transport. Apple protocol negotiation belongs to the
+// frontend adapter, while the session retains its own type and lifecycle.
+func NewARDSession(id string) *VNCSession {
+	s := NewVNCSession(id)
+	s.sessionType = "ard"
+	return s
 }
 
 func NewVNCSession(id string) *VNCSession {
@@ -23,21 +34,22 @@ func NewVNCSession(id string) *VNCSession {
 func (s *VNCSession) Connect(config ConnectionConfig) error {
 	s.setStatus(StatusConnecting)
 
-	target := fmt.Sprintf("%s:%d", config.Host, config.Port)
-	if config.Port <= 0 {
-		target = fmt.Sprintf("%s:5900", config.Host)
-	} else if config.Port < 100 {
+	port := config.Port
+	if port <= 0 {
+		port = 5900
+	} else if s.sessionType == "vnc" && port < 100 {
 		// libvirt display port format: :1 -> 5901, :23 -> 5923
-		target = fmt.Sprintf("%s:%d", config.Host, config.Port+5900)
+		port += 5900
 	}
+	target := net.JoinHostPort(config.Host, strconv.Itoa(port))
 
-	s.title = fmt.Sprintf("%s (VNC)", config.Host)
+	s.title = fmt.Sprintf("%s (%s)", config.Host, strings.ToUpper(s.sessionType))
 
 	proxy := NewVNCProxy(target)
 	addr, err := proxy.Start()
 	if err != nil {
 		s.setStatus(StatusError)
-		return fmt.Errorf("vnc proxy start: %w", err)
+		return fmt.Errorf("%s proxy start: %w", s.sessionType, err)
 	}
 
 	s.proxy = proxy

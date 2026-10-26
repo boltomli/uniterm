@@ -479,14 +479,14 @@
                     <el-switch v-model="form.ftpPassive" />
                   </el-form-item>
                 </template>
-                <template v-if="form.type === 'vnc'">
+                <template v-if="form.type === 'vnc' || form.type === 'ard'">
                   <el-form-item :label="t('conn.vncShared')">
                     <el-switch v-model="form.vncShared" />
                   </el-form-item>
-                  <el-form-item :label="t('conn.vncRepeaterID')">
+                  <el-form-item v-if="form.type === 'vnc'" :label="t('conn.vncRepeaterID')">
                     <el-input v-model="form.vncRepeaterID" :placeholder="t('conn.vncRepeaterIDPlaceholder')" />
                   </el-form-item>
-                  <el-form-item :label="t('conn.vncClipboardEncoding')">
+                  <el-form-item v-if="form.type === 'vnc'" :label="t('conn.vncClipboardEncoding')">
                     <el-select v-model="form.vncClipboardEncoding">
                       <el-option :label="t('conn.vncClipboardEncodingDefault')" value="auto" />
                       <el-option label="Unicode (UTF-8)" value="utf-8" />
@@ -1113,6 +1113,8 @@ const form = reactive<ConnectionConfig>({
   ftpPassive: true,
   ftpSkipVerify: false,
   vncShared: true,
+  desktopPreferences: undefined,
+  desktopView: undefined,
   vncRepeaterID: '',
   vncClipboardEncoding: 'auto',
   encoding: 'utf-8',
@@ -1157,7 +1159,7 @@ const advGroupNetwork = computed(() =>
   showProxy.value || showTunnel.value
 )
 const advGroupProtocol = computed(() =>
-  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet', 'rdp'].includes(form.type) ||
+  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'ard', 'telnet', 'rdp'].includes(form.type) ||
   isSSHAlgoType.value
 )
 const sshAlgoDialogVisible = ref(false)
@@ -1426,7 +1428,7 @@ watch(() => form.type, (newType) => {
     // ES shares the common `authType` field; default to 'password' unless an API key was already chosen.
     form.authType = form.authType === 'apikey' ? 'apikey' : 'password'
   }
-  if (['rdp', 'vnc', 'spice', 'x11-desktop'].includes(newType) || newType === 'database') {
+  if (['rdp', 'vnc', 'ard', 'spice', 'x11-desktop'].includes(newType) || newType === 'database') {
     form.authType = 'password'
   }
   // The shell ("terminal type") is specific to local/wsl; always reset to the
@@ -1520,6 +1522,8 @@ function resetForm() {
   form.ftpPassive = true
   form.ftpSkipVerify = false
   form.vncShared = true
+  form.desktopPreferences = undefined
+  form.desktopView = undefined
   form.vncRepeaterID = ''
   form.vncClipboardEncoding = 'auto'
   form.encoding = 'utf-8'

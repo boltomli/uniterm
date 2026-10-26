@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { fileURLToPath } from 'node:url'
 
 const version = process.env.VITE_VERSION || 'dev'
 
 export default defineConfig({
   plugins: [vue()],
+  resolve: {
+    alias: { '@novnc-internals': fileURLToPath(new URL('./node_modules/@novnc/novnc/core', import.meta.url)) }
+  },
   define: {
     'import.meta.env.VITE_VERSION': JSON.stringify(version)
   },

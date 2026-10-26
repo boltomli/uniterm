@@ -39,6 +39,7 @@
       </span>
       <span class="remote-desktop-toolbar-divider" />
     </template>
+    <slot name="displays" />
     <label class="remote-desktop-toolbar-scale">
       <span>{{ t('remoteDesktop.scale') }}</span>
       <el-switch
