@@ -335,6 +335,7 @@ Thanks to the following people for contributing code and improvements, and to ev
   <tr>
     <td align="center"><a href="https://github.com/lutzr400">@lutzr400</a></td>
     <td align="center"><a href="https://github.com/Merrcurys">@Merrcurys</a></td>
+    <td align="center"><a href="https://github.com/etanman">@etanman</a></td>
   </tr>
 </table>
 
