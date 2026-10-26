@@ -2016,5 +2016,9 @@
   "netscan.export.failed": "Error al exportar: ",
   "netscan.export.copy": "Copiar",
   "netscan.export.copied": "Resultados del escaneo copiados al portapapeles",
-  "netscan.export.copyFailed": "Error al copiar: "
+  "netscan.export.copyFailed": "Error al copiar: ",
+  "container.createDialog.terminal": "Terminal",
+  "container.createDialog.interactive": "Mantener stdin abierto (-i)",
+  "container.createDialog.tty": "Asignar un terminal (-t)",
+  "container.createDialog.terminalHint": "Active ambas opciones para un shell interactivo como Bash. Déjelas desactivadas para servicios normales."
 }

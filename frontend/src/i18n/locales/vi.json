@@ -2016,5 +2016,9 @@
   "netscan.export.failed": "Xuất thất bại: ",
   "netscan.export.copy": "Sao chép",
   "netscan.export.copied": "Đã sao chép kết quả quét vào clipboard",
-  "netscan.export.copyFailed": "Sao chép thất bại: "
+  "netscan.export.copyFailed": "Sao chép thất bại: ",
+  "container.createDialog.terminal": "Thiết bị đầu cuối",
+  "container.createDialog.interactive": "Giữ stdin mở (-i)",
+  "container.createDialog.tty": "Cấp phát thiết bị đầu cuối (-t)",
+  "container.createDialog.terminalHint": "Bật cả hai cho shell tương tác như Bash. Tắt khi chạy dịch vụ thông thường."
 }

@@ -2047,5 +2047,9 @@
   "netscan.export.failed": "匯出失敗：",
   "netscan.export.copy": "複製",
   "netscan.export.copied": "掃描結果已複製到剪貼簿",
-  "netscan.export.copyFailed": "複製失敗："
+  "netscan.export.copyFailed": "複製失敗：",
+  "container.createDialog.terminal": "終端",
+  "container.createDialog.interactive": "保持標準輸入開啟 (-i)",
+  "container.createDialog.tty": "配置虛擬終端 (-t)",
+  "container.createDialog.terminalHint": "執行 Bash 等互動式 shell 時可同時啟用兩項；一般服務通常無須啟用。"
 }

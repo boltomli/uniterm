@@ -2047,5 +2047,9 @@
   "netscan.export.failed": "导出失败：",
   "netscan.export.copy": "复制",
   "netscan.export.copied": "扫描结果已复制到剪贴板",
-  "netscan.export.copyFailed": "复制失败："
+  "netscan.export.copyFailed": "复制失败：",
+  "container.createDialog.terminal": "终端",
+  "container.createDialog.interactive": "保持标准输入打开 (-i)",
+  "container.createDialog.tty": "分配伪终端 (-t)",
+  "container.createDialog.terminalHint": "运行 Bash 等交互式 shell 时可同时启用两项；普通服务通常无需启用。"
 }

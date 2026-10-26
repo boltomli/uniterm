@@ -2016,5 +2016,9 @@
   "netscan.export.failed": "Export fehlgeschlagen: ",
   "netscan.export.copy": "Kopieren",
   "netscan.export.copied": "Scanergebnisse in die Zwischenablage kopiert",
-  "netscan.export.copyFailed": "Kopieren fehlgeschlagen: "
+  "netscan.export.copyFailed": "Kopieren fehlgeschlagen: ",
+  "container.createDialog.terminal": "Terminal",
+  "container.createDialog.interactive": "Standardeingabe offen halten (-i)",
+  "container.createDialog.tty": "Terminal zuweisen (-t)",
+  "container.createDialog.terminalHint": "Für eine interaktive Shell wie Bash beide Optionen aktivieren. Für normale Dienste deaktiviert lassen."
 }

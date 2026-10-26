@@ -2016,5 +2016,9 @@
   "netscan.export.failed": "Échec de l'export : ",
   "netscan.export.copy": "Copier",
   "netscan.export.copied": "Résultats du scan copiés dans le presse-papiers",
-  "netscan.export.copyFailed": "Échec de la copie : "
+  "netscan.export.copyFailed": "Échec de la copie : ",
+  "container.createDialog.terminal": "Terminal",
+  "container.createDialog.interactive": "Garder l’entrée standard ouverte (-i)",
+  "container.createDialog.tty": "Allouer un terminal (-t)",
+  "container.createDialog.terminalHint": "Activez les deux pour un shell interactif comme Bash. Laissez-les désactivés pour les services ordinaires."
 }
