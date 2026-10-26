@@ -50,6 +50,26 @@ describe('RDP clipboard files', () => {
     expect(bridge.invoke).toHaveBeenLastCalledWith('submit_file_contents', expect.objectContaining({ stream_id: 3, is_error: true }))
   })
 
+  it('reports an in-flight download so remote name text cannot preempt it', async () => {
+    const { bridge, transfer } = fixture()
+    let answer: (() => void) | null = null
+    bridge.invoke.mockImplementation((name, value) => {
+      if (name !== 'request_file_contents') return
+      const request = value as { stream_id: number; flags: number }
+      const data = request.flags === 1 ? new Uint8Array(8) : new Uint8Array(1)
+      answer = () => transfer.onResponse({ streamId: request.stream_id, isError: false, data })
+    })
+    expect(transfer.isDownloading()).toBe(false)
+    const download = transfer.download([{ name: '报告.txt', size: 0, lastModified: 0 }])
+    await Promise.resolve()
+    expect(transfer.isDownloading()).toBe(true)
+    answer!()
+    await vi.waitFor(() => expect(answer).not.toBeNull())
+    transfer.cancelDownload()
+    await expect(download).rejects.toThrow('Clipboard download cancelled')
+    expect(transfer.isDownloading()).toBe(false)
+  })
+
   it('downloads binary chunks and only publishes complete files', async () => {
     const { bridge, transfer } = fixture()
     const bytes = new Uint8Array(1024 * 1024 + 17).map((_, i) => i % 256)

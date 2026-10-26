@@ -41,14 +41,20 @@ const browserWriter: ClipboardWriter = async (text) => {
   }
 }
 
-const wailsWriter: ClipboardWriter = async (text) => {
-  let ok = false
+// System (Go/Wails) clipboard write only. On Windows this is the CF_UNICODETEXT
+// path other applications paste from; it is the fallback when the renderer's
+// clipboard write lands a mangled value (see RdpClipboardSync.verifyLocalWrite).
+export const writeClipboardViaSystem: ClipboardWriter = async (text) => {
+  if (typeof Clipboard.SetText !== 'function') return false
   try {
-    ok = await withTimeout(Clipboard.SetText(text).then(v => Boolean(v)), () => false)
+    return await withTimeout(Clipboard.SetText(text).then(v => Boolean(v)), () => false)
   } catch {
-    ok = false
+    return false
   }
-  return ok || browserWriter(text)
+}
+
+const wailsWriter: ClipboardWriter = async (text) => {
+  return (await writeClipboardViaSystem(text)) || browserWriter(text)
 }
 
 const isApplePlatform = () => /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)

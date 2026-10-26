@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RdpClipboardSync, RdpInputQueue } from './rdpClipboard'
+import { RdpClipboardSync, RdpInputQueue, describeText, sanitizeClipboardText } from './rdpClipboard'
 import type { RdpClipboardContent } from './rdpClipboard'
 
 function deferred<T>() {
@@ -143,6 +143,57 @@ describe('RDP clipboard synchronization', () => {
     await f.sync.receiveText('old remote')
     expect(f.bridge.publish).not.toHaveBeenCalled()
     expect(f.bridge.writeText).not.toHaveBeenCalled()
+  })
+})
+
+describe('RDP remote clipboard text repair', () => {
+  function repairFixture(localText: () => string) {
+    const log = vi.fn()
+    const written: string[] = []
+    const bridge = {
+      read: vi.fn(async () => null),
+      publish: vi.fn(async (_content: RdpClipboardContent) => {}),
+      writeText: vi.fn(async (text: string) => { written.push(text); return true }),
+      readText: vi.fn(async () => localText()),
+      rewriteText: vi.fn(async (text: string) => { written.push(text); return true }),
+      log,
+    }
+    return { bridge, sync: new RdpClipboardSync(bridge, true), log, written }
+  }
+
+  it('strips NULs and lone surrogates the system clipboard cannot hold', () => {
+    expect(sanitizeClipboardText('远\u0000程\uD800测试')).toBe('远程\uFFFD测试')
+    expect(sanitizeClipboardText('正常文本\r\n🙂')).toBe('正常文本\r\n🙂')
+  })
+
+  it('describes text as code units for the log instead of dumping it', () => {
+    expect(describeText('远程')).toBe('len=2 \\u8fdc\\u7a0b')
+    expect(describeText('abcdef', 3)).toBe('len=6 \\u0061\\u0062\\u0063…')
+  })
+
+  it('accepts a matching read-back without logging a mismatch', async () => {
+    const local = '远程文本'
+    const f = repairFixture(() => local)
+    await f.sync.receiveText(local)
+    expect(f.bridge.rewriteText).not.toHaveBeenCalled()
+    expect(f.log).toHaveBeenCalledWith('remote clipboard text received: len=4')
+    expect(f.log).not.toHaveBeenCalledWith(expect.stringContaining('differs after write'))
+  })
+
+  it('repairs a mangled local write through the system clipboard writer', async () => {
+    let local = 'very different local content'
+    const f = repairFixture(() => local)
+    f.bridge.rewriteText.mockImplementation(async (text: string) => { local = text; return true })
+    await f.sync.receiveText('远程\r\n文本')
+    expect(f.bridge.rewriteText).toHaveBeenCalledWith('远程\r\n文本')
+    expect(f.log).toHaveBeenCalledWith(expect.stringContaining('differs after write'))
+    expect(f.log).toHaveBeenCalledWith('remote clipboard text repaired on rewrite')
+  })
+
+  it('reports a write that stays mangled but keeps the session alive', async () => {
+    const f = repairFixture(() => 'garbled')
+    await expect(f.sync.receiveText('远程文本')).resolves.toBeUndefined()
+    expect(f.log).toHaveBeenCalledWith(expect.stringContaining('still differs after rewrite'))
   })
 })
 

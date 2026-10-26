@@ -31,6 +31,7 @@ export class RdpFileTransfer {
   private generation = 0
   private nextStreamId = 1
   private pending = new Map<number, { resolve(data: Uint8Array): void; reject(error: Error): void }>()
+  private downloading = 0
 
   constructor(private readonly bridge: FileBridge) {}
 
@@ -91,7 +92,20 @@ export class RdpFileTransfer {
     })
   }
 
+  /** A remote file copy in progress: its clipboard also carries the file names
+   * as text, which must not overwrite the local clipboard mid-transfer. */
+  isDownloading(): boolean { return this.downloading > 0 }
+
   async download(files: RemoteFile[], clipDataId?: number): Promise<ClipboardFile[]> {
+    ++this.downloading
+    try {
+      return await this.downloadFiles(files, clipDataId)
+    } finally {
+      --this.downloading
+    }
+  }
+
+  private async downloadFiles(files: RemoteFile[], clipDataId?: number): Promise<ClipboardFile[]> {
     const generation = this.generation
     const checkActive = () => {
       if (this.disposed || generation !== this.generation) throw new Error('Clipboard download cancelled')

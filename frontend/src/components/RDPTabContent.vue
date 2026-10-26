@@ -102,7 +102,7 @@ import { CreateSession, CloseSession, FrontendLog, ClipboardGetFiles, ClipboardR
 import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 import { Events } from '@wailsio/runtime'
 import { usePanelStore } from '../stores/panelStore'
-import { writeClipboard, readClipboardText } from '../composables/useClipboardWrite'
+import { writeClipboard, readClipboardText, writeClipboardViaSystem } from '../composables/useClipboardWrite'
 import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { RdpFileTransfer } from '../utils/rdpFileTransfer'
 import { adaptiveRdpSize, rdpContentRect, rdpPointerPosition } from '../utils/rdpGeometry'
@@ -399,6 +399,13 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
         }
       }),
       writeText: writeClipboard,
+      // The remote text is what the OS clipboard must end up holding; verify it
+      // and fall back to the Go writer when the renderer write landed something
+      // else (the two paths can disagree, and only the system clipboard is what
+      // local applications paste from).
+      readText: readClipboardText,
+      rewriteText: writeClipboardViaSystem,
+      log: message => rdpLog(`clipboard: ${message}`),
     })
     fileTransfer = new RdpFileTransfer({
       invoke: (name, value) => connectedSession.invokeExtension(new mod.Extension(name, value)),
@@ -570,7 +577,13 @@ function onRemoteClipboard(clipboardData: any) {
       if (item.mimeType() === 'text/plain') {
         const value = item.value()
         if (typeof value === 'string') {
-          fileTransfer?.cancelDownload()
+          // A file copy also advertises the file names as text. The file list is
+          // the richer payload: writing the name text here would cancel the
+          // in-flight download and leave the local clipboard with a bare name.
+          if (fileTransfer?.isDownloading()) {
+            rdpLog('clipboard: remote text ignored, remote file copy in progress')
+            break
+          }
           clipboardSync?.receiveText(value).catch(error => rdpLog(`remote clipboard write failed: ${describeError(error)}`))
         }
         break
