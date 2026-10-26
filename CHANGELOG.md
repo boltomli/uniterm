@@ -6,7 +6,7 @@
 
 **New Features**
 
-- Network scan: a new unified IP / port network scanner opens from the top-right menu and the sidebar's new-connection menu — an IP range scan with service detection (SSH / Telnet / RDP / VNC / FTP / SMB / HTTP) on top and a port scan below. A result row opens a prefilled connection form in one click, a per-host action launches a deep port scan, and the tables support numeric IP sorting, copying, and CSV export through the system save dialog. The IP range is prefilled with the local /24 subnet. (@etanman)
+- Network scan: new unified IP / port network scanner, from the top-right menu or the sidebar's new-connection menu — an IP range scan with service detection (SSH / Telnet / RDP / VNC / FTP / SMB / HTTP) on top and a port scan below. A result row opens a prefilled connection form in one click, and the IP range is prefilled with the local /24 subnet. (@etanman)
 - Remote desktop (VNC): multi-display VNC servers now get a display selector in the toolbar (all displays or a single display), and a custom region editor lets you view only part of the desktop — pick a preset, or drag, draw and resize a box on the desktop. The chosen display / region is saved per connection.
 - Settings: a new "Local Data" tab holds the data directory, encryption mode and master password settings moved out of the general tab; it is grouped with cloud sync under a new "Configuration Management" section.
 
@@ -27,7 +27,7 @@ Thanks to @etanman and @dungvv for their contributions to this release.
 
 **新功能**
 
-- 网络扫描：新增统一的 IP / 端口网络扫描器，入口在右上角菜单和侧边栏「新建连接」菜单——上方为带服务识别（SSH / Telnet / RDP / VNC / FTP / SMB / HTTP）的 IP 段扫描，下方为端口扫描。扫描结果可一键打开预填好的连接表单，支持按主机发起深度端口扫描，表格支持 IP 数字排序、复制，以及通过系统保存对话框导出 CSV。IP 段自动预填本机所在 /24 子网。(@etanman)
+- 网络扫描：新增统一的 IP / 端口网络扫描器，入口在右上角菜单或侧边栏「新建连接」菜单——上方为带服务识别（SSH / Telnet / RDP / VNC / FTP / SMB / HTTP）的 IP 段扫描，下方为端口扫描。扫描结果可一键打开预填好的连接表单，IP 段自动预填本机所在 /24 子网。(@etanman)
 - 远程桌面（VNC）：多显示器的 VNC 服务器新增显示器选择器（全部显示器或单个显示器），并支持自定义区域编辑，只查看桌面的一部分——可选择预设区域，也可在桌面上拖动、绘制、调整框体。所选显示器 / 区域按连接保存。
 - 设置：新增「本地数据」标签页，数据目录、加密模式、主密码等设置从通用页移入；它与云同步一起归入新的「配置管理」分组。
 
