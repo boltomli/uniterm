@@ -26,7 +26,12 @@ var serviceNames = map[int]string{
 }
 
 const (
-	portScanWorkers   = 128
+	// DefaultPortScanWorkers is the worker count used when the caller does
+	// not pass one. Kept deliberately low: a SYN burst against one host gets
+	// rate-limited or dropped by many firewalls, which silently hides open
+	// ports (the "IP scan finds it, port scan doesn't" effect).
+	DefaultPortScanWorkers = 32
+	maxPortScanWorkers     = 512
 	// portProbeTimeout tolerates the slow first TCP connect to a target (DNS /
 	// ARP resolution, routing table warm-up) so a cold scan isn't lost to timeouts.
 	portProbeTimeout  = 1200 * time.Millisecond
@@ -36,11 +41,18 @@ const (
 
 // StartPortScan launches an asynchronous port scan against one host. When
 // commonOnly is true only the known-ports list is scanned; otherwise the
-// inclusive range [startPort, endPort] (clamped to 1-65535).
-func (m *Manager) StartPortScan(host string, commonOnly bool, startPort, endPort int) (string, error) {
+// inclusive range [startPort, endPort] (clamped to 1-65535). workers caps the
+// concurrent probes (clamped to [1, maxPortScanWorkers]; <=0 uses the default).
+func (m *Manager) StartPortScan(host string, commonOnly bool, startPort, endPort, workers int) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return "", fmt.Errorf("host is required")
+	}
+	if workers <= 0 {
+		workers = DefaultPortScanWorkers
+	}
+	if workers > maxPortScanWorkers {
+		workers = maxPortScanWorkers
 	}
 	var ports []int
 	if commonOnly {
@@ -62,11 +74,11 @@ func (m *Manager) StartPortScan(host string, commonOnly bool, startPort, endPort
 	}
 
 	id, ctx := m.newScan()
-	go m.runPortScan(ctx, id, host, ports)
+	go m.runPortScan(ctx, id, host, ports, workers)
 	return id, nil
 }
 
-func (m *Manager) runPortScan(ctx context.Context, id, host string, ports []int) {
+func (m *Manager) runPortScan(ctx context.Context, id, host string, ports []int, workers int) {
 	defer m.finish(id)
 	total := len(ports)
 
@@ -75,8 +87,10 @@ func (m *Manager) runPortScan(ctx context.Context, id, host string, ports []int)
 		done     atomic.Int32
 		emitMu   sync.Mutex
 		lastEmit time.Time
+		mu       sync.Mutex
+		filtered []int // ports that timed out: retried once below
 	)
-	sem := make(chan struct{}, portScanWorkers)
+	sem := make(chan struct{}, workers)
 
 	// emitProgress throttles progress events: at most one per
 	// progressInterval, unless force is set (final update).
@@ -90,6 +104,15 @@ func (m *Manager) runPortScan(ctx context.Context, id, host string, ports []int)
 		m.emit(EventProgress, map[string]any{"scanId": id, "kind": "port", "done": n, "total": total})
 	}
 
+	openPort := func(port int) {
+		m.emit(EventPortOpen, map[string]any{
+			"scanId":  id,
+			"port":    port,
+			"service": serviceNames[port],
+			"state":   "listening",
+		})
+	}
+
 	for _, p := range ports {
 		if ctx.Err() != nil {
 			break
@@ -99,18 +122,45 @@ func (m *Manager) runPortScan(ctx context.Context, id, host string, ports []int)
 		go func(port int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if probeTCP(ctx, host, port, portProbeTimeout) == portOpen {
-				m.emit(EventPortOpen, map[string]any{
-					"scanId":  id,
-					"port":    port,
-					"service": serviceNames[port],
-					"state":   "listening",
-				})
+			switch probeTCP(ctx, host, port, portProbeTimeout) {
+			case portOpen:
+				openPort(port)
+			case portTimeout:
+				mu.Lock()
+				filtered = append(filtered, port)
+				mu.Unlock()
 			}
 			emitProgress(done.Add(1), false)
 		}(p)
 	}
 	wg.Wait()
+
+	// Retry pass: firewalls rate-limiting a SYN burst silently drop probes
+	// that succeed on a quieter second attempt, so re-probe every filtered
+	// port once before giving up (the same idea as nmap's --max-retries 1).
+	// The retries are counted in the progress: the total is extended and a
+	// checkpoint is emitted first, so the counter keeps moving to 100%
+	// instead of freezing at the pre-retry count.
+	if ctx.Err() == nil && len(filtered) > 0 {
+		total += len(filtered)
+		emitProgress(done.Load(), true)
+		for _, p := range filtered {
+			if ctx.Err() != nil {
+				break
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(port int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if probeTCP(ctx, host, port, portProbeTimeout) == portOpen {
+					openPort(port)
+				}
+				emitProgress(done.Add(1), false)
+			}(p)
+		}
+		wg.Wait()
+	}
 	emitProgress(done.Load(), true)
 
 	reason := "finished"
