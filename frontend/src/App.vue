@@ -157,7 +157,7 @@
     <EncryptionModeDialog v-model:visible="encryptVisible" :existing-secrets="credStore.status.existingSecrets" @done="onEncryptDone" />
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
     <MobileKeyBar v-if="keyBarSessionId" :key="keyBarSessionId" :session-id="keyBarSessionId" />
-    <NetworkScanTabContent v-model:visible="netscanVisible" />
+    <NetworkScanTabContent v-model:visible="netscanVisible" @new-connection="onNetscanNewConnection" />
   </div>
   </el-config-provider>
 </template>
@@ -1162,6 +1162,17 @@ function openSettings(category?: string) {
 
 function openNetscan() {
   netscanVisible.value = true
+}
+
+// Open the shared connection form prefilled with a network-scan result.
+// editConfig without an id means "new connection, prefilled" in ConnectionForm;
+// the type is mapped from the service port when it is a known one, otherwise
+// the form's default type applies and the user picks it themselves.
+function onNetscanNewConnection(d: { host: string; port?: number; type?: string }) {
+  const cfg: any = { host: d.host, port: d.port ?? 22 }
+  if (d.type) cfg.type = d.type
+  editConfig.value = cfg as ConnectionConfig
+  showConnectionForm.value = true
 }
 
 async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {

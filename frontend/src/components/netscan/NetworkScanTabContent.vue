@@ -16,178 +16,232 @@
          :deep selectors may not resolve to the dialog root) guarantees the two
          scan sections always get a definite height to lay out inside. ── -->
     <div class="netscan-content">
-    <!-- ── Full-width flat toolbar, mirroring the SFTP built-in editor ── -->
-    <div class="netscan-toolbar">
-      <div class="toolbar-group">
-        <span class="toolbar-group-title">{{ t('netscan.ipScan.title') }}</span>
-        <el-input
-          v-model="ipStart"
-          :placeholder="t('netscan.ipScan.startIp')"
-          class="ip-input"
-          :disabled="ipScanning"
-          @keyup.enter="startIPScan"
-        />
-        <span class="toolbar-sep">→</span>
-        <el-input
-          v-model="ipEnd"
-          :placeholder="t('netscan.ipScan.endIp')"
-          class="ip-input"
-          :disabled="ipScanning"
-          @keyup.enter="startIPScan"
-        />
-        <el-button v-if="!ipScanning" type="primary" class="go-btn" @click="startIPScan">
-          {{ t('netscan.ipScan.start') }}
-        </el-button>
-        <el-button v-else type="danger" class="go-btn" @click="stopIPScan">
-          {{ t('netscan.common.stop') }}
-        </el-button>
-      </div>
-
-      <span class="toolbar-divider" />
-
-      <div class="toolbar-group">
-        <span class="toolbar-group-title">{{ t('netscan.portScan.title') }}</span>
-        <el-input
-          v-model="portHost"
-          :placeholder="t('netscan.portScan.host')"
-          class="port-host-input"
-          :disabled="portScanning"
-          @keyup.enter="startPortScan"
-        />
-        <el-radio-group v-model="portMode" :disabled="portScanning" class="port-mode">
-          <el-radio-button :value="'common'">{{ t('netscan.portScan.common') }}</el-radio-button>
-          <el-radio-button :value="'range'">{{ t('netscan.portScan.range') }}</el-radio-button>
-        </el-radio-group>
-        <template v-if="portMode === 'range'">
-          <el-input-number
-            v-model="portStart"
-            :min="1"
-            :max="65535"
-            :disabled="portScanning"
-            controls-position="right"
-            class="port-num"
-          />
-          <span class="toolbar-sep">→</span>
-          <el-input-number
-            v-model="portEnd"
-            :min="1"
-            :max="65535"
-            :disabled="portScanning"
-            controls-position="right"
-            class="port-num"
-          />
-        </template>
-        <el-button v-if="!portScanning" type="primary" class="go-btn" @click="startPortScan">
-          {{ t('netscan.portScan.start') }}
-        </el-button>
-        <el-button v-else type="danger" class="go-btn" @click="stopPortScan">
-          {{ t('netscan.common.stop') }}
-        </el-button>
-      </div>
-    </div>
-
-    <!-- ═══════════════ Results region: IP scan (top) / port scan (bottom) ═══════════════ -->
-    <div class="netscan-body">
-      <div class="scan-section">
-        <div class="scan-header">
-          <span class="scan-title">{{ t('netscan.ipScan.title') }}</span>
-          <div v-if="ipScanning" class="scan-progress">
-            <el-progress
-              :percentage="ipProgressPercent"
-              :status="ipProgressPercent >= 100 ? 'success' : undefined"
-              :stroke-width="8"
-            />
-            <span class="progress-label">{{ ipDone }} / {{ ipTotal }}</span>
+      <div class="netscan-body">
+        <!-- ═══════════ IP scan section: controls live directly above its table ═══════════ -->
+        <div class="scan-section">
+          <div class="scan-header">
+            <span class="scan-title">{{ t('netscan.ipScan.title') }}</span>
+            <div v-if="ipScanning" class="scan-progress">
+              <el-progress
+                :percentage="ipProgressPercent"
+                :status="ipTotal > 0 && ipDone >= ipTotal ? 'success' : undefined"
+                :stroke-width="8"
+              />
+              <span class="progress-label">{{ ipDone }} / {{ ipTotal }}</span>
+            </div>
           </div>
-        </div>
-        <div class="table-wrap">
-          <el-table
-            :data="ipHosts"
-            size="small"
-            border
-            class="scan-table"
-            @row-click="onHostRowClick"
-            @row-contextmenu="onIpCtxMenu"
-          >
-            <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(120)" align="center" sortable :sort-method="compareIp">
-              <template #default="{ row }">
-                <span class="host-ip">{{ row.ip }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(120)" align="center">
-              <template #default="{ row }">{{ row.mac || '-' }}</template>
-            </el-table-column>
-            <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" align="center" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.hostname || '-' }}</template>
-            </el-table-column>
-            <el-table-column
-              v-for="sp in serviceColumns"
-              :key="sp.port"
-              :label="`${sp.port} (${sp.name})`"
-              align="center"
-              :width="sp.name === 'telnet' ? uiPx(108) : uiPx(88)"
+          <div class="scan-controls">
+            <el-input
+              v-model="octet1"
+              :placeholder="'10'"
+              maxlength="3"
+              class="octet-input"
+              :disabled="ipScanning"
+              @keyup.enter="startIPScan"
+            />
+            <span class="toolbar-sep">.</span>
+            <el-input
+              v-model="octet2"
+              :placeholder="'0'"
+              maxlength="3"
+              class="octet-input"
+              :disabled="ipScanning"
+              @keyup.enter="startIPScan"
+            />
+            <span class="toolbar-sep">.</span>
+            <el-input
+              v-model="octet3"
+              :placeholder="'0'"
+              maxlength="3"
+              class="octet-input"
+              :disabled="ipScanning"
+              @keyup.enter="startIPScan"
+            />
+            <span class="toolbar-sep">:</span>
+            <el-input-number
+              v-model="lastStart"
+              :min="1"
+              :max="254"
+              :disabled="ipScanning"
+              controls-position="right"
+              class="octet-range"
+            />
+            <span class="toolbar-sep">→</span>
+            <el-input-number
+              v-model="lastEnd"
+              :min="1"
+              :max="254"
+              :disabled="ipScanning"
+              controls-position="right"
+              class="octet-range"
+            />
+            <el-button v-if="!ipScanning" type="primary" class="go-btn" @click="startIPScan">
+              {{ t('netscan.ipScan.start') }}
+            </el-button>
+            <el-button v-else type="danger" class="go-btn" @click="stopIPScan">
+              {{ t('netscan.common.stop') }}
+            </el-button>
+          </div>
+          <div class="table-wrap">
+            <el-table
+              :data="ipHosts"
+              size="small"
+              border
+              height="100%"
+              class="scan-table"
+              @row-contextmenu="onIpCtxMenu"
             >
-              <template #default="{ row }">
-                <el-tag :type="row.ports && row.ports[sp.port] ? 'success' : 'info'" size="small" effect="plain">
-                  {{ row.ports && row.ports[sp.port] ? t('netscan.ipScan.open') : t('netscan.ipScan.closed') }}
-                </el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div v-if="!ipScanning && ipHosts.length === 0 && !ipStarted" class="scan-hint">
-            {{ t('netscan.ipScan.ipHint') }}
-          </div>
-          <div v-if="!ipScanning && ipHosts.length === 0 && ipStarted" class="scan-hint">
-            {{ t('netscan.ipScan.noHosts') }}
+              <el-table-column prop="ip" :label="t('netscan.ipScan.columns.ip')" :width="uiPx(120)" align="center" sortable :sort-method="compareIp">
+                <template #default="{ row }">
+                  <!-- Click the IP to open the connection form prefilled with the host -->
+                  <span class="host-ip clickable" :title="t('netscan.ipScan.connectHint')" @click.stop="openConnectionForm(row.ip)">{{ row.ip }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="mac" :label="t('netscan.ipScan.columns.mac')" :width="uiPx(120)" align="center">
+                <template #default="{ row }">{{ row.mac || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="hostname" :label="t('netscan.ipScan.columns.hostname')" :width="uiPx(120)" align="center" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.hostname || '-' }}</template>
+              </el-table-column>
+              <el-table-column
+                v-for="sp in serviceColumns"
+                :key="sp.port"
+                :label="`${sp.port} (${sp.name})`"
+                align="center"
+                :width="sp.name === 'telnet' ? uiPx(108) : uiPx(88)"
+              >
+                <template #default="{ row }">
+                  <!-- Open services show a check icon and are clickable: opens
+                       the connection form with host + port. Closed ones show --. -->
+                  <button
+                    v-if="row.ports && row.ports[sp.port]"
+                    class="svc-open-btn"
+                    :title="t('netscan.ipScan.connectHint')"
+                    @click.stop="openConnectionForm(row.ip, sp.port)"
+                  >
+                    <CircleCheck :size="16" />
+                  </button>
+                  <span v-else class="svc-closed">--</span>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('netscan.ipScan.deepScan')" :width="uiPx(96)" align="center" :sortable="false">
+                <template #default="{ row }">
+                  <el-button
+                    class="deep-scan-btn"
+                    size="small"
+                    :disabled="portScanning"
+                    @click.stop="deepScan(row)"
+                  >
+                    <Search :size="12" class="deep-scan-icon" />
+                    {{ t('netscan.ipScan.deepScan') }}
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-if="!ipScanning && ipHosts.length === 0 && !ipStarted" class="scan-hint">
+              {{ t('netscan.ipScan.ipHint') }}
+            </div>
+            <div v-if="!ipScanning && ipHosts.length === 0 && ipStarted" class="scan-hint">
+              {{ t('netscan.ipScan.noHosts') }}
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="scan-section">
-        <div class="scan-header">
-          <span class="scan-title">{{ t('netscan.portScan.title') }}</span>
-          <div v-if="portScanning" class="scan-progress">
-            <el-progress
-              :percentage="portProgressPercent"
-              :status="portProgressPercent >= 100 ? 'success' : undefined"
-              :stroke-width="8"
-            />
-            <span class="progress-label">{{ portDone }} / {{ portTotal }}</span>
+        <!-- ═══════════ Port scan section: controls live directly above its table ═══════════ -->
+        <div class="scan-section">
+          <div class="scan-header">
+            <span class="scan-title">{{ t('netscan.portScan.title') }}</span>
+            <div v-if="portScanning" class="scan-progress">
+              <el-progress
+                :percentage="portProgressPercent"
+                :status="portTotal > 0 && portDone >= portTotal ? 'success' : undefined"
+                :stroke-width="8"
+              />
+              <span class="progress-label">{{ portDone }} / {{ portTotal }}</span>
+            </div>
           </div>
-        </div>
-        <div class="table-wrap">
-          <el-table
-            :data="portResults"
-            size="small"
-            border
-            class="scan-table"
-            @row-contextmenu="onPortCtxMenu"
-          >
-            <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(150)" align="center">
-              <template #default="{ row }">
-                <span class="host-ip">{{ row.host }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="port" :label="t('netscan.portScan.columns.port')" sortable :width="uiPx(90)" align="center">
-              <template #default="{ row }">
-                <span class="port-num-text">#{{ row.port }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="service" :label="t('netscan.portScan.columns.service')" :width="uiPx(160)" align="center">
-              <template #default="{ row }">{{ row.service || '-' }}</template>
-            </el-table-column>
-            <el-table-column :label="t('netscan.portScan.columns.state')" :width="uiPx(160)" align="center">
-              <template #default="{ row }">
-                <el-tag type="success" size="small">{{ row.state }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div v-if="!portScanning && portResults.length === 0" class="scan-hint">
-            {{ t('netscan.portScan.portHint') }}
+          <div class="scan-controls">
+            <el-input
+              v-model="portHost"
+              :placeholder="t('netscan.portScan.host')"
+              class="port-host-input"
+              :disabled="portScanning"
+              @keyup.enter="startPortScan"
+            />
+            <el-radio-group v-model="portMode" :disabled="portScanning" class="port-mode">
+              <el-radio-button :value="'common'">{{ t('netscan.portScan.common') }}</el-radio-button>
+              <el-radio-button :value="'range'">{{ t('netscan.portScan.range') }}</el-radio-button>
+            </el-radio-group>
+            <template v-if="portMode === 'range'">
+              <el-input-number
+                v-model="portStart"
+                :min="1"
+                :max="65535"
+                :disabled="portScanning"
+                controls-position="right"
+                class="port-num"
+              />
+              <span class="toolbar-sep">→</span>
+              <el-input-number
+                v-model="portEnd"
+                :min="1"
+                :max="65535"
+                :disabled="portScanning"
+                controls-position="right"
+                class="port-num"
+              />
+            </template>
+            <span class="ctl-label" :title="t('netscan.portScan.workersHint')">{{ t('netscan.portScan.workers') }}</span>
+            <el-input-number
+              v-model="portWorkers"
+              :min="1"
+              :max="512"
+              :disabled="portScanning"
+              controls-position="right"
+              class="workers-num"
+            />
+            <el-button v-if="!portScanning" type="primary" class="go-btn" @click="startPortScan">
+              {{ t('netscan.portScan.start') }}
+            </el-button>
+            <el-button v-else type="danger" class="go-btn" @click="stopPortScan">
+              {{ t('netscan.common.stop') }}
+            </el-button>
+          </div>
+          <div class="table-wrap">
+            <el-table
+              :data="portResults"
+              size="small"
+              border
+              height="100%"
+              class="scan-table port-table"
+              @row-click="onPortRowClick"
+              @row-contextmenu="onPortCtxMenu"
+            >
+              <el-table-column prop="host" :label="t('netscan.portScan.columns.host')" :width="uiPx(150)" align="center">
+                <template #default="{ row }">
+                  <span class="host-ip">{{ row.host }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="port" :label="t('netscan.portScan.columns.port')" sortable :width="uiPx(90)" align="center">
+                <template #default="{ row }">
+                  <span class="port-num-text">#{{ row.port }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="service" :label="t('netscan.portScan.columns.service')" :width="uiPx(160)" align="center">
+                <template #default="{ row }">{{ row.service || '-' }}</template>
+              </el-table-column>
+              <el-table-column :label="t('netscan.portScan.columns.state')" :width="uiPx(160)" align="center">
+                <template #default="{ row }">
+                  <el-tag type="success" size="small">{{ row.state }}</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-if="!portScanning && portResults.length === 0" class="scan-hint">
+              {{ t('netscan.portScan.portHint') }}
+            </div>
           </div>
         </div>
       </div>
-    </div>
     </div>
     <!-- end .netscan-content -->
 
@@ -212,9 +266,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Events } from '@wailsio/runtime'
-import { StartIPScan, StopIPScan, StartPortScan, StopPortScan, SaveFileDialogFiltered, WriteFileBase64 } from '../../../bindings/github.com/ys-ll/uniterm/app'
+import { Search, CircleCheck } from '@lucide/vue'
+import { StartIPScan, StopIPScan, StartPortScan, StopPortScan, SaveFileDialogFiltered, WriteFileBase64, GetLocalSubnet } from '../../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../../services/message'
 import { useI18n } from '../../i18n'
 import { uiPx } from '../../utils/uiScale'
@@ -225,6 +280,7 @@ defineOptions({ name: 'NetworkScanTabContent' })
 const props = defineProps<{ visible?: boolean }>()
 const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
+  (e: 'new-connection', d: { host: string; port?: number; type?: string }): void
 }>()
 
 const { t } = useI18n()
@@ -240,9 +296,25 @@ const serviceColumns = [
   { port: 80, name: 'http' }
 ]
 
-// ── IP scan state ──
-const ipStart = ref('')
-const ipEnd = ref('')
+// Port → connection type for the click-to-create actions, mirroring the
+// backend's serviceNames. Ports not listed open the form with the default
+// type so the user can pick one themselves.
+const portConnTypes: Record<number, string> = {
+  22: 'ssh',
+  23: 'telnet',
+  3389: 'rdp',
+  5900: 'vnc',
+  21: 'ftp',
+  445: 'smb',
+  80: 'tcp'
+}
+
+// ── IP scan state: Moba-style base (first three octets) + last-octet range ──
+const octet1 = ref('')
+const octet2 = ref('')
+const octet3 = ref('')
+const lastStart = ref(1)
+const lastEnd = ref(254)
 const ipScanning = ref(false)
 const ipStarted = ref(false)
 const ipScanId = ref('')
@@ -256,6 +328,9 @@ const portHost = ref('')
 const portMode = ref<'common' | 'range'>('common')
 const portStart = ref(1)
 const portEnd = ref(1000)
+// Concurrent probes. Low by default: a SYN burst against one host gets
+// rate-limited or dropped by many firewalls, which silently hides open ports.
+const portWorkers = ref(32)
 const portScanning = ref(false)
 const portScanId = ref('')
 const portDone = ref(0)
@@ -272,6 +347,22 @@ const portScanTargets = new Map<string, string>()
 const ipProgressPercent = computed(() => ipTotal.value > 0 ? Math.round((ipDone.value / ipTotal.value) * 100) : 0)
 const portProgressPercent = computed(() => portTotal.value > 0 ? Math.round((portDone.value / portTotal.value) * 100) : 0)
 
+// Prefill the base octets from the machine's own /24 subnet the first time
+// the dialog opens. Errors are silent — the inputs just stay empty.
+let subnetFetched = false
+watch(() => props.visible, (v) => {
+  if (!v || subnetFetched) return
+  subnetFetched = true
+  GetLocalSubnet().then((s: { base: string; lastOctet: number }) => {
+    const parts = (s.base || '').split('.')
+    if (parts.length === 3) {
+      octet1.value = parts[0]
+      octet2.value = parts[1]
+      octet3.value = parts[2]
+    }
+  }).catch(() => {})
+}, { immediate: true })
+
 // Compare two IPv4 strings segment-by-segment by numeric value, so that
 // 192.168.1.10 sorts after 192.168.1.2 instead of lexicographically first.
 function compareIp(a: { ip: string }, b: { ip: string }): number {
@@ -284,15 +375,28 @@ function compareIp(a: { ip: string }, b: { ip: string }): number {
   return 0
 }
 
+// Parse one octet input; null when it is not a number in [0, 255].
+function parseOctet(s: string): number | null {
+  const v = s.trim()
+  if (!/^\d{1,3}$/.test(v)) return null
+  const n = Number(v)
+  return n >= 0 && n <= 255 ? n : null
+}
+
 async function startIPScan() {
-  const start = ipStart.value.trim()
-  const end = ipEnd.value.trim() || start
-  if (!start) {
-    msg.warning(t('netscan.ipScan.missingStart'))
+  const o1 = parseOctet(octet1.value)
+  const o2 = parseOctet(octet2.value)
+  const o3 = parseOctet(octet3.value)
+  if (o1 === null || o2 === null || o3 === null) {
+    msg.warning(t('netscan.ipScan.invalidBase'))
     return
   }
+  const base = `${o1}.${o2}.${o3}`
+  let from = lastStart.value || 1
+  let to = lastEnd.value || 254
+  if (from > to) [from, to] = [to, from]
   try {
-    const id = await StartIPScan(start, end)
+    const id = await StartIPScan(`${base}.${from}`, `${base}.${to}`)
     ownedScans.add(id)
     ipScanId.value = id
     ipStarted.value = true
@@ -318,8 +422,9 @@ async function startPortScan() {
   const commonOnly = portMode.value === 'common'
   const startPort = portStart.value || 1
   const endPort = portEnd.value || 65535
+  const workers = portWorkers.value || 32
   try {
-    const id = await StartPortScan(host, commonOnly, startPort, endPort)
+    const id = await StartPortScan(host, commonOnly, startPort, endPort, workers)
     ownedScans.add(id)
     portScanId.value = id
     portScanTargets.set(id, host)
@@ -337,11 +442,20 @@ function stopPortScan() {
   if (portScanId.value) StopPortScan(portScanId.value)
 }
 
-// Put the clicked host into the port-scan target field.
-function onHostRowClick(row: any) {
+// Deep scan: fill the port-scan target with this host and immediately start
+// a common-ports scan, like MobaXterm's per-row deep scan action.
+function deepScan(row: any) {
   if (portScanning.value) return
   portHost.value = row.ip
   portMode.value = 'common'
+  startPortScan()
+}
+
+// Open the global connection form prefilled with the scan result. The
+// connection type is mapped from the service port when it is a known one,
+// so clicking a service's check creates that type of connection.
+function openConnectionForm(host: string, port?: number) {
+  emit('new-connection', { host, port, type: port ? portConnTypes[port] : undefined })
 }
 
 // ── Right-click export context menu ──
@@ -352,11 +466,15 @@ const ctxMenu = ref<{ visible: boolean; x: number; y: number; kind: 'ip' | 'port
   kind: 'ip'
 })
 
-function onIpCtxMenu(row: any, column: any, event: MouseEvent) {
+function onIpCtxMenu(_row: any, _column: any, event: MouseEvent) {
   showCtxMenu(event, 'ip')
 }
-function onPortCtxMenu(row: any, column: any, event: MouseEvent) {
+function onPortCtxMenu(_row: any, _column: any, event: MouseEvent) {
   showCtxMenu(event, 'port')
+}
+// Clicking a port-scan result row opens the connection form with host + port.
+function onPortRowClick(row: any) {
+  openConnectionForm(row.host, row.port)
 }
 function showCtxMenu(event: MouseEvent, kind: 'ip' | 'port') {
   event.preventDefault()
@@ -423,7 +541,7 @@ async function exportResults(kind: 'ip' | 'port') {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   const lines = content.split('\n').map(line => line.split(sep).map(escapeCell).join(','))
-  content = '\uFEFF' + lines.join('\n') // BOM helps Excel open UTF-8 CSV
+  content = '﻿' + lines.join('\n') // BOM helps Excel open UTF-8 CSV
 
   // Ask the user where to save via the native save dialog, then write the file.
   try {
@@ -555,9 +673,9 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* Aligned with the SFTP built-in editor / file-list look: a dialog whose header
-   is a single full-width flat toolbar, with CSS-variable theming so the whole
-   scan UI follows dark / deep-blue / light automatically. */
+/* Aligned with the SFTP built-in editor / file-list look: a dialog whose
+   header is a single full-width flat toolbar, with CSS-variable theming so the
+   whole scan UI follows dark / deep-blue / light automatically. */
 /* The el-dialog root carries class="netscan-dialog" directly, so style it with
    that selector (NOT ".netscan-dialog :deep(.el-dialog)" — that descendant form
    never matches because they are the same element, which silently disabled the
@@ -600,120 +718,10 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* ── Full-width flat toolbar ── */
-.netscan-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-}
-.toolbar-group {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  flex-wrap: wrap;
-}
-.toolbar-group-title {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-secondary);
-  font-family: var(--font-ui);
-  margin-right: 0.125rem;
-}
-.toolbar-divider {
-  width: 1px;
-  align-self: stretch;
-  background: var(--border-subtle);
-  flex-shrink: 0;
-}
-.toolbar-sep {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-/* ── Flat inputs: drop Element's default chrome for a slim underlying field
-       that reads like the SFTP filter input. ── */
-.netscan-toolbar .el-input,
-.netscan-toolbar .el-input-number {
-  --el-input-bg-color: var(--bg-base);
-  --el-input-border-color: var(--border-subtle);
-  --el-input-hover-border-color: var(--accent);
-  --el-input-focus-border-color: var(--accent);
-  --el-input-text-color: var(--text-primary);
-  --el-input-placeholder-color: var(--text-muted);
-  --el-input-height: 1.875rem;
-  --el-input-border-radius: var(--radius-sm);
-}
-.netscan-toolbar .el-input__wrapper,
-.netscan-toolbar .el-input-number .el-input__wrapper {
-  background: var(--bg-base);
-  box-shadow: 0 0 0 1px var(--border-subtle) inset;
-  transition: box-shadow 0.12s ease;
-}
-.netscan-toolbar .el-input__wrapper:hover {
-  box-shadow: 0 0 0 1px var(--bg-hover) inset;
-}
-.netscan-toolbar .el-input__wrapper.is-focus {
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
-
-.ip-input { width: 9rem; }
-.port-host-input { width: 9.5rem; }
-.port-num { width: 6.25rem; }
-
-/* ── Mode toggle as a flat segmented control ── */
-.netscan-toolbar .el-radio-group.port-mode {
-  display: inline-flex;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  flex-shrink: 0;
-}
-.netscan-toolbar .port-mode .el-radio-button__inner {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  font-size: 0.75rem;
-  padding: 0.3rem 0.625rem;
-  box-shadow: none;
-  transition: all 0.12s ease;
-}
-.netscan-toolbar .port-mode .el-radio-button__original-radio:checked + .el-radio-button__inner {
-  background: var(--accent-subtle);
-  color: var(--accent);
-}
-
-/* ── Buttons: flat, accent-primary / danger-secondary ── */
-.netscan-toolbar .el-button {
-  --el-button-border-radius: var(--radius-sm);
-  font-family: var(--font-ui);
-}
-.go-btn.el-button--primary {
-  --el-button-bg-color: var(--accent);
-  --el-button-border-color: var(--accent);
-  --el-button-text-color: #fff;
-  --el-button-hover-bg-color: color-mix(in srgb, var(--accent) 85%, #000);
-  --el-button-hover-border-color: color-mix(in srgb, var(--accent) 85%, #000);
-  --el-button-active-bg-color: color-mix(in srgb, var(--accent) 70%, #000);
-  --el-button-active-border-color: color-mix(in srgb, var(--accent) 70%, #000);
-}
-.go-btn.el-button--danger {
-  --el-button-bg-color: transparent;
-  --el-button-border-color: var(--el-color-danger);
-  --el-button-text-color: var(--el-color-danger);
-  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-danger) 12%, transparent);
-}
-
 /* Fixed-height content root ensures the two sections always have room to lay
-   out, independent of el-dialog's internal header/body/footer sizing. */
+   out, independent of el-dialog's internal header/body/footer sizing. Keep the
+   explicit height here: relying on flex:1 against el-dialog__body collapses to
+   zero height when the :deep body selector fails to match (append-to-body). */
 .netscan-content {
   display: flex;
   flex-direction: column;
@@ -743,18 +751,125 @@ onUnmounted(() => {
   background: var(--bg-elevated);
 }
 
-/* Each table lives in its own well. .table-wrap is the scroll container
-   (overflow-y: auto) for its own half; the el-table inside renders at natural
-   height and the wrapper scrolls it — so the two tables scroll independently
-   without relying on el-table's fixed-height mode. */
+/* ── Per-section control row: sits directly above its own result table ── */
+.scan-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.toolbar-sep {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* ── Flat inputs: drop Element's default chrome for a slim underlying field
+       that reads like the SFTP filter input. ── */
+.scan-controls .el-input,
+.scan-controls .el-input-number {
+  --el-input-bg-color: var(--bg-base);
+  --el-input-border-color: var(--border-subtle);
+  --el-input-hover-border-color: var(--accent);
+  --el-input-focus-border-color: var(--accent);
+  --el-input-text-color: var(--text-primary);
+  --el-input-placeholder-color: var(--text-muted);
+  --el-input-height: 1.875rem;
+  --el-input-border-radius: var(--radius-sm);
+}
+.scan-controls .el-input__wrapper,
+.scan-controls .el-input-number .el-input__wrapper {
+  background: var(--bg-base);
+  box-shadow: 0 0 0 1px var(--border-subtle) inset;
+  transition: box-shadow 0.12s ease;
+}
+.scan-controls .el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--bg-hover) inset;
+}
+.scan-controls .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.octet-input { width: 2.75rem; }
+.octet-input :deep(.el-input__inner) { text-align: center; font-family: var(--font-mono); }
+/* Wide enough for 3 digits next to the right-side up/down controls. */
+.octet-range { width: 5.5rem; }
+.octet-range :deep(.el-input__inner) { text-align: center; font-family: var(--font-mono); }
+.port-host-input { width: 9.5rem; }
+.port-num { width: 6.25rem; }
+/* Inline label for the concurrency option. */
+.ctl-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+}
+.workers-num { width: 5rem; }
+
+/* ── Mode toggle as a flat segmented control ── */
+.scan-controls .el-radio-group.port-mode {
+  display: inline-flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.scan-controls .port-mode .el-radio-button__inner {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.625rem;
+  box-shadow: none;
+  transition: all 0.12s ease;
+}
+.scan-controls .port-mode .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* ── Buttons: flat, accent-primary / danger-secondary ── */
+.scan-controls .el-button {
+  --el-button-border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+}
+.go-btn.el-button--primary {
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+  --el-button-text-color: #fff;
+  --el-button-hover-bg-color: color-mix(in srgb, var(--accent) 85%, #000);
+  --el-button-hover-border-color: color-mix(in srgb, var(--accent) 85%, #000);
+  --el-button-active-bg-color: color-mix(in srgb, var(--accent) 70%, #000);
+  --el-button-active-border-color: color-mix(in srgb, var(--accent) 70%, #000);
+}
+.go-btn.el-button--danger {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--el-color-danger);
+  --el-button-text-color: var(--el-color-danger);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--el-color-danger) 12%, transparent);
+}
+
+/* ── Deep scan per-row button ── */
+.deep-scan-btn {
+  font-size: 0.6875rem;
+  padding: 0.25rem 0.5rem;
+}
+.deep-scan-icon { margin-right: 0.2rem; }
+
+/* Each table lives in its own well. The el-table inside uses height="100%"
+   and manages its own scrolling, so the table always fills the whole section
+   and its scrollbars sit at the region's edges (not floating under short
+   result sets). */
 .table-wrap {
   flex: 1;
   min-height: 0;
   position: relative;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 .scan-header {
   display: flex;
@@ -792,25 +907,10 @@ onUnmounted(() => {
 
 /* ── Result tables: compact, hairline rows, mono numerals — mirrors the
    SFTP file list instead of Element's boxy default grid.
-   The el-table height="100%" prop resolves against .table-wrap, giving each
-   table its own internal scrollbar. user-select: text lets cell contents be
-   mouse-selected and copied. ── */
+   user-select: text lets cell contents be mouse-selected and copied. ── */
 .scan-table {
   width: 100%;
-  flex-shrink: 0;
   --el-table-border-color: var(--border-subtle);
-}
-/* Keep the header visible while .table-wrap scrolls the rows. */
-.scan-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--bg-elevated);
-}
-.scan-table :deep(.el-table__header-wrapper) {
-  position: sticky;
-  top: 0;
-  z-index: 3;
 }
 .scan-table :deep(.el-table__inner-wrapper::before),
 .scan-table :deep(.el-table__border-left-patch),
@@ -845,9 +945,14 @@ onUnmounted(() => {
 .scan-table :deep(.el-table__body td.el-table__cell .cell) {
   padding: 0;
 }
+/* Only genuinely clickable things get the hand cursor: the IP text, the
+   open-service tags (.clickable below) and — since clicking anywhere on a
+   port-scan result row opens the connection form — every port-table row. */
 .scan-table :deep(.el-table__row) {
-  cursor: pointer;
   transition: background 0.1s ease;
+}
+.port-table :deep(.el-table__row) {
+  cursor: pointer;
 }
 .scan-table :deep(.el-table__row:hover > td.el-table__cell) {
   background: var(--bg-hover);
@@ -863,6 +968,37 @@ onUnmounted(() => {
 }
 .host-ip { color: var(--accent); user-select: text; }
 .port-num-text { color: var(--success); }
+
+/* Clickable cells (IP text, open-service checks) invite a click. */
+.clickable { cursor: pointer; }
+.clickable:hover { filter: brightness(1.2); }
+
+/* Service cells: a green circle-check icon = port open (click to open the
+   connection form); dim dash pair = closed. */
+.svc-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--success);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: filter 0.12s ease;
+}
+.svc-open-btn:hover {
+  filter: brightness(1.25);
+}
+/* style.css normalises all buttons to the arrow cursor (native-style cursors,
+   !important); this one acts as a link-like affordance, so beat it explicitly. */
+.scan-table :deep(.svc-open-btn:not(:disabled)) {
+  cursor: pointer !important;
+}
+.svc-closed {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
 
 .scan-table :deep(.el-table__empty-block) { background: var(--bg-elevated); }
 .scan-table :deep(.el-table__empty-text) { color: var(--text-muted); font-size: 0.75rem; }
