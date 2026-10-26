@@ -1,0 +1,136 @@
+//go:build windows
+// +build windows
+
+package localsrv
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/UserExistsError/conpty"
+	"golang.org/x/sys/windows"
+)
+
+// winTelnetPty wraps a Windows ConPTY for a local login shell. Data() streams
+// the conpty output; Done() closes when the shell's output pipe reaches EOF;
+// Close() tears the conpty down.
+type winTelnetPty struct {
+	cpty *conpty.ConPty
+	data chan []byte
+	done chan struct{}
+	once sync.Once
+}
+
+func (p *winTelnetPty) Data() <-chan []byte  { return p.data }
+func (p *winTelnetPty) Done() <-chan struct{} { return p.done }
+
+func (p *winTelnetPty) Write(b []byte) error {
+	_, err := p.cpty.Write(b)
+	return err
+}
+
+func (p *winTelnetPty) Close() error {
+	var err error
+	p.once.Do(func() { err = p.cpty.Close() })
+	return err
+}
+
+// windowsCommandLine joins argv back into a command-line string (conpty only
+// accepts a command-line string).
+func windowsCommandLine(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		if strings.ContainsAny(a, " \t") {
+			a = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
+		}
+		parts[i] = a
+	}
+	return strings.Join(parts, " ")
+}
+
+// startTelnetShell launches the user's Windows shell on a ConPTY, preferring
+// pwsh.exe, then powershell.exe, then cmd.exe. The control-sequence stripper in
+// the bridge already removes the OSC window-title sequence PowerShell writes on
+// startup, so PowerShell's full UTF-8 output renders cleanly.
+func startTelnetShell(ctx context.Context, cfg TelnetConfig) (telnetPty, error) {
+	shell := "cmd.exe"
+	if p, err := exec.LookPath("pwsh.exe"); err == nil {
+		shell = p
+	} else if p, err := exec.LookPath("powershell.exe"); err == nil {
+		shell = p
+	}
+	_ = ctx // ConPTY has no context-cancellable start; lifetime is managed via Close().
+
+	opts := []conpty.ConPtyOption{conpty.ConPtyDimensions(120, 30)}
+	// Start in the user's home directory instead of the exe's directory so the
+	// prompt does not show the install/bin path.
+	if home, err := os.UserHomeDir(); err == nil {
+		opts = append(opts, conpty.ConPtyWorkDir(home))
+	}
+
+	cpty, err := conpty.Start(windowsCommandLine([]string{shell}), opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	p := &winTelnetPty{cpty: cpty, data: make(chan []byte, 32), done: make(chan struct{})}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := cpty.Read(buf)
+			if n > 0 {
+				cp := make([]byte, n)
+				copy(cp, buf[:n])
+				p.data <- cp
+			}
+			if err != nil {
+				// ConPTY emits transient errors (e.g. ERROR_INVALID_HANDLE =
+				// "The handle is invalid.") during the short window while the
+				// child shell is still initialising, even though the shell goes
+				// on to produce output. Treating any error as EOF caused the
+				// telnet session to be torn down moments after connecting, so
+				// only a true pipe-end / handle-closed condition ends the
+				// stream; everything else is skipped and read again.
+				if isConPtyEOF(err) {
+					close(p.data)
+					return
+				}
+				continue
+			}
+		}
+	}()
+	// Done() must reflect the shell process having actually exited, not the
+	// transient errors above. conpty exposes no join API, but Wait polls the
+	// process handle and returns once the process really terminates.
+	go func() {
+		_, _ = cpty.Wait(context.Background())
+		close(p.done)
+	}()
+	return p, nil
+}
+
+// isConPtyEOF reports whether an error from a ConPTY read means the output
+// stream genuinely ended (pipe broken / handle closed / EOF), as opposed to a
+// transient error that can be retried.
+func isConPtyEOF(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case windows.ERROR_BROKEN_PIPE,
+			windows.ERROR_HANDLE_EOF,
+			windows.ERROR_NO_DATA,
+			windows.ERROR_PIPE_NOT_CONNECTED:
+			return true
+		}
+	}
+	return false
+}

@@ -121,6 +121,11 @@
           {{ t('netscan.title') }}
         </MenuItem>
 
+        <!-- 本地服务（右上角工具入口） -->
+        <MenuItem @click="openLocalServices">
+          {{ t('localsrv.title') }}
+        </MenuItem>
+
         <MenuDivider />
 
         <!-- 导入 / 导出连接 -->
@@ -267,6 +272,11 @@ function openNetscan() {
   closeSettingsMenu()
 }
 
+function openLocalServices() {
+  emit('open-local-services')
+  closeSettingsMenu()
+}
+
 function checkUpdate() {
   updateCheck.checkForUpdate(true)
   closeSettingsMenu()
@@ -311,6 +321,7 @@ const emit = defineEmits<{
   'toggle-sidebar': []
   'open-settings': [category?: string]
   'open-netscan': []
+  'open-local-services': []
   'close-tab': [id: string]
   'close-tab-batch': [ids: string[]]
   'toggle-ai-lock': [panelId: string]

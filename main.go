@@ -427,6 +427,15 @@ func main() {
 			log.Writef("relaunch: spawn successor failed: %v", err)
 		}
 	}
+	// Graceful exit. shutdown() (see app.go) has already released the WebView2
+	// COM controller synchronously on the UI thread. ICoreWebView2Controller::Close()
+	// blocks until the controller and, being the last one on the environment, the
+	// WebView2 browser subprocess are torn down, so by the time we reach ExitProcess
+	// the WebView2 DLL-detach teardown has nothing live to block on — the process
+	// exits immediately, no frozen window. All user-facing teardown (local
+	// servers, sessions, tunnels, webview data dir) already ran synchronously in
+	// shutdown().
+	os.Exit(0)
 }
 
 // loadSavedSettings reads the persisted app settings so the window can be
