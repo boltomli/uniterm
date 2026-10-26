@@ -21,6 +21,7 @@ import { queuedSessionWrite } from './sessionWriter'
 import type { CustomTerminalTheme } from '../types/settings'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { installImeCompatibilityPatch } from '../utils/xtermImeCompatibility'
+import { installImeCompositionOverlay } from '../utils/xtermCompositionOverlay'
 import {
   bufferRowSource,
   createLineRegistry,
@@ -743,7 +744,16 @@ export function attachTerminal(sessionId: string, container: HTMLElement): void 
   // macOS direct input and Windows composition ownership both need the
   // textarea/composition helper created by open(), not construction.
   if (!managed.imeDispose) {
-    managed.imeDispose = installImeCompatibilityPatch(managed.terminal)
+    const patch = installImeCompatibilityPatch(managed.terminal)
+    // xterm's own preedit view is the only place the composing string is drawn;
+    // keep a cursor-pinned mirror ready for when that view does not paint.
+    const overlay = installImeCompositionOverlay(managed.terminal)
+    managed.imeDispose = {
+      dispose() {
+        patch.dispose()
+        overlay.dispose()
+      },
+    }
   }
 
   // terminal.element only exists after open(), so the padding-ring color is
