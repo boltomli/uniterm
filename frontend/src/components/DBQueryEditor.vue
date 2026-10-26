@@ -9,6 +9,7 @@
     </div>
     <div class="editor-top" :style="editorCollapsed ? {} : { height: topHeight + 'px' }">
       <div class="editor-toolbar">
+        <span v-if="browseMode" class="browse-mode-badge" :title="t('db.browseModeHint')">{{ t('db.browseMode') }}</span>
         <input
           v-model="nlInput"
           class="nl-input"
@@ -82,17 +83,35 @@
       </div>
 
       <div v-if="queryResult" class="result-toolbar">
-        <input
+        <button v-if="browseMode" class="btn btn-default btn-sm" @click="browseControlsOpen = !browseControlsOpen">
+          <ListFilter :size="14" /> {{ t('db.filterSort') }}<span v-if="appliedFilters.length || appliedSorts.length"> ({{ appliedFilters.length + appliedSorts.length }})</span>
+        </button>
+        <input v-else
           v-model="resultFilter"
           class="result-filter"
           :placeholder="t('db.filterResults')"
         />
         <div class="result-toolbar-right">
+          <button v-if="tableName" class="btn btn-default btn-sm" @click="onRefresh" :disabled="loading || savingRows">
+            <RefreshCw :size="14" /> {{ t('db.refreshData') }}
+          </button>
           <button
-            v-if="tableName && !isView"
+            v-if="browseMode && tableName && !isView"
             class="btn btn-default btn-sm"
             @click="startInsertRow"
           ><Plus :size="'0.875rem'" /> {{ t('db.insertRow') }}</button>
+          <button v-if="browseMode && tableName && !isView" class="btn btn-default btn-sm" @click="openCSVImport">
+            <Upload :size="14" /> {{ t('db.importCSV') }}
+          </button>
+          <button v-if="canEditRows" class="btn btn-default btn-sm" :disabled="!selectedRow" @click="onEditSelected">
+            <Pencil :size="14" /> {{ t('common.edit') }}
+          </button>
+          <button v-if="canEditRows" class="btn btn-default btn-sm" :disabled="!selectedRow" @click="onDuplicateSelected">
+            <Copy :size="14" /> {{ t('db.duplicateRow') }}
+          </button>
+          <button v-if="canEditRows" class="btn btn-default btn-sm danger" :disabled="!selectedRow" @click="onDeleteSelected">
+            <Trash2 :size="14" /> {{ t('common.delete') }}
+          </button>
           <button
             ref="exportBtnRef"
             class="btn btn-ghost btn-icon btn-sm"
@@ -113,6 +132,45 @@
         </div>
       </div>
 
+      <div v-if="queryResult && browseMode && browseControlsOpen" class="browse-controls">
+        <div class="browse-rule-title">{{ t('db.filters') }}</div>
+        <div v-for="(rule, i) in filterDrafts" :key="i" class="browse-rule">
+          <select v-model="rule.column" class="browse-select">
+            <option value="">{{ t('db.chooseColumn') }}</option>
+            <option v-for="col in browseColumns" :key="col" :value="col">{{ col }}</option>
+          </select>
+          <select v-model="rule.op" class="browse-select">
+            <option value="contains">{{ t('db.contains') }}</option>
+            <option value="equals">{{ t('db.equals') }}</option>
+            <option value="startsWith">{{ t('db.startsWith') }}</option>
+            <option value="isNull">{{ t('db.isNull') }}</option>
+            <option value="isNotNull">{{ t('db.isNotNull') }}</option>
+          </select>
+          <input v-if="rule.op !== 'isNull' && rule.op !== 'isNotNull'" v-model="rule.value" class="browse-value" :placeholder="t('db.filterValue')" @keydown.enter="applyBrowseControls" />
+          <span v-else class="browse-value" />
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.delete')" @click="filterDrafts.splice(i, 1)"><X :size="14" /></button>
+        </div>
+        <button class="btn btn-ghost btn-sm" @click="filterDrafts.push({ column: '', op: 'contains', value: '' })">{{ t('db.addFilter') }}</button>
+        <div class="browse-rule-title">{{ t('db.sortRules') }}</div>
+        <div v-for="(rule, i) in sortDrafts" :key="i" class="browse-rule">
+          <select v-model="rule.column" class="browse-select">
+            <option value="">{{ t('db.chooseColumn') }}</option>
+            <option v-for="col in browseColumns" :key="col" :value="col">{{ col }}</option>
+          </select>
+          <select v-model="rule.desc" class="browse-select">
+            <option :value="false">{{ t('db.ascending') }}</option>
+            <option :value="true">{{ t('db.descending') }}</option>
+          </select>
+          <span class="browse-value" />
+          <button class="btn btn-ghost btn-icon btn-sm" :title="t('common.delete')" @click="sortDrafts.splice(i, 1)"><X :size="14" /></button>
+        </div>
+        <div class="browse-actions">
+          <button class="btn btn-ghost btn-sm" @click="sortDrafts.push({ column: '', desc: false })">{{ t('db.addSort') }}</button>
+          <button class="btn btn-default btn-sm" @click="resetBrowseControls">{{ t('db.clearFilters') }}</button>
+          <button class="btn btn-primary btn-sm" @click="applyBrowseControls">{{ t('db.applyFilterSort') }}</button>
+        </div>
+      </div>
+
       <div v-if="queryResult" class="result-grid">
         <DBResultGrid
           ref="resultGridRef"
@@ -129,6 +187,8 @@
           @pending-change="onPendingChange"
           @edit-row="startEditRowByRow"
           @delete-row="onDeleteRowByRow"
+          @select-row="onSelectRow"
+          @editing-change="onEditingChange"
           @sort-change="onSortChange"
         />
       </div>
@@ -181,6 +241,33 @@
         </template>
       </el-dialog>
 
+      <el-dialog v-model="csvDialogOpen" :title="t('db.importCSV')" width="48rem" append-to-body destroy-on-close>
+        <p class="csv-path">{{ csvPath }}</p>
+        <p class="csv-hint">{{ t('db.csvMappingHint') }}</p>
+        <p v-if="error" class="csv-error">{{ error }}</p>
+        <div class="csv-mapping">
+          <div v-for="(header, i) in csvPreview?.headers || []" :key="i" class="csv-mapping-row">
+            <span :title="header">{{ header }}</span>
+            <span>{{ csvPreview?.rows?.[0]?.[i] ?? '' }}</span>
+            <select v-model="csvTargetColumns[i]" class="browse-select">
+              <option value="">{{ t('db.skipColumn') }}</option>
+              <option v-for="col in csvColumnOptions" :key="col" :value="col">{{ col }}</option>
+            </select>
+          </div>
+        </div>
+        <p class="csv-hint">{{ t('db.csvPreviewCount', { count: csvPreview?.rows?.length || 0 }) }}</p>
+        <div class="csv-sample">
+          <table>
+            <thead><tr><th v-for="(header, i) in csvPreview?.headers || []" :key="i">{{ header }}</th></tr></thead>
+            <tbody><tr v-for="(row, i) in csvPreview?.rows || []" :key="i"><td v-for="(cell, j) in row" :key="j">{{ cell }}</td></tr></tbody>
+          </table>
+        </div>
+        <template #footer>
+          <el-button @click="csvDialogOpen = false">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" :loading="importingCsv" @click="onImportCSV">{{ t('db.importCSV') }}</el-button>
+        </template>
+      </el-dialog>
+
       <el-dialog
         v-model="editingRow"
         :title="t('common.edit')"
@@ -208,7 +295,7 @@
 
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
-import { Sparkles, History, FolderOpen, Download, Plus, ChevronUp, ChevronDown } from '@lucide/vue'
+import { Sparkles, History, FolderOpen, Download, Upload, Plus, ChevronUp, ChevronDown, RefreshCw, Pencil, Copy, Trash2, ListFilter, X } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
@@ -216,7 +303,7 @@ import SyntaxEditor from './SyntaxEditor.vue'
 import DBResultGrid from './DBResultGrid.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
-import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBBrowseTable, DBUpdateRowsAtomic, DBPreviewCSV, DBImportCSV, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
@@ -241,6 +328,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   cellUpdated: []
+  'pending-change': [pending: boolean]
+  'operation-busy': [busy: boolean]
 }>()
 
 const sql = ref('')
@@ -258,12 +347,70 @@ const page = ref(0)
 const pageSize = ref(100)
 const browseMode = ref(false)
 const browseHasMore = ref(false)
+const browseSql = ref('')
+type FilterRule = { column: string; op: 'contains' | 'equals' | 'startsWith' | 'isNull' | 'isNotNull'; value: string }
+type SortRule = { column: string; desc: boolean }
+const browseControlsOpen = ref(false)
+const filterDrafts = ref<FilterRule[]>([])
+const sortDrafts = ref<SortRule[]>([])
+const appliedFilters = ref<FilterRule[]>([])
+const appliedSorts = ref<SortRule[]>([])
+const browseColumns = computed(() => props.tableColumns?.length ? props.tableColumns.map(c => c.name) : (queryResult.value?.columns.map(c => c.name) || []))
 const resultFilter = ref('')
 const sortProp = ref('')
 const sortOrder = ref<'ascending' | 'descending' | null>(null)
 
 const historyOpen = ref(false)
 const history = ref<HistoryEntry[]>([])
+
+async function executeBrowse() {
+  if (!props.tableName) return
+  error.value = ''
+  loading.value = true
+  const started = performance.now()
+  try {
+    const result = await DBBrowseTable(props.sessionId, props.dbName || '', props.tableName, {
+      filters: appliedFilters.value.map(f => ({ ...f })),
+      sorts: appliedSorts.value.map(s => ({ ...s })),
+      limit: pageSize.value,
+      offset: page.value * pageSize.value,
+    })
+    queryResult.value = result
+    selectedRow.value = null
+    browseHasMore.value = result.hasMore === true
+    lastDurationMs.value = Math.round(performance.now() - started)
+  } catch (e: any) {
+    error.value = e?.message || String(e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function applyBrowseControls() {
+  const filters = filterDrafts.value.filter(f => f.column).map(f => ({ ...f }))
+  const sorts = sortDrafts.value.filter(s => s.column).map(s => ({ ...s }))
+  if (new Set(sorts.map(s => s.column)).size !== sorts.length) {
+    error.value = t('db.duplicateSortColumn')
+    return
+  }
+  if (!(await confirmDiscardEdits())) return
+  appliedFilters.value = filters
+  appliedSorts.value = sorts
+  page.value = 0
+  await loadBrowseSql(0)
+  await executeBrowse()
+}
+
+async function resetBrowseControls() {
+  if (!(await confirmDiscardEdits())) return
+  filterDrafts.value = []
+  sortDrafts.value = []
+  appliedFilters.value = []
+  appliedSorts.value = []
+  page.value = 0
+  await loadBrowseSql(0)
+  await executeBrowse()
+}
 
 const resolvedPrimaryKeys = computed(() => {
   if (!props.tableName || props.isView || !props.primaryKeys?.length || !queryResult.value) return [] as string[]
@@ -277,10 +424,26 @@ const resolvedPrimaryKeys = computed(() => {
   return resolved
 })
 
-const canEditRows = computed(() => resolvedPrimaryKeys.value.length > 0)
+const canEditRows = computed(() => browseMode.value && resolvedPrimaryKeys.value.length > 0)
+const selectedRow = shallowRef<Record<string, any> | null>(null)
+
+function onSelectRow(row: Record<string, any> | null) { selectedRow.value = row }
+function onEditSelected() { if (selectedRow.value) startEditRowByRow(selectedRow.value) }
+function onDeleteSelected() { if (selectedRow.value) void onDeleteRowByRow(selectedRow.value) }
+async function onDuplicateSelected() {
+  const row = selectedRow.value
+  if (!row) return
+  if (!(await startInsertRow())) return
+  for (const col of insertColumns.value) {
+    if (insertAutoIncrement.value[col]) continue
+    insertNulls.value[col] = row[col] == null
+    insertValues.value[col] = row[col] == null ? '' : String(row[col])
+  }
+}
 
 const displayRows = computed(() => {
   let rows = queryResult.value?.rows || []
+  if (browseMode.value) return rows
   const q = resultFilter.value.trim().toLowerCase()
   if (q) {
     rows = rows.filter(row =>
@@ -313,6 +476,59 @@ const browsePageTotal = computed(() => {
 
 const exportMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const exportMenuVisible = ref(false)
+const csvDialogOpen = ref(false)
+const csvPath = ref('')
+const csvPreview = shallowRef<{ headers: string[]; rows: string[][] } | null>(null)
+const csvTargetColumns = ref<string[]>([])
+const csvColumnOptions = ref<string[]>([])
+const importingCsv = ref(false)
+
+async function openCSVImport() {
+  if (!props.tableName || !(await confirmDiscardEdits())) return
+  try {
+    const path = await OpenFileDialogFiltered(t('db.importCSV'), 'CSV File', '*.csv')
+    if (!path) return
+    const [preview, schema] = await Promise.all([
+      DBPreviewCSV(path),
+      GetTableSchema(props.sessionId, props.dbName || '', props.tableName),
+    ])
+    csvPath.value = path
+    csvPreview.value = preview
+    csvColumnOptions.value = schema.columns.map((c: ColumnInfo) => c.name)
+    csvTargetColumns.value = preview.headers.map((header: string) => csvColumnOptions.value.find(col => col.toLowerCase() === header.toLowerCase()) || '')
+    csvDialogOpen.value = true
+    error.value = ''
+  } catch (e: any) {
+    if (!isDialogCancel(e)) error.value = e?.message || String(e)
+  }
+}
+
+async function onImportCSV() {
+  if (!props.tableName || !csvPreview.value || importingCsv.value) return
+  const mapping = csvTargetColumns.value.flatMap((target, sourceIndex) => target ? [{ sourceIndex, target }] : [])
+  if (!mapping.length || new Set(mapping.map(m => m.target)).size !== mapping.length) {
+    error.value = t('db.invalidCSVMapping')
+    return
+  }
+  importingCsv.value = true
+  emit('operation-busy', true)
+  try {
+    const count = await DBImportCSV(props.sessionId, props.dbName || '', props.tableName, csvPath.value, mapping)
+    csvDialogOpen.value = false
+    error.value = ''
+    msg.success(t('db.csvImported', { count }))
+    emit('cellUpdated')
+    page.value = 0
+    await loadBrowseSql(0)
+    await executeBrowse()
+  } catch (e: any) {
+    error.value = e?.message || String(e)
+    msg.error(error.value)
+  } finally {
+    importingCsv.value = false
+    emit('operation-busy', false)
+  }
+}
 
 function csvCell(v: unknown): string {
   if (v == null) return ''
@@ -430,13 +646,14 @@ function normalizeSql(s: string): string {
 
 async function loadBrowseSql(offset = 0) {
   if (!props.tableName) return
-  sql.value = await DBDefaultTableQuery(
+  browseSql.value = await DBDefaultTableQuery(
     props.sessionId,
     props.dbName || '',
     props.tableName,
     pageSize.value,
     offset,
   )
+  sql.value = browseSql.value
   browseMode.value = true
 }
 
@@ -554,30 +771,21 @@ async function onExecute() {
   const selected = editorRef.value?.getSelectedOrAll?.() ?? sql.value
   const toRun = selected.trim()
   if (!toRun) return
+  if (!(await confirmDiscardEdits())) return
+  if (browseMode.value && normalizeSql(sql.value) === normalizeSql(browseSql.value) && normalizeSql(toRun) === normalizeSql(browseSql.value)) {
+    await executeBrowse()
+    return
+  }
+  browseMode.value = false
   error.value = ''
   queryResult.value = null
+  selectedRow.value = null
   execResult.value = null
   scriptResult.value = null
   loading.value = true
   cancelled = false
   resultFilter.value = ''
   const started = performance.now()
-
-  // If user edited away from browse SQL, leave browse mode
-  if (browseMode.value && props.tableName) {
-    try {
-      const expected = await DBDefaultTableQuery(
-        props.sessionId,
-        props.dbName || '',
-        props.tableName,
-        pageSize.value,
-        page.value * pageSize.value,
-      )
-      if (normalizeSql(sql.value) !== normalizeSql(expected) && normalizeSql(toRun) !== normalizeSql(expected)) {
-        browseMode.value = false
-      }
-    } catch { /* ignore */ }
-  }
 
   try {
     // Multi-statement scripts must run as a script: ExecuteQuery/Statement
@@ -647,6 +855,7 @@ function isDialogCancel(e: unknown): boolean {
 const sqlFileEditorLimit = 1 << 20
 
 async function onOpenScriptFile() {
+  if (!(await confirmDiscardEdits())) return
   let path = ''
   try {
     path = await OpenFileDialogFiltered(t('db.runSqlFile'), 'SQL File', '*.sql')
@@ -689,19 +898,31 @@ function decodeBase64(b64: string): string {
 }
 
 async function onPageChange(p: number) {
+  if (!(await confirmDiscardEdits())) return
   page.value = Math.max(0, p - 1)
   await loadBrowseSql(page.value * pageSize.value)
-  await onExecute()
+  await executeBrowse()
 }
 
 async function onPageSizeChange(size: number) {
+  if (!(await confirmDiscardEdits())) return
   pageSize.value = size
   page.value = 0
   await loadBrowseSql(0)
-  await onExecute()
+  await executeBrowse()
 }
 
-function onSortChange(payload: { field: string; order: 'asc' | 'desc' | null }) {
+async function onSortChange(payload: { field: string; order: 'asc' | 'desc' | null }) {
+  if (browseMode.value) {
+    if (!(await confirmDiscardEdits())) return
+    const sorts: SortRule[] = payload.field && payload.order ? [{ column: payload.field, desc: payload.order === 'desc' }] : []
+    sortDrafts.value = sorts
+    appliedSorts.value = sorts
+    page.value = 0
+    await loadBrowseSql(0)
+    await executeBrowse()
+    return
+  }
   sortProp.value = payload.field || ''
   sortOrder.value = payload.order === 'asc' ? 'ascending' : payload.order === 'desc' ? 'descending' : null
 }
@@ -711,43 +932,60 @@ const resultGridRef = ref<InstanceType<typeof DBResultGrid> | null>(null)
 /** Number of unsaved inline cell edits staged in the result grid. */
 const pendingCount = ref(0)
 const savingRows = ref(false)
+const editingCell = ref(false)
+
+function onEditingChange(editing: boolean) {
+  editingCell.value = editing
+  emit('pending-change', editing || pendingCount.value > 0)
+}
+
+async function confirmDiscardEdits(): Promise<boolean> {
+  if (savingRows.value || importingCsv.value) return false
+  resultGridRef.value?.clearEdit()
+  if (!pendingCount.value) return true
+  try {
+    await ElMessageBox.confirm(t('db.discardEditsConfirm'), t('db.unsavedChanges'), {
+      confirmButtonText: t('db.discardEdits'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+    })
+    resultGridRef.value?.revertAll()
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function onRefresh() {
+  if (!(await confirmDiscardEdits())) return
+  if (props.tableName) await loadBrowseSql(page.value * pageSize.value)
+  await onExecute()
+}
 
 function onPendingChange(count: number) {
   pendingCount.value = count
+  emit('pending-change', editingCell.value || count > 0)
 }
 
 /** Persist every staged cell edit via UPDATE ... WHERE original primary keys. */
 async function onSaveEdits() {
+  resultGridRef.value?.clearEdit()
   const edits = resultGridRef.value?.getPendingEdits() || []
   if (!edits.length || savingRows.value) return
   savingRows.value = true
-  let ok = true
+  emit('operation-busy', true)
   try {
-    for (const ed of edits) {
-      try {
-        await DBUpdateRow(
-          props.sessionId,
-          props.dbName || '',
-          props.tableName,
-          { [ed.field]: ed.newValue },
-          ed.where,
-        )
-        resultGridRef.value?.markCommitted(ed.row, ed.field)
-      } catch (e: any) {
-        ok = false
-        resultGridRef.value?.revertRow(ed.row)
-        const m = e?.message || String(e)
-        error.value = m
-        msg.error(m)
-        break
-      }
-    }
-    if (ok) {
-      error.value = ''
-      emit('cellUpdated')
-    }
+    await DBUpdateRowsAtomic(props.sessionId, props.dbName || '', props.tableName || '', edits.map(ed => ({ set: ed.set, where: ed.where })))
+    for (const ed of edits) resultGridRef.value?.markCommittedRow(ed.row)
+    error.value = ''
+    emit('cellUpdated')
+  } catch (e: any) {
+    const m = e?.message || String(e)
+    error.value = `${t('db.batchRolledBack')}: ${m}`
+    msg.error(error.value)
   } finally {
     savingRows.value = false
+    emit('operation-busy', false)
   }
 }
 
@@ -769,7 +1007,8 @@ function rowIndexOf(row: Record<string, any>): number {
   return rows.findIndex(r => cols.every(c => r?.[c] === row?.[c]))
 }
 
-function startEditRowByRow(row: Record<string, any>) {
+async function startEditRowByRow(row: Record<string, any>) {
+  if (!(await confirmDiscardEdits())) return
   const idx = rowIndexOf(row)
   if (idx < 0) {
     error.value = t('db.noPrimaryKey')
@@ -831,6 +1070,8 @@ async function onDeleteRow(rowIndex: number) {
     return
   }
 
+  if (!(await confirmDiscardEdits())) return
+
   const row = queryResult.value!.rows[rowIndex]
   const where: Record<string, any> = {}
   for (const pk of pks) {
@@ -843,6 +1084,7 @@ async function onDeleteRow(rowIndex: number) {
       ...queryResult.value!,
       rows: queryResult.value!.rows.filter((_, i) => i !== rowIndex)
     }
+    selectedRow.value = null
     error.value = ''
     emit('cellUpdated')
   } catch (e: any) {
@@ -857,6 +1099,7 @@ const insertAutoIncrement = ref<Record<string, boolean>>({})
 const insertColumns = ref<string[]>([])
 
 async function startInsertRow() {
+  if (!(await confirmDiscardEdits())) return false
   let cols: ColumnInfo[]
   try {
     const schema = await GetTableSchema(props.sessionId, props.dbName || '', props.tableName || '')
@@ -882,6 +1125,7 @@ async function startInsertRow() {
   }
   editingRow.value = false
   insertingRow.value = true
+  return true
 }
 
 async function onInsertConfirm() {
@@ -1072,6 +1316,14 @@ function onEditRowCancel() {
   align-items: center;
   flex-shrink: 0;
 }
+.browse-mode-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.1875rem 0.375rem;
+}
 .sql-editor-wrap {
   position: relative;
   flex: 1 1 auto;
@@ -1221,6 +1473,7 @@ function onEditRowCancel() {
 .result-duration { color: var(--text-muted); }
 .result-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0;
@@ -1239,11 +1492,57 @@ function onEditRowCancel() {
 .result-filter:focus { border-color: var(--accent); }
 .result-toolbar-right {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 0.625rem;
+  gap: 0.375rem;
   margin-left: auto;
   min-width: 0;
 }
+.result-toolbar-right .danger { color: var(--error); }
+.browse-controls {
+  max-height: 15rem;
+  overflow: auto;
+  flex-shrink: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.browse-rule-title { font-size: 0.75rem; font-weight: 600; margin: 0.375rem 0; }
+.browse-rule { display: flex; gap: 0.375rem; align-items: center; margin-bottom: 0.375rem; }
+.browse-select, .browse-value {
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+.browse-select { flex: 0 1 10rem; }
+.browse-value { flex: 1; }
+span.browse-value { border: 0; background: none; }
+.browse-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.browse-actions .btn-primary { margin-left: auto; }
+.csv-path, .csv-hint { font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+.csv-error { color: var(--error); font-size: 0.75rem; overflow-wrap: anywhere; }
+.csv-mapping { max-height: 18rem; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.csv-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, 1fr) minmax(5rem, 1fr) minmax(8rem, 1fr);
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.375rem;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.75rem;
+}
+.csv-mapping-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csv-mapping-row .browse-select { width: 100%; }
+.csv-sample { max-height: 12rem; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.csv-sample table { border-collapse: collapse; font-size: 0.75rem; min-width: 100%; }
+.csv-sample th, .csv-sample td { border: 1px solid var(--border-subtle); padding: 0.25rem 0.5rem; text-align: left; white-space: nowrap; }
+.csv-sample th { background: var(--bg-elevated); }
 .result-grid { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
 .result-footer {
   display: flex;

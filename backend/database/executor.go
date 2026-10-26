@@ -28,6 +28,7 @@ type QueryResultColumn struct {
 type QueryResult struct {
 	Columns []QueryResultColumn `json:"columns"`
 	Rows    []map[string]any    `json:"rows"`
+	HasMore bool                `json:"hasMore,omitempty"`
 }
 
 type ExecResult struct {
@@ -36,6 +37,10 @@ type ExecResult struct {
 }
 
 func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, error) {
+	return executeQueryArgs(p, db, dbName, sqlStr, nil)
+}
+
+func executeQueryArgs(p Provider, db *sql.DB, dbName, sqlStr string, args []any) (*QueryResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
@@ -48,7 +53,7 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 		return nil, err
 	}
 
-	rows, err := conn.QueryContext(ctx, sqlStr)
+	rows, err := conn.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +127,11 @@ func QueryResultToJSON(qr *QueryResult) ([]byte, error) {
 
 // ScriptResult is the outcome of running a multi-statement SQL script.
 type ScriptResult struct {
-	Executed      int    `json:"executed"`       // statements that ran successfully
-	FailedLine    int    `json:"failedLine"`     // 1-based line of the failing statement; 0 if all ok
-	FailedSQL     string `json:"failedSql"`      // the failing statement (truncated for display)
-	Error         string `json:"error"`          // failure message
-	AffectedTotal int64  `json:"affectedTotal"`  // sum of rows affected across statements
+	Executed      int    `json:"executed"`      // statements that ran successfully
+	FailedLine    int    `json:"failedLine"`    // 1-based line of the failing statement; 0 if all ok
+	FailedSQL     string `json:"failedSql"`     // the failing statement (truncated for display)
+	Error         string `json:"error"`         // failure message
+	AffectedTotal int64  `json:"affectedTotal"` // sum of rows affected across statements
 }
 
 // ExecuteScript splits a SQL script and runs each statement sequentially on a
