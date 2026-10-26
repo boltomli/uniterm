@@ -116,7 +116,6 @@ describe('launchConnection routing', () => {
     ['s3', 's3'],
     ['rdp', 'rdp'],
     ['vnc', 'vnc'],
-    ['ard', 'ard'],
     ['spice', 'spice'],
     ['monitor', 'monitor'],
     ['database', 'database'],

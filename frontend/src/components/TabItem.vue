@@ -116,7 +116,7 @@
 
       <!-- ③ 连接功能（ssh / rdp） -->
       <MenuDivider />
-      <MenuItem v-if="tab.type === 'rdp' || tab.type === 'vnc' || tab.type === 'ard' || tab.type === 'spice'" @click="enterDesktopFullScreen">{{ t('remoteDesktop.fullscreen') }}</MenuItem>
+      <MenuItem v-if="tab.type === 'rdp' || tab.type === 'vnc' || tab.type === 'spice'" @click="enterDesktopFullScreen">{{ t('remoteDesktop.fullscreen') }}</MenuItem>
       <MenuItem v-if="isSsh" @click="openSftp">{{ t(fileMenuKey) }}</MenuItem>
       <MenuItem v-if="isSsh" @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
       <MenuItem v-if="isSsh" @click="openMonitor">{{ t('sidebar.connectMonitor') }}</MenuItem>
@@ -365,7 +365,7 @@ const TTY_RECONNECT_TYPES: readonly string[] = ['ssh', 'telnet', 'serial', 'mosh
 // tabs (rdp/vnc/spice/x11) run their own reconnect inside their content component.
 const canReconnect = computed(() => {
   const type = props.tab.type
-  if (type === 'rdp' || type === 'vnc' || type === 'ard' || type === 'spice' || type === 'x11-desktop') return true
+  if (type === 'rdp' || type === 'vnc' || type === 'spice' || type === 'x11-desktop') return true
   if (type === 'database' || type === 'redis' || type === 'mongodb' || type === 'elasticsearch' || type === 'sftp' || type === 'monitor') {
     return 'panelId' in props.tab && !!panelStore.getPanel(props.tab.panelId)
   }

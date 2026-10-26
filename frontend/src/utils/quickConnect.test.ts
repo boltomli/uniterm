@@ -48,7 +48,6 @@ describe('parseQuickConnect protocols', () => {
     ['mosh', 'mosh', undefined],
     ['rdp', 'rdp', undefined],
     ['vnc', 'vnc', undefined],
-    ['ard', 'ard', undefined],
     ['spice', 'spice', undefined],
     ['ftp', 'ftp', undefined],
     ['sftp', 'sftp', undefined],

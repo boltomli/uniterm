@@ -186,7 +186,6 @@ const SPECS: Record<string, ConnectSpec> = {
   },
   rdp: { initSession: true },
   vnc: { sessionFirst: true, initSession: true, title: c => c.name || c.host },
-  ard: { sessionFirst: true, initSession: true, title: c => c.name || c.host },
   spice: { sessionFirst: true, initSession: true, title: c => c.name || c.host },
   // The X11DesktopTabContent owns CreateSession + X11DesktopConnect; it runs
   // when the tab mounts and reads the panel's config.

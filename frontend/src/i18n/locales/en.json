@@ -20,7 +20,6 @@
   "remoteDesktop.moveRegionToolbar": "Drag to move the input toolbar",
   "remoteDesktop.regionDesktopChanged": "The desktop size changed. Cancel and reopen the region editor to refresh the preview.",
   "remoteDesktop.previewUnavailable": "Unable to capture the desktop preview. Try again after the desktop loads.",
-  "sidebar.connectARD": "Connect ARD",
   "remoteDesktop.display": "Display",
   "remoteDesktop.allDisplays": "All displays",
   "remoteDesktop.displayNumber": "Display {n}",

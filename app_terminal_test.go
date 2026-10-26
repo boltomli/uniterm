@@ -25,8 +25,8 @@ func TestCreateSPICESessionThroughSSHTunnel(t *testing.T) {
 	testDesktopSessionThroughSSHTunnel(t, "spice", 3, 5903, []string{"main", "display", "inputs", "cursor"})
 }
 
-func TestCreateARDSessionThroughSSHTunnel(t *testing.T) {
-	testDesktopSessionThroughSSHTunnel(t, "ard", 5900, 5900, []string{"rfb"})
+func TestCreateVNCSessionThroughSSHTunnel(t *testing.T) {
+	testDesktopSessionThroughSSHTunnel(t, "vnc", 5900, 5900, []string{"rfb"})
 }
 
 func testDesktopSessionThroughSSHTunnel(t *testing.T, protocol string, port, targetPort int, channels []string) {

@@ -1574,7 +1574,6 @@ function doEditConnection(config: ConnectionConfig | null) {
 .start-card-icon.database { color: var(--warning); }
 .start-card-icon.rdp,
 .start-card-icon.vnc,
-.start-card-icon.ard,
 .start-card-icon.spice { color: var(--accent); }
 .start-card-icon.k8s { color: var(--accent); }
 .start-card-icon.serial { color: var(--success-dim); }

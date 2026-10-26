@@ -20,7 +20,6 @@
   "remoteDesktop.moveRegionToolbar": "拖动移动输入栏",
   "remoteDesktop.regionDesktopChanged": "桌面尺寸已变化，请取消并重新打开裁剪，以刷新预览。",
   "remoteDesktop.previewUnavailable": "无法获取桌面预览，请等待桌面显示后重试。",
-  "sidebar.connectARD": "连接 ARD",
   "remoteDesktop.display": "屏幕",
   "remoteDesktop.allDisplays": "全部屏幕",
   "remoteDesktop.displayNumber": "屏幕 {n}",

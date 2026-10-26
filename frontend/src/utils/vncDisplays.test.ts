@@ -134,29 +134,6 @@ describe('VNC display viewport using the noVNC renderer', () => {
     expect(rfb._display._viewportLoc).toEqual({ x: 0, y: 400, w: 1080, h: 1000 })
   })
 
-  it('uses server-relative coordinates after native Apple display selection', () => {
-    const rfb = fakeRfb()
-    rfb.ardSelectDisplay = vi.fn()
-    const controller = installVncDisplays(rfb, { selected: 'all' }, () => {})
-    controller.select({ selected: 'screen:42' })
-    expect(rfb.ardSelectDisplay).toHaveBeenCalledWith(42)
-    rfb._resize(2560, 1440)
-    expect(rfb._display._viewportLoc.x).toBe(0)
-    expect(rfb._display.absX(50)).toBe(100)
-  })
-
-  it('uses the latest Apple layout when restoring a cached inactive tab', () => {
-    const rfb = fakeRfb()
-    rfb.ardSelectDisplay = vi.fn()
-    const controller = installVncDisplays(rfb, { selected: 'all' }, () => {})
-    controller.dispose()
-    rfb._ardDisplays = [{ id: 77, x: 0, y: 0, width: 1920, height: 1080 }]
-    rfb._ardSelected = 77
-    const changed = vi.fn()
-    installVncDisplays(rfb, { selected: 'all' }, changed)
-    expect(changed.mock.calls[0][0].displays[0].id).toBe(77)
-    expect(changed.mock.calls[0][0].view.selected).toBe('screen:77')
-  })
 })
 
 describe('display layout validation', () => {

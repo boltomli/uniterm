@@ -7,7 +7,7 @@ import (
 )
 
 func TestConnectionStoreDesktopPreferences(t *testing.T) {
-	for _, protocol := range []string{"vnc", "ard", "rdp", "spice"} {
+	for _, protocol := range []string{"vnc", "rdp", "spice"} {
 		t.Run(protocol, func(t *testing.T) {
 			s := mustConnStore(t)
 			data := session.ConnectionStoreData{Connections: []session.ConnectionConfig{

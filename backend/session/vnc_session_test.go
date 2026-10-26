@@ -5,15 +5,14 @@ import (
 	"testing"
 )
 
-func TestVNCAndARDConnectionPorts(t *testing.T) {
+func TestVNCConnectionPorts(t *testing.T) {
 	for _, tc := range []struct {
 		kind string
 		port int
 		want string
 	}{
 		{"vnc", 0, "[::1]:5900"}, {"vnc", 3, "[::1]:5903"},
-		{"ard", 0, "[::1]:5900"}, {"ard", 3, "[::1]:3"},
-		{"ard", 5901, "[::1]:5901"},
+		{"vnc", 5901, "[::1]:5901"},
 	} {
 		t.Run(tc.kind+tc.want, func(t *testing.T) {
 			manager := NewSessionManager()
