@@ -44,7 +44,7 @@
               :session-id="getPanelSessionId(activeTab.panelId)"
             />
             <VNCTabContent
-              v-else-if="activeTab.type === 'vnc'"
+              v-else-if="activeTab.type === 'vnc' || activeTab.type === 'ard'"
               :key="activeTab.id"
               :panel-id="activeTab.panelId"
               :config="getPanelConfig(activeTab.panelId)"
@@ -905,6 +905,9 @@ onMounted(async () => {
   window.addEventListener('app:connect-vnc', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchConnection(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
   }) as EventListener)
+  window.addEventListener('app:connect-ard', ((e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchConnection(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
+  }) as EventListener)
   window.addEventListener('app:connect-spice', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchConnection(c, { prevStart: prev?.type === 'start' ? prev : undefined }) }
   }) as EventListener)
@@ -1229,7 +1232,7 @@ async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {
     }
   }
   // Close VNC session
-  if (tab && tab.type === 'vnc') {
+  if (tab && (tab.type === 'vnc' || tab.type === 'ard')) {
     const p = panelStore.getPanel(tab.panelId)
     if (p?.sessionId) {
       try { await CloseSession(p.sessionId) } catch (_) {}

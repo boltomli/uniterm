@@ -94,6 +94,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 import { CreateSession, CloseSession, FrontendLog, ClipboardGetFiles, ClipboardReadFileChunkByID,
@@ -123,7 +124,7 @@ const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('conne
 const currentSessionId = ref<string | null>(props.sessionId)
 const errorMessage = ref<string>('')
 const container = ref<HTMLDivElement | null>(null)
-const scaleViewport = ref(false)
+const { scaleViewport } = useRemoteDesktopPreferences(() => props.config)
 const isFullscreen = ref(false)
 const keyboardFocused = ref(false)
 let keyboardCaptureId = ''

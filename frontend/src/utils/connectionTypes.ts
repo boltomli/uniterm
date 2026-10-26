@@ -69,6 +69,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   // Remote desktop
   { type: 'rdp', label: 'RDP', icon: Monitor, category: 'remote', defaultPort: 3389, connectMenuKey: 'sidebar.connectRDP' },
   { type: 'vnc', label: 'VNC', icon: MonitorSmartphone, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectVNC' },
+  { type: 'ard', label: 'ARD', icon: Monitor, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectARD' },
   { type: 'spice', label: 'SPICE', icon: MonitorCloud, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectSPICE' },
   { type: 'x11-desktop', label: 'X11 Desktop', icon: AppWindow, category: 'remote', defaultPort: 22, connectMenuKey: 'sidebar.connectX11Desktop' },
   // SQL family: shared 'database' type with a dbType discriminator

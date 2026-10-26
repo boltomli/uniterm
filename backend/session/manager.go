@@ -38,6 +38,8 @@ func (sm *SessionManager) Create(sessionType string, config ConnectionConfig) (S
 
 	case "vnc":
 		s = NewVNCSession(config.ID)
+	case "ard":
+		s = NewARDSession(config.ID)
 
 	case "local":
 		s = NewLocalSession(config.ID)

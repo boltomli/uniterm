@@ -156,7 +156,7 @@ async function closeTab(id: string) {
   }
 
   // Clean up VNC session
-  if (tab && tab.type === 'vnc') {
+  if (tab && (tab.type === 'vnc' || tab.type === 'ard')) {
     const vncPanel = panelStore.getPanel(tab.panelId)
     if (vncPanel?.sessionId) {
       try { await CloseSession(vncPanel.sessionId) } catch (_) {}

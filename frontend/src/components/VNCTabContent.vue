@@ -45,6 +45,12 @@
       <span class="vnc-status-sep">|</span>
       <span>{{ config?.host }}:{{ config?.port || 5900 }}</span>
       <span class="vnc-status-sep">|</span>
+      <RemoteDisplaySelect
+        :displays="displayState.displays" :width="displayState.width" :height="displayState.height"
+        :view="displayState.view" :allow-custom="!isArd" @select="selectDisplay" @focus-desktop="focusDesktop"
+        @create-region="openRegionEditor()" @edit-region="openRegionEditor"
+      />
+      <span class="vnc-status-sep">|</span>
       <span class="vnc-status-label">{{ t('vnc.scale') }}</span>
       <el-switch
         v-model="scaleViewport"
@@ -84,22 +90,44 @@
       @focus-desktop="focusDesktop"
       @minimize="blurDesktop"
       @error="onToolbarError"
+    >
+      <template #displays>
+        <RemoteDisplaySelect
+          :displays="displayState.displays" :width="displayState.width" :height="displayState.height"
+          :view="displayState.view" :allow-custom="!isArd" @select="selectDisplay" @focus-desktop="focusDesktop"
+          @create-region="openRegionEditor()" @edit-region="openRegionEditor"
+        />
+        <span class="vnc-status-sep">|</span>
+      </template>
+    </RemoteDesktopToolbar>
+    <DesktopRegionEditor
+      v-if="regionEditor" :key="regionEditor.region.id" :preview="regionEditor.preview" :region="regionEditor.region"
+      :regions="displayState.view.regions || []" :editing-existing="regionEditor.editingExisting"
+      :desktop-width="displayState.width" :desktop-height="displayState.height"
+      @save="saveRegion" @cancel="closeRegionEditor" @delete="deleteRegion"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import RemoteDisplaySelect from './RemoteDisplaySelect.vue'
+import DesktopRegionEditor from './DesktopRegionEditor.vue'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
+import { useConnectionStore } from '../stores/connectionStore'
+import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import type { ConnectionConfig } from '../types/session'
 import { Events } from '@wailsio/runtime'
 import { CreateSession, CloseSession, SetVNCKeyboardCapture, EncodeVNCClipboardText } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { createVncClipboard } from '../utils/vncClipboard'
 import { installVncPixelScaling } from '../utils/vncScaling'
+import { captureVncPreview, installVncDisplays, type DesktopDisplayState, type DesktopPreview, type DesktopRegion, type DesktopView } from '../utils/vncDisplays'
+import { deleteDesktopRegion, saveDesktopRegion, suggestedDesktopRegion } from '../utils/desktopRegions'
+import { msg } from '../services/message'
 import { VncNativeKeyboard } from '../utils/vncKeyboard'
 import { queueRemoteKeyboardChange } from '../utils/remoteKeyboard'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
@@ -108,6 +136,7 @@ import { readClipboardText, writeClipboard } from '../composables/useClipboardWr
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
+const connectionStore = useConnectionStore()
 
 const props = defineProps<{
   panelId: string
@@ -122,9 +151,55 @@ const container = ref<HTMLDivElement | null>(null)
 const isFullscreen = ref(false)
 const vncContainer = ref<HTMLDivElement | null>(null)
 const savedPassword = ref<string>('')
-const scaleViewport = ref(false)
-const viewOnly = ref(false)
-const showDotCursor = ref(false)
+const { scaleViewport, viewOnly, showDotCursor } = useRemoteDesktopPreferences(() => props.config)
+const isArd = computed(() => props.config?.type === 'ard')
+const displayState = ref<DesktopDisplayState>({ displays: [], width: 0, height: 0, view: { selected: 'all' } })
+let displayController: ReturnType<typeof installVncDisplays> | null = null
+const regionEditor = ref<{ preview: DesktopPreview; region: DesktopRegion; editingExisting: boolean } | null>(null)
+
+function openRegionEditor(id?: string) {
+  if (!rfb || status.value !== 'connected' || isArd.value) return
+  blurDesktop()
+  try {
+    const preview = captureVncPreview(rfb)
+    const regions = displayState.value.view.regions || []
+    const existing = regions.find(region => region.id === id)
+    let number = 1
+    while (regions.some((region, index) => (region.name || t('remoteDesktop.regionNumber', { n: index + 1 })) === t('remoteDesktop.regionNumber', { n: number }))) number++
+    const region = existing ? { ...existing, name: existing.name || t('remoteDesktop.regionNumber', { n: regions.indexOf(existing) + 1 }) } : {
+      ...suggestedDesktopRegion(displayState.value.view, preview.width, preview.height, displayState.value.displays),
+      id: crypto.randomUUID(), name: t('remoteDesktop.regionNumber', { n: number }),
+    }
+    regionEditor.value = { preview, region, editingExisting: !!existing }
+  } catch (error) {
+    console.error('Desktop preview failed:', error)
+    msg.error(t('remoteDesktop.previewUnavailable'))
+    focusDesktop()
+  }
+}
+
+function closeRegionEditor() {
+  regionEditor.value = null
+  void nextTick(focusDesktop)
+}
+
+function saveRegion(region: DesktopRegion) {
+  selectDisplay(saveDesktopRegion(displayState.value.view, region))
+  closeRegionEditor()
+}
+
+function deleteRegion(id: string) {
+  selectDisplay(deleteDesktopRegion(displayState.value.view, id))
+  closeRegionEditor()
+}
+
+function selectDisplay(view: DesktopView) {
+  displayController?.select(view)
+  if (props.config) {
+    props.config.desktopView = view
+    void connectionStore.update(props.config.id, { desktopView: view })
+  }
+}
 const keyboardFocused = ref(false)
 let keyboardCaptureId = ''
 let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
@@ -179,7 +254,7 @@ async function connect() {
   status.value = 'connecting'
   lastError.value = ''
   try {
-    const info = await CreateSession('vnc', props.config)
+    const info = await CreateSession(isArd.value ? 'ard' : 'vnc', props.config)
     currentSessionId.value = info.id
     // Bind the session to the panel so tab-close cleanup and later
     // session:status events resolve to this id. The proxy address comes
@@ -202,9 +277,12 @@ async function connect() {
 }
 
 async function reconnect() {
+  regionEditor.value = null
   onFocusOut()
   restoreDesktopInput?.()
   restoreDesktopInput = null
+  displayController?.dispose()
+  displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
   if (currentSessionId.value) {
@@ -224,6 +302,8 @@ function initRFB(proxyAddr: string, password: string) {
   onFocusOut()
   restoreDesktopInput?.()
   restoreDesktopInput = null
+  displayController?.dispose()
+  displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
 
@@ -233,6 +313,15 @@ function initRFB(proxyAddr: string, password: string) {
   }
   if (vncContainer.value) {
     vncContainer.value.innerHTML = ''
+  }
+
+  if (isArd.value) {
+    import('../utils/ard/ArdRfb').then(module => createRFB(module.default, proxyAddr, password)).catch(e => {
+      lastError.value = e?.message || String(e)
+      status.value = 'error'
+      isIniting = false
+    })
+    return
   }
 
   const RFB = (window as any).__novnc_RFB
@@ -255,17 +344,22 @@ function initRFB(proxyAddr: string, password: string) {
 
 function applyRFBOptions() {
   if (!rfb) return
+  displayController?.dispose()
   restorePixelScaling?.()
   restorePixelScaling = installVncPixelScaling(rfb)
   rfb.viewOnly = viewOnly.value
+  rfb.ardSetControl?.(!viewOnly.value)
   rfb.scaleViewport = scaleViewport.value
   rfb.showDotCursor = showDotCursor.value
   rfb.background = readThemeBackground()
+  displayController = installVncDisplays(rfb, props.config?.desktopView ?? { selected: 'all' }, state => {
+    displayState.value = state
+  })
   setupDesktopInput()
 }
 
 function ownsRemoteKeyboard(): boolean {
-  return status.value === 'connected' && !viewOnly.value && document.hasFocus() &&
+  return !regionEditor.value && status.value === 'connected' && !viewOnly.value && document.hasFocus() &&
     document.activeElement === vncContainer.value?.querySelector('canvas')
 }
 
@@ -295,7 +389,7 @@ function queueVncKey(keysym: number, code: string, down: boolean, send: () => vo
 function setupDesktopInput() {
   restoreDesktopInput?.()
   const target = rfb
-  const clipboard = createVncClipboard(target, props.config?.vncClipboardEncoding, EncodeVNCClipboardText,
+  const clipboard = createVncClipboard(target, isArd.value ? 'auto' : props.config?.vncClipboardEncoding, EncodeVNCClipboardText,
     () => ownsRemoteKeyboard() && rfb === target)
   const sync = new RdpClipboardSync({
     read: async () => {
@@ -402,7 +496,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
 
   try {
     rfb = new RFB(vncContainer.value, proxyAddr, {
-      credentials: { password: password || '' },
+      credentials: { username: props.config?.user || '', password: password || '' },
       shared: props.config?.vncShared ?? true,
       repeaterID: props.config?.vncRepeaterID || '',
     })
@@ -420,7 +514,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
   // ahead of VNC Auth (2), failing with a 1006 close. Cap the max version to
   // 3.3 so noVNC replies "RFB 003.003" and the server falls back to legacy
   // single-security-type negotiation, sending VNC Auth (2) directly.
-  rfb._rfbMaxVersion = 3.3
+  if (!isArd.value) rfb._rfbMaxVersion = 3.3
 
   applyRFBOptions()
 
@@ -464,10 +558,12 @@ function onPaste(e: ClipboardEvent) {
   const target = rfb
   inputQueue.enqueue(() => syncLocalClipboard(text))
   inputQueue.enqueue(() => {
-    target.sendKey(0xffe3, 'ControlLeft', true)
+    const modifier = isArd.value ? 0xffeb : 0xffe3
+    const code = isArd.value ? 'MetaLeft' : 'ControlLeft'
+    target.sendKey(modifier, code, true)
     target.sendKey(0x76, 'KeyV', true)
     target.sendKey(0x76, 'KeyV', false)
-    target.sendKey(0xffe3, 'ControlLeft', false)
+    target.sendKey(modifier, code, false)
   })
 }
 
@@ -546,7 +642,7 @@ onMounted(() => {
   }, 1000)
   onPixelRatioChange()
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  window.addEventListener('vnc:fullscreen', onFullscreenEvent)
+  window.addEventListener(isArd.value ? 'ard:fullscreen' : 'vnc:fullscreen', onFullscreenEvent)
   if (props.sessionId) {
     currentSessionId.value = props.sessionId
   }
@@ -621,10 +717,12 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)
   pixelRatioQuery = null
+  displayController?.dispose()
+  displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
   document.removeEventListener('fullscreenchange', onFullscreenChange)
-  window.removeEventListener('vnc:fullscreen', onFullscreenEvent)
+  window.removeEventListener(isArd.value ? 'ard:fullscreen' : 'vnc:fullscreen', onFullscreenEvent)
   themeObserver?.disconnect()
   themeObserver = null
   unsubStatus?.()
@@ -655,12 +753,16 @@ watch(scaleViewport, (val) => {
 watch(viewOnly, (val) => {
   if (val) onFocusOut()
   if (rfb) rfb.viewOnly = val
+  rfb?.ardSetControl?.(!val)
   if (!val) onFocusIn()
 })
 watch(showDotCursor, (val) => {
   if (rfb) rfb.showDotCursor = val
 })
-watch(status, value => value === 'connected' ? nextTick(onFocusIn) : onFocusOut())
+watch(status, value => {
+  if (value === 'connected') void nextTick(onFocusIn)
+  else { regionEditor.value = null; onFocusOut() }
+})
 onDeactivated(onFocusOut)
 onActivated(onFocusIn)
 </script>
@@ -727,6 +829,10 @@ onActivated(onFocusIn)
   color: var(--text-muted);
   font-size: 0.75rem;
   box-sizing: border-box;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   z-index: 5;
 }
 .vnc-status-dot {
@@ -735,6 +841,8 @@ onActivated(onFocusIn)
   background: var(--success);
   flex-shrink: 0;
 }
+.vnc-statusbar::-webkit-scrollbar { display: none; }
+.vnc-statusbar :deep(.el-switch) { height: 1.25rem; }
 .vnc-status-sep { color: var(--text-disabled); }
 .vnc-status-label { font-size: 0.6875rem; }
 .vnc-status-spacer { flex: 1; }
