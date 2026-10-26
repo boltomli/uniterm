@@ -47,7 +47,7 @@
       <span class="vnc-status-sep">|</span>
       <RemoteDisplaySelect
         :displays="displayState.displays" :width="displayState.width" :height="displayState.height"
-        :view="displayState.view" :allow-custom="!isArd" @select="selectDisplay" @focus-desktop="focusDesktop"
+        :view="displayState.view" allow-custom @select="selectDisplay" @focus-desktop="focusDesktop"
         @create-region="openRegionEditor()" @edit-region="openRegionEditor"
       />
       <span class="vnc-status-sep">|</span>
@@ -83,6 +83,7 @@
     <RemoteDesktopToolbar
       v-if="isFullscreen"
       v-model:scale-viewport="scaleViewport"
+      v-model:show-dot-cursor="showDotCursor"
       :host="config?.host || ''"
       :port="config?.port || 5900"
       :disabled="status !== 'connected'"
@@ -94,7 +95,7 @@
       <template #displays>
         <RemoteDisplaySelect
           :displays="displayState.displays" :width="displayState.width" :height="displayState.height"
-          :view="displayState.view" :allow-custom="!isArd" @select="selectDisplay" @focus-desktop="focusDesktop"
+          :view="displayState.view" allow-custom @select="selectDisplay" @focus-desktop="focusDesktop"
           @create-region="openRegionEditor()" @edit-region="openRegionEditor"
         />
         <span class="vnc-status-sep">|</span>
@@ -110,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
 import RemoteDisplaySelect from './RemoteDisplaySelect.vue'
@@ -125,6 +126,7 @@ import { Events } from '@wailsio/runtime'
 import { CreateSession, CloseSession, SetVNCKeyboardCapture, EncodeVNCClipboardText } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { createVncClipboard } from '../utils/vncClipboard'
 import { installVncPixelScaling } from '../utils/vncScaling'
+import { installVncCursor } from '../utils/vncCursor'
 import { captureVncPreview, installVncDisplays, type DesktopDisplayState, type DesktopPreview, type DesktopRegion, type DesktopView } from '../utils/vncDisplays'
 import { deleteDesktopRegion, saveDesktopRegion, suggestedDesktopRegion } from '../utils/desktopRegions'
 import { msg } from '../services/message'
@@ -152,13 +154,12 @@ const isFullscreen = ref(false)
 const vncContainer = ref<HTMLDivElement | null>(null)
 const savedPassword = ref<string>('')
 const { scaleViewport, viewOnly, showDotCursor } = useRemoteDesktopPreferences(() => props.config)
-const isArd = computed(() => props.config?.type === 'ard')
 const displayState = ref<DesktopDisplayState>({ displays: [], width: 0, height: 0, view: { selected: 'all' } })
 let displayController: ReturnType<typeof installVncDisplays> | null = null
 const regionEditor = ref<{ preview: DesktopPreview; region: DesktopRegion; editingExisting: boolean } | null>(null)
 
 function openRegionEditor(id?: string) {
-  if (!rfb || status.value !== 'connected' || isArd.value) return
+  if (!rfb || status.value !== 'connected') return
   blurDesktop()
   try {
     const preview = captureVncPreview(rfb)
@@ -239,6 +240,7 @@ let rfb: any = null
 let unsubStatus: (() => void) | null = null
 let isIniting = false
 let restorePixelScaling: (() => void) | null = null
+let restoreCursor: (() => void) | null = null
 let pixelRatioQuery: MediaQueryList | null = null
 
 function onPixelRatioChange() {
@@ -254,7 +256,7 @@ async function connect() {
   status.value = 'connecting'
   lastError.value = ''
   try {
-    const info = await CreateSession(isArd.value ? 'ard' : 'vnc', props.config)
+    const info = await CreateSession('vnc', props.config)
     currentSessionId.value = info.id
     // Bind the session to the panel so tab-close cleanup and later
     // session:status events resolve to this id. The proxy address comes
@@ -285,6 +287,8 @@ async function reconnect() {
   displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
+  restoreCursor?.()
+  restoreCursor = null
   if (currentSessionId.value) {
     try { await CloseSession(currentSessionId.value) } catch (_) {}
     currentSessionId.value = null
@@ -306,6 +310,8 @@ function initRFB(proxyAddr: string, password: string) {
   displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
+  restoreCursor?.()
+  restoreCursor = null
 
   if (rfb) {
     try { rfb.disconnect() } catch (_) {}
@@ -313,15 +319,6 @@ function initRFB(proxyAddr: string, password: string) {
   }
   if (vncContainer.value) {
     vncContainer.value.innerHTML = ''
-  }
-
-  if (isArd.value) {
-    import('../utils/ard/ArdRfb').then(module => createRFB(module.default, proxyAddr, password)).catch(e => {
-      lastError.value = e?.message || String(e)
-      status.value = 'error'
-      isIniting = false
-    })
-    return
   }
 
   const RFB = (window as any).__novnc_RFB
@@ -347,8 +344,9 @@ function applyRFBOptions() {
   displayController?.dispose()
   restorePixelScaling?.()
   restorePixelScaling = installVncPixelScaling(rfb)
+  restoreCursor?.()
+  if (container.value) restoreCursor = installVncCursor(rfb, container.value)
   rfb.viewOnly = viewOnly.value
-  rfb.ardSetControl?.(!viewOnly.value)
   rfb.scaleViewport = scaleViewport.value
   rfb.showDotCursor = showDotCursor.value
   rfb.background = readThemeBackground()
@@ -389,7 +387,7 @@ function queueVncKey(keysym: number, code: string, down: boolean, send: () => vo
 function setupDesktopInput() {
   restoreDesktopInput?.()
   const target = rfb
-  const clipboard = createVncClipboard(target, isArd.value ? 'auto' : props.config?.vncClipboardEncoding, EncodeVNCClipboardText,
+  const clipboard = createVncClipboard(target, props.config?.vncClipboardEncoding, EncodeVNCClipboardText,
     () => ownsRemoteKeyboard() && rfb === target)
   const sync = new RdpClipboardSync({
     read: async () => {
@@ -496,7 +494,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
 
   try {
     rfb = new RFB(vncContainer.value, proxyAddr, {
-      credentials: { username: props.config?.user || '', password: password || '' },
+      credentials: { password: password || '' },
       shared: props.config?.vncShared ?? true,
       repeaterID: props.config?.vncRepeaterID || '',
     })
@@ -514,7 +512,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
   // ahead of VNC Auth (2), failing with a 1006 close. Cap the max version to
   // 3.3 so noVNC replies "RFB 003.003" and the server falls back to legacy
   // single-security-type negotiation, sending VNC Auth (2) directly.
-  if (!isArd.value) rfb._rfbMaxVersion = 3.3
+  rfb._rfbMaxVersion = 3.3
 
   applyRFBOptions()
 
@@ -558,12 +556,10 @@ function onPaste(e: ClipboardEvent) {
   const target = rfb
   inputQueue.enqueue(() => syncLocalClipboard(text))
   inputQueue.enqueue(() => {
-    const modifier = isArd.value ? 0xffeb : 0xffe3
-    const code = isArd.value ? 'MetaLeft' : 'ControlLeft'
-    target.sendKey(modifier, code, true)
+    target.sendKey(0xffe3, 'ControlLeft', true)
     target.sendKey(0x76, 'KeyV', true)
     target.sendKey(0x76, 'KeyV', false)
-    target.sendKey(modifier, code, false)
+    target.sendKey(0xffe3, 'ControlLeft', false)
   })
 }
 
@@ -585,21 +581,6 @@ function onToolbarError(error: unknown) {
   console.error('VNC minimize error:', error)
 }
 
-// The frameless WebView2 window runs in composition mode: the OS cursor is
-// only updated when the web content's cursor *changes* (CursorChanged →
-// Wails SetCursor). Entering fullscreen rewrites the window style, which
-// drops the active cursor; VNC servers only send cursor shapes when the
-// remote shape changes, so unlike RDP nothing re-fires it afterwards and the
-// cursor stays invisible until this replay nudges WebView2 to re-emit it.
-function replayCanvasCursor() {
-  const canvas = vncContainer.value?.querySelector('canvas')
-  if (!canvas) return
-  const cursor = canvas.style.cursor
-  if (!cursor) return
-  canvas.style.cursor = 'default'
-  requestAnimationFrame(() => { canvas.style.cursor = cursor })
-}
-
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement === container.value
   if (keyboardCaptureId && currentSessionId.value) {
@@ -610,10 +591,6 @@ function onFullscreenChange() {
     queueRemoteKeyboardChange(() => SetVNCKeyboardCapture(sessionID, captureID, true, isFullscreen.value))
       .catch(error => console.error('VNC keyboard capture error:', error))
   }
-  // Replay once on the next frame and once after the window-style swap has
-  // settled; both are idempotent.
-  requestAnimationFrame(replayCanvasCursor)
-  setTimeout(replayCanvasCursor, 300)
 }
 
 async function toggleFullscreen() {
@@ -642,7 +619,7 @@ onMounted(() => {
   }, 1000)
   onPixelRatioChange()
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  window.addEventListener(isArd.value ? 'ard:fullscreen' : 'vnc:fullscreen', onFullscreenEvent)
+  window.addEventListener('vnc:fullscreen', onFullscreenEvent)
   if (props.sessionId) {
     currentSessionId.value = props.sessionId
   }
@@ -721,8 +698,10 @@ onBeforeUnmount(() => {
   displayController = null
   restorePixelScaling?.()
   restorePixelScaling = null
+  restoreCursor?.()
+  restoreCursor = null
   document.removeEventListener('fullscreenchange', onFullscreenChange)
-  window.removeEventListener(isArd.value ? 'ard:fullscreen' : 'vnc:fullscreen', onFullscreenEvent)
+  window.removeEventListener('vnc:fullscreen', onFullscreenEvent)
   themeObserver?.disconnect()
   themeObserver = null
   unsubStatus?.()
@@ -753,7 +732,6 @@ watch(scaleViewport, (val) => {
 watch(viewOnly, (val) => {
   if (val) onFocusOut()
   if (rfb) rfb.viewOnly = val
-  rfb?.ardSetControl?.(!val)
   if (!val) onFocusIn()
 })
 watch(showDotCursor, (val) => {

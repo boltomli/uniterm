@@ -80,16 +80,12 @@ export function installVncDisplays(
   const originalLayout = rfb._handleExtendedDesktopSize
   const originalClip = rfb._updateClip
   const originalScale = rfb._updateScale
-  let displays: DesktopDisplay[] = rfb.ardSelectDisplay ? rfb._ardDisplays ?? [] : rfb._unitermDisplays ?? []
+  let displays: DesktopDisplay[] = rfb._unitermDisplays ?? []
   let view: DesktopView = normalizeDesktopView(rfb._unitermView ?? initial)
-  if (rfb.ardSelectDisplay && displays.length > 0) {
-    view = { ...view, selected: rfb._ardSelected === null ? 'all' : `screen:${rfb._ardSelected}` }
-  }
   let initialScreen = view.selected.startsWith('screen:') ? view.selected : undefined
   let disposed = false
 
   function selectedRect(): DesktopRect | undefined {
-    if (rfb.ardSelectDisplay) return undefined
     if (view.selected.startsWith('region:')) return customDesktopRegion(view)
     if (view.selected.startsWith('screen:')) {
       return displays.find(d => `screen:${d.id}` === view.selected)
@@ -132,7 +128,7 @@ export function installVncDisplays(
 
   function refresh() {
     const rect = selectedRect()
-    if (!rfb.ardSelectDisplay && view.selected !== 'all' && (!rect || !validDesktopRect(rect, rfb._fbWidth, rfb._fbHeight))) {
+    if (view.selected !== 'all' && (!rect || !validDesktopRect(rect, rfb._fbWidth, rfb._fbHeight))) {
       view = { ...view, selected: 'all' }
     }
     updateClip()
@@ -143,7 +139,7 @@ export function installVncDisplays(
   const resize = function (this: any, width: number, height: number) {
     originalResize.call(this, width, height)
     // A real size change invalidates stale coordinates until the next layout.
-    if (!rfb.ardSelectDisplay) displays = displays.filter(d => validDesktopRect(d, width, height))
+    displays = displays.filter(d => validDesktopRect(d, width, height))
     refresh()
   }
   const layout = function (this: any) {
@@ -169,16 +165,7 @@ export function installVncDisplays(
   rfb._updateClip = updateClip
   rfb._updateScale = updateScale
 
-  // Apple display selection changes the server's framebuffer. Its own adapter
-  // publishes the list, and coordinates are then relative to that framebuffer.
-  function onArdDisplays(event: Event) {
-    const detail = (event as CustomEvent).detail
-    displays = detail.displays
-    view = { ...view, selected: detail.selected === null ? 'all' : `screen:${detail.selected}` }
-    notify()
-  }
-  rfb.addEventListener('arddisplayinfo', onArdDisplays)
-  if (!rfb.ardSelectDisplay && rfb._fbWidth > 0 && rfb._fbHeight > 0) refresh()
+  if (rfb._fbWidth > 0 && rfb._fbHeight > 0) refresh()
   else notify()
 
   return {
@@ -186,19 +173,11 @@ export function installVncDisplays(
       if (disposed) return
       initialScreen = undefined
       next = normalizeDesktopView(next)
-      if (rfb.ardSelectDisplay && !next.selected.startsWith('region:')) {
-        const id = next.selected.startsWith('screen:') ? Number(next.selected.slice(7)) : null
-        rfb.ardSelectDisplay(id)
-        view = next
-        notify()
-      } else {
-        view = next
-        refresh()
-      }
+      view = next
+      refresh()
     },
     dispose() {
       disposed = true
-      rfb.removeEventListener('arddisplayinfo', onArdDisplays)
       if (rfb._resize === resize) rfb._resize = originalResize
       if (rfb._handleExtendedDesktopSize === layout) rfb._handleExtendedDesktopSize = originalLayout
       if (rfb._updateClip === updateClip) rfb._updateClip = originalClip

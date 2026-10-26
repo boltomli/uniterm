@@ -61,14 +61,10 @@ func (s desktopCaptureTestSession) Status() session.SessionStatus { return s.sta
 func TestRemoteDesktopKeyboardSessionValidation(t *testing.T) {
 	a := &App{sessionManager: session.NewSessionManager(), rdpKeyboard: &platform.RDPKeyboardCapture{}, mainHwnd: 1}
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewVNCSession("vnc"), status: session.StatusConnected})
-	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewARDSession("ard"), status: session.StatusConnected})
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewRDPSession("rdp"), status: session.StatusConnected})
 	a.sessionManager.Add(desktopCaptureTestSession{Session: session.NewSPICESession("spice"), status: session.StatusConnected})
 	if _, err := a.SetVNCKeyboardCapture("vnc", "vnc-capture", true, false); err != nil {
 		t.Fatalf("connected VNC rejected: %v", err)
-	}
-	if _, err := a.SetVNCKeyboardCapture("ard", "ard-capture", true, false); err != nil {
-		t.Fatalf("connected ARD rejected: %v", err)
 	}
 	if _, err := a.SetRDPKeyboardCapture("rdp", "rdp-capture", true); err != nil {
 		t.Fatalf("connected RDP rejected: %v", err)

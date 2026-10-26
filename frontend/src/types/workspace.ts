@@ -1,4 +1,4 @@
-export type PanelType = 'ssh' | 'telnet' | 'mosh' | 'sftp' | 'settings' | 'rdp' | 'vnc' | 'ard' | 'spice' | 'local' | 'wsl' | 'database' | 'monitor' | 'serial' | 'tcp' | 'k8s' | 'container' | 'container-exec' | 'x11-desktop' | 'netscan' | 'other'
+export type PanelType = 'ssh' | 'telnet' | 'mosh' | 'sftp' | 'settings' | 'rdp' | 'vnc' | 'spice' | 'local' | 'wsl' | 'database' | 'monitor' | 'serial' | 'tcp' | 'k8s' | 'container' | 'container-exec' | 'x11-desktop' | 'netscan' | 'other'
 export type PanelStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 
 import type { ConnectionConfig } from './session'
@@ -84,7 +84,7 @@ export interface RDPTab {
 }
 
 export interface VNCTab {
-  type: 'vnc' | 'ard'
+  type: 'vnc'
   id: string
   panelId: string
   name: string

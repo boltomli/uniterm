@@ -9,7 +9,7 @@
   <div
     ref="fullscreenToolbar"
     class="remote-desktop-fullscreen-toolbar"
-    :class="{ 'is-hidden': !toolbarPinned && !toolbarExpanded }"
+    :class="{ 'is-hidden': !toolbarPinned && !toolbarExpanded, 'has-cursor-toggle': showDotCursor !== undefined }"
     role="toolbar"
     :aria-label="t('remoteDesktop.fullscreenToolbar')"
     @pointerenter="showFullscreenToolbar"
@@ -54,6 +54,23 @@
         @change="focusDesktop"
       />
     </label>
+    <template v-if="showDotCursor !== undefined">
+      <span class="remote-desktop-toolbar-divider" />
+      <label class="remote-desktop-toolbar-scale">
+        <span>{{ t('vnc.showDotCursor') }}</span>
+        <el-switch
+          :model-value="showDotCursor"
+          @update:model-value="emit('update:showDotCursor', $event)"
+          inline-prompt
+          :active-text="t('vnc.scaleOn')"
+          :inactive-text="t('vnc.scaleOff')"
+          :aria-label="t('vnc.showDotCursor')"
+          :disabled="disabled"
+          style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
+          @change="focusDesktop"
+        />
+      </label>
+    </template>
     <span class="remote-desktop-toolbar-divider" />
     <button
       class="remote-desktop-toolbar-btn remote-desktop-toolbar-minimize"
@@ -81,15 +98,17 @@ import { Window } from '@wailsio/runtime'
 import { useI18n } from '../i18n'
 
 const { t } = useI18n()
-defineProps<{
+withDefaults(defineProps<{
   host: string
   port: number
   resolution?: string
   scaleViewport: boolean
+  showDotCursor?: boolean
   disabled: boolean
-}>()
+}>(), { showDotCursor: undefined })
 const emit = defineEmits<{
   'update:scaleViewport': [value: boolean]
+  'update:showDotCursor': [value: boolean]
   restore: []
   focusDesktop: []
   minimize: []
@@ -174,6 +193,10 @@ onBeforeUnmount(clearToolbarHideTimer)
   transform: translateX(-50%);
   transition: transform 160ms ease, visibility 160ms;
   --wails-draggable: no-drag;
+}
+.remote-desktop-fullscreen-toolbar.has-cursor-toggle {
+  width: min(44rem, 100%);
+  flex-wrap: wrap;
 }
 .remote-desktop-fullscreen-toolbar.is-hidden {
   transform: translate(-50%, -100%);

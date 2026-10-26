@@ -29,7 +29,7 @@ beforeEach(() => {
 })
 
 describe('remote desktop status bar preferences', () => {
-  it.each(['vnc', 'ard', 'rdp', 'spice'] as const)('restores %s options after closing and loading the saved connection', async type => {
+  it.each(['vnc', 'rdp', 'spice'] as const)('restores %s options after closing and loading the saved connection', async type => {
     const store = useConnectionStore()
     const config = connection(type)
     await store.add(config)
@@ -37,7 +37,7 @@ describe('remote desktop status bar preferences', () => {
     const first = open(config)
     expect(first.scaleViewport.value).toBe(false)
     first.scaleViewport.value = true
-    if (type === 'vnc' || type === 'ard') {
+    if (type === 'vnc') {
       first.viewOnly.value = true
       first.showDotCursor.value = true
     }
@@ -46,8 +46,8 @@ describe('remote desktop status bar preferences', () => {
     await store.load()
     const restored = open(store.connections[0]!)
     expect(restored.scaleViewport.value).toBe(true)
-    expect(restored.viewOnly.value).toBe(type === 'vnc' || type === 'ard')
-    expect(restored.showDotCursor.value).toBe(type === 'vnc' || type === 'ard')
+    expect(restored.viewOnly.value).toBe(type === 'vnc')
+    expect(restored.showDotCursor.value).toBe(type === 'vnc')
     expect(store.connections[1]!.desktopPreferences).toBeUndefined()
 
     restored.scaleViewport.value = false

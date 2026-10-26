@@ -65,7 +65,7 @@ type DesktopRegion struct {
 	Name string `json:"name"`
 }
 
-// DesktopPreferences holds status bar options for VNC, ARD, RDP and SPICE.
+// DesktopPreferences holds status bar options for VNC, RDP and SPICE.
 type DesktopPreferences struct {
 	ScaleViewport bool `json:"scaleViewport"`
 	ViewOnly      bool `json:"viewOnly"`
