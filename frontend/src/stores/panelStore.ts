@@ -55,7 +55,10 @@ const panelState = shallowReactive<{
   spiceCaches: Map<string, SPICECache>
 }>({
   panels: reactive(new Map()),
-  transferTasks: new Map(),
+  // Deep reactive too: consumers capture the task array once at setup
+  // (FileTabContent) or via computed (FileSidebar), and transferTaskCenter
+  // mutates it in place — pushes/property writes must notify those views.
+  transferTasks: reactive(new Map()),
   proxyAddrs: shallowReactive(new Map()),
   vncCaches: new Map(),
   spiceCaches: new Map()
