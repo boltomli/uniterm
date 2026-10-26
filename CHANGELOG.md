@@ -12,8 +12,8 @@
 
 **Bug Fixes**
 
-- Panels: fixes sessions failing to reconnect — after a session ended, the terminal pane stayed stuck on the reconnecting prompt and never picked up the new session.
-- Panels: fixes the standalone file panel's transfer list staying empty while a transfer ran.
+- Terminal: fixes sessions failing to reconnect — after a session ended, the terminal stayed stuck on the reconnecting prompt and never picked up the new session.
+- File transfer: fixes the standalone file panel's transfer list staying empty while a transfer ran.
 - Terminal (macOS): fixes Vietnamese Telex input methods garbling text — typing "tieengs vieejt" could come out as "tieến việt" because the keystrokes an input method emits for one keypress (a delete plus the replacement text) reached the page out of order; the keystrokes of one keypress are now reordered by their intent. (@dungvv)
 
 **Notes**
@@ -33,8 +33,8 @@ Thanks to @etanman and @dungvv for their contributions to this release.
 
 **问题修复**
 
-- 面板：修复会话重连失败的问题——会话结束后终端面板一直停留在「重新连接中」提示，无法接续新会话。
-- 面板：修复独立文件面板在传输进行时传输列表一直为空的问题。
+- 终端：修复会话重连失败的问题——会话结束后终端一直停留在「重新连接中」提示，无法接续新会话。
+- 文件传输：修复独立文件面板在传输进行时传输列表一直为空的问题。
 - 终端（macOS）：修复越南文 Telex 输入法打字乱序错乱的问题——输入 "tieengs vieejt" 可能变成 "tieến việt"，原因是输入法一次按键产生的 keystroke（删除 + 替换文本）到达页面的顺序不保证；现在会按按键意图对同一次按键的 keystroke 重新排序。(@dungvv)
 
 **说明**
