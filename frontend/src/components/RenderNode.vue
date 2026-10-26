@@ -5,6 +5,10 @@
     :class="{ 'maximized-hidden': maximizedPanelId && node.panelId !== maximizedPanelId }"
   >
     <SettingsTab v-if="panel?.type === 'settings'" />
+    <NetworkScanTabContent
+      v-else-if="panel?.type === 'netscan'"
+      :tab="tabStore.tabs.find(t => t.id === props.tabId) as any"
+    />
     <div
       v-else-if="panel"
       class="panel-wrapper"
@@ -73,6 +77,7 @@ import type { LayoutNode } from '../types/workspace'
 import Panel from './Panel.vue'
 import PanelSplitter from './PanelSplitter.vue'
 import SettingsTab from './SettingsTab.vue'
+import NetworkScanTabContent from './netscan/NetworkScanTabContent.vue'
 
 const props = defineProps<{
   node: LayoutNode

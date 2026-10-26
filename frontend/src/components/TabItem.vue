@@ -90,9 +90,9 @@
       <MenuItem v-if="tab.type === 'terminal'" :shortcut="menuShortcut('lockAI')" @click="toggleAiLock">
         {{ isAILocked ? t('terminal.aiLocked') : t('terminal.lockAI') }}
       </MenuItem>
-      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings'" @click="startEdit">{{ t('tab.rename') }}</MenuItem>
+      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings' && tab.type !== 'netscan'" @click="startEdit">{{ t('tab.rename') }}</MenuItem>
       <MenuItem v-if="hasLocatableConnection" @click="locateHost">{{ t('tab.locate') }}</MenuItem>
-      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings'" @click="toggleLock">
+      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings' && tab.type !== 'netscan'" @click="toggleLock">
         {{ tab.locked ? t('tab.unlock') : t('tab.lock') }}
       </MenuItem>
       <MenuItem v-if="canBroadcast" @click="toggleBroadcastTarget">
@@ -154,7 +154,7 @@ import {
 import { msg } from '../services/message'
 import { ElMessageBox } from 'element-plus'
 import { saveWorkspaceToConnections } from '../composables/savedWorkspace'
-import type { TerminalTab, SettingsTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
+import type { TerminalTab, SettingsTab, NetscanTab, SFTPTab, RDPTab, VNCTab, SPICETab, DBTab, MonitorTab, WorkspaceTab } from '../types/workspace'
 import { connectFileMenuKey, fileTransferProto, canOpenSshTerminal, asSshTerminalConfig } from '../utils/fileTransferUtils'
 import { connectionTypeIconOfKind } from '../utils/connectionTypes'
 import { useDuplicateSession } from '../composables/useDuplicateSession'
@@ -166,7 +166,7 @@ import { isMobilePlatform } from '../utils/platform'
 import { SquareTerminal, FolderUp, X, ArrowDownUp, Lock, Radio } from '@lucide/vue'
 
 const props = defineProps<{
-  tab: TerminalTab | SettingsTab | SFTPTab | RDPTab | VNCTab | SPICETab | DBTab | MonitorTab | WorkspaceTab
+  tab: TerminalTab | SettingsTab | NetscanTab | SFTPTab | RDPTab | VNCTab | SPICETab | DBTab | MonitorTab | WorkspaceTab
   shortcutIndex?: number
   isActive: boolean
   hasNotification?: boolean
@@ -309,7 +309,7 @@ const hasActiveTransfers = computed(() => {
 })
 
 const isDisconnected = computed(() => {
-  if (props.tab.type === 'start' || props.tab.type === 'settings') return false
+  if (props.tab.type === 'start' || props.tab.type === 'settings' || props.tab.type === 'netscan') return false
   // k8s main tab has no session; its connect status comes from the k8s store
   // (grey while connecting / on error).
   if (props.tab.type === 'k8s') {
