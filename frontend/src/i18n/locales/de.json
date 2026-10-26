@@ -798,6 +798,8 @@
   "sync.conflictUseRemote": "Remote verwenden, lokale Dateien überschreiben",
   "remoteDesktop.scale": "Automatische Skalierung",
   "conn.rdpEnableNLA": "NLA bevorzugen",
+  "conn.rdpAudio": "Audio",
+  "conn.rdpAudioHint": "Audio wird noch nicht unterstützt: Die integrierte RDP-Engine überträgt nur das Bild, Töne bleiben auf dem Server.",
   "conn.rdpDomain": "Domäne",
   "conn.smbDomain": "Domäne",
   "conn.smbShare": "Freigabe",

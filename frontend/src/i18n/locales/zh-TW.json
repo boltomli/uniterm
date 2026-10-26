@@ -801,6 +801,8 @@
   "sync.conflictUseRemote": "用遠端覆蓋本機",
   "remoteDesktop.scale": "自動縮放",
   "conn.rdpEnableNLA": "優先使用 NLA",
+  "conn.rdpAudio": "音訊",
+  "conn.rdpAudioHint": "暫不支援音訊（聲音重新導向）：內建 RDP 引擎僅傳輸畫面，遠端聲音仍留在伺服器上播放。",
   "conn.rdpDomain": "網域",
   "conn.smbDomain": "網域",
   "conn.smbShare": "共用資料夾",

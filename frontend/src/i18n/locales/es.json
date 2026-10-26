@@ -798,6 +798,8 @@
   "sync.conflictUseRemote": "Usar remoto, sobrescribir configuración local",
   "remoteDesktop.scale": "Ajuste automático",
   "conn.rdpEnableNLA": "Preferir NLA",
+  "conn.rdpAudio": "Audio",
+  "conn.rdpAudioHint": "El audio aún no es compatible: el motor RDP integrado solo transmite imagen, el sonido permanece en el servidor.",
   "conn.rdpDomain": "Dominio",
   "conn.smbDomain": "Dominio",
   "conn.smbShare": "Recurso compartido",

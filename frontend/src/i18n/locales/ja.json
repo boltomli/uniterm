@@ -798,6 +798,8 @@
   "sync.conflictUseRemote": "リモートを使用し、ローカルを上書き",
   "remoteDesktop.scale": "自動スケーリング",
   "conn.rdpEnableNLA": "NLA を優先",
+  "conn.rdpAudio": "音声",
+  "conn.rdpAudioHint": "音声（サウンドリダイレクト）は未対応です。内蔵の RDP エンジンは画面のみを転送するため、音はサーバー側で再生されます。",
   "conn.rdpDomain": "ドメイン",
   "conn.smbDomain": "ドメイン",
   "conn.smbShare": "共有",

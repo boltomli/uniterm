@@ -58,6 +58,10 @@ Fast-typing character loss/duplication, IME Enter keystrokes accidentally trigge
 
 ## Feature Issues
 
+### No sound from an RDP remote desktop
+
+RDP audio (sound redirection) is not supported yet: the built-in IronRDP engine wires RDPSND to a no-op backend, so only the picture is transferred and remote sounds keep playing on the server (unlike mstsc's Play on this computer). Video, keyboard, clipboard and file copy are unaffected.
+
 ### AI Assistant not responding
 
 - Verify the API address and key are configured correctly

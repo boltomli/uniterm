@@ -795,6 +795,8 @@
   "sync.conflictUseRemote": "Dùng bản từ xa, ghi đè kho cục bộ",
   "remoteDesktop.scale": "Tự động co giãn",
   "conn.rdpEnableNLA": "Ưu tiên NLA",
+  "conn.rdpAudio": "Âm thanh",
+  "conn.rdpAudioHint": "Chưa hỗ trợ âm thanh (chuyển tiếp âm thanh): engine RDP tích hợp chỉ truyền hình ảnh, âm thanh vẫn phát trên máy chủ.",
   "conn.rdpDomain": "Miền",
   "conn.smbDomain": "Miền",
   "conn.smbShare": "Chia sẻ",

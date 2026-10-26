@@ -446,6 +446,12 @@
                   <el-form-item :label="t('conn.rdpEnableNLA')">
                     <el-switch v-model="form.rdpEnableNLA" />
                   </el-form-item>
+                  <!-- RDP 音频（声音重定向）当前不支持：内置 IronRDP 引擎只接入了空实现的
+                       RDPSND 后端，声音不会离开服务器。写在这里而不是等用户去找设置项，
+                       是因为连接表单里本来就没有音频开关。 -->
+                  <el-form-item :label="t('conn.rdpAudio')">
+                    <div class="field-hint">{{ t('conn.rdpAudioHint') }}</div>
+                  </el-form-item>
                 </template>
                 <div class="inline-pair-row">
                   <el-form-item v-if="form.type === 'ssh'" :label="t('conn.fileTransferProto')">

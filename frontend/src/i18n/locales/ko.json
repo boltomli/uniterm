@@ -798,6 +798,8 @@
   "sync.conflictUseRemote": "원격 사용, 로컬 덮어쓰기",
   "remoteDesktop.scale": "자동 크기 조정",
   "conn.rdpEnableNLA": "NLA 우선 사용",
+  "conn.rdpAudio": "오디오",
+  "conn.rdpAudioHint": "오디오(사운드 리디렉션)는 아직 지원되지 않습니다. 내장 RDP 엔진은 화면만 전송하므로 소리는 서버에서 재생됩니다.",
   "conn.rdpDomain": "도메인",
   "conn.smbDomain": "도메인",
   "conn.smbShare": "공유",

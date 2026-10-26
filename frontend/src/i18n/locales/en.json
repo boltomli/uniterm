@@ -801,6 +801,8 @@
   "sync.conflictUseRemote": "Use remote, overwrite local repo",
   "remoteDesktop.scale": "Auto Scaling",
   "conn.rdpEnableNLA": "Prefer NLA",
+  "conn.rdpAudio": "Audio",
+  "conn.rdpAudioHint": "Audio is not supported yet: the built-in RDP engine sends video only, so remote sounds keep playing on the server.",
   "conn.rdpDomain": "Domain",
   "conn.smbDomain": "Domain",
   "conn.smbShare": "Share",

@@ -798,6 +798,8 @@
   "sync.conflictUseRemote": "Utiliser la version distante et écraser la configuration locale",
   "remoteDesktop.scale": "Redimensionnement auto",
   "conn.rdpEnableNLA": "Privilégier NLA",
+  "conn.rdpAudio": "Audio",
+  "conn.rdpAudioHint": "L’audio n’est pas encore pris en charge : le moteur RDP intégré ne transmet que l’image, les sons restent sur le serveur.",
   "conn.rdpDomain": "Domaine",
   "conn.smbDomain": "Domaine",
   "conn.smbShare": "Partage",

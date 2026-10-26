@@ -52,7 +52,7 @@ Remote terminal, local & serial terminal, file transfer, remote desktop, databas
 - **Remote Terminal** — SSH / Telnet / Mosh / Raw TCP with password or key authentication; includes SSH tunnel port forwarding so any connection can route through an SSH jump host.
 - **Local & Serial Terminal** — PowerShell / CMD / Git Bash / WSL plus serial connections with configurable baud rate, data bits, stop bits, parity, and local echo.
 - **File Transfer** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem with dual-pane browsing and `rz`/`sz` support in SSH terminals.
-- **Remote Desktop** — RDP (Windows Remote Desktop), VNC (Linux remote control), SPICE (KVM/QEMU VMs), X11 (X Window forwarding)
+- **Remote Desktop** — RDP (Windows Remote Desktop, audio redirection not yet supported), VNC (Linux remote control), SPICE (KVM/QEMU VMs), X11 (X Window forwarding)
 - **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, with AI-powered natural-language queries and data-row editing.
 - **Kubernetes & Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, with cluster resource & image management, Pod logs and exec terminals, and CPU/memory metrics.
 - **Server Monitor** — Real-time CPU, memory, disk, network, processes, ports, and network interfaces.
