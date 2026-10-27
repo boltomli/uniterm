@@ -8,6 +8,7 @@ import (
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/session"
 )
+
 // ── Database methods ──
 
 func (a *App) dbSession(sessionID string) (*session.DatabaseSession, error) {
@@ -204,6 +205,34 @@ func (a *App) DBDeleteRow(sessionID string, dbName string, tableName string, whe
 		return err
 	}
 	return p.DeleteRow(ds.DB(), dbName, tableName, where)
+}
+
+func (a *App) DBBrowseTable(sessionID, dbName, tableName string, options database.BrowseOptions) (*database.QueryResult, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return database.BrowseTable(p, ds.DB(), dbName, tableName, options)
+}
+
+func (a *App) DBUpdateRowsAtomic(sessionID, dbName, tableName string, updates []database.RowUpdate) error {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return err
+	}
+	return database.UpdateRowsAtomic(p, ds.DB(), dbName, tableName, updates)
+}
+
+func (a *App) DBPreviewCSV(path string) (*database.CSVPreview, error) {
+	return database.PreviewCSV(path)
+}
+
+func (a *App) DBImportCSV(sessionID, dbName, tableName, path string, mapping []database.CSVColumnMapping) (int, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return database.ImportCSV(p, ds.DB(), dbName, tableName, path, mapping)
 }
 
 func (a *App) AddColumn(sessionID string, dbName string, tableName string, col database.ColumnDef) error {
