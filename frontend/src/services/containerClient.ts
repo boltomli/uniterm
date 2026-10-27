@@ -6,11 +6,12 @@ import {
   ContainerStartPush, ContainerTagImage, ContainerImagePrune,
   ContainerImageInspect, ContainerImageHistory, ContainerRegistryLogin,
   ContainerRuntimeInfo, ContainerStopStream, ContainerExecSession,
+  ContainerPrepareImageOperation, ContainerCancelImageOperation, ContainerLoadImage, ContainerCommitImage,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { Events } from '@wailsio/runtime'
 import type {
   ContainerInfo, InspectResult, ContainerImage, ContainerStats as ContainerStatsInfo, ContainerCreateOptions,
-  ContainerTransferOptions, ContainerLoginOptions, ImageLayer, RuntimeInfo, ContainerVolume,
+  ContainerCommitOptions, ContainerTransferOptions, ContainerLoginOptions, ImageLayer, RuntimeInfo, ContainerVolume,
 } from '../types/container'
 
 // 凭据补全弹窗（useTunnelCredentials）提交的临时账密；error 非 null 表示用户取消，
@@ -96,3 +97,9 @@ export const runtimeInfo = (connId: string) =>
 
 export const registryLogin = (connId: string, opts: ContainerLoginOptions) =>
   ContainerRegistryLogin(connId, opts as any)
+
+export const prepareImageOperation = (connId: string): Promise<string> => ContainerPrepareImageOperation(connId)
+export const cancelImageOperation = (id: string): Promise<void> => ContainerCancelImageOperation(id)
+export const loadImage = (id: string, path: string): Promise<string> => ContainerLoadImage(id, path)
+export const commitImage = (operationId: string, containerId: string, opts: ContainerCommitOptions): Promise<string> =>
+  ContainerCommitImage(operationId, containerId, opts as any)

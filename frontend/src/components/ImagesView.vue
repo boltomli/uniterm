@@ -21,6 +21,7 @@
         style="width: 12.5rem"
       />
       <div class="toolbar-spacer" />
+      <el-button v-if="session?.runtime === 'docker'" size="small" @click="archiveOpen = true">{{ t('container.loadArchive') }}</el-button>
       <el-button size="small" :icon="ArrowDownToLine" @click="openTransfer('pull')">{{ t('container.pull') }}</el-button>
       <el-button size="small" @click="loginOpen = true">{{ t('container.login') }}</el-button>
       <el-button size="small" @click="onPrune">{{ t('container.prune') }}</el-button>
@@ -126,6 +127,7 @@
       </div>
     </div>
 
+    <ImageArchiveDialog v-model="archiveOpen" :conn-id="session?.connId || ''" @loaded="store.loadImages(tab.id)" />
     <ImageDetailDrawer
       :mode="drawerMode"
       :tab-id="tab.id"
@@ -156,6 +158,7 @@ import { Clipboard } from '@wailsio/runtime'
 import { useI18n } from '../i18n'
 import * as client from '../services/containerClient'
 import type { StreamHandle } from '../services/containerClient'
+import ImageArchiveDialog from './ImageArchiveDialog.vue'
 import ImageDetailDrawer from './ImageDetailDrawer.vue'
 import ContainerCreateDialog from './ContainerCreateDialog.vue'
 import RegistryLoginDialog from './RegistryLoginDialog.vue'
@@ -188,6 +191,7 @@ async function onCopyMenu() {
 const props = defineProps<{ tab: ContainerTab; session: ReturnType<typeof useContainerStore>['sessions'][string] | undefined }>()
 defineEmits<{ (e: 'view-related', ref: string): void }>()
 
+const archiveOpen = ref(false)
 const { t } = useI18n()
 const store = useContainerStore()
 

@@ -134,3 +134,9 @@ export interface ContainerTab {
   runtime: 'docker' | 'podman' | 'nerdctl' | 'wslc'
   locked?: boolean
 }
+
+export interface ContainerCommitOptions {
+  image: string
+  author?: string
+  message?: string
+}

@@ -110,6 +110,7 @@
       :target="drawerTarget"
       @close="drawerMode = null"
     />
+    <ContainerCommitDialog v-model="commitOpen" :conn-id="session?.connId || ''" :target="commitTarget" @committed="store.loadImages(tab.id); store.refresh(tab.id)" />
     <ContainerCreateDialog v-model="createOpen" :tab-id="tab.id" @created="store.refresh(tab.id)" />
 
     <!-- 共享的行级"更多"菜单：单个实例，行数据经 slot current 传入 -->
@@ -121,6 +122,7 @@
         <MenuItem v-if="session?.runtime !== 'wslc'" :icon="Pencil" iconic @click="onMoreCommand('rename', current as ContainerInfo)">
           {{ t('container.rename') }}
         </MenuItem>
+        <MenuItem v-if="session?.runtime === 'docker'" :icon="Camera" iconic @click="onMoreCommand('commit', current as ContainerInfo)">{{ t('container.commitImage') }}</MenuItem>
         <MenuItem :icon="Trash2" iconic class="danger" @click="onMoreCommand('remove', current as ContainerInfo)">
           {{ t('container.remove') }}
         </MenuItem>
@@ -132,13 +134,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, SquareTerminal, FolderOpen, ScrollText, Play, Square, Power, Pencil, Trash2, Ellipsis } from '@lucide/vue'
+import { RefreshCw, SquareTerminal, FolderOpen, ScrollText, Play, Square, Power, Pencil, Trash2, Ellipsis, Camera } from '@lucide/vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import { useContainerStore } from '../stores/containerStore'
 import { useI18n } from '../i18n'
 import ContainerDetailDrawer from './ContainerDetailDrawer.vue'
 import ContainerCreateDialog from './ContainerCreateDialog.vue'
+import ContainerCommitDialog from './ContainerCommitDialog.vue'
 import type { ContainerSession } from '../stores/containerStore'
 import type { ContainerInfo, ContainerTab } from '../types/container'
 import { uiPx } from '../utils/uiScale'
@@ -213,6 +216,8 @@ function matchesImage(c: ContainerInfo, ref: string) {
 const drawerMode = ref<'detail' | 'logs' | null>(null)
 const drawerTarget = ref<ContainerInfo | null>(null)
 const createOpen = ref(false)
+const commitOpen = ref(false)
+const commitTarget = ref<ContainerInfo | null>(null)
 
 function openDetail(c: ContainerInfo) {
   drawerMode.value = 'detail'
@@ -245,6 +250,10 @@ const moreVisible = ref(false)
 function onMoreCommand(cmd: string, c: ContainerInfo) {
   moreMenuRef.value?.close()
   switch (cmd) {
+    case 'commit':
+      commitTarget.value = c
+      commitOpen.value = true
+      break
     case 'restart':
       void runAction(c, 'restart')
       break
