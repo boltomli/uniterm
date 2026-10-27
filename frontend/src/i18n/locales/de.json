@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "Image-Archiv geladen",
   "container.commitImage": "Als Image speichern",
   "container.commitHint": "Daten eingehängter Volumes sind nicht enthalten. Docker pausiert laufende Containerprozesse während des Commits.",
-  "container.commitTarget": "Ziel-Image (Repository:Tag)",
-  "container.commitAuthor": "Autor (optional)",
-  "container.commitMessage": "Nachricht (optional)",
+  "container.commitTarget": "Ziel-Image",
+  "container.commitAuthor": "Autor",
+  "container.commitMessage": "Nachricht",
   "container.committingImage": "Container wird als Image gespeichert…",
   "container.imageCommitted": "Image aus Container erstellt"
 }

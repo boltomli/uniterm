@@ -2058,9 +2058,9 @@
   "container.archiveLoaded": "映像檔封存已載入",
   "container.commitImage": "提交為映像檔",
   "container.commitHint": "不包含掛載磁碟區中的資料。提交期間，Docker 會暫停正在執行的容器程序。",
-  "container.commitTarget": "目標映像檔（名稱:標籤）",
-  "container.commitAuthor": "作者（選填）",
-  "container.commitMessage": "說明（選填）",
+  "container.commitTarget": "目標映像檔",
+  "container.commitAuthor": "作者",
+  "container.commitMessage": "說明",
   "container.committingImage": "正在將容器提交為映像檔…",
   "container.imageCommitted": "已從容器建立映像檔"
 }

@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "Archivo de imagen cargado",
   "container.commitImage": "Guardar como imagen",
   "container.commitHint": "No incluye datos de volúmenes montados. Docker pausa los procesos del contenedor en ejecución durante la creación.",
-  "container.commitTarget": "Imagen de destino (repositorio:etiqueta)",
-  "container.commitAuthor": "Autor (opcional)",
-  "container.commitMessage": "Mensaje (opcional)",
+  "container.commitTarget": "Imagen destino",
+  "container.commitAuthor": "Autor",
+  "container.commitMessage": "Mensaje",
   "container.committingImage": "Creando imagen del contenedor…",
   "container.imageCommitted": "Imagen creada a partir del contenedor"
 }

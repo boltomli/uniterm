@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "Архив образа загружен",
   "container.commitImage": "Сохранить как образ",
   "container.commitHint": "Данные подключённых томов не включаются. Во время создания образа Docker приостанавливает процессы работающего контейнера.",
-  "container.commitTarget": "Целевой образ (репозиторий:тег)",
-  "container.commitAuthor": "Автор (необязательно)",
-  "container.commitMessage": "Сообщение (необязательно)",
+  "container.commitTarget": "Новый образ",
+  "container.commitAuthor": "Автор",
+  "container.commitMessage": "Сообщение",
   "container.committingImage": "Создание образа из контейнера…",
   "container.imageCommitted": "Образ создан из контейнера"
 }

@@ -2058,9 +2058,9 @@
   "container.archiveLoaded": "镜像归档已加载",
   "container.commitImage": "提交为镜像",
   "container.commitHint": "不包含挂载卷中的数据。提交期间，Docker 会暂停正在运行的容器进程。",
-  "container.commitTarget": "目标镜像（名称:标签）",
-  "container.commitAuthor": "作者（可选）",
-  "container.commitMessage": "说明（可选）",
+  "container.commitTarget": "目标镜像",
+  "container.commitAuthor": "作者",
+  "container.commitMessage": "说明",
   "container.committingImage": "正在将容器提交为镜像…",
   "container.imageCommitted": "已从容器创建镜像"
 }

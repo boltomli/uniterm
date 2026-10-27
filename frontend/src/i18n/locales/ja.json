@@ -2019,7 +2019,7 @@
   "netscan.export.copyFailed": "コピー失敗: ",
   "container.loadArchive": "イメージアーカイブを読み込む",
   "container.archiveHint": "docker save で作成したアーカイブを読み込みます。Docker が対応する圧縮形式も使用できます。docker export のルートファイルシステムのインポートには使用できません。",
-  "container.archiveFile": "アーカイブファイル",
+  "container.archiveFile": "アーカイブ",
   "container.archivePathHint": "uniTerm を実行しているコンピューター上のアーカイブパス",
   "container.chooseArchive": "ファイルを選択",
   "container.loadingArchive": "イメージアーカイブを読み込み中…",
@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "イメージアーカイブを読み込みました",
   "container.commitImage": "イメージとして保存",
   "container.commitHint": "マウントされたボリュームのデータは含まれません。保存中、Docker は実行中のコンテナープロセスを一時停止します。",
-  "container.commitTarget": "保存先イメージ（リポジトリ:タグ）",
-  "container.commitAuthor": "作成者（任意）",
-  "container.commitMessage": "メッセージ（任意）",
+  "container.commitTarget": "保存先イメージ",
+  "container.commitAuthor": "作成者",
+  "container.commitMessage": "メッセージ",
   "container.committingImage": "コンテナーをイメージとして保存中…",
   "container.imageCommitted": "コンテナーからイメージを作成しました"
 }

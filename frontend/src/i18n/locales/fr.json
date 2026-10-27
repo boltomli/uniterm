@@ -2019,7 +2019,7 @@
   "netscan.export.copyFailed": "Échec de la copie : ",
   "container.loadArchive": "Charger une archive d’image",
   "container.archiveHint": "Charge une archive créée par docker save, y compris les formats compressés pris en charge par Docker. Ne charge pas un système de fichiers racine créé par docker export.",
-  "container.archiveFile": "Fichier archive",
+  "container.archiveFile": "Archive",
   "container.archivePathHint": "Chemin de l’archive sur l’ordinateur exécutant uniTerm",
   "container.chooseArchive": "Choisir un fichier",
   "container.loadingArchive": "Chargement de l’archive…",
@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "Archive d’image chargée",
   "container.commitImage": "Enregistrer comme image",
   "container.commitHint": "Les données des volumes montés sont exclues. Docker suspend les processus du conteneur en cours pendant la création de l’image.",
-  "container.commitTarget": "Image cible (dépôt:étiquette)",
-  "container.commitAuthor": "Auteur (facultatif)",
-  "container.commitMessage": "Message (facultatif)",
+  "container.commitTarget": "Image cible",
+  "container.commitAuthor": "Auteur",
+  "container.commitMessage": "Message",
   "container.committingImage": "Création de l’image du conteneur…",
   "container.imageCommitted": "Image créée à partir du conteneur"
 }

@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "Đã nạp tệp lưu trữ ảnh",
   "container.commitImage": "Lưu thành ảnh",
   "container.commitHint": "Không bao gồm dữ liệu trong volume được gắn. Docker tạm dừng tiến trình container đang chạy trong khi tạo ảnh.",
-  "container.commitTarget": "Ảnh đích (kho:thẻ)",
-  "container.commitAuthor": "Tác giả (tùy chọn)",
-  "container.commitMessage": "Thông điệp (tùy chọn)",
+  "container.commitTarget": "Ảnh đích",
+  "container.commitAuthor": "Tác giả",
+  "container.commitMessage": "Thông điệp",
   "container.committingImage": "Đang tạo ảnh từ container…",
   "container.imageCommitted": "Đã tạo ảnh từ container"
 }

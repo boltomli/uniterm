@@ -1,7 +1,7 @@
 <template>
   <el-dialog append-to-body v-model="visible" :title="t('container.loadArchive')" width="34rem" :close-on-click-modal="false">
     <p class="operation-hint">{{ t('container.archiveHint') }}</p>
-    <el-form label-position="top" @submit.prevent="submit">
+    <el-form label-width="7rem" @submit.prevent="submit">
       <el-form-item :label="t('container.archiveFile')" required>
         <div class="archive-path">
           <el-input v-model="archivePath" :disabled="busy" :placeholder="t('container.archivePathHint')" />

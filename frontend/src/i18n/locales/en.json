@@ -2058,9 +2058,9 @@
   "container.archiveLoaded": "Image archive loaded",
   "container.commitImage": "Commit as image",
   "container.commitHint": "Mounted volume data is not included. Running container processes are paused by Docker while the image is committed.",
-  "container.commitTarget": "Target image (repository:tag)",
-  "container.commitAuthor": "Author (optional)",
-  "container.commitMessage": "Message (optional)",
+  "container.commitTarget": "Target image",
+  "container.commitAuthor": "Author",
+  "container.commitMessage": "Message",
   "container.committingImage": "Committing container as image…",
   "container.imageCommitted": "Image created from container"
 }

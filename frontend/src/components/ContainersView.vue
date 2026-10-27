@@ -122,7 +122,7 @@
         <MenuItem v-if="session?.runtime !== 'wslc'" :icon="Pencil" iconic @click="onMoreCommand('rename', current as ContainerInfo)">
           {{ t('container.rename') }}
         </MenuItem>
-        <MenuItem v-if="session?.runtime === 'docker'" @click="onMoreCommand('commit', current as ContainerInfo)">{{ t('container.commitImage') }}</MenuItem>
+        <MenuItem v-if="session?.runtime === 'docker'" :icon="Camera" iconic @click="onMoreCommand('commit', current as ContainerInfo)">{{ t('container.commitImage') }}</MenuItem>
         <MenuItem :icon="Trash2" iconic class="danger" @click="onMoreCommand('remove', current as ContainerInfo)">
           {{ t('container.remove') }}
         </MenuItem>
@@ -134,7 +134,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, SquareTerminal, FolderOpen, ScrollText, Play, Square, Power, Pencil, Trash2, Ellipsis } from '@lucide/vue'
+import { RefreshCw, SquareTerminal, FolderOpen, ScrollText, Play, Square, Power, Pencil, Trash2, Ellipsis, Camera } from '@lucide/vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import { useContainerStore } from '../stores/containerStore'

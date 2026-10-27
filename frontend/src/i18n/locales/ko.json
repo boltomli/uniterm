@@ -2027,9 +2027,9 @@
   "container.archiveLoaded": "이미지 아카이브를 불러왔습니다",
   "container.commitImage": "이미지로 저장",
   "container.commitHint": "마운트된 볼륨 데이터는 포함되지 않습니다. Docker는 저장 중 실행 중인 컨테이너 프로세스를 일시 중지합니다.",
-  "container.commitTarget": "대상 이미지 (저장소:태그)",
-  "container.commitAuthor": "작성자 (선택 사항)",
-  "container.commitMessage": "설명 (선택 사항)",
+  "container.commitTarget": "대상 이미지",
+  "container.commitAuthor": "작성자",
+  "container.commitMessage": "説明",
   "container.committingImage": "컨테이너를 이미지로 저장 중…",
   "container.imageCommitted": "컨테이너에서 이미지를 만들었습니다"
 }

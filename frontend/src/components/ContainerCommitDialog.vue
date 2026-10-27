@@ -1,15 +1,21 @@
 <template>
   <el-dialog append-to-body v-model="visible" :title="t('container.commitImage')" width="34rem" :close-on-click-modal="false">
-    <p>{{ target?.name }}</p>
-    <p class="operation-hint">{{ t('container.commitHint') }}</p>
-    <el-form label-position="top" :disabled="busy" @submit.prevent="submit">
-      <el-form-item :label="t('container.commitTarget')" required>
-        <el-input v-model="image" placeholder="my-image:latest" />
+    <el-form label-width="7rem" :disabled="busy" @submit.prevent="submit">
+      <el-form-item :label="t('container.colName')">
+        <span class="target-name">{{ target?.name }}</span>
       </el-form-item>
-      <el-form-item :label="t('container.commitAuthor')"><el-input v-model="author" /></el-form-item>
-      <el-form-item :label="t('container.commitMessage')"><el-input v-model="message" type="textarea" :rows="2" /></el-form-item>
+      <el-form-item :label="t('container.commitTarget')" required>
+        <el-input v-model="image" placeholder="my-repo/my-image:tag" />
+      </el-form-item>
+      <el-form-item :label="t('container.commitAuthor')">
+        <el-input v-model="author" />
+      </el-form-item>
+      <el-form-item :label="t('container.commitMessage')">
+        <el-input v-model="message" type="textarea" :rows="2" />
+      </el-form-item>
     </el-form>
-    <p v-if="busy" role="status">{{ t('container.committingImage') }}</p>
+    <p class="operation-hint">{{ t('container.commitHint') }}</p>
+    <p v-if="busy" class="operation-status" role="status">{{ t('container.committingImage') }}</p>
     <p v-if="error" class="operation-error" role="alert">{{ error }}</p>
     <p v-if="busy" class="operation-hint">{{ t('container.imageCancelHint') }}</p>
     <template #footer>
@@ -55,6 +61,11 @@ async function submit() {
 </script>
 
 <style scoped>
+.target-name {
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
 .operation-hint { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.operation-status { margin: 0.25rem 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .operation-error { color: var(--el-color-danger); overflow-wrap: anywhere; }
 </style>
