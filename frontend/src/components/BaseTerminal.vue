@@ -177,6 +177,7 @@ import {
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
 import { createKeystrokeReorder } from '../utils/imeKeystrokeOrder'
+import { installGhostText, pickGhostSuggestion, type GhostText } from '../utils/terminalGhostText'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { stripCursorBlink } from '../utils/cursor'
 import { applyBackspaceKey } from '../utils/terminalOptions'
@@ -187,7 +188,7 @@ import {
   sanitizeLiveTerminalOutput,
 } from '../utils/terminalSanitize'
 import { useTerminalInput } from '../composables/useTerminalInput'
-import { useSuggestions } from '../composables/useSuggestions'
+import { useSuggestions, type SuggestionItem } from '../composables/useSuggestions'
 import TerminalSuggestion from './TerminalSuggestion.vue'
 import TerminalGutter from './TerminalGutter.vue'
 import { startZmodemService } from '../services/zmodemService'
@@ -290,6 +291,7 @@ let dragEnterCount = 0
 const suggestions = useSuggestions()
 let terminalInput: ReturnType<typeof useTerminalInput> | null = null
 let terminal: Terminal | null = null
+let ghostText: GhostText | null = null
 let processTerminalData: (data: string) => void = () => {}
 // Input methods can deliver a rewrite's delete and its replacement out of
 // order; this restores the intent before anything downstream sees it.
@@ -426,7 +428,9 @@ function renderTerminalData(rawData: string, countChunk = true) {
         writeStamped(seg.text)
         continue
       }
-      if (props.mode === 'ssh' && terminalInput) {
+      // Feeds alternate-screen detection. Local panels need it as much as ssh:
+      // without it a locally-run vim or k9s would keep drawing suggestions.
+      if ((props.mode === 'ssh' || props.mode === 'local') && terminalInput) {
         terminalInput.handleSessionData(seg.text)
         if (terminalInput.isInAlternateScreen()) suggestions.close()
       }
@@ -665,6 +669,85 @@ function getSelection(): string {
   return terminal?.getSelection() || ''
 }
 
+// The suggestion to hint inline (fish / zsh-autosuggestions style), gated on
+// the states where drawing text at the cursor would be wrong: mid-line edits,
+// where the hint would cover the rest of the line, and password prompts, where
+// nothing is echoed to sit beside.
+//
+// A plain function rather than a computed: `terminalInput` is only assigned in
+// onMounted, and a computed first read before that would cache null with no
+// reactive dependencies and never re-evaluate.
+function ghostSuggestion(): SuggestionItem | null {
+  if (!terminalInput) return null
+  if (!terminalInput.isAtLineEnd() || terminalInput.isPasswordMode()) return null
+  // The popup and the hint coexist: the list floats below (or above) the
+  // cursor line, the hint draws after the cursor on the line itself, so
+  // neither covers the other.
+  // ?? true: settings saved before this option existed carry no value for it,
+  // and the hint was always on back then.
+  if (!(settingsStore.settings.terminal.inlineHint ?? true)) return null
+  return pickGhostSuggestion(suggestions.state.value.items, terminalInput.lineBuffer.value)
+}
+
+// Re-created per attach: the overlay lives inside the terminal's own screen
+// element, so switching this panel to another session needs a new one.
+function mountGhostText() {
+  ghostText?.dispose()
+  ghostText = terminal ? installGhostText(terminal) : null
+}
+
+function refreshGhostText() {
+  if (!ghostText) return
+  const item = ghostSuggestion()
+  const typedLength = terminalInput?.lineBuffer.value.length ?? 0
+  ghostText.set(item ? item.value.slice(typedLength) : '')
+}
+
+// The popup keeps its pre-hint behaviour: it opens on its own when items
+// arrive. The inline hint runs alongside it (see ghostSuggestion), and Tab is
+// likewise untouched — it applies a popup selection when the user has
+// navigated to one, and reaches the shell's own completion otherwise.
+
+// Suggestions land 150ms after the last keystroke; the hint must follow them.
+// close() assigns a fresh empty array, so this clears the hint too.
+watch(() => suggestions.state.value.items, () => {
+  refreshGhostText()
+})
+
+// One keystroke stream out, whether this panel is alone or broadcasting.
+function writeToSessions(data: string) {
+  if (props.broadcastActive) {
+    for (const pid of tabStore.getAllBroadcastPanelIds()) {
+      const p = panelStore.getPanel(pid)
+      if (p?.sessionId && (p.type === 'ssh' || p.type === 'local' || p.type === 'wsl')) {
+        queuedSessionWrite(p.sessionId, data)
+      }
+    }
+  } else if (props.sessionId) {
+    queuedSessionWrite(props.sessionId, data)
+  }
+}
+
+function syncLineTo(value: string) {
+  if (!terminalInput) return
+  terminalInput.lineBuffer.value = value
+  terminalInput.cursorIndex.value = value.length
+  terminalInput.currentToken.value = ''
+}
+
+// Accepting an inline hint only ever appends: the hint is the tail of what is
+// already on the line, so there is nothing to erase. Deliberately NOT routed
+// through applySuggestion — its Ctrl+U line-clear is not implemented by every
+// shell (cmd.exe ignores it), and local panels put those shells in reach.
+function acceptGhostSuggestion(item: SuggestionItem) {
+  if (!terminalInput) return
+  const suffix = item.value.slice(terminalInput.lineBuffer.value.length)
+  if (!suffix) return
+  writeToSessions(suffix)
+  syncLineTo(item.value)
+  suggestions.close()
+}
+
 async function applySuggestion(item: ReturnType<typeof suggestions.getSelectedItem>) {
   if (!item || !terminal || !terminalInput) return
 
@@ -674,28 +757,13 @@ async function applySuggestion(item: ReturnType<typeof suggestions.getSelectedIt
     return
   }
 
-  const sid = props.sessionId
-
   if (item.type === 'ai-result' || item.type === 'history' || item.type === 'quick-command') {
     // Replace entire line with Ctrl+U. Using backspaces only works when the
     // replacement is exactly the currentToken; for multi-token input (e.g.
     // "git che" → "git checkout") backspaces leave the earlier text behind.
-    if (props.broadcastActive) {
-      const targets = tabStore.getAllBroadcastPanelIds()
-      for (const pid of targets) {
-        const p = panelStore.getPanel(pid)
-        if (p?.sessionId && (p.type === 'ssh' || p.type === 'local' || p.type === 'wsl')) {
-          queuedSessionWrite(p.sessionId, '\x15')
-          queuedSessionWrite(p.sessionId, item.value)
-        }
-      }
-    } else if (sid) {
-      queuedSessionWrite(sid, '\x15')
-      queuedSessionWrite(sid, item.value)
-    }
-    terminalInput.lineBuffer.value = item.value
-    terminalInput.cursorIndex.value = item.value.length
-    terminalInput.currentToken.value = ''
+    writeToSessions('\x15')
+    writeToSessions(item.value)
+    syncLineTo(item.value)
   }
 
   suggestions.close()
@@ -1251,6 +1319,7 @@ onMounted(() => {
 
   // Attach terminal DOM to this component's container
   attachTerminal(props.sessionId || '', terminalRef.value)
+  mountGhostText()
 
   // Touch panning: only wired on touch devices (see block above bindListeners)
   if (isMobileTouch && terminalRef.value) {
@@ -1263,8 +1332,11 @@ onMounted(() => {
 
   initZmodemService(props.sessionId || '')
 
-  // Initialize terminal input handling for SSH
-  if (props.mode === 'ssh') {
+  // Line tracking for ssh and for local/WSL shells (Panel.vue maps both to
+  // mode 'local'). Without this the composable is never constructed, so every
+  // `if (terminalInput && ...)` below is skipped and no suggestion — popup or
+  // inline hint — can appear, whatever useTerminalInput itself allows.
+  if (props.mode === 'ssh' || props.mode === 'local') {
     terminalInput = useTerminalInput(terminal, {
       mode: props.mode,
       sessionId: props.sessionId,
@@ -1277,6 +1349,9 @@ onMounted(() => {
       },
     })
     suggestions.loadHistory()
+    // The login shell's history is this machine's, so it only makes sense for
+    // local/WSL panels — an ssh session is another host.
+    if (props.mode === 'local') suggestions.loadShellHistory()
   }
 
   if (props.mode === 'ssh' || props.mode === 'local') {
@@ -1330,6 +1405,7 @@ onMounted(() => {
     const gen = sidNow ? bumpOnDataGeneration(sidNow) : 0
 
     keyHandlerDispose = terminal.attachCustomKeyEventHandler(handleTerminalKey)
+
 
     // Input handling
     onDataDispose = terminal.onData((data) => {
@@ -1412,6 +1488,24 @@ onMounted(() => {
       // Handle suggestions input (skip in alternate screen apps like vim/k9s)
       if (terminalInput && !terminalInput.isInAlternateScreen() && (props.mode === 'ssh' || props.mode === 'local')) {
         terminalInput.handleInput(data)
+        // Before the 150ms suggestion debounce, so a keystroke that breaks the
+        // match drops the hint immediately instead of leaving stale text on the
+        // line for a sixth of a second.
+        refreshGhostText()
+
+        // Right arrow at end of line accepts the inline hint, fish-style. The
+        // hint only shows while the popup is closed, so this never races the
+        // list; readline does nothing for → at end of line, so swallowing the
+        // key costs bash/zsh nothing either. Tab stays the shell's: it applies
+        // a popup selection when one is navigated to (below) and otherwise
+        // reaches the shell's own completion untouched.
+        if (data === '\x1b[C') {
+          const ghost = ghostSuggestion()
+          if (ghost) {
+            acceptGhostSuggestion(ghost)
+            return
+          }
+        }
 
         // When suggestions are visible, intercept certain keys synchronously
         if (suggestions.isVisible()) {
@@ -1454,7 +1548,7 @@ onMounted(() => {
           const isPrintable = data.length === 1 && data >= ' '
           if (!wasVisible && !isPrintable) return
           if (terminalInput.isAtLineEnd() && terminalInput.currentToken.value && !terminalInput.isPasswordMode()) {
-            suggestions.updateSuggestions(terminalInput.currentToken.value, settingsStore.settings.terminal.aiTranscription)
+            suggestions.updateSuggestions(terminalInput.currentToken.value, settingsStore.settings.terminal.aiTranscription, props.mode === 'local')
           } else {
             suggestions.close()
           }
@@ -1973,11 +2067,12 @@ watch(() => props.sessionId, (newId, oldId) => {
     if (terminalRef.value) {
       attachTerminal(newId, terminalRef.value)
     }
+    mountGhostText()
     // Re-create terminalInput with the new terminal reference.
     // Otherwise it would still hold the old (disposed) terminal and
     // cursor position tracking returns {0,0}, pinning the suggestion
     // popup to the top-left corner.
-    if (props.mode === 'ssh') {
+    if (props.mode === 'ssh' || props.mode === 'local') {
       terminalInput = useTerminalInput(terminal, {
         mode: props.mode,
         sessionId: newId,
@@ -1990,6 +2085,9 @@ watch(() => props.sessionId, (newId, oldId) => {
         },
       })
       suggestions.loadHistory()
+      // The login shell's history is this machine's, so it only makes
+      // sense for local/WSL panels — an ssh session is another host.
+      if (props.mode === 'local') suggestions.loadShellHistory()
     }
     // Re-bind onData/keyHandler on the new terminal
     bindListeners?.()
@@ -2167,6 +2265,10 @@ onUnmounted(() => {
   // Release anything the reorder buffer is still holding rather than dropping
   // a half-finished rewrite on the floor.
   imeOrder.dispose()
+  // The terminal instance can outlive this component, so the overlay has to go
+  // with the component or it would linger in the shared screen element.
+  ghostText?.dispose()
+  ghostText = null
   resizeObserver?.disconnect()
   intersectionObserver?.disconnect()
   touchPanStop()

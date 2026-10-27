@@ -36,6 +36,7 @@ export interface QueryResultColumn {
 export interface QueryResult {
   columns: QueryResultColumn[]
   rows: Record<string, any>[]
+  hasMore?: boolean
 }
 
 export interface ExecResult {

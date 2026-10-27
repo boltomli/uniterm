@@ -56,7 +56,10 @@ func (p *sqliteProvider) DSN(host string, port int, user, password, dbName strin
 		}
 		pragmas = append(pragmas, "_pragma="+k+"%3D"+extraParams[k])
 	}
-	return "file:" + filepath.ToSlash(host) + "?" + strings.Join(pragmas, "&")
+	// A saved SQLite connection may contain a Windows path even when opened
+	// on another platform. filepath.ToSlash only converts separators native to
+	// the current OS, so normalize both forms for the URI DSN.
+	return "file:" + strings.ReplaceAll(filepath.ToSlash(host), `\`, "/") + "?" + strings.Join(pragmas, "&")
 }
 
 func (p *sqliteProvider) Quote(name string) string {

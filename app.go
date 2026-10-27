@@ -17,6 +17,7 @@ import (
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/mcpclient"
+	"github.com/ys-ll/uniterm/backend/localsrv"
 	"github.com/ys-ll/uniterm/backend/netscan"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
@@ -50,6 +51,7 @@ type App struct {
 	sessionManager       *session.SessionManager
 	k8sManager           *k8s.Manager
 	netscanManager       *netscan.Manager
+	localsrvManager      *localsrv.Manager
 	containerManager     *container.Manager
 	connectionStore      *store.ConnectionStore
 	aiSessionStore       *store.AISessionStore
@@ -189,6 +191,7 @@ func NewApp(webviewDataPath string) *App {
 		mcpTransferWaiters: make(map[string]chan mcpTransferOutcome),
 		k8sManager:         k8s.NewManager(),
 		netscanManager:     netscan.NewManager(),
+		localsrvManager:    localsrv.NewManager(),
 		containerManager:   container.NewManager(),
 		errCh:              make(chan error, 16),
 	}
@@ -235,6 +238,9 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		a.emit(name, payload)
 	})
 	a.netscanManager.SetEventEmitter(func(name string, payload any) {
+		a.emit(name, payload)
+	})
+	a.localsrvManager.SetEventEmitter(func(name string, payload any) {
 		a.emit(name, payload)
 	})
 	a.containerManager.SetEventEmitter(func(name string, payload any) {
@@ -817,6 +823,22 @@ func (a *App) watchForeground(ctx context.Context) {
 }
 
 func (a *App) shutdown() {
+	// Hide the window first so the user perceives an instant close — the exact
+	// "disappear" behaviour of the upstream build. Releasing WebView2 below calls
+	// ICoreWebView2Controller::Close(), which gracefully tears down the control's
+	// renderer; doing that while the window is still visible produces a brief
+	// "window goes black, then exits" transition. Hiding the window makes that
+	// teardown invisible, so the close feels immediate. Hide() is thread-safe and
+	// dispatches to the UI thread like the rest of shutdown().
+	a.window.Hide()
+
+	// Release the WebView2 COM controller while still on the UI thread and the
+	// message loop is alive. This gracefully closes the WebView2 control and
+	// terminates the browser subprocess (msedgewebview2.exe) BEFORE the process
+	// reaches ExitProcess, so the WebView2 DLL-detach teardown has no live
+	// subprocess to block on and the app exits normally instead of freezing.
+	// (wails beta.27 never releases WebView2 on quit; see webview2_release.go.)
+	releaseWebView2(a.window)
 	a.closeRDPKeyboard()
 	a.unsubclassMainWindow()
 	if a.mcpServer != nil {
@@ -838,6 +860,14 @@ func (a *App) shutdown() {
 		a.sessionManager.CloseAll()
 	}
 	a.netscanManager.StopAll()
+	// Stop the built-in local file servers (HTTP/TFTP/SSH/FTP). This runs on a
+	// background goroutine so it can never block the main/UI thread that
+	// shutdown() executes on — that would otherwise freeze the window (the
+	// WM_QUIT/PostQuitMessage that tears down the message loop never runs).
+	// Stopping is cancellation-driven; if any server goroutine is still mid
+	// teardown when the process exits, the OS reaps it, so no background
+	// process or bound port survives a full app close.
+	go a.localsrvManager.StopAll()
 	cleanupExtEditsOnExit()
 	session.CleanupSSHX11Server()
 	if a.terminalHistoryStore != nil {

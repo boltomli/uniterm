@@ -26,6 +26,12 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
   const currentToken = ref('')
   const cursorPixelPos = ref<CursorPosition>({ x: 0, y: 0 })
 
+  // sftp panels have no shell line to track. Local and WSL shells (Panel.vue
+  // maps both to mode 'local') do, and they need handleSessionData just as much
+  // as ssh: without it inAlternateScreen is never set, and suggestions would
+  // pop up over a locally-run vim or k9s.
+  const tracksShellInput = options.mode === 'ssh' || options.mode === 'local'
+
   let inAlternateScreen = false
   let isPasswordPrompt = false
   let cursorPosRAF: number | null = null
@@ -49,8 +55,13 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
     try {
       const buffer = (terminal as any).buffer?.active
       if (!buffer) return null
-      // Prompt endings: $ # > ] plus common zsh/oh-my-zsh/powerline glyphs
-      const PROMPT_RE = /(.+?[$#>\]❯➜→»λ])(?:\s+|$)(.*)/
+      // Prompt endings: $ # > ] plus common zsh/oh-my-zsh/powerline glyphs.
+      //
+      // `%` is zsh's default on macOS ("user@Mac dir %"), so local sessions
+      // recorded nothing without it. It only counts when a space precedes it —
+      // otherwise every line of output containing "50% done" would be read as a
+      // prompt and "done" filed away as a command.
+      const PROMPT_RE = /(.+?(?:[$#>\]❯➜→»λ]|\s%))(?:\s+|$)(.*)/
       const rows = (terminal as any).rows || 24
       // Scan visible area from bottom to top — always finds the latest
       // prompt regardless of cursor position. (Cursor-based scanning was
@@ -141,7 +152,7 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
   }
 
   function handleInput(data: string) {
-    if (options.mode !== 'ssh') return
+    if (!tracksShellInput) return
     if (inAlternateScreen) return
     for (let i = 0; i < data.length; i++) {
       const char = data[i]
@@ -241,7 +252,7 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
   }
 
   function handleSessionData(data: string) {
-    if (options.mode !== 'ssh') return
+    if (!tracksShellInput) return
 
     // Detect alternate screen buffer enter/exit (vim, k9s, less, etc.)
     if (data.includes('\x1b[?1049h') || data.includes('\x1b[?47h')) {

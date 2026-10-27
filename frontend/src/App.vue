@@ -7,6 +7,7 @@
       @toggle-sidebar="sidebarVisible = !sidebarVisible"
       @open-settings="openSettings"
       @open-netscan="openNetscan"
+      @open-local-services="openLocalServices"
       @close-tab="closeTab"
       @close-tab-batch="closeTabBatch"
       @toggle-ai-lock="onToggleAiLock"
@@ -158,6 +159,7 @@
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
     <MobileKeyBar v-if="keyBarSessionId" :key="keyBarSessionId" :session-id="keyBarSessionId" />
     <NetworkScanTabContent v-model:visible="netscanVisible" @new-connection="onNetscanNewConnection" />
+    <LocalServices v-model:visible="localServicesVisible" />
   </div>
   </el-config-provider>
 </template>
@@ -183,6 +185,7 @@ import { startAndroidKeepAlive, stopAndroidKeepAlive } from './utils/androidKeep
 import { writeClipboard } from './composables/useClipboardWrite'
 import SettingsTabContent from './components/SettingsTabContent.vue'
 import NetworkScanTabContent from './components/netscan/NetworkScanTabContent.vue'
+import LocalServices from './components/localsrv/LocalServices.vue'
 import WorkspaceContent from './components/WorkspaceContent.vue'
 import FileTabContent from './components/FileTabContent.vue'
 import RDPTabContent from './components/RDPTabContent.vue'
@@ -390,6 +393,7 @@ const dataDirVisible = ref(false)
 const encryptVisible = ref(false)
 const unlockVisible = ref(false)
 const netscanVisible = ref(false)
+const localServicesVisible = ref(false)
 
 // Determine which credential dialog (recovery-unlock / setup) to show based
 // on the current store status. Shared by startup and by the first-run
@@ -1173,6 +1177,10 @@ function onNetscanNewConnection(d: { host: string; port?: number; type?: string 
   if (d.type) cfg.type = d.type
   editConfig.value = cfg as ConnectionConfig
   showConnectionForm.value = true
+}
+
+function openLocalServices() {
+  localServicesVisible.value = true
 }
 
 async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {
