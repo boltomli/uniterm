@@ -85,3 +85,16 @@ func (a *App) StartNFSServer(port int, timeoutSeconds int) (string, error) {
 		TimeoutSeconds: timeoutSeconds,
 	})
 }
+
+// StartS3Server starts the experimental S3-compatible server exposing rootDir
+// as an object store on port. Access/secret keys are accepted for client
+// compatibility but not cryptographically verified. Returns the server id.
+func (a *App) StartS3Server(rootDir string, port int, accessKey, secretKey string, timeoutSeconds int) (string, error) {
+	return a.localsrvManager.StartS3Server(localsrv.S3Config{
+		RootDir:        rootDir,
+		Port:           port,
+		AccessKey:      accessKey,
+		SecretKey:      secretKey,
+		TimeoutSeconds: timeoutSeconds,
+	})
+}

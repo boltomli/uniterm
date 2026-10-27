@@ -2080,5 +2080,10 @@
   "localsrv.telnet.password": "密码",
   "localsrv.telnet.passPlaceholder": "留空则不需要认证",
   "localsrv.nfs.name": "NFS 服务",
-  "localsrv.nfs.hint": "实验性 NFSv4 服务，基于内存文件系统。挂载后写入的数据在服务停止时会丢失。挂载提示（Linux）：mount -o nfsvers=4,minorversion=0,noacl,tcp -t nfs <host>:/ /mnt"
+  "localsrv.nfs.hint": "实验性 NFSv4 服务，基于内存文件系统。挂载后写入的数据在服务停止时会丢失。挂载提示（Linux）：mount -o nfsvers=4,minorversion=0,noacl,tcp -t nfs <host>:/ /mnt",
+  "localsrv.s3.name": "S3 服务",
+  "localsrv.s3.hint": "实验性 S3 兼容服务，基于本地目录。使用不做签名校验的 S3 客户端访问，例如：mc --no-sign-request alias set local http://<host>:<端口>/ ; mc ls local",
+  "localsrv.s3.accessKey": "Access key",
+  "localsrv.s3.secretKey": "Secret key",
+  "localsrv.s3.keyPlaceholder": "可选"
 }

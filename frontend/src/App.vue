@@ -1182,7 +1182,6 @@ function onNetscanNewConnection(d: { host: string; port?: number; type?: string 
 function openLocalServices() {
   localServicesVisible.value = true
 }
-}
 
 async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {
   // Close session before removing panel to clean up Go-side resources

@@ -50,7 +50,7 @@
 
         <div class="detail-form">
           <!-- Root directory (file-sharing services only) -->
-          <div v-if="['http','tftp','ssh','ftp'].includes(selected)" class="form-row">
+          <div v-if="['http','tftp','ssh','ftp','s3'].includes(selected)" class="form-row">
             <label class="form-label">{{ t('localsrv.rootDir') }}</label>
             <el-input
               v-model="config[selected].rootDir"
@@ -149,6 +149,25 @@
             </div>
           </template>
 
+          <!-- S3 settings -->
+          <template v-if="selected === 's3'">
+            <div class="form-row">
+              <label class="form-label">{{ t('localsrv.port') }}</label>
+              <el-input-number v-model="config.s3.port" :min="1" :max="65535" :disabled="isRunning('s3')" controls-position="right" />
+            </div>
+            <div class="form-row">
+              <label class="form-label">{{ t('localsrv.s3.accessKey') }}</label>
+              <el-input v-model="config.s3.accessKey" :disabled="isRunning('s3')" class="cred-input" :placeholder="t('localsrv.s3.keyPlaceholder')" />
+            </div>
+            <div class="form-row">
+              <label class="form-label">{{ t('localsrv.s3.secretKey') }}</label>
+              <el-input v-model="config.s3.secretKey" type="password" show-password :disabled="isRunning('s3')" class="cred-input" :placeholder="t('localsrv.s3.keyPlaceholder')" />
+            </div>
+            <div class="form-row">
+              <span class="form-hint">{{ t('localsrv.s3.hint') }}</span>
+            </div>
+          </template>
+
           <!-- Timeout auto-stop (all services, shared) -->
           <div class="form-row timeout-row">
             <el-checkbox
@@ -193,7 +212,7 @@ import { Events } from '@wailsio/runtime'
 import { FolderOpen, Play, Pause } from '@lucide/vue'
 import {
   StartHTTPServer, StartTFTPServer, StartSSHServer, StartFTPServer,
-  StartTelnetServer, StartNFSServer,
+  StartTelnetServer, StartNFSServer, StartS3Server,
   StopLocalServer, OpenDirectoryDialog
 } from '../../../bindings/github.com/ys-ll/uniterm/app'
 import { useI18n } from '../../i18n'
@@ -209,7 +228,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-type ServiceKey = 'http' | 'tftp' | 'ssh' | 'ftp' | 'telnet' | 'nfs'
+type ServiceKey = 'http' | 'tftp' | 'ssh' | 'ftp' | 'telnet' | 'nfs' | 's3'
 
 const services: { key: ServiceKey }[] = [
   { key: 'tftp' },
@@ -217,7 +236,8 @@ const services: { key: ServiceKey }[] = [
   { key: 'http' },
   { key: 'ssh' },
   { key: 'telnet' },
-  { key: 'nfs' }
+  { key: 'nfs' },
+  { key: 's3' }
 ]
 
 const selected = ref<ServiceKey>('tftp')
@@ -229,18 +249,19 @@ const config = reactive({
   ssh:    { rootDir: '', port: 22, username: '', password: '', timeoutSeconds: 0 },
   ftp:    { rootDir: '', port: 21, username: '', password: '', anonymous: true, utf8: true, timeoutSeconds: 0 },
   telnet: { port: 23, password: '', timeoutSeconds: 0 },
-  nfs:    { port: 2049, timeoutSeconds: 0 }
+  nfs:    { port: 2049, timeoutSeconds: 0 },
+  s3:     { rootDir: '', port: 9000, accessKey: '', secretKey: '', timeoutSeconds: 0 }
 })
 
 // Per-service runtime state.
 const serverIds = reactive<Record<ServiceKey, string>>({
-  http: '', tftp: '', ssh: '', ftp: '', telnet: '', nfs: ''
+  http: '', tftp: '', ssh: '', ftp: '', telnet: '', nfs: '', s3: ''
 })
 const running = reactive<Record<ServiceKey, boolean>>({
-  http: false, tftp: false, ssh: false, ftp: false, telnet: false, nfs: false
+  http: false, tftp: false, ssh: false, ftp: false, telnet: false, nfs: false, s3: false
 })
 const logs = reactive<Record<ServiceKey, string[]>>({
-  http: [], tftp: [], ssh: [], ftp: [], telnet: [], nfs: []
+  http: [], tftp: [], ssh: [], ftp: [], telnet: [], nfs: [], s3: []
 })
 
 const logViewportRef = ref<HTMLElement | null>(null)
@@ -263,13 +284,13 @@ async function browseDir(key: ServiceKey) {
 }
 
 const serviceLabel: Record<ServiceKey, string> = {
-  http: 'HTTP', tftp: 'TFTP', ssh: 'SSH/SFTP', ftp: 'FTP', telnet: 'Telnet', nfs: 'NFS'
+  http: 'HTTP', tftp: 'TFTP', ssh: 'SSH/SFTP', ftp: 'FTP', telnet: 'Telnet', nfs: 'NFS', s3: 'S3'
 }
 
 async function startServer(key: ServiceKey) {
   const rootDir = config[key].rootDir
-  // Some services (telnet, iperf) don't need a root directory.
-  const needsRootDir = ['http', 'tftp', 'ssh', 'ftp'].includes(key)
+  // Some services (telnet, nfs) don't need a root directory.
+  const needsRootDir = ['http', 'tftp', 'ssh', 'ftp', 's3'].includes(key)
   if (needsRootDir && !rootDir) {
     msg.warning(t('localsrv.missingRootDir'))
     return
@@ -294,6 +315,9 @@ async function startServer(key: ServiceKey) {
         break
       case 'nfs':
         id = await StartNFSServer(config.nfs.port, config.nfs.timeoutSeconds)
+        break
+      case 's3':
+        id = await StartS3Server(config.s3.rootDir, config.s3.port, config.s3.accessKey, config.s3.secretKey, config.s3.timeoutSeconds)
         break
     }
     serverIds[key] = id

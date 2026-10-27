@@ -14,7 +14,17 @@ const (
 	ServiceFTP    Service = "ftp"
 	ServiceTelnet Service = "telnet"
 	ServiceNFS    Service = "nfs"
+	ServiceS3     Service = "s3"
 )
+
+// S3Config holds the parameters for the S3-compatible server.
+type S3Config struct {
+	RootDir        string `json:"rootDir"`
+	Port           int    `json:"port"`
+	AccessKey      string `json:"accessKey"`
+	SecretKey      string `json:"secretKey"`
+	TimeoutSeconds int    `json:"timeoutSeconds"` // 0 = no auto-stop
+}
 
 // NFSConfig holds the parameters for the NFS server.
 type NFSConfig struct {

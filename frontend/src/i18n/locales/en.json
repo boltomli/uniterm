@@ -2080,5 +2080,10 @@
   "localsrv.telnet.password": "Password",
   "localsrv.telnet.passPlaceholder": "Leave empty for no authentication",
   "localsrv.nfs.name": "NFS server",
-  "localsrv.nfs.hint": "Experimental NFSv4 server backed by an in-memory filesystem. Data written to the mount is lost when the server stops. Mount hint (Linux): mount -o nfsvers=4,minorversion=0,noacl,tcp -t nfs <host>:/ /mnt"
+  "localsrv.nfs.hint": "Experimental NFSv4 server backed by an in-memory filesystem. Data written to the mount is lost when the server stops. Mount hint (Linux): mount -o nfsvers=4,minorversion=0,noacl,tcp -t nfs <host>:/ /mnt",
+  "localsrv.s3.name": "S3 server",
+  "localsrv.s3.hint": "Experimental S3-compatible server over a local directory. Use an S3 client without signature verification, e.g. mc --no-sign-request alias set local http://<host>:<port>/ ; mc ls local",
+  "localsrv.s3.accessKey": "Access key",
+  "localsrv.s3.secretKey": "Secret key",
+  "localsrv.s3.keyPlaceholder": "optional"
 }
