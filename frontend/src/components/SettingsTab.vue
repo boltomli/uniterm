@@ -665,6 +665,18 @@
               <el-switch :model-value="settingsStore.settings.terminal.aiTranscription ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.aiTranscription = v; settingsStore.save() }" />
             </div>
           </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.inlineHint') }}</div>
+              <div class="setting-desc">{{ t('settings.inlineHintDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <!-- ?? true: settings saved before this option existed have no
+                   value for it, and the hint was always on back then. -->
+              <el-switch :model-value="settingsStore.settings.terminal.inlineHint ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.inlineHint = v; settingsStore.save() }" />
+            </div>
+          </div>
         </div>
 
         <h2 class="section-title">{{ t('settings.session') }}</h2>

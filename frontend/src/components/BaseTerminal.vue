@@ -680,6 +680,12 @@ function getSelection(): string {
 function ghostSuggestion(): SuggestionItem | null {
   if (!terminalInput) return null
   if (!terminalInput.isAtLineEnd() || terminalInput.isPasswordMode()) return null
+  // The popup and the hint coexist: the list floats below (or above) the
+  // cursor line, the hint draws after the cursor on the line itself, so
+  // neither covers the other.
+  // ?? true: settings saved before this option existed carry no value for it,
+  // and the hint was always on back then.
+  if (!(settingsStore.settings.terminal.inlineHint ?? true)) return null
   return pickGhostSuggestion(suggestions.state.value.items, terminalInput.lineBuffer.value)
 }
 
@@ -697,28 +703,15 @@ function refreshGhostText() {
   ghostText.set(item ? item.value.slice(typedLength) : '')
 }
 
-function popupEnabled(): boolean {
-  // ?? true: settings saved before this option existed carry no value for it,
-  // and the popup was always on back then.
-  return settingsStore.settings.terminal.suggestionPopup ?? true
-}
-
-// The popup stands down when an inline hint already answers the line — it
-// would sit right on top of it — and never opens at all once the user turns it
-// off. The items survive either way: the hint is derived from them, and
-// ArrowDown can still open the list for the fuzzy / quick-command / AI entries
-// a hint cannot show.
-function applyPopupPolicy() {
-  if (!popupEnabled() || ghostSuggestion()) {
-    suggestions.state.value.visible = false
-  }
-}
+// The popup keeps its pre-hint behaviour: it opens on its own when items
+// arrive. The inline hint runs alongside it (see ghostSuggestion), and Tab is
+// likewise untouched — it applies a popup selection when the user has
+// navigated to one, and reaches the shell's own completion otherwise.
 
 // Suggestions land 150ms after the last keystroke; the hint must follow them.
 // close() assigns a fresh empty array, so this clears the hint too.
 watch(() => suggestions.state.value.items, () => {
   refreshGhostText()
-  applyPopupPolicy()
 })
 
 // One keystroke stream out, whether this panel is alone or broadcasting.
@@ -1125,19 +1118,6 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
     }
   }
 
-  // An inline hint keeps the popup closed. ArrowDown opens it anyway, for the
-  // fuzzy / quick-command / AI entries the hint cannot represent.
-  if (
-    e.type === 'keydown' && e.key === 'ArrowDown' && popupEnabled() &&
-    !suggestions.isVisible() && suggestions.state.value.items.length > 0 &&
-    ghostSuggestion()
-  ) {
-    e.preventDefault()
-    suggestions.state.value.visible = true
-    suggestions.selectNext()
-    return false
-  }
-
   // Suggestion navigation (only on keydown, ignore keyup)
   if (suggestions.isVisible() && e.type === 'keydown') {
     if (e.key === 'ArrowDown') {
@@ -1512,19 +1492,14 @@ onMounted(() => {
         // match drops the hint immediately instead of leaving stale text on the
         // line for a sixth of a second.
         refreshGhostText()
-        applyPopupPolicy()
 
-        // Tab: a popup selection the user navigated to wins, then the inline
-        // hint. Outside the isVisible() guard below, because a hint deliberately
-        // keeps the popup closed. Nothing is hinted once the line already equals
-        // the suggestion, so a second Tab falls through to the shell's own
-        // completion.
-        if (data === '\t') {
-          const selected = suggestions.isVisible() ? suggestions.getSelectedItem() : null
-          if (selected) {
-            applySuggestion(selected)
-            return
-          }
+        // Right arrow at end of line accepts the inline hint, fish-style. The
+        // hint only shows while the popup is closed, so this never races the
+        // list; readline does nothing for → at end of line, so swallowing the
+        // key costs bash/zsh nothing either. Tab stays the shell's: it applies
+        // a popup selection when one is navigated to (below) and otherwise
+        // reaches the shell's own completion untouched.
+        if (data === '\x1b[C') {
           const ghost = ghostSuggestion()
           if (ghost) {
             acceptGhostSuggestion(ghost)
@@ -1534,6 +1509,13 @@ onMounted(() => {
 
         // When suggestions are visible, intercept certain keys synchronously
         if (suggestions.isVisible()) {
+          if (data === '\t') {
+            const selected = suggestions.getSelectedItem()
+            if (selected) {
+              applySuggestion(selected)
+              return
+            }
+          }
           if (data === '\r' || data === '\n') {
             const selected = suggestions.getSelectedItem()
             if (selected) {

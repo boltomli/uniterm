@@ -102,6 +102,17 @@ export function installGhostText(terminal: Terminal): GhostText {
   ].join(';')
   screen.appendChild(element)
 
+  // The hint body and the accept cue are separate nodes so the cue can be
+  // dimmer than the body without touching it.
+  const textNode = document.createTextNode('')
+  element.appendChild(textNode)
+  // Fish shows a small → after its ghost text for the same reason: without an
+  // on-screen affordance there is no way to discover that → accepts the hint.
+  const cue = document.createElement('span')
+  cue.textContent = '→'
+  cue.style.cssText = 'margin-left:0.5em'
+  element.appendChild(cue)
+
   let text = ''
 
   // Copy what the overlay cannot inherit. Left out, the hint renders as black
@@ -128,7 +139,7 @@ export function installGhostText(terminal: Terminal): GhostText {
       element.style.display = 'none'
       return
     }
-    element.textContent = text
+    textNode.data = text
     applyAppearance()
     element.style.left = `${geometry.left}px`
     element.style.top = `${geometry.top}px`

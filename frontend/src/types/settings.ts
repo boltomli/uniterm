@@ -78,6 +78,7 @@ export interface TerminalSettings {
   maxHistoryLines: number
   smartCompletion: boolean
   suggestionPopup: boolean
+  inlineHint: boolean
   aiTranscription: boolean
   highlightEnabled: boolean
   cursorBlink: boolean
@@ -387,6 +388,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     maxHistoryLines: 2500,
     smartCompletion: true,
     suggestionPopup: true,
+    inlineHint: true,
     aiTranscription: true,
     highlightEnabled: true,
     cursorBlink: true,

@@ -53,10 +53,9 @@ function setup() {
     props: { mode: 'ssh', sessionId: 'test' },
     terminalInput: input,
     suggestions: { isVisible: () => false, close: () => {} },
-    // The inline hint and the popup policy are driven from the pipeline but
-    // have nothing to say about Backspace delivery.
+    // The inline hint is driven from the pipeline but has nothing to say
+    // about Backspace delivery.
     refreshGhostText: () => {},
-    applyPopupPolicy: () => {},
     ghostSuggestion: () => null,
     setTimeout: () => 0,
     writeTerminalInput: (data: string, inAlt: boolean) => {
