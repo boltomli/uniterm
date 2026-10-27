@@ -188,6 +188,28 @@ describe('useTerminalInput', () => {
       expect(extracted).toEqual(['git log --oneline -5'])
     })
 
+    // zsh's default prompt on macOS. Without `%` no local session ever
+    // recorded a command, so local panels had an empty history to suggest from.
+    it('extracts from a macOS zsh "%" prompt', () => {
+      const extracted: string[] = []
+      const t = makeInput(mkTerminal({
+        cursorY: 1,
+        lines: ['dungvv@Mac src % claude', ''],
+      }), (cmd) => extracted.push(cmd))
+      t.handleInput('\r')
+      expect(extracted).toEqual(['claude'])
+    })
+
+    it('does not read a percentage in output as a prompt', () => {
+      const extracted: string[] = []
+      const t = makeInput(mkTerminal({
+        cursorY: 1,
+        lines: ['Downloading: 50% complete', ''],
+      }), (cmd) => extracted.push(cmd))
+      t.handleInput('\r')
+      expect(extracted).toEqual([])
+    })
+
     it('returns null when no prompt is visible', () => {
       const extracted: string[] = []
       const t = makeInput(mkTerminal({
@@ -237,6 +259,37 @@ describe('useTerminalInput', () => {
       }), (cmd) => extracted.push(cmd))
       t.handleInput('\r')
       expect(extracted).toEqual(['cat foobar'])
+    })
+  })
+
+  describe('tracked modes', () => {
+    // Panel.vue maps both local shells and WSL to mode 'local'. They used to be
+    // skipped alongside sftp, so the line buffer stayed empty and no suggestion
+    // — popup or inline hint — could ever appear outside ssh.
+    it.each(['ssh', 'local'] as const)('tracks the typed line in %s mode', (mode) => {
+      const t = useTerminalInput(null, { mode, sessionId: 's1' })
+      t.handleInput('git st')
+      expect(t.lineBuffer.value).toBe('git st')
+      expect(t.currentToken.value).toBe('git st')
+    })
+
+    it('ignores sftp panels, which have no shell line', () => {
+      const t = useTerminalInput(null, { mode: 'sftp', sessionId: 's1' })
+      t.handleInput('git st')
+      expect(t.lineBuffer.value).toBe('')
+    })
+
+    // Without this, inAlternateScreen would never be set on a local panel and
+    // suggestions would draw over a locally-run vim or k9s.
+    it('tracks the alternate screen in local mode', () => {
+      const t = useTerminalInput(null, { mode: 'local', sessionId: 's1' })
+      expect(t.isInAlternateScreen()).toBe(false)
+      t.handleSessionData('\x1b[?1049h')
+      expect(t.isInAlternateScreen()).toBe(true)
+      t.handleInput('jjjj')
+      expect(t.lineBuffer.value).toBe('')
+      t.handleSessionData('\x1b[?1049l')
+      expect(t.isInAlternateScreen()).toBe(false)
     })
   })
 })
