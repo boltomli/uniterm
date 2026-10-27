@@ -66,6 +66,13 @@
       <el-form-item :label="t('container.createDialog.command')">
         <el-input v-model="form.command" placeholder="sleep 3600" />
       </el-form-item>
+      <el-form-item v-if="supportsTerminalOptions" :label="t('container.createDialog.terminal')">
+        <div>
+          <el-checkbox v-model="form.interactive">{{ t('container.createDialog.interactive') }}</el-checkbox>
+          <el-checkbox v-model="form.tty">{{ t('container.createDialog.tty') }}</el-checkbox>
+          <div class="terminal-hint">{{ t('container.createDialog.terminalHint') }}</div>
+        </div>
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="visible = false">{{ t('common.cancel') }}</el-button>
@@ -105,6 +112,12 @@ const form = reactive({
   env: [] as string[],
   restart: 'no',
   command: '',
+  interactive: false,
+  tty: false,
+})
+const supportsTerminalOptions = computed(() => {
+  const runtime = store.sessions[props.tabId]?.runtime
+  return runtime === 'docker' || runtime === 'podman' || runtime === 'nerdctl'
 })
 const creating = ref(false)
 const imageError = ref('')
@@ -120,6 +133,8 @@ function resetForm() {
   form.env = []
   form.restart = 'no'
   form.command = ''
+  form.interactive = false
+  form.tty = false
   imageError.value = ''
   portErrors.value = []
 }
@@ -143,6 +158,8 @@ function portRowInvalid(p: PortRow): boolean {
 function buildOptions(): ContainerCreateOptions {
   return {
     image: form.image.trim(),
+    interactive: supportsTerminalOptions.value && form.interactive,
+    tty: supportsTerminalOptions.value && form.tty,
     name: form.name.trim(),
     ports: form.ports.filter(p => p.hostPort.trim() && p.containerPort.trim())
       .map(p => ({ hostPort: p.hostPort.trim(), containerPort: p.containerPort.trim(), protocol: p.protocol || 'tcp' })),
@@ -179,6 +196,11 @@ async function onSubmit() {
 </script>
 
 <style scoped>
+.terminal-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .rows {
   display: flex;
   flex-direction: column;

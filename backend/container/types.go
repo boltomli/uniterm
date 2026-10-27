@@ -130,11 +130,13 @@ type LoginOptions struct {
 }
 
 type CreateOptions struct {
-	Image   string        `json:"image"`
-	Name    string        `json:"name"`
-	Ports   []PortMapping `json:"ports"`
-	Volumes []string      `json:"volumes"` // "host:container" 原文
-	Env     []string      `json:"env"`     // "KEY=VAL" 原文
-	Restart string        `json:"restart"` // no/always/unless-stopped/on-failure
-	Command []string      `json:"command"`
+	Interactive bool          `json:"interactive"` // Keep stdin open (-i).
+	TTY         bool          `json:"tty"`         // Allocate a pseudo-terminal (-t).
+	Image       string        `json:"image"`
+	Name        string        `json:"name"`
+	Ports       []PortMapping `json:"ports"`
+	Volumes     []string      `json:"volumes"` // "host:container" 原文
+	Env         []string      `json:"env"`     // "KEY=VAL" 原文
+	Restart     string        `json:"restart"` // no/always/unless-stopped/on-failure
+	Command     []string      `json:"command"`
 }

@@ -77,3 +77,51 @@ func TestProviderCreate(t *testing.T) {
 		t.Fatalf("argv: %v", fr.lastArgv)
 	}
 }
+
+func TestProviderCreateTerminalOptions(t *testing.T) {
+	for _, rt := range []Runtime{RuntimeDocker, RuntimePodman, RuntimeNerdctl} {
+		for _, tc := range []struct {
+			name             string
+			interactive, tty bool
+			flags            string
+		}{
+			{"service default", false, false, ""},
+			{"stdin only", true, false, " -i"},
+			{"tty only", false, true, " -t"},
+			{"interactive shell", true, true, " -i -t"},
+		} {
+			t.Run(string(rt)+"/"+tc.name, func(t *testing.T) {
+				runner := &fakeRunner{}
+				p := NewProvider(rt, "", runner)
+				err := p.Create(context.Background(), CreateOptions{Image: "rockylinux:9.3", Command: []string{"/bin/bash"}, Interactive: tc.interactive, TTY: tc.tty})
+				if err != nil {
+					t.Fatal(err)
+				}
+				prefix := rt.Bin()
+				if rt == RuntimeNerdctl {
+					prefix += " --namespace default"
+				}
+				want := prefix + " run -d" + tc.flags + " rockylinux:9.3 /bin/bash"
+				if got := strings.Join(runner.lastArgv, " "); got != want {
+					t.Fatalf("got %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestProviderCreateRejectsUnsupportedTerminalOptions(t *testing.T) {
+	runner := &fakeRunner{}
+	p := NewProvider(RuntimeWSLC, "", runner)
+	for _, opts := range []CreateOptions{{Image: "test", Interactive: true}, {Image: "test", TTY: true}} {
+		if err := p.Create(context.Background(), opts); err == nil {
+			t.Fatal("expected unsupported terminal options to fail")
+		}
+	}
+	if runner.lastArgv != nil {
+		t.Fatal("unsupported options reached runner")
+	}
+	if err := p.Create(context.Background(), CreateOptions{Image: "test"}); err != nil {
+		t.Fatal(err)
+	}
+}
