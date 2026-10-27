@@ -114,6 +114,8 @@ export interface ContainerStats {
 }
 
 export interface ContainerCreateOptions {
+  interactive?: boolean
+  tty?: boolean
   image: string
   name: string
   ports: PortMapping[]

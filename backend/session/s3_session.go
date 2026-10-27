@@ -346,6 +346,9 @@ func (s *S3Session) MakeDir(dir string) error {
 	if err := s.requireClient(); err != nil {
 		return err
 	}
+	if s.bucket == "" {
+		return fmt.Errorf("cannot create a directory at the S3 root: open a bucket first")
+	}
 	p, err := s.resolveRemote(dir)
 	if err != nil {
 		return err
@@ -636,6 +639,9 @@ func (s *S3Session) PutContent(remotePath string, content []byte) error {
 	if err := s.requireClient(); err != nil {
 		return err
 	}
+	if s.bucket == "" {
+		return fmt.Errorf("cannot create a file at the S3 root: open a bucket first")
+	}
 	p, err := s.resolveRemote(remotePath)
 	if err != nil {
 		return err
@@ -711,6 +717,9 @@ func (s *S3Session) Get(remotePath, localPath string, recursive bool) (string, e
 func (s *S3Session) Put(localPath, remotePath string, recursive bool) (string, error) {
 	if err := s.requireClient(); err != nil {
 		return "", err
+	}
+	if s.bucket == "" {
+		return "", fmt.Errorf("cannot upload at the S3 root: open a bucket first")
 	}
 	lp := localPath
 	if !filepath.IsAbs(lp) {

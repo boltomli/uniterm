@@ -84,18 +84,20 @@ func TestSQLiteSchemaAndCRUD(t *testing.T) {
 		t.Fatalf("unexpected schema: %+v", schema.Columns)
 	}
 
-	if err := p.UpdateRow(db, "main", "items", map[string]any{"name": "b"}, map[string]any{"id": int64(1)}); err != nil {
+	// The result grid sends all changed fields for a row in one UPDATE,
+	// using the original primary key to locate it.
+	if err := p.UpdateRow(db, "main", "items", map[string]any{"id": int64(2), "name": "b"}, map[string]any{"id": int64(1)}); err != nil {
 		t.Fatalf("UpdateRow: %v", err)
 	}
 	rows, err := queryStrings(db, p.DefaultTableQuery("main", "items", 50, 0))
 	if err != nil {
 		t.Fatalf("DefaultTableQuery: %v", err)
 	}
-	if len(rows) != 1 || rows[0]["name"] != "b" {
+	if len(rows) != 1 || rows[0]["id"] != "2" || rows[0]["name"] != "b" {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 
-	if err := p.DeleteRow(db, "main", "items", map[string]any{"id": int64(1)}); err != nil {
+	if err := p.DeleteRow(db, "main", "items", map[string]any{"id": int64(2)}); err != nil {
 		t.Fatalf("DeleteRow: %v", err)
 	}
 	rows, err = queryStrings(db, p.PagedTableQuery("main", "items", 50, 0))

@@ -89,6 +89,9 @@ func (p *Provider) RemoveImage(ctx context.Context, imageID string) error {
 }
 
 func (p *Provider) Create(ctx context.Context, o CreateOptions) error {
+	if p.rt == RuntimeWSLC && (o.Interactive || o.TTY) {
+		return fmt.Errorf("interactive container creation is not supported for WSLC")
+	}
 	if strings.TrimSpace(o.Image) == "" {
 		return fmt.Errorf("image required")
 	}

@@ -37,7 +37,9 @@
             <span :class="{ 'match-char': item.matchIndices?.includes(charIdx) }">{{ char }}</span>
           </template>
         </span>
-        <button class="delete-btn" :class="{ visible: item.type === 'history' }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
+        <!-- Entries read from the login shell's own history file are not
+             uniTerm's to delete, so they get no delete button. -->
+        <button class="delete-btn" :class="{ visible: item.type === 'history' && !item.readonly }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
       </div>
     </div>
     <!-- AI section (fixed at bottom) -->
@@ -110,6 +112,12 @@ const itemRefs = ref<Record<number, HTMLElement>>({})
 const historyListRef = ref<HTMLDivElement | null>(null)
 
 function adjustPosition() {
+  // Gap between the cursor line and the popup, in px. Asymmetric on purpose:
+  // below, the gap runs from the line's bottom edge, right under the glyphs;
+  // above, the cell's own line-height padding already separates the glyphs
+  // from the line's top edge, so the same number would read much farther.
+  const POPUP_GAP_BELOW = 16
+  const POPUP_GAP_ABOVE = 4
   if (!props.visible) {
     adjustedY.value = 0
     screenPos.value = { x: 0, y: 0 }
@@ -131,19 +139,19 @@ function adjustPosition() {
 
     // cursorY = (buffer.y + 1) * cellHeight (bottom edge of cursor line)
     const cellHeight = 17
-    if (spaceBelow >= popupRect.height + 4) {
-      // Enough room below — show below cursor line with 4px gap
-      adjustedY.value = 4
-    } else if (spaceAbove >= popupRect.height + 4) {
+    if (spaceBelow >= popupRect.height + POPUP_GAP_BELOW) {
+      // Enough room below — show below cursor line
+      adjustedY.value = POPUP_GAP_BELOW
+    } else if (spaceAbove >= popupRect.height + POPUP_GAP_ABOVE) {
       // Not enough below — show above cursor line.
       // Popup bottom must be above cursor top (cursorY - cellHeight).
       // adjustedY = cursorTop - gap - popupHeight - cursorY
-      //            = (cursorY - cellHeight) - 4 - popupHeight - cursorY
-      //            = -(cellHeight + 4 + popupHeight)
-      adjustedY.value = -(cellHeight + 4 + popupRect.height)
+      //            = (cursorY - cellHeight) - gap - popupHeight - cursorY
+      //            = -(cellHeight + gap + popupHeight)
+      adjustedY.value = -(cellHeight + POPUP_GAP_ABOVE + popupRect.height)
     } else {
       // Neither direction has full room — show below and push up to fit
-      adjustedY.value = -(popupRect.height - spaceBelow + 4)
+      adjustedY.value = -(popupRect.height - spaceBelow + POPUP_GAP_BELOW)
     }
 
     // Update fixed-position screen coordinates

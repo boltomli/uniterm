@@ -137,6 +137,8 @@
                   :primary-keys="doc.primaryKeys"
                   :table-columns="doc.tableColumns"
                   :is-view="doc.isView"
+                  @pending-change="(pending) => onDocPendingChange(doc.id, pending)"
+                  @operation-busy="(busy) => onDocBusyChange(doc.id, busy)"
                 />
                 <DBTableStructure
                   v-show="doc.subTab === 'structure' && !doc.isView"
@@ -211,6 +213,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { Table2, Eye, Code2, Database, MoreHorizontal, PanelLeft } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
+import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -249,6 +252,43 @@ interface DocTab {
 
 const docs = ref<DocTab[]>([])
 const activeDocId = ref('')
+const dirtyDocs = ref(new Set<string>())
+const busyDocs = ref(new Set<string>())
+
+function onDocBusyChange(id: string, busy: boolean) {
+  const next = new Set(busyDocs.value)
+  if (busy) next.add(id)
+  else next.delete(id)
+  busyDocs.value = next
+}
+
+function onDocPendingChange(id: string, pending: boolean) {
+  const next = new Set(dirtyDocs.value)
+  if (pending) next.add(id)
+  else next.delete(id)
+  dirtyDocs.value = next
+}
+
+async function confirmCloseDocs(ids: string[]): Promise<boolean> {
+  if (ids.some(id => busyDocs.value.has(id))) {
+    await ElMessageBox.alert(t('db.operationInProgress'), t('db.loading'))
+    return false
+  }
+  if (!ids.some(id => dirtyDocs.value.has(id))) return true
+  try {
+    await ElMessageBox.confirm(t('db.discardEditsConfirm'), t('db.unsavedChanges'), {
+      confirmButtonText: t('db.discardEdits'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+    })
+    const next = new Set(dirtyDocs.value)
+    ids.forEach(id => next.delete(id))
+    dirtyDocs.value = next
+    return true
+  } catch {
+    return false
+  }
+}
 const treeRef = ref<InstanceType<typeof DBTreePanel> | null>(null)
 let docSeq = 0
 
@@ -284,9 +324,18 @@ function activateDoc(id: string) {
   activeDocId.value = id
 }
 
-function closeDoc(id: string) {
+async function closeDoc(id: string) {
   const idx = docs.value.findIndex(d => d.id === id)
   if (idx < 0) return
+  if (!(await confirmCloseDocs([id]))) return
+  removeDoc(id)
+}
+
+function removeDoc(id: string) {
+  const idx = docs.value.findIndex(d => d.id === id)
+  if (idx < 0) return
+  onDocPendingChange(id, false)
+  onDocBusyChange(id, false)
   docs.value.splice(idx, 1)
   if (activeDocId.value === id) {
     const next = docs.value[Math.min(idx, docs.value.length - 1)]
@@ -326,17 +375,19 @@ function onCtxClose(id: string) {
   ctxMenuVisible.value = false
 }
 
-function onCtxCloseOthers(id: string) {
+async function onCtxCloseOthers(id: string) {
   if (docs.value.length > 1) {
+    if (!(await confirmCloseDocs(docs.value.filter(d => d.id !== id).map(d => d.id)))) return
     docs.value = docs.value.filter(d => d.id === id)
     activeDocId.value = id
   }
   ctxMenuVisible.value = false
 }
 
-function onCtxCloseLeft(id: string) {
+async function onCtxCloseLeft(id: string) {
   const idx = ctxIndexFor(id)
   if (idx > 0) {
+    if (!(await confirmCloseDocs(docs.value.slice(0, idx).map(d => d.id)))) return
     const keepId = activeDocId.value
     docs.value = docs.value.filter((_, i) => i >= idx)
     if (!docs.value.find(d => d.id === keepId)) {
@@ -346,9 +397,10 @@ function onCtxCloseLeft(id: string) {
   ctxMenuVisible.value = false
 }
 
-function onCtxCloseRight(id: string) {
+async function onCtxCloseRight(id: string) {
   const idx = ctxIndexFor(id)
   if (idx >= 0 && idx < docs.value.length - 1) {
+    if (!(await confirmCloseDocs(docs.value.slice(idx + 1).map(d => d.id)))) return
     const keepId = activeDocId.value
     docs.value = docs.value.filter((_, i) => i <= idx)
     if (!docs.value.find(d => d.id === keepId)) {
@@ -358,7 +410,8 @@ function onCtxCloseRight(id: string) {
   ctxMenuVisible.value = false
 }
 
-function onCtxCloseAll() {
+async function onCtxCloseAll() {
+  if (!(await confirmCloseDocs(docs.value.map(d => d.id)))) return
   docs.value = []
   activeDocId.value = ''
   ctxMenuVisible.value = false
@@ -576,6 +629,7 @@ function onObjectsChanged(dbName: string) {
 function onObjectRemoved(payload: { dbName: string; tableName?: string; kind: 'table' | 'view' | 'database' }) {
   treeRef.value?.refreshDb(payload.dbName)
   if (payload.kind === 'database') {
+    for (const d of docs.value.filter(d => d.dbName === payload.dbName)) onDocPendingChange(d.id, false)
     docs.value = docs.value.filter(d => d.dbName !== payload.dbName)
     if (!docs.value.find(d => d.id === activeDocId.value)) {
       activeDocId.value = docs.value[0]?.id || ''
@@ -586,7 +640,7 @@ function onObjectRemoved(payload: { dbName: string; tableName?: string; kind: 't
     const toClose = docs.value.filter(
       d => d.kind === 'table' && d.dbName === payload.dbName && d.tableName === payload.tableName
     )
-    for (const d of toClose) closeDoc(d.id)
+    for (const d of toClose) removeDoc(d.id)
   }
 }
 
