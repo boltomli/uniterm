@@ -73,7 +73,7 @@
       <el-table-column
         v-if="canEdit"
         :label="actionsLabel"
-        :width="uiPx(88)"
+        :width="uiPx(100)"
         fixed="right"
         class-name="db-action-cell"
         :resizable="false"
@@ -87,6 +87,14 @@
               @click.stop.prevent="emit('edit-row', row)"
             >
               <Pencil :size="'0.875rem'" />
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-icon btn-sm"
+              :title="duplicateLabel"
+              @click.stop.prevent="emit('duplicate-row', row)"
+            >
+              <Copy :size="'0.875rem'" />
             </button>
             <button
               type="button"
@@ -118,7 +126,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, shallowReactive, shallowRef, ref, watch } from 'vue'
-import { Pencil, Trash2 } from '@lucide/vue'
+import { Pencil, Copy, Trash2 } from '@lucide/vue'
 import type { QueryResultColumn, ColumnInfo } from '../types/database'
 import { useI18n } from '../i18n'
 import { uiPx } from '../utils/uiScale'
@@ -138,6 +146,7 @@ const props = defineProps<{
   emptyText?: string
   actionsLabel?: string
   editLabel?: string
+  duplicateLabel?: string
   deleteLabel?: string
 }>()
 
@@ -145,9 +154,9 @@ const emit = defineEmits<{
   /** A staged, unsaved cell edit changed; payload = number of pending edits. */
   'pending-change': [count: number]
   'edit-row': [row: Record<string, any>]
+  'duplicate-row': [row: Record<string, any>]
   'delete-row': [row: Record<string, any>]
   'sort-change': [payload: { field: string; order: 'asc' | 'desc' | null }]
-  'select-row': [row: Record<string, any> | null]
   'editing-change': [editing: boolean]
 }>()
 
@@ -166,7 +175,6 @@ const selectedCell = shallowRef<{ row: Record<string, any>; field: string } | nu
 
 function selectCell(row: Record<string, any>, field: string) {
   selectedCell.value = { row, field }
-  emit('select-row', row)
   // 容器获得焦点，keydown（Ctrl+C）才能路由到这里；不抢编辑态 input 的焦点。
   if (!editingRow.value) gridRootEl.value?.focus({ preventScroll: true })
 }
@@ -471,7 +479,6 @@ onBeforeUnmount(onEditDismissCleanup)
 watch(() => props.rows, (rows, previous = []) => {
   if (selectedCell.value && !rows.includes(selectedCell.value.row)) {
     selectedCell.value = null
-    emit('select-row', null)
   }
   // Filtering and client-side sorting create new arrays containing the same
   // row objects. Keep their staged changes until a different result arrives.

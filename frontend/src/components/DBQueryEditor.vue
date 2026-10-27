@@ -9,7 +9,6 @@
     </div>
     <div class="editor-top" :style="editorCollapsed ? {} : { height: topHeight + 'px' }">
       <div class="editor-toolbar">
-        <span v-if="browseMode" class="browse-mode-badge" :title="t('db.browseModeHint')">{{ t('db.browseMode') }}</span>
         <input
           v-model="nlInput"
           class="nl-input"
@@ -83,42 +82,43 @@
       </div>
 
       <div v-if="queryResult" class="result-toolbar">
-        <button v-if="browseMode" class="btn btn-default btn-sm" @click="browseControlsOpen = !browseControlsOpen">
-          <ListFilter :size="14" /> {{ t('db.filterSort') }}<span v-if="appliedFilters.length || appliedSorts.length"> ({{ appliedFilters.length + appliedSorts.length }})</span>
+        <button v-if="tableName" class="btn btn-default btn-sm" @click="onToggleBrowseControls">
+          <ListFilter :size="14" /> {{ t('db.filterSort') }}<span v-if="browseMode && (appliedFilters.length || appliedSorts.length)"> ({{ appliedFilters.length + appliedSorts.length }})</span>
         </button>
-        <input v-else
+        <input
           v-model="resultFilter"
           class="result-filter"
           :placeholder="t('db.filterResults')"
         />
         <div class="result-toolbar-right">
-          <button v-if="tableName" class="btn btn-default btn-sm" @click="onRefresh" :disabled="loading || savingRows">
-            <RefreshCw :size="14" /> {{ t('db.refreshData') }}
-          </button>
           <button
-            v-if="browseMode && tableName && !isView"
+            v-if="tableName && !isView"
             class="btn btn-default btn-sm"
             @click="startInsertRow"
           ><Plus :size="'0.875rem'" /> {{ t('db.insertRow') }}</button>
-          <button v-if="browseMode && tableName && !isView" class="btn btn-default btn-sm" @click="openCSVImport">
-            <Upload :size="14" /> {{ t('db.importCSV') }}
+          <button
+            v-if="tableName && !isView"
+            ref="importBtnRef"
+            class="btn btn-default btn-sm"
+            @click.stop="importMenuRef?.toggle($event.currentTarget)"
+          >
+            <Upload :size="14" /> {{ t('db.import') }}
           </button>
-          <button v-if="canEditRows" class="btn btn-default btn-sm" :disabled="!selectedRow" @click="onEditSelected">
-            <Pencil :size="14" /> {{ t('common.edit') }}
-          </button>
-          <button v-if="canEditRows" class="btn btn-default btn-sm" :disabled="!selectedRow" @click="onDuplicateSelected">
-            <Copy :size="14" /> {{ t('db.duplicateRow') }}
-          </button>
-          <button v-if="canEditRows" class="btn btn-default btn-sm danger" :disabled="!selectedRow" @click="onDeleteSelected">
-            <Trash2 :size="14" /> {{ t('common.delete') }}
-          </button>
+          <Menu
+            v-if="tableName && !isView"
+            ref="importMenuRef"
+            v-model:visible="importMenuVisible"
+            align="end"
+          >
+            <MenuItem @click="openCSVImport">CSV</MenuItem>
+          </Menu>
           <button
             ref="exportBtnRef"
-            class="btn btn-ghost btn-icon btn-sm"
+            class="btn btn-default btn-sm"
             :title="t('db.exportResults')"
             @click.stop="exportMenuRef?.toggle($event.currentTarget)"
           >
-            <Download :size="'0.875rem'" />
+            <Download :size="14" /> {{ t('db.export') }}
           </button>
           <Menu
             ref="exportMenuRef"
@@ -183,11 +183,12 @@
           :empty-text="t('db.noData')"
           :actions-label="t('db.actions')"
           :edit-label="t('common.edit')"
+          :duplicate-label="t('db.duplicateRow')"
           :delete-label="t('common.delete')"
           @pending-change="onPendingChange"
           @edit-row="startEditRowByRow"
+          @duplicate-row="onDuplicateRowByRow"
           @delete-row="onDeleteRowByRow"
-          @select-row="onSelectRow"
           @editing-change="onEditingChange"
           @sort-change="onSortChange"
         />
@@ -295,7 +296,7 @@
 
 <script setup lang="ts">
 import { ref, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
-import { Sparkles, History, FolderOpen, Download, Upload, Plus, ChevronUp, ChevronDown, RefreshCw, Pencil, Copy, Trash2, ListFilter, X } from '@lucide/vue'
+import { Sparkles, History, FolderOpen, Download, Upload, Plus, ChevronUp, ChevronDown, ListFilter, X } from '@lucide/vue'
 import { isNarrowScreen } from '../utils/platform'
 import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
@@ -376,7 +377,6 @@ async function executeBrowse() {
       offset: page.value * pageSize.value,
     })
     queryResult.value = result
-    selectedRow.value = null
     browseHasMore.value = result.hasMore === true
     lastDurationMs.value = Math.round(performance.now() - started)
   } catch (e: any) {
@@ -384,6 +384,19 @@ async function executeBrowse() {
   } finally {
     loading.value = false
   }
+}
+
+/** Toggle the filter/sort panel; from a custom query, jump back to the
+ *  table browse view first — applied filters survive the round trip. */
+async function onToggleBrowseControls() {
+  if (browseMode.value) {
+    browseControlsOpen.value = !browseControlsOpen.value
+    return
+  }
+  if (!(await confirmDiscardEdits())) return
+  browseControlsOpen.value = true
+  await loadBrowseSql(0)
+  await executeBrowse()
 }
 
 async function applyBrowseControls() {
@@ -424,15 +437,11 @@ const resolvedPrimaryKeys = computed(() => {
   return resolved
 })
 
-const canEditRows = computed(() => browseMode.value && resolvedPrimaryKeys.value.length > 0)
-const selectedRow = shallowRef<Record<string, any> | null>(null)
+// Editable whenever the result carries primary keys, browse mode or not
+// (matches the pre-atomic-save behavior; changing LIMIT must not lock the grid).
+const canEditRows = computed(() => resolvedPrimaryKeys.value.length > 0)
 
-function onSelectRow(row: Record<string, any> | null) { selectedRow.value = row }
-function onEditSelected() { if (selectedRow.value) startEditRowByRow(selectedRow.value) }
-function onDeleteSelected() { if (selectedRow.value) void onDeleteRowByRow(selectedRow.value) }
-async function onDuplicateSelected() {
-  const row = selectedRow.value
-  if (!row) return
+async function onDuplicateRowByRow(row: Record<string, any>) {
   if (!(await startInsertRow())) return
   for (const col of insertColumns.value) {
     if (insertAutoIncrement.value[col]) continue
@@ -443,13 +452,15 @@ async function onDuplicateSelected() {
 
 const displayRows = computed(() => {
   let rows = queryResult.value?.rows || []
-  if (browseMode.value) return rows
+  // Quick filter always applies to the loaded page; in browse mode the
+  // database-side filter/sort coexists with it instead of replacing it.
   const q = resultFilter.value.trim().toLowerCase()
   if (q) {
     rows = rows.filter(row =>
       Object.values(row).some(v => v != null && String(v).toLowerCase().includes(q))
     )
   }
+  if (browseMode.value) return rows
   if (sortProp.value && sortOrder.value) {
     const prop = sortProp.value
     const dir = sortOrder.value === 'ascending' ? 1 : -1
@@ -476,6 +487,8 @@ const browsePageTotal = computed(() => {
 
 const exportMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const exportMenuVisible = ref(false)
+const importMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const importMenuVisible = ref(false)
 const csvDialogOpen = ref(false)
 const csvPath = ref('')
 const csvPreview = shallowRef<{ headers: string[]; rows: string[][] } | null>(null)
@@ -779,7 +792,6 @@ async function onExecute() {
   browseMode.value = false
   error.value = ''
   queryResult.value = null
-  selectedRow.value = null
   execResult.value = null
   scriptResult.value = null
   loading.value = true
@@ -956,12 +968,6 @@ async function confirmDiscardEdits(): Promise<boolean> {
   }
 }
 
-async function onRefresh() {
-  if (!(await confirmDiscardEdits())) return
-  if (props.tableName) await loadBrowseSql(page.value * pageSize.value)
-  await onExecute()
-}
-
 function onPendingChange(count: number) {
   pendingCount.value = count
   emit('pending-change', editingCell.value || count > 0)
@@ -1084,7 +1090,6 @@ async function onDeleteRow(rowIndex: number) {
       ...queryResult.value!,
       rows: queryResult.value!.rows.filter((_, i) => i !== rowIndex)
     }
-    selectedRow.value = null
     error.value = ''
     emit('cellUpdated')
   } catch (e: any) {
@@ -1316,14 +1321,6 @@ function onEditRowCancel() {
   align-items: center;
   flex-shrink: 0;
 }
-.browse-mode-badge {
-  flex-shrink: 0;
-  font-size: 0.6875rem;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  padding: 0.1875rem 0.375rem;
-}
 .sql-editor-wrap {
   position: relative;
   flex: 1 1 auto;
@@ -1524,7 +1521,8 @@ function onEditRowCancel() {
 .browse-value { flex: 1; }
 span.browse-value { border: 0; background: none; }
 .browse-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
-.browse-actions .btn-primary { margin-left: auto; }
+/* Clear button sits right next to the apply button, pushed away from add-sort. */
+.browse-actions .btn-default { margin-left: auto; }
 .csv-path, .csv-hint { font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
 .csv-error { color: var(--error); font-size: 0.75rem; overflow-wrap: anywhere; }
 .csv-mapping { max-height: 18rem; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
