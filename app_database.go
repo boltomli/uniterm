@@ -94,6 +94,7 @@ func (a *App) CreateTable(sessionID string, dbName string, tableName string) err
 	if err != nil {
 		return err
 	}
+	defer database.InvalidateTableColumns(ds.DB())
 	return p.CreateTable(ds.DB(), dbName, tableName)
 }
 
@@ -102,6 +103,7 @@ func (a *App) DropTable(sessionID string, dbName string, tableName string) error
 	if err != nil {
 		return err
 	}
+	defer database.InvalidateTableColumns(ds.DB())
 	return p.DropTable(ds.DB(), dbName, tableName)
 }
 
@@ -240,6 +242,7 @@ func (a *App) AddColumn(sessionID string, dbName string, tableName string, col d
 	if err != nil {
 		return err
 	}
+	defer database.InvalidateTableColumns(ds.DB())
 	return p.AddColumn(ds.DB(), dbName, tableName, col)
 }
 
@@ -248,6 +251,7 @@ func (a *App) ModifyColumn(sessionID string, dbName string, tableName string, co
 	if err != nil {
 		return err
 	}
+	defer database.InvalidateTableColumns(ds.DB())
 	return p.ModifyColumn(ds.DB(), dbName, tableName, col)
 }
 
@@ -256,6 +260,7 @@ func (a *App) DropColumn(sessionID string, dbName string, tableName string, colN
 	if err != nil {
 		return err
 	}
+	defer database.InvalidateTableColumns(ds.DB())
 	return p.DropColumn(ds.DB(), dbName, tableName, colName)
 }
 

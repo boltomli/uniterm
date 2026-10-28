@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,7 +47,61 @@ type CSVPreview struct {
 	Rows    [][]string `json:"rows"`
 }
 
+// columnCacheTTL bounds how long a table's column whitelist is reused.
+// Paging and filtering re-fetch the schema on every request otherwise, which
+// costs several metadata round-trips per page against remote servers. 60s is
+// short enough that DDL done through uniTerm itself is picked up quickly, and
+// the browse view can be refreshed by reopening the table.
+const columnCacheTTL = 60 * time.Second
+
+type columnCacheKey struct {
+	db        *sql.DB
+	dbName    string
+	tableName string
+}
+
+// columnCache keeps one entry per (connection, database, table). Values are
+// never mutated after insert; lookups return the shared map read-only (all
+// callers only test membership).
+var columnCache = struct {
+	sync.Mutex
+	entries map[columnCacheKey]columnCacheEntry
+}{entries: map[columnCacheKey]columnCacheEntry{}}
+
+type columnCacheEntry struct {
+	cols    map[string]bool
+	expires time.Time
+}
+
+// InvalidateTableColumns drops the cached column whitelists for one
+// connection (all databases and tables). DDL executed through uniTerm calls
+// this so a freshly added or dropped column is visible in the next browse
+// without waiting out columnCacheTTL.
+func InvalidateTableColumns(db *sql.DB) {
+	columnCache.Lock()
+	defer columnCache.Unlock()
+	for key := range columnCache.entries {
+		if key.db == db {
+			delete(columnCache.entries, key)
+		}
+	}
+}
+
 func browseTableColumns(p Provider, db *sql.DB, dbName, tableName string) (map[string]bool, error) {
+	key := columnCacheKey{db: db, dbName: dbName, tableName: tableName}
+	now := time.Now()
+	columnCache.Lock()
+	if e, ok := columnCache.entries[key]; ok {
+		if now.Before(e.expires) {
+			columnCache.Unlock()
+			return e.cols, nil
+		}
+		// Expired: drop it now so entries for closed connections or renamed
+		// tables do not accumulate until the next write to the same key.
+		delete(columnCache.entries, key)
+	}
+	columnCache.Unlock()
+
 	schema, err := p.GetTableSchema(db, dbName, tableName)
 	if err != nil {
 		return nil, err
@@ -58,6 +113,10 @@ func browseTableColumns(p Provider, db *sql.DB, dbName, tableName string) (map[s
 	for _, col := range schema.Columns {
 		cols[col.Name] = true
 	}
+
+	columnCache.Lock()
+	columnCache.entries[key] = columnCacheEntry{cols: cols, expires: now.Add(columnCacheTTL)}
+	columnCache.Unlock()
 	return cols, nil
 }
 

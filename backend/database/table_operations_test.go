@@ -54,6 +54,59 @@ func TestBrowseTableFiltersBeforePagination(t *testing.T) {
 	}
 }
 
+func TestBrowseTableColumnsCached(t *testing.T) {
+	p, db := testTableDB(t)
+	// Wrap the provider to count schema round-trips: paging a table must hit
+	// the metadata only once within the cache TTL.
+	counting := &schemaCountingProvider{Provider: p}
+	for i := 0; i < 3; i++ {
+		if _, err := BrowseTable(counting, db, "main", "items", BrowseOptions{Limit: 10}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if counting.calls != 1 {
+		t.Fatalf("GetTableSchema called %d times, want 1 (cached)", counting.calls)
+	}
+
+	// A second connection is a different cache key — no cross-talk.
+	db2, err := NewDB("sqlite", filepath.Join(t.TempDir(), "table2.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	if _, err := db2.Exec(`CREATE TABLE items (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BrowseTable(counting, db2, "main", "items", BrowseOptions{Limit: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if counting.calls != 2 {
+		t.Fatalf("GetTableSchema called %d times, want 2 (distinct connection)", counting.calls)
+	}
+
+	// DDL through the app invalidates, so a new column is visible at once.
+	if _, err := db.Exec(`ALTER TABLE items ADD COLUMN extra TEXT`); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateTableColumns(db)
+	if _, err := BrowseTable(counting, db, "main", "items", BrowseOptions{Limit: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if counting.calls != 3 {
+		t.Fatalf("GetTableSchema called %d times, want 3 (invalidated)", counting.calls)
+	}
+}
+
+type schemaCountingProvider struct {
+	Provider
+	calls int
+}
+
+func (p *schemaCountingProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {
+	p.calls++
+	return p.Provider.GetTableSchema(db, dbName, tableName)
+}
+
 func TestBrowseSQLDialects(t *testing.T) {
 	cols := map[string]bool{"id": true, "name": true}
 	opts := BrowseOptions{Filters: []TableFilter{{Column: "name", Op: "contains", Value: "50%_!"}}, Sorts: []TableSort{{Column: "id", Desc: true}}, Limit: 20, Offset: 40}
