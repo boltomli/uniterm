@@ -36,6 +36,11 @@ const (
 	ipScanWorkers   = 64
 	ipProbeTimeout  = 400 * time.Millisecond
 	hostnameTimeout = 2 * time.Second
+	// hostnameWorkers bounds the concurrency of the post-scan enrichment pass
+	// (reverse DNS + MAC). Reverse DNS is not part of the liveness probe: a
+	// 2s-cancellable lookup inside each worker serialized behind the probes
+	// and stretched the scan's hot path by up to the full timeout per host.
+	hostnameWorkers = 16
 )
 
 // StartIPScan launches an asynchronous liveness scan of [startIP, endIP].
@@ -88,8 +93,8 @@ func (m *Manager) runIPScan(ctx context.Context, id string, lo, hi uint32, total
 				mu.Lock()
 				hosts = append(hosts, h)
 				mu.Unlock()
-				// Emit immediately with the data we have; MAC is filled in a
-				// second pass below once the ARP cache is read in bulk.
+				// Emit immediately with the data we have; the hostname and MAC
+				// are filled in by the enrichment pass below.
 				m.emit(EventHostFound, map[string]any{"scanId": id, "host": h})
 			}
 			n := done.Add(1)
@@ -103,19 +108,36 @@ func (m *Manager) runIPScan(ctx context.Context, id string, lo, hi uint32, total
 	}
 	wg.Wait()
 
-	// Second pass: enrich hosts with MAC addresses from the system ARP cache.
-	// The TCP probes above already triggered ARP resolution for live hosts, so
-	// the table is warm by now.
+	// Second pass: enrich hosts with their reverse-DNS name and MAC address,
+	// in parallel but off the probe hot path. The TCP probes above already
+	// triggered ARP resolution for live hosts, so the table is warm by now.
 	if ctx.Err() == nil && len(hosts) > 0 {
-		if macs := readARPTable(); len(macs) > 0 {
-			for _, h := range hosts {
+		macs := readARPTable()
+		var enrich sync.WaitGroup
+		esem := make(chan struct{}, hostnameWorkers)
+		for i := range hosts {
+			enrich.Add(1)
+			esem <- struct{}{}
+			go func(i int) {
+				defer enrich.Done()
+				defer func() { <-esem }()
+				h := &hosts[i]
+				changed := false
 				if mac, ok := macs[h.IP]; ok && mac != "" && h.MAC != mac {
 					h.MAC = mac
-					// Re-emit with the MAC filled in; the frontend upserts by IP.
-					m.emit(EventHostFound, map[string]any{"scanId": id, "host": h})
+					changed = true
 				}
-			}
+				if name := lookupHostname(ctx, h.IP); name != "" && name != h.Hostname {
+					h.Hostname = name
+					changed = true
+				}
+				if changed {
+					// Re-emit with the enriched data; the frontend upserts by IP.
+					m.emit(EventHostFound, map[string]any{"scanId": id, "host": *h})
+				}
+			}(i)
 		}
+		enrich.Wait()
 	}
 
 	reason := "finished"
@@ -147,7 +169,8 @@ func probeHost(ctx context.Context, ip net.IP) (ScanHost, bool) {
 	if !alive {
 		return h, false
 	}
-	h.Hostname = lookupHostname(ctx, h.IP)
+	// No reverse DNS here: the hostname is resolved in the enrichment pass
+	// after the scan, so a slow PTR lookup never delays other probes.
 	return h, true
 }
 
