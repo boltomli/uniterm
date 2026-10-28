@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -188,8 +189,24 @@ func probeTCP(ctx context.Context, ip string, port int, timeout time.Duration) p
 		conn.Close()
 		return portOpen
 	}
+	return classifyDialError(err)
+}
+
+// classifyDialError maps a dial failure to a port state. Errno comparison
+// comes first: it is stable across OS versions, locales and Go releases,
+// unlike the error-text matching below, which only survives as a fallback
+// for paths that surface the message without a wrapped errno.
+//
+// ECONNREFUSED (RST on a closed port) and ECONNRESET mean the host answered,
+// so the host is alive and the port closed. Timeouts, unreachable networks
+// and DNS failures stay portTimeout — a firewall dropping probes looks the
+// same as a dead host from here.
+func classifyDialError(err error) portState {
 	if errors.Is(err, context.Canceled) {
 		return portTimeout
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return portClosed
 	}
 	msg := strings.ToLower(err.Error())
 	// Linux: "connection refused" / "connection reset by peer".
