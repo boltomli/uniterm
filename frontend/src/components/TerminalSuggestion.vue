@@ -4,6 +4,9 @@
     v-show="visible"
     class="terminal-suggestion-popup"
     :style="popupStyle"
+    role="listbox"
+    :aria-label="t('terminal.suggestionsLabel')"
+    :aria-activedescendant="selectedIndex >= 0 ? suggestionItemId(selectedIndex) : undefined"
   >
     <!-- Scrollable history list -->
     <div class="history-list" ref="historyListRef">
@@ -11,6 +14,9 @@
         v-for="{ item, index } in historyItemsWithIndex"
         :key="item.id"
         :ref="(el) => setItemRef(el as HTMLElement, index)"
+        :id="suggestionItemId(index)"
+        role="option"
+        :aria-selected="index === selectedIndex"
         class="suggestion-item"
         :class="{ selected: index === selectedIndex }"
         @click="onSelect(index)"
@@ -39,13 +45,16 @@
         </span>
         <!-- Entries read from the login shell's own history file are not
              uniTerm's to delete, so they get no delete button. -->
-        <button class="delete-btn" :class="{ visible: item.type === 'history' && !item.readonly }" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
+        <button class="delete-btn" :class="{ visible: item.type === 'history' && !item.readonly }" :aria-label="t('common.delete')" @click.stop="onRemove(item.id)"><Trash2 :size="'0.75rem'" /></button>
       </div>
     </div>
     <!-- AI section (fixed at bottom) -->
     <div
       v-if="aiItemWithIndex"
       class="suggestion-item ai-fixed"
+      :id="suggestionItemId(aiItemWithIndex.index)"
+      role="option"
+      :aria-selected="aiItemWithIndex.index === selectedIndex"
       :class="{
         selected: aiItemWithIndex.index === selectedIndex,
         'ai-result': aiItemWithIndex.item.type === 'ai-result',
@@ -65,7 +74,16 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { Trash2, Clock, Zap, Sparkles } from '@lucide/vue'
+import { useI18n } from '../i18n'
 import type { SuggestionItem } from '../composables/useSuggestions'
+
+const { t } = useI18n()
+
+// Stable DOM ids so aria-activedescendant can point at the highlighted option
+// without moving real DOM focus out of the terminal.
+function suggestionItemId(index: number): string {
+  return `terminal-suggestion-option-${index}`
+}
 
 const props = defineProps<{
   visible: boolean

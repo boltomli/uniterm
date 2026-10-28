@@ -207,6 +207,7 @@
   "terminal.aiTranscribing": "AI đang chép lời...",
   "terminal.aiTranscribeFailed": "AI chép lời thất bại",
   "terminal.suggestionHistory": "Lịch sử",
+  "terminal.suggestionsLabel": "Gợi ý lệnh",
   "terminal.suggestionQuickCommand": "Lệnh nhanh",
   "input.cut": "Cắt",
   "input.copy": "Sao chép",

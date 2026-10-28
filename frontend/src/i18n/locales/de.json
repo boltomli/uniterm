@@ -207,6 +207,7 @@
   "terminal.aiTranscribing": "KI-Transkription...",
   "terminal.aiTranscribeFailed": "KI-Transkription fehlgeschlagen",
   "terminal.suggestionHistory": "Verlauf",
+  "terminal.suggestionsLabel": "Befehlsvorschläge",
   "terminal.suggestionQuickCommand": "Schnellbefehl",
   "input.cut": "Ausschneiden",
   "input.copy": "Kopieren",

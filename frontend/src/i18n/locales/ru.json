@@ -207,6 +207,7 @@
   "terminal.aiTranscribing": "Транскрибация ИИ...",
   "terminal.aiTranscribeFailed": "Ошибка транскрибации ИИ",
   "terminal.suggestionHistory": "История",
+  "terminal.suggestionsLabel": "Подсказки команд",
   "terminal.suggestionQuickCommand": "Быстрая команда",
   "input.cut": "Вырезать",
   "input.copy": "Копировать",

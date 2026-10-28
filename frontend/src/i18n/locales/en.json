@@ -238,6 +238,7 @@
   "terminal.aiTranscribing": "AI transcribing...",
   "terminal.aiTranscribeFailed": "AI transcription failed",
   "terminal.suggestionHistory": "History",
+  "terminal.suggestionsLabel": "Command suggestions",
   "terminal.suggestionQuickCommand": "Quick Command",
   "input.cut": "Cut",
   "input.copy": "Copy",
