@@ -74,6 +74,35 @@ describe('remote desktop status bar preferences', () => {
     remounted.scope.stop()
   })
 
+  it('skips the disk write when a toggle lands on the already persisted values', async () => {
+    const store = useConnectionStore()
+    const config = connection('vnc')
+    await store.add(config)
+    // Two panels bound to the same connection, both opened before any
+    // change — like a status bar and a fullscreen toolbar.
+    const panel = open(config)
+    const twin = open(config)
+    const baseline = disk.writes
+    panel.scaleViewport.value = true
+    await Promise.resolve()
+    expect(disk.writes).toBe(baseline + 1)
+
+    // The twin still holds the stale default; flipping it to the value the
+    // first panel already persisted must not serialise the list again.
+    twin.scaleViewport.value = true
+    twin.viewOnly.value = false
+    twin.showDotCursor.value = false
+    await Promise.resolve()
+    expect(disk.writes).toBe(baseline + 1)
+
+    // A real change still persists.
+    twin.viewOnly.value = true
+    await Promise.resolve()
+    expect(disk.writes).toBe(baseline + 2)
+    panel.scope.stop()
+    twin.scope.stop()
+  })
+
   it('keeps legacy defaults and does not write on initialization', () => {
     const defaults = open(connection('vnc'))
     expect(defaults.scaleViewport.value).toBe(false)

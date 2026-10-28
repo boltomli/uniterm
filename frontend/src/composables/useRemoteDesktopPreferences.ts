@@ -14,6 +14,17 @@ export function useRemoteDesktopPreferences(config: () => ConnectionConfig | nul
     const connection = config()
     if (!connection) return
     const desktopPreferences = { scaleViewport: scale, viewOnly: readOnly, showDotCursor: cursor }
+    // Each toggle triggers a full connection-list serialisation to disk, and
+    // desktop panels tend to flip several switches in a row (a second panel
+    // instance for the same session can even toggle back to the persisted
+    // values). Skip the write when nothing actually changed.
+    const persisted = connection.desktopPreferences
+    if (persisted &&
+      persisted.scaleViewport === desktopPreferences.scaleViewport &&
+      persisted.viewOnly === desktopPreferences.viewOnly &&
+      persisted.showDotCursor === desktopPreferences.showDotCursor) {
+      return
+    }
     // Update the panel too, so moving a cached session preserves its options.
     connection.desktopPreferences = desktopPreferences
     void connectionStore.update(connection.id, { desktopPreferences })
