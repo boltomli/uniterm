@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
+import { fileURLToPath } from 'node:url'
 
 const version = process.env.VITE_VERSION || 'dev'
 
@@ -19,6 +20,11 @@ export default defineConfig({
       resolvers: [ElementPlusResolver({ importStyle: 'css' })],
     }),
   ],
+  resolve: {
+    // noVNC's core modules (display, cursor, ...) are imported directly by
+    // the Apple-touchbar adapter and its tests.
+    alias: { '@novnc-internals': fileURLToPath(new URL('./node_modules/@novnc/novnc/core', import.meta.url)) }
+  },
   define: {
     'import.meta.env.VITE_VERSION': JSON.stringify(version)
   },

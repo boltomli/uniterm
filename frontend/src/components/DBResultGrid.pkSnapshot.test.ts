@@ -3,9 +3,11 @@
 // object BEFORE snapshotting the primary key, so the first staged edit on a
 // PK column produced an UPDATE ... WHERE pk = <new value> that matched zero
 // rows while the UI happily reported success. The fix moves the snapshot
-// ahead of the write; the second half of the fix is that the backend now
-// returns the affected-row count and the editor refuses to mark an edit
-// committed when it is 0.
+// ahead of the write; the second half of the fix lives in the backend:
+// database.UpdateRowsAtomic rejects any row UPDATE whose affected count is
+// not exactly 1 and rolls the whole batch back (pinned by
+// backend/database/table_operations_test.go TestUpdateRowsAtomicRollback),
+// so a stale WHERE can never masquerade as a successful save.
 //
 // No component-mount tests exist (node env, no jsdom — see testUtils/sfc.ts),
 // so the ordering is asserted on the SFC source.
@@ -14,7 +16,6 @@ import { describe, expect, it } from 'vitest'
 import { readSrc, scriptBody } from '../testUtils/sfc'
 
 const gridScript = scriptBody(readSrc('components/DBResultGrid.vue'))
-const editorScript = scriptBody(readSrc('components/DBQueryEditor.vue'))
 
 describe('DBResultGrid PK snapshot ordering (DB-01)', () => {
   it('snapshots the primary key before writing the new value into the row', () => {
@@ -28,60 +29,32 @@ describe('DBResultGrid PK snapshot ordering (DB-01)', () => {
   })
 
   it('creates the pending record from the pre-edit row state', () => {
-    expect(gridScript).toMatch(/rec = \{ pk: snapshotPk\(row\), fields: new Map\(\) \}/)
+    expect(gridScript).toMatch(/rec = \{ pk: snapshotPk\(row\), fields: reactive\(new Map<string, StagedCell>\(\)\) \}/)
   })
 })
 
-describe('DBQueryEditor affected-row checks (DB-01 / DB-05)', () => {
-  it('does not mark a staged edit committed when its row UPDATE affected 0', () => {
+describe('DBQueryEditor batch save keeps the read snapshot (DB-01 / DB-05)', () => {
+  it('saves staged edits as one atomic batch keyed by the original PKs', () => {
+    const editorScript = scriptBody(readSrc('components/DBQueryEditor.vue'))
     const save = editorScript.slice(
       editorScript.indexOf('async function onSaveEdits'),
       editorScript.indexOf('function onUndoEdits'),
     )
-    // The save is one transactional batch (DB-05) carrying per-row counts.
-    expect(save).toMatch(/counts = await DBUpdateRows\(/)
-    expect(save).toMatch(/const affected = counts\[i\]/)
-    expect(save).toMatch(/db\.updateNoMatch/)
-    // markCommitted must only run on rows whose UPDATE reported a count.
-    expect(save.indexOf('if (affected === 0)')).toBeLessThan(save.indexOf('markCommitted'))
-    // A failing statement rolls the batch back: everything stays staged.
-    expect(save).toMatch(/The transaction rolled back/)
+    // The grid hands each row's original PK values as the WHERE clause (see
+    // DBResultGrid getPendingEdits), and a failure keeps every edit staged
+    // (no markCommittedRow on the error path) — the backend rolled the whole
+    // transaction back.
+    expect(save).toMatch(/DBUpdateRowsAtomic\(/)
+    expect(save).toMatch(/where: ed\.where/)
+    expect(save).toMatch(/edits\.map\(ed => \(\{ set: ed\.set, where: ed\.where \}\)\)/)
   })
 
-  it('keeps the row-edit dialog open when the snapshot WHERE matched nothing', () => {
-    const confirm = editorScript.slice(
-      editorScript.indexOf('async function onEditRowConfirm'),
-      editorScript.indexOf('function onEditRowCancel'),
+  it('stages each row as set + original-PK where in the grid', () => {
+    const gridScript2 = scriptBody(readSrc('components/DBResultGrid.vue'))
+    const pending = gridScript2.slice(
+      gridScript2.indexOf('function getPendingEdits'),
+      gridScript2.indexOf('function markCommittedRow'),
     )
-    expect(confirm).toMatch(/const affected = await DBUpdateRow\(/)
-    expect(confirm).toMatch(/if \(affected === 0\)/)
-    // The early return happens before the local rows array is rewritten.
-    expect(confirm.indexOf('if (affected === 0)')).toBeLessThan(
-      confirm.indexOf('const updatedRow = [...queryResult.value!.rows[idx]]'),
-    )
-  })
-
-  it('reports a delete that matched no row', () => {
-    const del = editorScript.slice(
-      editorScript.indexOf('async function onDeleteRow(rowIndex: number)'),
-      editorScript.indexOf('const insertingRow = ref'),
-    )
-    expect(del).toMatch(/const affected = await DBDeleteRow\(/)
-    expect(del).toMatch(/if \(affected === 0\)/)
-    expect(del).toMatch(/db\.rowGone/)
-  })
-})
-
-describe('DB-01 i18n keys', () => {
-  const locales = [
-    'de', 'en', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'vi', 'zh-CN', 'zh-TW',
-  ]
-
-  it.each(locales)('%s defines db.updateNoMatch and db.rowGone', (loc) => {
-    const dict = JSON.parse(readSrc(`i18n/locales/${loc}.json`))
-    expect(typeof dict['db.updateNoMatch']).toBe('string')
-    expect(dict['db.updateNoMatch'].length).toBeGreaterThan(0)
-    expect(typeof dict['db.rowGone']).toBe('string')
-    expect(dict['db.rowGone'].length).toBeGreaterThan(0)
+    expect(pending).toMatch(/where: \{ \.\.\.rec\.pk \}/)
   })
 })

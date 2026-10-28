@@ -69,7 +69,12 @@ func (p *sqliteProvider) DSN(host string, port int, user, password, dbName strin
 		}
 		pragmas = append(pragmas, "_pragma="+escapeSQLiteToken(k)+"%3D"+escapeSQLiteToken(extraParams[k]))
 	}
-	return "file:" + escapeSQLitePath(filepath.ToSlash(host)) + "?" + strings.Join(pragmas, "&")
+	// A saved SQLite connection may contain a Windows path even when opened
+	// on another platform. filepath.ToSlash only converts separators native to
+	// the current OS, so normalize both forms for the URI DSN; the path is
+	// then percent-encoded so it cannot break out of the path segment
+	// (see escapeSQLitePath).
+	return "file:" + escapeSQLitePath(strings.ReplaceAll(filepath.ToSlash(host), `\`, "/")) + "?" + strings.Join(pragmas, "&")
 }
 
 // escapeSQLitePath percent-encodes the file: URI path segment's structural

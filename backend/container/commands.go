@@ -252,6 +252,12 @@ func removeImageArgs(rt Runtime, ns, imageID string) []string {
 
 func createArgs(rt Runtime, ns string, o CreateOptions) []string {
 	argv := []string{"run", "-d"}
+	if o.Interactive {
+		argv = append(argv, "-i")
+	}
+	if o.TTY {
+		argv = append(argv, "-t")
+	}
 	if o.Name != "" {
 		argv = append(argv, "--name", o.Name)
 	}
@@ -281,8 +287,8 @@ func createArgs(rt Runtime, ns string, o CreateOptions) []string {
 
 // detectArgs: command -v 走 shell，两 runner 均支持（见各 runner 的特例处理）。
 func detectArgs(rt Runtime) []string {
-		return []string{"sh", "-c", "command -v " + rt.Bin()}
-	}
+	return []string{"sh", "-c", "command -v " + rt.Bin()}
+}
 
 // wslcFormat returns --format json for WSLC (vs Docker's --format "{{json .}}")
 func wslcFormat() []string {

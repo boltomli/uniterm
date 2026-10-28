@@ -32,11 +32,13 @@ type QueryResultColumn struct {
 
 type QueryResult struct {
 	// Columns keeps the result-set column metadata in ordinal order.
-	// Duplicate names are preserved as-is (SELECT a.id, b.id yields two
-	// entries named "id"); consumers must address cells by index.
-	Columns   []QueryResultColumn `json:"columns"`
-	Rows      [][]any             `json:"rows"`
-	Truncated bool                `json:"truncated"`
+	Columns []QueryResultColumn `json:"columns"`
+	Rows    []map[string]any    `json:"rows"`
+	// HasMore is set by the browse path when it fetched one row past the
+	// requested limit (see BrowseTable).
+	HasMore bool `json:"hasMore,omitempty"`
+	// Truncated is set when the scan stopped at maxQueryRows.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type ExecResult struct {
@@ -45,7 +47,7 @@ type ExecResult struct {
 }
 
 func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, error) {
-	return ExecuteQueryCtx(context.Background(), p, db, dbName, sqlStr)
+	return executeQueryArgs(context.Background(), p, db, dbName, sqlStr, nil)
 }
 
 // ExecuteQueryCtx is ExecuteQuery with a caller-owned parent context. The
@@ -53,6 +55,10 @@ func ExecuteQuery(p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, 
 // button aborts the in-flight statement instead of only hiding the result
 // (DB-16); the per-query budget still applies on top of it.
 func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string) (*QueryResult, error) {
+	return executeQueryArgs(parent, p, db, dbName, sqlStr, nil)
+}
+
+func executeQueryArgs(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string, args []any) (*QueryResult, error) {
 	ctx, cancel := context.WithTimeout(parent, queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
@@ -65,7 +71,7 @@ func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sql
 		return nil, err
 	}
 
-	rows, err := conn.QueryContext(ctx, sqlStr)
+	rows, err := conn.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +83,7 @@ func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sql
 	}
 
 	guids := guidColumns(rows)
-	var result [][]any
+	var result []map[string]any
 	truncated := false
 	for rows.Next() {
 		if len(result) >= maxQueryRows {
@@ -94,9 +100,9 @@ func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sql
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return nil, err
 		}
-		row := make([]any, len(cols))
-		for i := range cols {
-			row[i] = scanToAnyCol(values[i], isGuidCol(guids, i))
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			row[col] = scanToAnyCol(values[i], isGuidCol(guids, i))
 		}
 		result = append(result, row)
 	}
@@ -110,7 +116,7 @@ func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sql
 	}
 
 	if len(result) == 0 {
-		return &QueryResult{Columns: columns, Rows: [][]any{}, Truncated: truncated}, nil
+		return &QueryResult{Columns: columns, Rows: []map[string]any{}, Truncated: truncated}, nil
 	}
 	return &QueryResult{Columns: columns, Rows: result, Truncated: truncated}, nil
 }
@@ -147,11 +153,11 @@ func ExecuteStatementCtx(parent context.Context, p Provider, db *sql.DB, dbName,
 
 // ScriptResult is the outcome of running a multi-statement SQL script.
 type ScriptResult struct {
-	Executed      int    `json:"executed"`       // statements that ran successfully
-	FailedLine    int    `json:"failedLine"`     // 1-based line of the failing statement; 0 if all ok
-	FailedSQL     string `json:"failedSql"`      // the failing statement (truncated for display)
-	Error         string `json:"error"`          // failure message
-	AffectedTotal int64  `json:"affectedTotal"`  // sum of rows affected across statements
+	Executed      int    `json:"executed"`      // statements that ran successfully
+	FailedLine    int    `json:"failedLine"`    // 1-based line of the failing statement; 0 if all ok
+	FailedSQL     string `json:"failedSql"`     // the failing statement (truncated for display)
+	Error         string `json:"error"`         // failure message
+	AffectedTotal int64  `json:"affectedTotal"` // sum of rows affected across statements
 }
 
 // ExecuteScript splits a SQL script and runs each statement sequentially on a

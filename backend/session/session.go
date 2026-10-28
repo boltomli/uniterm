@@ -46,6 +46,32 @@ type SSHAlgoConfig struct {
 	HostKeys     []string `json:"hostKeys,omitempty"`
 }
 
+type DesktopRect struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type DesktopView struct {
+	Selected string          `json:"selected"`
+	Region   *DesktopRect    `json:"region,omitempty"`
+	Regions  []DesktopRegion `json:"regions,omitempty"`
+}
+
+type DesktopRegion struct {
+	DesktopRect
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// DesktopPreferences holds status bar options for VNC, RDP and SPICE.
+type DesktopPreferences struct {
+	ScaleViewport bool `json:"scaleViewport"`
+	ViewOnly      bool `json:"viewOnly"`
+	ShowDotCursor bool `json:"showDotCursor"`
+}
+
 type ConnectionConfig struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -182,7 +208,9 @@ type ConnectionConfig struct {
 	// VncShared is forwarded to noVNC's RFB constructor as `shared`.
 	// true (default) — the new client may connect alongside other clients.
 	// false — the server will typically disconnect other clients on connect.
-	VncShared bool `json:"vncShared,omitempty"`
+	VncShared          bool                `json:"vncShared,omitempty"`
+	DesktopView        *DesktopView        `json:"desktopView,omitempty"`
+	DesktopPreferences *DesktopPreferences `json:"desktopPreferences,omitempty"`
 	// VncRepeaterID is forwarded to noVNC's RFB constructor as `repeaterID`.
 	// Empty (default) — direct connection to the VNC server.
 	// Non-empty — connect via an UltraVNC-compatible repeater using the given ID.

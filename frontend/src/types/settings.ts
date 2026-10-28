@@ -87,6 +87,8 @@ export interface TerminalSettings {
   ctrlWheelZoom?: boolean
   maxHistoryLines: number
   smartCompletion: boolean
+  suggestionPopup: boolean
+  inlineHint: boolean
   aiTranscription: boolean
   highlightEnabled: boolean
   cursorBlink: boolean
@@ -415,6 +417,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     middleClickAction: 'paste',
     maxHistoryLines: 2500,
     smartCompletion: true,
+    suggestionPopup: true,
+    inlineHint: true,
     aiTranscription: true,
     highlightEnabled: true,
     cursorBlink: true,

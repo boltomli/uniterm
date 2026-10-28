@@ -116,6 +116,8 @@ export interface ContainerStats {
 }
 
 export interface ContainerCreateOptions {
+  interactive?: boolean
+  tty?: boolean
   image: string
   name: string
   ports: PortMapping[]
@@ -133,4 +135,10 @@ export interface ContainerTab {
   connectionId: string // 保存的连接配置 ID（= 后端 conn key）
   runtime: 'docker' | 'podman' | 'nerdctl' | 'wslc'
   locked?: boolean
+}
+
+export interface ContainerCommitOptions {
+  image: string
+  author?: string
+  message?: string
 }

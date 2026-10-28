@@ -13,10 +13,11 @@ import (
 type EventEmitter func(name string, payload any)
 
 type Manager struct {
-	mu      sync.RWMutex
-	conns   map[string]*conn
-	streams map[string]*streamHandle
-	emit    EventEmitter
+	mu       sync.RWMutex
+	conns    map[string]*conn
+	streams  map[string]*streamHandle
+	imageOps map[string]*imageOperation
+	emit     EventEmitter
 }
 
 type conn struct {
@@ -33,9 +34,10 @@ type streamHandle struct {
 
 func NewManager() *Manager {
 	return &Manager{
-		conns:   map[string]*conn{},
-		streams: map[string]*streamHandle{},
-		emit:    func(string, any) {},
+		conns:    map[string]*conn{},
+		streams:  map[string]*streamHandle{},
+		imageOps: map[string]*imageOperation{},
+		emit:     func(string, any) {},
 	}
 }
 
@@ -98,7 +100,17 @@ func (m *Manager) Disconnect(id string) {
 			delete(m.streams, sid)
 		}
 	}
+	var imageCancels []context.CancelFunc
+	for operationID, op := range m.imageOps {
+		if op.connID == id {
+			imageCancels = append(imageCancels, op.cancel)
+			delete(m.imageOps, operationID)
+		}
+	}
 	m.mu.Unlock()
+	for _, cancel := range imageCancels {
+		cancel()
+	}
 	for _, s := range streams {
 		_ = s.stream.Close()
 	}

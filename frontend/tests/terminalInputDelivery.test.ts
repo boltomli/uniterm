@@ -5,45 +5,66 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTerminalInput } from '../src/composables/useTerminalInput'
 import { pasteWithScroll } from '../src/utils/terminalPaste'
 import { filterTerminalInput } from '../src/utils/terminalInputFilter'
+import { createKeystrokeReorder } from '../src/utils/imeKeystrokeOrder'
 
 // Exercise the component's actual onData callback without mounting Wails,
 // WebGL, and every store used by BaseTerminal.
 const source = readFileSync(new URL('../src/components/BaseTerminal.vue', import.meta.url), 'utf8')
 const script = source.match(/<script setup[^>]*>([\s\S]*?)<\/script>/)![1]
 const ast = ts.createSourceFile('BaseTerminal.ts', script, ts.ScriptTarget.Latest, true)
+// onData hands each keystroke to the input-method reorder buffer, which
+// releases it into processTerminalData — the rest of the pipeline. Both halves
+// are needed, and they are wired back together through the real buffer below so
+// this still exercises the path a keystroke actually takes.
 let callback = ''
+let pipeline = ''
 function visit(node: ts.Node) {
   if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'onDataDispose' &&
       ts.isCallExpression(node.right) && node.right.expression.getText(ast) === 'terminal.onData') {
     callback = node.right.arguments[0].getText(ast)
   }
+  if (ts.isBinaryExpression(node) && node.left.getText(ast) === 'processTerminalData' &&
+      ts.isArrowFunction(node.right)) {
+    pipeline = node.right.getText(ast)
+  }
   ts.forEachChild(node, visit)
 }
 visit(ast)
 if (!callback) throw new Error('BaseTerminal onData callback not found')
-const executable = ts.transpile(`const onData = ${callback}; onData`, {
-  target: ts.ScriptTarget.ES2022,
-})
+if (!pipeline) throw new Error('BaseTerminal processTerminalData not found')
+const executable = ts.transpile(
+  `const processTerminalData = ${pipeline}; const onData = ${callback}; ({ onData, processTerminalData })`,
+  { target: ts.ScriptTarget.ES2022 },
+)
 
 function setup() {
   vi.stubGlobal('requestAnimationFrame', () => 0)
   vi.stubGlobal('cancelAnimationFrame', () => {})
   const input = useTerminalInput(null, { mode: 'ssh', sessionId: 'test' })
   const writes: string[] = []
-  const onData = runInNewContext(executable, {
+  // The real buffer, not a pass-through: a backspace with no rewrite in flight
+  // takes its immediate path, so these assertions stay synchronous.
+  let pipe: (data: string) => void = () => {}
+  const extracted = runInNewContext(executable, {
+    imeOrder: { push: (data: string) => pipe(data) },
     sidNow: 'test', gen: 1,
     getManagedTerminal: () => ({ onDataGeneration: 1 }),
     replySuppressUntil: 0, isMobileTouch: false, retryOnEnter: false,
     props: { mode: 'ssh', sessionId: 'test' },
     terminalInput: input,
     suggestions: { isVisible: () => false, close: () => {} },
+    // The inline hint is driven from the pipeline but has nothing to say
+    // about Backspace delivery.
+    refreshGhostText: () => {},
+    ghostSuggestion: () => null,
     setTimeout: () => 0,
     writeTerminalInput: (data: string, inAlt: boolean) => {
       const filtered = filterTerminalInput(data, inAlt)
       if (filtered) writes.push(filtered)
     },
-  }) as (data: string) => void
-  return { input, writes, onData }
+  }) as { onData: (data: string) => void; processTerminalData: (data: string) => void }
+  pipe = createKeystrokeReorder(data => extracted.processTerminalData(data)).push
+  return { input, writes, onData: extracted.onData }
 }
 
 afterEach(() => vi.unstubAllGlobals())

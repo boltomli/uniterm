@@ -30,3 +30,8 @@ declare module '@novnc/novnc' {
 
   export default RFB
 }
+
+// noVNC's core (display, cursor, ...) is imported directly through the
+// `@novnc-internals` vite alias by the Apple-touchbar adapter and its tests.
+// Those modules ship untyped JavaScript and are consumed loosely.
+declare module '@novnc-internals/*';

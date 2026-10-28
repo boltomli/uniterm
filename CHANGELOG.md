@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.11.2
+
+### What's Changed
+
+**New Features**
+
+- Network scan: new unified IP / port network scanner, from the top-right menu or the sidebar's new-connection menu — an IP range scan with service detection (SSH / Telnet / RDP / VNC / FTP / SMB / HTTP) on top and a port scan below. A result row opens a prefilled connection form in one click, and the IP range is prefilled with the local /24 subnet. (@etanman)
+- Remote desktop (VNC): multi-display VNC servers now get a display selector in the toolbar (all displays or a single display), and a custom region editor lets you view only part of the desktop — drag, draw and resize a box on the desktop. The chosen display / region is saved per connection.
+- Settings: a new "Local Data" tab holds the data directory, encryption mode and master password settings moved out of the general tab; it is grouped with cloud sync under a new "Configuration Management" section.
+
+**Bug Fixes**
+
+- Terminal: fixes sessions failing to reconnect — after a session ended, the terminal stayed stuck on the reconnecting prompt and never picked up the new session.
+- File transfer: fixes the standalone file panel's transfer list staying empty while a transfer ran.
+- Terminal (macOS): fixes Vietnamese Telex input methods garbling text — typing "tieengs vieejt" could come out as "tieến việt" because the keystrokes an input method emits for one keypress (a delete plus the replacement text) reached the page out of order; the keystrokes of one keypress are now reordered by their intent. (@dungvv)
+
+**Notes**
+
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+- Android app: since version 1.11.0, the Android app uses a new application ID based on the uniterm domain (`net.uniterm.app`) — if a version before 1.11.0 is installed, uninstall it first before installing the new version.
+
+Thanks to @etanman and @dungvv for their contributions to this release.
+
+### 更新内容
+
+**新功能**
+
+- 网络扫描：新增统一的 IP / 端口网络扫描器，入口在右上角菜单或侧边栏「新建连接」菜单——上方为带服务识别（SSH / Telnet / RDP / VNC / FTP / SMB / HTTP）的 IP 段扫描，下方为端口扫描。扫描结果可一键打开预填好的连接表单，IP 段自动预填本机所在 /24 子网。(@etanman)
+- 远程桌面（VNC）：多显示器的 VNC 服务器新增显示器选择器（全部显示器或单个显示器），并支持自定义区域编辑，只查看桌面的一部分——在桌面上拖动、绘制、调整框体即可。所选显示器 / 区域按连接保存。
+- 设置：新增「本地数据」标签页，数据目录、加密模式、主密码等设置从通用页移入；它与云同步一起归入新的「配置管理」分组。
+
+**问题修复**
+
+- 终端：修复会话重连失败的问题——会话结束后终端一直停留在「重新连接中」提示，无法接续新会话。
+- 文件传输：修复独立文件面板在传输进行时传输列表一直为空的问题。
+- 终端（macOS）：修复越南文 Telex 输入法打字乱序错乱的问题——输入 "tieengs vieejt" 可能变成 "tieến việt"，原因是输入法一次按键产生的 keystroke（删除 + 替换文本）到达页面的顺序不保证；现在会按按键意图对同一次按键的 keystroke 重新排序。(@dungvv)
+
+**说明**
+
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+- 安卓 APP 从 1.11.0 版本起更换为基于 uniterm 域名的新应用 ID（`net.uniterm.app`），如果安装了该版本之前的版本，需要先卸载旧版后安装新版。
+
+感谢 @etanman、@dungvv 对本次发布的贡献。
+
 ## v1.11.1
 
 ### What's Changed
@@ -127,7 +171,6 @@ Thanks to @laigcss, @surenwuyuwuqiu, @Merrcurys, @lutzr400 and @zhongqian97 for 
 - 安卓 APP 从 1.11.0 版本起更换为基于 uniterm 域名的新应用 ID（`net.uniterm.app`），如果安装了该版本之前的版本，需要先卸载旧版后安装新版。
 
 感谢 @laigcss、@surenwuyuwuqiu、@Merrcurys、@lutzr400 和 @zhongqian97 对本版本发布的贡献。
->>>>>>> origin/main
 
 ## v1.10.1
 

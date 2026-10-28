@@ -79,6 +79,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { spiceDesktopGeometry } from '../utils/spiceGeometry'
 import { SpiceKeyboard } from '../utils/spiceKeyboard'
 import { createSpiceClipboard } from '../utils/spiceClipboard'
@@ -110,7 +111,7 @@ const container = ref<HTMLDivElement | null>(null)
 const viewport = ref<HTMLDivElement | null>(null)
 const desktop = ref<HTMLDivElement | null>(null)
 const spiceContainer = ref<HTMLDivElement | null>(null)
-const scaleViewport = ref(false)
+const { scaleViewport } = useRemoteDesktopPreferences(() => props.config)
 const isFullscreen = ref(false)
 const resolution = ref('')
 const keyboardFocused = ref(false)

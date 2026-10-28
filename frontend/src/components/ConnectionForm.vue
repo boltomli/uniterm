@@ -1141,6 +1141,8 @@ const form = reactive<ConnectionConfig>({
   ftpPassive: true,
   ftpSkipVerify: false,
   vncShared: true,
+  desktopPreferences: undefined,
+  desktopView: undefined,
   vncRepeaterID: '',
   vncClipboardEncoding: 'auto',
   encoding: 'utf-8',
@@ -1550,6 +1552,8 @@ function resetForm() {
   form.ftpPassive = true
   form.ftpSkipVerify = false
   form.vncShared = true
+  form.desktopPreferences = undefined
+  form.desktopView = undefined
   form.vncRepeaterID = ''
   form.vncClipboardEncoding = 'auto'
   form.encoding = 'utf-8'

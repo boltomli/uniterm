@@ -116,6 +116,18 @@
 
         <MenuDivider />
 
+        <!-- 网络扫描（右上角工具入口） -->
+        <MenuItem @click="openNetscan">
+          {{ t('netscan.title') }}
+        </MenuItem>
+
+        <!-- 本地服务（右上角工具入口） -->
+        <MenuItem @click="openLocalServices">
+          {{ t('localsrv.title') }}
+        </MenuItem>
+
+        <MenuDivider />
+
         <!-- 导入 / 导出连接 -->
         <MenuItem @click="openImport">{{ t('importExport.import') }}</MenuItem>
         <MenuItem @click="openExport">{{ t('importExport.export') }}</MenuItem>
@@ -257,6 +269,16 @@ function openCategory(category?: string) {
   closeSettingsMenu()
 }
 
+function openNetscan() {
+  emit('open-netscan')
+  closeSettingsMenu()
+}
+
+function openLocalServices() {
+  emit('open-local-services')
+  closeSettingsMenu()
+}
+
 function checkUpdate() {
   updateCheck.checkForUpdate(true)
   closeSettingsMenu()
@@ -286,7 +308,7 @@ function menuShortcut(action: ShortcutAction): string {
 
 const hasActiveConnections = computed(() =>
   tabStore.tabs.some(t => {
-    if (t.type === 'start' || t.type === 'settings') return false
+    if (t.type === 'start' || t.type === 'settings' || t.type === 'netscan') return false
     const panelIds = t.type === 'workspace' ? t.panelIds : 'panelId' in t ? [t.panelId] : []
     return panelIds.some(pid => {
       const p = panelStore.getPanel(pid)
@@ -300,6 +322,8 @@ const emit = defineEmits<{
   'toggle-ai': []
   'toggle-sidebar': []
   'open-settings': [category?: string]
+  'open-netscan': []
+  'open-local-services': []
   'close-tab': [id: string]
   'close-tab-batch': [ids: string[]]
   'toggle-ai-lock': [panelId: string]

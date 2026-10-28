@@ -46,9 +46,8 @@ export type DbRow = DbCellValue[]
 
 export interface QueryResult {
   columns: QueryResultColumn[]
-  /** Positional rows: cell (r, c) is rows[r][c], matching columns[c]. Column
-   *  names may repeat (JOINs), so always address cells by index. */
-  rows: DbRow[]
+  rows: Record<string, any>[]
+  hasMore?: boolean
   /** True when the backend capped the scan (see maxQueryRows) and rows are missing. */
   truncated?: boolean
 }

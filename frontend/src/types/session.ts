@@ -132,6 +132,13 @@ export interface ConnectionConfig {
   // true (default) — the new client may connect alongside other clients.
   // false — the server will typically disconnect other clients on connect.
   vncShared?: boolean
+  // Status bar preferences, remembered per remote desktop connection.
+  desktopPreferences?: {
+    scaleViewport?: boolean
+    viewOnly?: boolean
+    showDotCursor?: boolean
+  }
+  desktopView?: import('../utils/vncDisplays').DesktopView
   // vncRepeaterID is forwarded to noVNC's RFB constructor as `repeaterID`.
   // Empty (default) — direct connection to the VNC server.
   // Non-empty — connect via an UltraVNC-compatible repeater using the given ID.

@@ -30,6 +30,8 @@ import (
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/mcpclient"
+	"github.com/ys-ll/uniterm/backend/localsrv"
+	"github.com/ys-ll/uniterm/backend/netscan"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -48,6 +50,8 @@ type App struct {
 	notifier             *notifications.NotificationService // system notifications (MCP approval prompts)
 	sessionManager       *session.SessionManager
 	k8sManager           *k8s.Manager
+	netscanManager       *netscan.Manager
+	localsrvManager      *localsrv.Manager
 	containerManager     *container.Manager
 	connectionStore      *store.ConnectionStore
 	aiSessionStore       *store.AISessionStore
@@ -225,6 +229,8 @@ func NewApp(webviewDataPath string) *App {
 		mcpFileSessions:    make(map[string]string),
 		mcpTransferWaiters: make(map[string]chan mcpTransferOutcome),
 		k8sManager:         k8s.NewManager(),
+		netscanManager:     netscan.NewManager(),
+		localsrvManager:    localsrv.NewManager(),
 		containerManager:   container.NewManager(),
 		errCh:              make(chan error, 16),
 	}
@@ -340,6 +346,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.ctx = ctx
 
 	a.k8sManager.SetEventEmitter(func(name string, payload any) {
+		a.emit(name, payload)
+	})
+	a.netscanManager.SetEventEmitter(func(name string, payload any) {
+		a.emit(name, payload)
+	})
+	a.localsrvManager.SetEventEmitter(func(name string, payload any) {
 		a.emit(name, payload)
 	})
 	a.containerManager.SetEventEmitter(func(name string, payload any) {
@@ -978,6 +990,19 @@ func (a *App) watchForeground(ctx context.Context) {
 // streams run on context.Background(), so without Close those goroutines
 // (and the HTTP bodies they block on) would outlive the app.
 func (a *App) shutdown() {
+	// Hide the window first so the user perceives an instant close — the exact
+	// "disappear" behaviour of the upstream build. Releasing WebView2 below calls
+	// ICoreWebView2Controller::Close(), which gracefully tears down the control's
+	// renderer; doing that while the window is still visible produces a brief
+	// "window goes black, then exits" transition. Hiding the window makes that
+	// teardown invisible, so the close feels immediate. Hide() is thread-safe and
+	// dispatches to the UI thread like the rest of shutdown().
+	// (wails beta.27 never releases WebView2 on quit; see webview2_release.go.)
+	// A nil window (headless/unit-test App) skips both UI steps.
+	if a.window != nil {
+		a.window.Hide()
+		releaseWebView2(a.window)
+	}
 	a.closeRDPKeyboard()
 	a.unsubclassMainWindow()
 	a.disableAllPanelLogs()
@@ -1005,6 +1030,19 @@ func (a *App) shutdown() {
 	}
 	if a.containerManager != nil {
 		a.containerManager.Close()
+	}
+	if a.netscanManager != nil {
+		a.netscanManager.StopAll()
+	}
+	// Stop the built-in local file servers (HTTP/TFTP/SSH/FTP). This runs on a
+	// background goroutine so it can never block the main/UI thread that
+	// shutdown() executes on — that would otherwise freeze the window (the
+	// WM_QUIT/PostQuitMessage that tears down the message loop never runs).
+	// Stopping is cancellation-driven; if any server goroutine is still mid
+	// teardown when the process exits, the OS reaps it, so no background
+	// process or bound port survives a full app close.
+	if a.localsrvManager != nil {
+		go a.localsrvManager.StopAll()
 	}
 	a.stopMoveResizePump()
 	// backend/log buffers for up to a second; flush so no line is lost.
@@ -3563,4 +3601,39 @@ func dirUnlockable(target string) bool {
 		return false
 	}
 	return probe.Status().Unlocked
+}
+
+// ── Network Scanner tool (IP-range scan + per-host port scan) ──
+// Scans run asynchronously; results stream back as "netscan:*" events
+// carrying the scanId returned here.
+
+// GetLocalSubnet returns the /24 subnet of the primary outbound interface
+// (first three octets plus this machine's own last octet), so the frontend
+// can prefill the IP-range inputs in Moba-style base + last-octet form.
+func (a *App) GetLocalSubnet() (netscan.LocalSubnet, error) {
+	return netscan.DetectLocalSubnet()
+}
+
+// StartIPScan scans [startIP, endIP] for alive hosts (TCP liveness, service
+// ports, MAC from the ARP cache, reverse-DNS hostname). Returns the scan id.
+func (a *App) StartIPScan(startIP, endIP string) (string, error) {
+	return a.netscanManager.StartIPScan(startIP, endIP)
+}
+
+// StopIPScan cancels a running IP scan. A no-op for unknown/finished ids.
+func (a *App) StopIPScan(scanId string) {
+	a.netscanManager.Stop(scanId)
+}
+
+// StartPortScan scans one host's ports: the known-ports list when commonOnly
+// is true, otherwise the inclusive range [startPort, endPort] (1-65535).
+// workers caps the concurrent probes (<=0 uses the backend default).
+// Returns the scan id.
+func (a *App) StartPortScan(host string, commonOnly bool, startPort, endPort, workers int) (string, error) {
+	return a.netscanManager.StartPortScan(host, commonOnly, startPort, endPort, workers)
+}
+
+// StopPortScan cancels a running port scan. A no-op for unknown/finished ids.
+func (a *App) StopPortScan(scanId string) {
+	a.netscanManager.Stop(scanId)
 }

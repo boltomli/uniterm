@@ -53,15 +53,18 @@ describe('DBQueryEditor schema threading (DB-06)', () => {
   })
 
   it('qualifies browse, metadata and row-CRUD calls', () => {
-    // Browse SQL (both the initial load and the browse-mode comparison).
+    // Browse SQL for the table pager (schema-qualified for PG/MSSQL).
     const browseCalls = editor.match(/DBDefaultTableQuery\(\s*props\.sessionId,\s*props\.dbName \|\| '',\s*props\.schema \|\| '',/g) ?? []
-    expect(browseCalls.length).toBeGreaterThanOrEqual(2)
+    expect(browseCalls.length).toBeGreaterThanOrEqual(1)
+    // The filtered browse path (DBBrowseTable) carries it too.
+    expect(editor).toMatch(/DBBrowseTable\(props\.sessionId, props\.dbName \|\| '', props\.schema \|\| '', props\.tableName, \{/)
     // Every metadata / row-CRUD call carries the schema (multi-line calls
     // included, hence the shared count).
     const schemaPasses = editor.match(/props\.schema \|\| ''/g) ?? []
-    // 2× DBDefaultTableQuery + 2× DBUpdateRow + DBDeleteRow + DBInsertRow
-    // + the insert-dialog GetTableSchema + the AI probe.
-    expect(schemaPasses.length).toBeGreaterThanOrEqual(8)
+    // DBBrowseTable + DBDefaultTableQuery + 2× GetTableSchema + DBImportCSV
+    // + DBUpdateRowsAtomic + DBDeleteRow + DBInsertRow + DBUpdateRow
+    // + the AI probe.
+    expect(schemaPasses.length).toBeGreaterThanOrEqual(9)
     expect(editor).toMatch(/DBDeleteRow\(props\.sessionId, props\.dbName \|\| '', props\.schema \|\| '',/)
     expect(editor).toMatch(/DBInsertRow\(props\.sessionId, props\.dbName \|\| '', props\.schema \|\| '',/)
     expect(editor).toMatch(/GetTableSchema\(props\.sessionId, props\.dbName \|\| '', props\.schema \|\| '', props\.tableName \|\| ''\)/)

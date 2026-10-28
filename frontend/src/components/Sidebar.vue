@@ -42,6 +42,8 @@
           <MenuItem @click="onNewConnSelect('new-workspace')">{{ t('workspace.newWorkspace') }}</MenuItem>
           <MenuItem @click="onNewConnSelect('new-group')">{{ t('conn.newGroupTitle') }}</MenuItem>
           <MenuDivider />
+          <MenuItem @click="onNewConnSelect('netscan')">{{ t('netscan.title') }}</MenuItem>
+          <MenuDivider />
           <MenuItem @click="onNewConnSelect('import')">{{ t('importExport.import') }}</MenuItem>
           <MenuItem @click="onNewConnSelect('export')">{{ t('importExport.export') }}</MenuItem>
         </Menu>
@@ -455,7 +457,7 @@ import { isMobilePlatform } from '../utils/platform'
 defineProps<{
   visible: boolean
 }>()
-const emit = defineEmits(['connect', 'connectToWorkspace', 'createWorkspace', 'connectOnly', 'toggle'])
+const emit = defineEmits(['connect', 'connectToWorkspace', 'createWorkspace', 'connectOnly', 'toggle', 'openNetscan'])
 const connectionStore = useConnectionStore()
 const favoriteStore = useFavoriteStore()
 const settingsStore = useSettingsStore()
@@ -1586,6 +1588,8 @@ function onNewConnCommand(cmd: string) {
       if (!result) return
       await createEmptyWorkspaceRecord(result.name, result.groupId)
     })
+  } else if (cmd === 'netscan') {
+    emit('openNetscan')
   } else if (cmd === 'import') {
     showImportDialog.value = true
   } else if (cmd === 'export') {

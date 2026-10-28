@@ -1,12 +1,11 @@
 // Regression tests for DB-20 (database regression audit 2026-10-25):
-// "总数靠估算，可翻到空页；过滤/排序只作用于当前页".
+// "过滤/排序只作用于当前页" — the quick filter applies to the LOADED page only
+// (browse mode filters server-side via DBBrowseTable instead), and the
+// placeholder says so instead of implying a table-wide search.
 //
-// - The page total is an estimate (rows loaded so far + "maybe one more"),
-//   so an exactly-full last page offers one page past the end. The editor
-//   now steps back automatically instead of stranding the user on an empty
-//   page.
-// - The filter applies to the loaded page only; the placeholder says so
-//   instead of implying a table-wide search.
+// The empty-page back-off half of the original DB-20 no longer applies: the
+// browse pager is now server-driven (DBBrowseTable + HasMore), so the total
+// is exact and a page past the end cannot be offered.
 //
 // No component-mount tests exist (node env — see testUtils/sfc.ts), so the
 // wiring is asserted on the SFC source.
@@ -17,19 +16,16 @@ import { readSrc, scriptBody } from '../testUtils/sfc'
 const editor = scriptBody(readSrc('components/DBQueryEditor.vue'))
 const locales = ['de', 'en', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'vi', 'zh-CN', 'zh-TW']
 
-describe('DBQueryEditor empty-page back-off (DB-20)', () => {
-  it('steps back when an estimated page turns out not to exist', () => {
-    const queryBranch = editor.slice(
-      editor.indexOf('else if (isQuerySql(toRun))'),
-      editor.indexOf('const call = ExecuteStatement'),
-    )
-    expect(queryBranch).toMatch(/if \(browseMode\.value && result\.rows\.length === 0 && page\.value > 0\)/)
-    expect(queryBranch).toMatch(/page\.value -= 1/)
-    // The retry happens BEFORE the duration/history bookkeeping so the
-    // phantom fetch is not recorded as a real query.
-    const backoff = queryBranch.indexOf('page.value -= 1')
-    const bookkeeping = queryBranch.indexOf('lastDurationMs.value =')
-    expect(backoff).toBeLessThan(bookkeeping)
+describe('DBQueryEditor browse paging is server-driven (DB-20)', () => {
+  it('derives hasMore from the browse response, not an estimate', () => {
+    expect(editor).toMatch(/browseHasMore\.value = result\.hasMore === true/)
+  })
+
+  it('applies the quick filter to the loaded page only', () => {
+    // displayRows filters the in-memory page; in browse mode the database-side
+    // filter/sort (DBBrowseTable) coexists with it.
+    expect(editor).toMatch(/rows = rows\.filter\(row =>/)
+    expect(editor).toMatch(/Object\.values\(row\)\.some/)
   })
 })
 

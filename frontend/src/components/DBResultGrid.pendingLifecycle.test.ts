@@ -1,11 +1,9 @@
 // Regression tests for DB-02 (database regression audit 2026-10-25):
-// "过滤/排序/重新执行会清空 pending，但行对象已被改写 → 幽灵保存".
-// The grid used to clear staged edits in a watch on props.rows — but the
-// parent passes a DERIVED array (filter/sort), so typing one character in
-// the result filter produced a new array reference, wiped the pending map,
-// and left the edited (already-written-into-the-row) value on screen with no
-// way to save it. Pending edits are now keyed to the result-set identity
-// (resultKey), and replacing the result set asks before discarding them.
+// "过滤/排序/重新执行会清空 pending，但行里已是新值 → 幽灵保存".
+// The grid must NOT clear staged edits when the parent passes a DERIVED
+// rows array (filter/sort produce a new array holding the same row objects);
+// only a genuinely different result set may invalidate them. Replacing the
+// result set asks before discarding.
 //
 // No component-mount tests exist (node env — see testUtils/sfc.ts), so the
 // wiring is asserted on the SFC sources.
@@ -26,44 +24,36 @@ function bodyOf(src: string, startMarker: string, endMarker: string): string {
 }
 
 describe('DBResultGrid pending lifecycle (DB-02)', () => {
-  it('clears staged edits only when the result-set key changes', () => {
-    const resultKeyWatch = bodyOf(gridScript, 'watch(() => props.resultKey', 'watch(() => props.rows')
-    expect(resultKeyWatch).toMatch(/pending\.clear\(\)/)
-    expect(resultKeyWatch).toMatch(/bumpPending\(\)/)
-  })
-
-  it('a rows-array change (filter/sort) never touches pending', () => {
+  it('keeps staged edits when the new rows array is a subset of the old', () => {
+    // Filtering/sorting re-orders or narrows the SAME row objects; clearing
+    // pending here used to turn a later save into a phantom no-op while the
+    // edited value stayed rendered.
     const rowsWatch = bodyOf(gridScript, 'watch(() => props.rows', 'defineExpose')
-    expect(rowsWatch).not.toMatch(/pending\.clear/)
-    expect(rowsWatch).toMatch(/selectedCell\.value = null/)
+    expect(rowsWatch).toMatch(/if \(rows\.every\(row => previous\.includes\(row\)\)\) return/)
+    expect(rowsWatch).toMatch(/pending\.clear\(\)/)
+    expect(rowsWatch).toMatch(/bumpPending\(\)/)
   })
 
-  it('declares the resultKey prop', () => {
-    expect(gridScript).toMatch(/resultKey\?: number/)
+  it('clears the selection when its row left the array', () => {
+    const rowsWatch = bodyOf(gridScript, 'watch(() => props.rows', 'defineExpose')
+    expect(rowsWatch).toMatch(/if \(selectedCell\.value && !rows\.includes\(selectedCell\.value\.row\)\)/)
   })
 })
 
 describe('DBQueryEditor result-set identity (DB-02)', () => {
-  it('passes a monotonic result key to the grid', () => {
-    expect(editorSrc).toMatch(/:result-key="resultSeq"/)
-    expect(editorScript).toMatch(/const resultSeq = ref\(0\)/)
-    // The key advances only when a fresh query result replaces the set.
-    const queryBranch = bodyOf(
-      editorScript,
-      'else if (isQuerySql(toRun))',
-      'const call = ExecuteStatement',
-    )
-    expect(queryBranch).toMatch(/resultSeq\.value\+\+/)
+  it('asks before running a query that would discard staged edits', () => {
+    const confirm = bodyOf(editorScript, 'async function confirmDiscardEdits', 'function onPendingChange')
+    expect(confirm).toMatch(/if \(!pendingCount\.value\) return true/)
+    expect(confirm).toMatch(/db\.discardEditsConfirm/)
+    // The confirm's cancel path aborts the execution (returns false) and the
+    // accepted path restores the committed values before the new result lands.
+    expect(confirm).toMatch(/revertAll\(\)/)
+    expect(confirm).toMatch(/return false/)
   })
 
-  it('asks before running a query that would discard staged edits', () => {
-    const exec = bodyOf(editorScript, 'async function onExecute', 'function onCancelQuery')
-    expect(exec).toMatch(/if \(pendingCount\.value > 0\)/)
-    expect(exec).toMatch(/db\.discardEditsConfirm/)
-    // The confirm's cancel path must abort the execution.
-    expect(exec).toMatch(/catch \{\s*return\s*\}/)
-    // The stale counter must be reset together with the discard.
-    expect(exec).toMatch(/pendingCount\.value = 0/)
+  it('every execution entry point gates on the confirm', () => {
+    const exec = bodyOf(editorScript, 'async function onExecute', 'function isCancelError')
+    expect(exec).toMatch(/if \(!\(await confirmDiscardEdits\(\)\)\) return/)
   })
 })
 

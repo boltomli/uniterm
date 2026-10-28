@@ -90,9 +90,9 @@
       <MenuItem v-if="tab.type === 'terminal'" :shortcut="menuShortcut('lockAI')" @click="toggleAiLock">
         {{ isAILocked ? t('terminal.aiLocked') : t('terminal.lockAI') }}
       </MenuItem>
-      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings'" @click="startEdit">{{ t('tab.rename') }}</MenuItem>
+      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings' && tab.type !== 'netscan'" @click="startEdit">{{ t('tab.rename') }}</MenuItem>
       <MenuItem v-if="hasLocatableConnection" @click="locateHost">{{ t('tab.locate') }}</MenuItem>
-      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings'" @click="toggleLock">
+      <MenuItem v-if="tab.type !== 'start' && tab.type !== 'settings' && tab.type !== 'netscan'" @click="toggleLock">
         {{ tab.locked ? t('tab.unlock') : t('tab.lock') }}
       </MenuItem>
       <MenuItem v-if="canBroadcast" @click="toggleBroadcastTarget">
@@ -311,7 +311,7 @@ const hasActiveTransfers = computed(() => {
 })
 
 const isDisconnected = computed(() => {
-  if (props.tab.type === 'start' || props.tab.type === 'settings') return false
+  if (props.tab.type === 'start' || props.tab.type === 'settings' || props.tab.type === 'netscan') return false
   // k8s main tab has no session; its connect status comes from the k8s store
   // (grey while connecting / on error).
   if (props.tab.type === 'k8s') {
