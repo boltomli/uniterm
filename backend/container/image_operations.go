@@ -72,6 +72,20 @@ func (m *Manager) PrepareImageOperation(connID string) (string, error) {
 	if c.provider.Runtime() != RuntimeDocker {
 		return "", fmt.Errorf("image loading and commit are currently supported only for Docker")
 	}
+	// A prepare whose run/cancel never came (dialog closed on a crashed
+	// frontend, RPC dropped) would otherwise sit in imageOps until
+	// Disconnect. Replacing the connection's pending operations here bounds
+	// the map: only one unstarted operation per connection can survive.
+	var stale []context.CancelFunc
+	for id, op := range m.imageOps {
+		if op.connID == connID && !op.running {
+			stale = append(stale, op.cancel)
+			delete(m.imageOps, id)
+		}
+	}
+	for _, cancel := range stale {
+		cancel()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	id := uuid.NewString()
 	m.imageOps[id] = &imageOperation{connID: connID, provider: c.provider, ctx: ctx, cancel: cancel}

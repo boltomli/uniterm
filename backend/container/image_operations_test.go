@@ -156,6 +156,33 @@ func TestImageOperationCancelBeforeStart(t *testing.T) {
 	}
 }
 
+func TestPrepareReplacesStalePendingOperations(t *testing.T) {
+	r := &fakeRunner{}
+	m := imageTestManager(r)
+	// Simulates a frontend that prepares but never runs or cancels (crashed
+	// dialog, dropped RPC): the orphan must not accumulate in imageOps.
+	stale, err := m.PrepareImageOperation("docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := m.PrepareImageOperation("docker"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(m.imageOps) != 1 {
+		t.Fatalf("pending operations accumulated: %d", len(m.imageOps))
+	}
+	// The stale operation's context must be cancelled, so a run that raced
+	// the replacement still fails instead of executing.
+	if _, err := m.CommitImage(stale, "container", CommitOptions{Image: "image:tag"}); err == nil {
+		t.Fatal("stale operation executed")
+	}
+	if r.lastArgv != nil {
+		t.Fatal("stale operation reached runner")
+	}
+}
+
 func TestImageLoadCancellationAndDisconnect(t *testing.T) {
 	for _, disconnect := range []bool{false, true} {
 		t.Run(map[bool]string{false: "cancel", true: "disconnect"}[disconnect], func(t *testing.T) {
