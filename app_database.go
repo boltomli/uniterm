@@ -235,6 +235,17 @@ func (a *App) DBImportCSV(sessionID, dbName, tableName, path string, mapping []d
 	return database.ImportCSV(p, ds.DB(), dbName, tableName, path, mapping)
 }
 
+// DBExportTableCSV streams the full table (browse filters and sorts applied)
+// to path as CSV and returns the exported row count. Unlike the grid export
+// this is not limited to the current page.
+func (a *App) DBExportTableCSV(sessionID, dbName, tableName, path string, opts database.BrowseOptions) (int, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return database.ExportTableCSV(p, ds.DB(), dbName, tableName, path, opts)
+}
+
 func (a *App) AddColumn(sessionID string, dbName string, tableName string, col database.ColumnDef) error {
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {

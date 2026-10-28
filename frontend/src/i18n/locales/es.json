@@ -1177,6 +1177,8 @@
   "db.applyFilterSort": "Aplicar",
   "db.duplicateSortColumn": "Cada columna solo puede aparecer una vez en la ordenación.",
   "db.importCSV": "Importar CSV",
+  "db.exportTableCSV": "Exportar tabla a CSV",
+  "db.csvExported": "Se exportaron {count} filas.",
   "db.import": "Importar",
   "db.export": "Exportar",
   "db.csvMappingHint": "La primera fila del CSV es el encabezado. Asigne las columnas CSV a las columnas de la tabla. Las celdas vacías se convierten en cadenas vacías; las columnas sin asignar usan los valores predeterminados de la base de datos. Todas las filas se confirman juntas.",

@@ -1173,6 +1173,8 @@
   "db.applyFilterSort": "Áp dụng",
   "db.duplicateSortColumn": "Mỗi cột sắp xếp chỉ được xuất hiện một lần.",
   "db.importCSV": "Nhập CSV",
+  "db.exportTableCSV": "Xuất bảng ra CSV",
+  "db.csvExported": "Đã xuất {count} dòng.",
   "db.import": "Nhập",
   "db.export": "Xuất",
   "db.csvMappingHint": "Dòng đầu tiên của CSV là phần tiêu đề. Ánh xạ các cột CSV vào các cột của bảng. Ô trống sẽ thành chuỗi rỗng; các cột không được ánh xạ dùng giá trị mặc định của cơ sở dữ liệu. Tất cả các dòng được ghi cùng lúc.",

@@ -1177,6 +1177,8 @@
   "db.applyFilterSort": "Anwenden",
   "db.duplicateSortColumn": "Jede Sortierspalte darf nur einmal vorkommen.",
   "db.importCSV": "CSV importieren",
+  "db.exportTableCSV": "Tabelle als CSV exportieren",
+  "db.csvExported": "{count} Zeilen exportiert.",
   "db.import": "Importieren",
   "db.export": "Exportieren",
   "db.csvMappingHint": "Die erste CSV-Zeile ist die Kopfzeile. Ordnen Sie CSV-Spalten den Tabellenspalten zu. Leere Zellen werden zu leeren Zeichenfolgen; nicht zugeordnete Spalten verwenden die Datenbankstandards. Alle Zeilen werden gemeinsam übernommen.",

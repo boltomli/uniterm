@@ -126,6 +126,7 @@
             align="end"
           >
             <MenuItem @click="onExportResults('csv')">CSV</MenuItem>
+            <MenuItem v-if="browseMode && tableName && !isView" @click="onExportTableCSV">{{ t('db.exportTableCSV') }}</MenuItem>
             <MenuItem @click="onExportResults('txt')">TXT</MenuItem>
             <MenuItem @click="onExportResults('json')">JSON</MenuItem>
           </Menu>
@@ -304,7 +305,7 @@ import SyntaxEditor from './SyntaxEditor.vue'
 import DBResultGrid from './DBResultGrid.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
-import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBBrowseTable, DBUpdateRowsAtomic, DBPreviewCSV, DBImportCSV, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBBrowseTable, DBUpdateRowsAtomic, DBPreviewCSV, DBImportCSV, DBExportTableCSV, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
@@ -495,6 +496,7 @@ const csvPreview = shallowRef<{ headers: string[]; rows: string[][] } | null>(nu
 const csvTargetColumns = ref<string[]>([])
 const csvColumnOptions = ref<string[]>([])
 const importingCsv = ref(false)
+const exportingTableCsv = ref(false)
 
 async function openCSVImport() {
   if (!props.tableName || !(await confirmDiscardEdits())) return
@@ -591,6 +593,33 @@ async function onExportResults(format: 'csv' | 'txt' | 'json') {
     msg.success(t('db.exportDone', { name: path.split('/').pop() || defaultName }))
   } catch (e: any) {
     msg.error(e?.message || String(e))
+  }
+}
+
+// Export the whole table (with the currently applied browse filters and
+// sorts) from the backend — unlike onExportResults this is not limited to
+// the rows of the current page.
+async function onExportTableCSV() {
+  exportMenuVisible.value = false
+  if (!props.tableName || exportingTableCsv.value) return
+  const defaultName = `${props.tableName}_${new Date().toISOString().slice(0, 10)}.csv`
+  try {
+    const path = await SaveFileDialogFiltered(t('db.exportTableCSV'), defaultName, 'CSV File', '*.csv')
+    if (!path) return
+    exportingTableCsv.value = true
+    emit('operation-busy', true)
+    const count = await DBExportTableCSV(props.sessionId, props.dbName || '', props.tableName, path, {
+      filters: appliedFilters.value.map(f => ({ ...f })),
+      sorts: appliedSorts.value.map(s => ({ ...s })),
+      limit: 0,
+      offset: 0,
+    })
+    msg.success(t('db.csvExported', { count }))
+  } catch (e: any) {
+    if (!isDialogCancel(e)) msg.error(e?.message || String(e))
+  } finally {
+    exportingTableCsv.value = false
+    emit('operation-busy', false)
   }
 }
 

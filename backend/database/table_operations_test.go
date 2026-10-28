@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,80 @@ func TestBrowseTableFiltersBeforePagination(t *testing.T) {
 	opts.Filters[0].Column = `name" OR 1=1 --`
 	if _, err := BrowseTable(p, db, "main", "items", opts); err == nil {
 		t.Fatal("expected invalid column to be rejected")
+	}
+}
+
+func TestExportTableCSVStreamsFiltersAndEscapes(t *testing.T) {
+	p, db := testTableDB(t)
+	for _, row := range []struct {
+		id   int
+		name string
+		qty  int
+	}{
+		{1, "plain", 5},
+		{2, `has "quotes", commas`, 0},
+		{3, "match me", 7},
+		{4, "match me too", 8},
+		{5, "line\nbreak", 9},
+	} {
+		if _, err := db.Exec(`INSERT INTO items (id, name, qty) VALUES (?, ?, ?)`, row.id, row.name, row.qty); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "export.csv")
+	opts := BrowseOptions{
+		Filters: []TableFilter{{Column: "name", Op: "contains", Value: "match"}},
+		Sorts:   []TableSort{{Column: "id", Desc: true}},
+	}
+	count, err := ExportTableCSV(p, db, "main", "items", path, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("exported %d rows, want 2", count)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "\ufeff") {
+		t.Fatal("missing UTF-8 BOM for spreadsheet encoding detection")
+	}
+	if !strings.Contains(string(raw), "\r\n") {
+		t.Fatal("expected RFC 4180 CRLF row terminators")
+	}
+
+	// The filter column whitelist must hold for export too.
+	opts.Filters[0].Column = `name" OR 1=1 --`
+	if _, err := ExportTableCSV(p, db, "main", "items", path, opts); err == nil {
+		t.Fatal("expected invalid column to be rejected")
+	}
+
+	// Unfiltered export includes every row, values CSV-escaped by encoding/csv.
+	count, err = ExportTableCSV(p, db, "main", "items", path, BrowseOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 5 {
+		t.Fatalf("exported %d rows, want 5", count)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Round-trip through csv.Reader: embedded newlines make raw splitting
+	// unreliable, and this is what spreadsheet tools do anyway.
+	records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(string(raw), "\ufeff"))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 6 {
+		t.Fatalf("got %d records, want 6 (header + 5 rows)", len(records))
+	}
+	// csv.Reader normalises CRLF back to LF inside quoted fields, so the
+	// embedded newline round-trips as \n regardless of UseCRLF.
+	if records[2][1] != `has "quotes", commas` || records[5][1] != "line\nbreak" {
+		t.Fatalf("values not round-tripped: %v", records)
 	}
 }
 

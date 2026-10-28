@@ -1207,6 +1207,8 @@
   "db.applyFilterSort": "Apply",
   "db.duplicateSortColumn": "Each sort column can appear only once.",
   "db.importCSV": "Import CSV",
+  "db.exportTableCSV": "Export table to CSV",
+  "db.csvExported": "Exported {count} rows.",
   "db.import": "Import",
   "db.export": "Export",
   "db.csvMappingHint": "The first CSV row is the header. Map CSV columns to table columns. Empty cells become empty strings; unmapped columns use database defaults. All rows are committed together.",

@@ -1177,6 +1177,8 @@
   "db.applyFilterSort": "Appliquer",
   "db.duplicateSortColumn": "Chaque colonne de tri ne peut apparaître qu'une seule fois.",
   "db.importCSV": "Importer CSV",
+  "db.exportTableCSV": "Exporter la table en CSV",
+  "db.csvExported": "{count} lignes exportées.",
   "db.import": "Importer",
   "db.export": "Exporter",
   "db.csvMappingHint": "La première ligne du CSV est l'en-tête. Associez les colonnes CSV aux colonnes de la table. Les cellules vides deviennent des chaînes vides ; les colonnes non associées utilisent les valeurs par défaut de la base de données. Toutes les lignes sont validées ensemble.",

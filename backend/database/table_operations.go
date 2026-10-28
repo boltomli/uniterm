@@ -100,15 +100,17 @@ func likeLiteral(s string) string {
 	return strings.ReplaceAll(s, "_", "!_")
 }
 
-func buildBrowseSQL(p Provider, tableName string, cols map[string]bool, opts BrowseOptions) (string, []any, error) {
-	if opts.Limit <= 0 || opts.Limit > 1000 || opts.Offset < 0 || len(opts.Filters) > 20 || len(opts.Sorts) > 10 {
-		return "", nil, errors.New("invalid browse options")
+// buildBrowseClauses validates the filter/sort rules and compiles them into
+// WHERE predicates, ORDER BY terms and the matching args. Shared by the paged
+// browse query and the full-table CSV export so both apply the same column
+// whitelist.
+func buildBrowseClauses(p Provider, cols map[string]bool, opts BrowseOptions) (predicates, order []string, args []any, err error) {
+	if len(opts.Filters) > 20 || len(opts.Sorts) > 10 {
+		return nil, nil, nil, errors.New("invalid browse options")
 	}
-	var args []any
-	var predicates []string
 	for _, f := range opts.Filters {
 		if err := requireColumn(cols, f.Column); err != nil {
-			return "", nil, err
+			return nil, nil, nil, err
 		}
 		col := p.Quote(f.Column)
 		switch f.Op {
@@ -129,17 +131,16 @@ func buildBrowseSQL(p Provider, tableName string, cols map[string]bool, opts Bro
 			args = append(args, value)
 			predicates = append(predicates, "LOWER("+textCast(p.DriverName(), col)+") LIKE LOWER("+placeholder(p.DriverName(), len(args))+") ESCAPE '!'")
 		default:
-			return "", nil, fmt.Errorf("unsupported filter operator %q", f.Op)
+			return nil, nil, nil, fmt.Errorf("unsupported filter operator %q", f.Op)
 		}
 	}
-	var order []string
 	seen := map[string]bool{}
 	for _, s := range opts.Sorts {
 		if err := requireColumn(cols, s.Column); err != nil {
-			return "", nil, err
+			return nil, nil, nil, err
 		}
 		if seen[s.Column] {
-			return "", nil, fmt.Errorf("duplicate sort column %q", s.Column)
+			return nil, nil, nil, fmt.Errorf("duplicate sort column %q", s.Column)
 		}
 		seen[s.Column] = true
 		direction := " ASC"
@@ -147,6 +148,17 @@ func buildBrowseSQL(p Provider, tableName string, cols map[string]bool, opts Bro
 			direction = " DESC"
 		}
 		order = append(order, p.Quote(s.Column)+direction)
+	}
+	return predicates, order, args, nil
+}
+
+func buildBrowseSQL(p Provider, tableName string, cols map[string]bool, opts BrowseOptions) (string, []any, error) {
+	if opts.Limit <= 0 || opts.Limit > 1000 || opts.Offset < 0 {
+		return "", nil, errors.New("invalid browse options")
+	}
+	predicates, order, args, err := buildBrowseClauses(p, cols, opts)
+	if err != nil {
+		return "", nil, err
 	}
 	query := "SELECT * FROM " + p.Quote(tableName)
 	if len(predicates) > 0 {
@@ -186,6 +198,98 @@ func BrowseTable(p Provider, db *sql.DB, dbName, tableName string, opts BrowseOp
 		result.Rows = result.Rows[:opts.Limit]
 	}
 	return result, nil
+}
+
+// ExportTableCSV streams the full (filter/sort applied, unpaginated) table
+// content to path as CSV: a UTF-8 BOM so spreadsheets detect the encoding,
+// CRLF row terminators per RFC 4180, and []byte values rendered the same way
+// the grid displays them (Guid/hex for binary columns). Rows are written as
+// they are scanned, so a large table never materialises in memory. Returns
+// the number of exported rows (header excluded).
+func ExportTableCSV(p Provider, db *sql.DB, dbName, tableName, path string, opts BrowseOptions) (int, error) {
+	cols, err := browseTableColumns(p, db, dbName, tableName)
+	if err != nil {
+		return 0, err
+	}
+	predicates, order, args, err := buildBrowseClauses(p, cols, opts)
+	if err != nil {
+		return 0, err
+	}
+	query := "SELECT * FROM " + p.Quote(tableName)
+	if len(predicates) > 0 {
+		query += " WHERE " + strings.Join(predicates, " AND ")
+	}
+	if len(order) > 0 {
+		query += " ORDER BY " + strings.Join(order, ", ")
+	} else if p.DriverName() == "sqlserver" {
+		query += " ORDER BY (SELECT NULL)"
+	}
+
+	// Exports of big tables legitimately run much longer than an interactive
+	// query; still bounded so a hung server cannot pin the goroutine forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if err := p.PrepareExec(conn, dbName); err != nil {
+		return 0, err
+	}
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	file, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	write := csv.NewWriter(file)
+	write.UseCRLF = true // RFC 4180 row terminators, matching the grid's client-side export
+	if _, err := file.WriteString("\ufeff"); err != nil {
+		return 0, err
+	}
+	names, err := rows.Columns()
+	if err != nil {
+		return 0, err
+	}
+	if err := write.Write(names); err != nil {
+		return 0, err
+	}
+
+	guids := guidColumns(rows)
+	count := 0
+	values := make([]any, len(names))
+	valuePtrs := make([]any, len(names))
+	for i := range values {
+		valuePtrs[i] = &values[i]
+	}
+	record := make([]string, len(names))
+	for rows.Next() {
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return 0, err
+		}
+		for i := range values {
+			record[i] = scanToStringCol(values[i], isGuidCol(guids, i))
+		}
+		if err := write.Write(record); err != nil {
+			return 0, err
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	write.Flush()
+	if err := write.Error(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func buildUpdateSQL(p Provider, tableName string, cols map[string]bool, update RowUpdate) (string, []any, error) {

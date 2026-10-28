@@ -1173,6 +1173,8 @@
   "db.applyFilterSort": "Aplicar",
   "db.duplicateSortColumn": "Cada coluna de ordenação pode aparecer apenas uma vez.",
   "db.importCSV": "Importar CSV",
+  "db.exportTableCSV": "Exportar tabela para CSV",
+  "db.csvExported": "{count} linhas exportadas.",
   "db.import": "Importar",
   "db.export": "Exportar",
   "db.csvMappingHint": "A primeira linha do CSV é o cabeçalho. Mapeie as colunas do CSV para as colunas da tabela. Células vazias tornam-se strings vazias; colunas não mapeadas usam os padrões do banco de dados. Todas as linhas são gravadas juntas.",
