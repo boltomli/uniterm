@@ -8,6 +8,15 @@ vi.mock('@wailsio/runtime', () => ({
     On: vi.fn(() => () => {}),
     Off: vi.fn(),
   },
+  // The generated bindings construct their type descriptors at module load.
+  Create: {
+    Any: {},
+    Array: () => ({}),
+    ByteSlice: () => ({}),
+    Events: () => ({}),
+    Map: () => ({}),
+    Nullable: () => ({}),
+  },
 }))
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {

@@ -767,7 +767,9 @@ export const useAIStore = defineStore('ai', () => {
               return resolvedIds.has(block.id as string)
             }
             return true
-          })
+          }).map(block => block.type === 'tool_use' && (typeof block.input !== 'object' || block.input === null || Array.isArray(block.input))
+            ? { ...block, input: {} }
+            : block)
           if (filtered.length === 0 && !m.content && !(m.pendingTools?.length || pendingCommand.value?.messageId === m.id)) continue
           result.push({ ...raw, role: (raw.role as string) || 'assistant', content: filtered })
         } else {

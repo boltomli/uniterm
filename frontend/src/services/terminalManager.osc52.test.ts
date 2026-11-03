@@ -12,6 +12,15 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock('@wailsio/runtime', () => ({
+  // The generated bindings construct their type descriptors at module load.
+  Create: {
+    Any: {},
+    Array: () => ({}),
+    ByteSlice: () => ({}),
+    Events: () => ({}),
+    Map: () => ({}),
+    Nullable: () => ({}),
+  },
   Events: { On: vi.fn(() => () => {}), Off: vi.fn() },
 }))
 vi.mock('element-plus', () => ({

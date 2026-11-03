@@ -7,6 +7,7 @@
 //   correctness — DEFAULT_SETTINGS was shallow-copied ({ ...DEFAULT_SETTINGS }),
 //     so mutating the store mutated the defaults themselves ("reset" stopped
 //     resetting); aiConfigStore shared the default model objects too.
+import { Events } from '@wailsio/runtime'
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -231,5 +232,49 @@ describe('active AI model migration', () => {
     expect(SaveLocalState).not.toHaveBeenCalled()
     await store.reload()
     expect(store.activeModelId).toBe('b')
+  })
+})
+
+describe('AI context preferences', () => {
+  it('defaults legacy configurations to automatic 32K compaction with the current model', async () => {
+    const store = useSettingsStore()
+    await store.init()
+    expect(store.ai).toMatchObject({ autoCompact: true, contextTokenBudget: 32000, summaryModelId: '' })
+  })
+
+  it('persists context settings to ai.json and restores them in a fresh store', async () => {
+    const store = useSettingsStore()
+    await store.init()
+    Object.assign(store.settings.ai, { autoCompact: false, contextTokenBudget: 512000, summaryModelId: 'a' })
+    await store.save()
+    const saved = JSON.parse(JSON.stringify(vi.mocked(SaveAIModels).mock.calls.slice(-1)[0][0]))
+    expect(saved).toMatchObject({ autoCompact: false, contextTokenBudget: 512000, summaryModelId: 'a' })
+    vi.mocked(LoadAIModels).mockResolvedValue(saved)
+    setActivePinia(createPinia())
+    const restarted = useSettingsStore()
+    await restarted.init()
+    expect(restarted.ai).toMatchObject({ autoCompact: false, contextTokenBudget: 512000, summaryModelId: 'a' })
+  })
+
+  it('resets the summary model selection when the selected model is removed', async () => {
+    const store = useSettingsStore()
+    await store.init()
+    store.settings.ai.summaryModelId = 'a'
+    store.removeModel('a')
+    expect(store.settings.ai.summaryModelId).toBe('')
+  })
+
+  it('applies context preferences received through cloud sync', async () => {
+    const models = ['a', 'b'].map(id => ({ id, name: id, model: id, baseURL: 'https://example.com', apiKey: '', protocol: 'responses' }))
+    // This describe shares the file's mocks with the tests above: start from a
+    // fresh pinia and drop the earlier stores' Events.On registrations, so the
+    // lookup below finds THIS store's handler instead of a disposed one.
+    setActivePinia(createPinia())
+    vi.mocked(Events.On).mockClear()
+    const store = useSettingsStore()
+    await store.init()
+    const listener = vi.mocked(Events.On).mock.calls.find(call => call[0] === 'store:ai:changed')![1]
+    listener({ data: { models, maxTurns: 20, autoCompact: false, contextTokenBudget: 1000000, summaryModelId: 'b' } } as any)
+    expect(store.ai).toMatchObject({ autoCompact: false, contextTokenBudget: 1000000, summaryModelId: 'b' })
   })
 })

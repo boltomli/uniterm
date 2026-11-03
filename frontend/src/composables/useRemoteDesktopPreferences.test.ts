@@ -35,8 +35,8 @@ describe('remote desktop status bar preferences', () => {
     await store.add(config)
     await store.add(connection(type, 'other'))
     const first = open(config)
-    expect(first.scaleViewport.value).toBe(false)
-    first.scaleViewport.value = true
+    expect(first.zoom.value).toBe(1)
+    first.zoom.value = 'adaptive'
     if (type === 'vnc') {
       first.viewOnly.value = true
       first.showDotCursor.value = true
@@ -45,17 +45,19 @@ describe('remote desktop status bar preferences', () => {
     first.scope.stop()
     await store.load()
     const restored = open(store.connections[0]!)
+    expect(restored.zoom.value).toBe('adaptive')
     expect(restored.scaleViewport.value).toBe(true)
     expect(restored.viewOnly.value).toBe(type === 'vnc')
     expect(restored.showDotCursor.value).toBe(type === 'vnc')
     expect(store.connections[1]!.desktopPreferences).toBeUndefined()
 
-    restored.scaleViewport.value = false
+    restored.zoom.value = 1
     restored.viewOnly.value = false
     restored.showDotCursor.value = false
     restored.scope.stop()
     await store.load()
     const disabled = open(store.connections[0]!)
+    expect(disabled.zoom.value).toBe(1)
     expect(disabled.scaleViewport.value).toBe(false)
     expect(disabled.viewOnly.value).toBe(false)
     expect(disabled.showDotCursor.value).toBe(false)
@@ -65,10 +67,10 @@ describe('remote desktop status bar preferences', () => {
   it('keeps connect-only preferences on the panel without creating a saved connection', () => {
     const config = connection('vnc')
     const first = open(config)
-    first.scaleViewport.value = true
+    first.zoom.value = 'adaptive'
     first.scope.stop()
     const remounted = open(config)
-    expect(remounted.scaleViewport.value).toBe(true)
+    expect(remounted.zoom.value).toBe('adaptive')
     expect(useConnectionStore().connections).toHaveLength(0)
     expect(disk.writes).toBe(0)
     remounted.scope.stop()
@@ -76,7 +78,7 @@ describe('remote desktop status bar preferences', () => {
 
   it('keeps legacy defaults and does not write on initialization', () => {
     const defaults = open(connection('vnc'))
-    expect(defaults.scaleViewport.value).toBe(false)
+    expect(defaults.zoom.value).toBe(1)
     expect(defaults.viewOnly.value).toBe(false)
     expect(defaults.showDotCursor.value).toBe(false)
     expect(disk.writes).toBe(0)

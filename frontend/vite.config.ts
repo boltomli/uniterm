@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
@@ -27,6 +27,13 @@ export default defineConfig({
   },
   define: {
     'import.meta.env.VITE_VERSION': JSON.stringify(version)
+  },
+  test: {
+    // Element Plus is on-demand (ElementPlusResolver injects its theme-chalk
+    // CSS imports). Left externalized, node's ESM loader trips over the .css
+    // files during vitest runs — process the package through vite instead so
+    // its styles resolve to empty modules.
+    server: { deps: { inline: ['element-plus'] } },
   },
   // esnext everywhere so the dev server's esbuild transform also accepts
   // top-level await (used by @novnc/novnc). `build.target` alone only affects

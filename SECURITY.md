@@ -54,12 +54,18 @@ touched files before changing them):
   model API keys never leave the Go side (renderer sees `***`).
 - **Updates / 更新**: Ed25519 signature + SHA256 + host allowlist chain
   (`backend/update/*`) — do not weaken it.
-- **SSH host keys**: TOFU fail-closed (`backend/session/knownhosts.go`).
+- **SSH host keys**: TOFU fail-closed (`backend/session/hostkey.go`): a
+  known host presenting any other key — including a different key type — is
+  rejected and surfaced through the change dialog, a corrupt pin refuses
+  connections instead of re-trusting, jump-host sessions verify under
+  `TunnelTargetHost/Port` (never the rewritten `127.0.0.1:<ephemeral>`), and
+  legacy `known_hosts.json` pins are migrated on startup.
 - **AI execution / AI 执行**: default policy `confirm_write`; the local risk
   classifier is mirrored in Go and TypeScript with a shared fixture
   (`backend/mcp/testdata/risk_cases.json`) so the two copies cannot drift;
   external MCP tools and agent skill saves require confirmation.
-- **MCP server**: loopback-only listener, per-client bearer tokens with
+- **MCP server**: loopback-only listener by default (remote access is an
+  explicit opt-in), per-client bearer tokens with
   optional scopes (`exec` / `files` / `readonly`), Origin/Host guards, body
   limits, approval rate limiting, size-rotated audit log.
 

@@ -61,32 +61,78 @@
       <span class="rdp-status-sep">|</span>
       <span>{{ config?.host }}:{{ config?.port || 3389 }}</span>
       <span class="rdp-status-sep">|</span>
-      <span>{{ t('remoteDesktop.resolution') }}: {{ statusResolution }}</span>
+      <span class="rdp-status-label">{{ t('remoteDesktop.resolution') }}</span>
+      <el-select
+        v-model="activeResolution"
+        class="rdp-quality-select"
+        :disabled="status === 'connecting'"
+        :aria-label="t('remoteDesktop.resolution')"
+        @change="onResolutionChange"
+      >
+        <el-option v-for="r in resolutionOptions" :key="r.value" :value="r.value" :label="r.label" />
+      </el-select>
       <span class="rdp-status-sep">|</span>
-      <span class="rdp-status-label">{{ t('remoteDesktop.scale') }}<template v-if="displayScale !== null">: {{ displayScale }}%</template></span>
-      <el-switch
-        v-model="scaleViewport"
-        inline-prompt
-        :active-text="t('vnc.scaleOn')"
-        :inactive-text="t('vnc.scaleOff')"
-        style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
+      <span class="rdp-status-label">{{ t('remoteDesktop.scale') }}</span>
+      <RemoteDesktopZoomSelect
+        v-model="zoom"
+        :disabled="status === 'connecting'"
+        :allow-fit="activeResolution !== 'adaptive'"
       />
+      <span class="rdp-status-sep">|</span>
+      <span class="rdp-status-label">{{ t('conn.rdpQuality') }}</span>
+      <el-select
+        v-model="activeQuality"
+        class="rdp-quality-select"
+        :disabled="status === 'connecting'"
+        :aria-label="t('conn.rdpQuality')"
+        @change="onQualityChange"
+      >
+        <el-option v-for="q in RDP_QUALITY_OPTIONS" :key="q.value" :value="q.value" :label="t(q.label)" />
+      </el-select>
       <span class="rdp-status-spacer" />
       <button class="rdp-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
     </div>
 
     <RemoteDesktopToolbar
       v-if="isFullscreen"
-      v-model:scale-viewport="scaleViewport"
+      v-model:zoom="zoom"
+      :allow-fit="activeResolution !== 'adaptive'"
+      selects
       :host="config?.host || ''"
       :port="config?.port || 3389"
-      :resolution="statusResolution"
       :disabled="status !== 'connected'"
       @restore="toggleFullscreen"
       @focus-desktop="focusDesktop"
       @minimize="onFocusOut"
       @error="onToolbarError"
-    />
+    >
+      <template #displays>
+        <el-select
+          v-model="activeResolution"
+          class="remote-desktop-toolbar-select"
+          :teleported="false"
+          :fit-input-width="false"
+          :disabled="status === 'connecting'"
+          :aria-label="t('remoteDesktop.resolution')"
+          @change="onResolutionChange"
+        >
+          <el-option v-for="r in resolutionOptions" :key="r.value" :value="r.value" :label="r.label" />
+        </el-select>
+        <span class="rdp-status-sep">|</span>
+        <el-select
+          v-model="activeQuality"
+          class="remote-desktop-toolbar-select"
+          :teleported="false"
+          :fit-input-width="false"
+          :disabled="status === 'connecting'"
+          :aria-label="t('conn.rdpQuality')"
+          @change="onQualityChange"
+        >
+          <el-option v-for="q in RDP_QUALITY_OPTIONS" :key="q.value" :value="q.value" :label="t(q.label)" />
+        </el-select>
+        <span class="rdp-status-sep">|</span>
+      </template>
+    </RemoteDesktopToolbar>
   </div>
 </template>
 
@@ -94,7 +140,6 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
-import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 import { CreateSession, CloseSession, FrontendLog, ClipboardGetFiles, ClipboardReadFileChunkByID,
@@ -104,15 +149,24 @@ import { backendErrorText, backendErrorTextOf } from '../utils/backendError'
 import { Events } from '@wailsio/runtime'
 import { usePanelStore } from '../stores/panelStore'
 import { writeClipboard, readClipboardText, writeClipboardViaSystem } from '../composables/useClipboardWrite'
+import { useConnectionStore } from '../stores/connectionStore'
 import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { RdpFileTransfer } from '../utils/rdpFileTransfer'
-import { adaptiveRdpSize, rdpContentRect, rdpPointerPosition } from '../utils/rdpGeometry'
+import { adaptiveRdpSize, rdpPointerPosition } from '../utils/rdpGeometry'
 import type { RdpDesktopSize } from '../utils/rdpGeometry'
+import { DEFAULT_RDP_QUALITY, normalizeRdpQuality, rdpQualityProfile } from '../utils/rdpQuality'
+import type { RdpQuality } from '../utils/rdpQuality'
+import { RDP_RESOLUTION_PRESETS, resolutionSentinels, seedResolutionChoice } from '../utils/rdpResolutions'
+import type { RdpResolutionChoice } from '../utils/rdpResolutions'
+import { adaptiveSizeRatio, zoomedCssSize } from '../utils/rdpZoom'
+import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
+import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { queueRemoteKeyboardChange, isRdpPasteKey, REMOTE_KEY_SCANCODES as KEY_SCANCODES } from '../utils/remoteKeyboard'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
 
 const { t } = useI18n()
 const panelStore = usePanelStore()
+const connectionStore = useConnectionStore()
 
 const props = defineProps<{
   panelId: string
@@ -121,10 +175,26 @@ const props = defineProps<{
 }>()
 
 const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
+// Graphics/network tier. Seed from the saved connection; the status bar
+// selector overrides it for the next (re)connect and persists the choice.
+const activeQuality = ref<RdpQuality>(normalizeRdpQuality(props.config?.rdpQuality))
+// The tier the running session was actually started with — the select may
+// hold a newer value until the reconnect it triggers completes.
+const sessionQuality = ref<RdpQuality>(activeQuality.value)
+// Resolution mode (adaptive / fullscreen / fixed WxH). Seeded from the saved
+// connection; the status bar selector overrides it and persists the choice.
+// Component state, not props.config — the panel holds a snapshot taken at
+// creation and never sees later edits.
+const activeResolution = ref<RdpResolutionChoice>(seedResolutionChoice(props.config))
+const sessionResolution = ref<RdpResolutionChoice>(activeResolution.value)
 const currentSessionId = ref<string | null>(props.sessionId)
 const errorMessage = ref<string>('')
 const container = ref<HTMLDivElement | null>(null)
-const { scaleViewport } = useRemoteDesktopPreferences(() => props.config)
+// Display zoom from the shared desktop preferences: a number scales the
+// canvas to that factor (default 100%), 'adaptive' CSS-fits the pane — and
+// with adaptive resolution a numeric factor drives the negotiated desktop
+// size in place of devicePixelRatio.
+const { zoom } = useRemoteDesktopPreferences(() => props.config)
 const isFullscreen = ref(false)
 const keyboardFocused = ref(false)
 let keyboardCaptureId = ''
@@ -135,36 +205,66 @@ const displayPixelRatio = ref(window.devicePixelRatio || 1)
 const framebufferSize = ref<RdpDesktopSize | null>(null)
 const viewportSize = ref<RdpDesktopSize>({ width: 0, height: 0 })
 const scaleCanvas = computed(() => {
-  if (!scaleViewport.value) return false
+  if (zoom.value === 'stretch') return true
+  if (zoom.value !== 'adaptive') return false
   if (!isAdaptive() || !framebufferSize.value) return true
-  const target = adaptiveRdpSize(viewportSize.value.width, viewportSize.value.height, displayPixelRatio.value)
+  const target = adaptiveRdpSize(viewportSize.value.width, viewportSize.value.height, adaptiveSizeRatio(zoom.value, displayPixelRatio.value))
   return framebufferSize.value.width !== target.width || framebufferSize.value.height !== target.height
 })
-const canvasStyle = computed(() => {
-  if (scaleCanvas.value || !framebufferSize.value) return undefined
+const canvasStyle = computed<import('vue').CSSProperties | undefined>(() => {
+  const fb = framebufferSize.value
+  if (!fb) return undefined
+  if (zoom.value === 'stretch') {
+    // Ignore the aspect ratio: fill the pane edge to edge.
+    return { width: '100%', height: '100%', objectFit: 'fill' }
+  }
+  if (typeof zoom.value !== 'number') return undefined
+  // Physical zoom: 100% renders one framebuffer pixel per device pixel.
   return {
-    width: `${framebufferSize.value.width / displayPixelRatio.value}px`,
-    height: `${framebufferSize.value.height / displayPixelRatio.value}px`,
+    width: `${zoomedCssSize(fb.width, zoom.value, displayPixelRatio.value)}px`,
+    height: `${zoomedCssSize(fb.height, zoom.value, displayPixelRatio.value)}px`,
   }
-})
-const displayScale = computed(() => {
-  if (!framebufferSize.value) return null
-  if (!scaleCanvas.value) return 100
-  const content = rdpContentRect({ left: 0, top: 0, ...viewportSize.value }, framebufferSize.value, isAdaptive())
-  return content ? Math.round(content.width * displayPixelRatio.value / framebufferSize.value.width * 100) : null
-})
-
-const statusResolution = computed(() => {
-  if (framebufferSize.value) return `${framebufferSize.value.width}×${framebufferSize.value.height}`
-  if (isAdaptive()) return t('rdp.adaptive')
-  if (props.config?.rdpFixedWidth === -1 || props.config?.rdpFixedHeight === -1) return t('remoteDesktop.fullscreen')
-  if (props.config?.rdpFixedWidth && props.config?.rdpFixedHeight) {
-    return `${props.config.rdpFixedWidth}×${props.config.rdpFixedHeight}`
-  }
-  return '1280×720'
 })
 
 const CONNECT_TIMEOUT = 30_000
+
+const RDP_QUALITY_OPTIONS: { value: RdpQuality; label: string }[] = [
+  { value: 'high', label: 'conn.rdpQualityHigh' },
+  { value: 'balanced', label: 'conn.rdpQualityBalanced' },
+  { value: 'low', label: 'conn.rdpQualityLow' },
+]
+
+const resolutionOptions = computed(() => [
+  { value: 'adaptive' as const, label: t('remoteDesktop.resAdaptive') },
+  { value: 'fullscreen' as const, label: t('remoteDesktop.fullscreen') },
+  ...RDP_RESOLUTION_PRESETS.map(r => ({ value: `${r.w}x${r.h}` as RdpResolutionChoice, label: r.label })),
+])
+
+// Switching the tier needs a new session (connection_type and performance
+// flags are negotiated at connect time). Persist the choice on the
+// connection like the other status bar preferences. sessionQuality is the
+// comparison baseline: v-model has already written the select's value into
+// activeQuality by the time @change fires.
+function onQualityChange(quality: RdpQuality) {
+  if (quality === sessionQuality.value) return
+  if (props.config?.id) void connectionStore.update(props.config.id, { rdpQuality: quality })
+  if (status.value !== 'connecting') void reconnect()
+}
+
+// Same contract as the quality tier: new framebuffer geometry is negotiated
+// at connect, so the switch persists and reconnects. Custom sizes stay in
+// the connection form; the bar offers adaptive/fullscreen + presets.
+function onResolutionChange(choice: RdpResolutionChoice) {
+  if (choice === sessionResolution.value) return
+  if (props.config?.id) {
+    void connectionStore.update(props.config.id, resolutionSentinels(choice))
+  }
+  if (status.value !== 'connecting') void reconnect()
+}
+
+// Zoom applies live (CSS + Display Control resize for adaptive), no
+// reconnect. The shared preferences hook persists the choice.
+
 
 // Frontend log channel → app log file (~/.uniterm/uniterm.log), alongside the
 // Go proxy's [IronRDPProxy] lines.
@@ -226,26 +326,28 @@ function clearConnectTimer() {
   }
 }
 
-// Desktop size from the config sentinels (-1 fullscreen / -2 adaptive /
-// fixed pixels), clamped to the u16 the protocol carries.
+// Desktop size from the active resolution choice (fullscreen follows the
+// primary monitor, adaptive follows the viewport, fixed is explicit),
+// clamped to the u16 the protocol carries.
 function resolveDesktopSize(): { width: number; height: number } {
-  const cfg = props.config
-  const el = viewportEl.value
+  const choice = activeResolution.value
   let width = 1280
   let height = 720
-  if (cfg?.rdpFixedWidth === -1 || cfg?.rdpFixedHeight === -1) {
+  if (choice === 'fullscreen') {
     width = window.screen?.width || 1280
     height = window.screen?.height || 720
-  } else if (isAdaptive()) {
+  } else if (choice === 'adaptive') {
     const size = adaptiveDesktopSize()
     if (size) return size
-  } else if (cfg?.rdpFixedWidth && cfg?.rdpFixedHeight) {
-    width = cfg.rdpFixedWidth
-    height = cfg.rdpFixedHeight
-  } else if (el?.clientWidth && el?.clientHeight) {
-    width = el.clientWidth
-    height = el.clientHeight
+  } else {
+    const { rdpFixedWidth: w, rdpFixedHeight: h } = resolutionSentinels(choice)
+    width = w
+    height = h
   }
+  // Guard against a NaN leaking into the GCC desktop size: the server
+  // answers the whole handshake with a disconnect.
+  if (!Number.isFinite(width)) width = 1280
+  if (!Number.isFinite(height)) height = 720
   return {
     width: Math.max(640, Math.min(0xffff, Math.round(width))),
     height: Math.max(480, Math.min(0xffff, Math.round(height))),
@@ -310,6 +412,7 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     const { username, domain } = splitDomainUser(props.config)
     const size = desktopSizeOverride ?? resolveDesktopSize()
     lastResizeRequest = desktopSizeOverride ?? null
+    rdpLog(`client start: tier=${activeQuality.value} res=${activeResolution.value} zoom=${zoom.value} size=${size.width}x${size.height} credssp=${activeCredSSP} displayControl=${isAdaptive()} gen=${generation}`)
 
     // proxyUrl: ws://127.0.0.1:<port>/<token> — the token path doubles as
     // the gateway auth token the RDCleanPath handshake must echo.
@@ -329,6 +432,17 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     // Auto-logon with the saved credentials (mstsc saved-creds equivalent) —
     // requires the autologon extension patch in the WASM build.
     builder.extension(new mod.Extension('autologon', !!password))
+    // Low-bandwidth tiers negotiate a smaller connection_type and strip
+    // server-side graphics features (wallpaper, theming, animations). The
+    // default tier equals the engine's built-in values, so it is not sent —
+    // connections keep their current behavior on older WASM builds too.
+    if (activeQuality.value !== DEFAULT_RDP_QUALITY) {
+      const profile = rdpQualityProfile(activeQuality.value)
+      builder.extension(new mod.Extension('connection_type', profile.connectionType))
+      builder.extension(new mod.Extension('performance_flags', profile.performanceFlags))
+    }
+    sessionQuality.value = activeQuality.value
+    sessionResolution.value = activeResolution.value
     // Servers with Display Control resize in place; older servers use the
     // reconnect fallback when the canvas does not reach the requested size.
     if (isAdaptive()) builder.extension(new mod.Extension('display_control', true))
@@ -538,7 +652,7 @@ function retryWithoutNLA(reason: string): boolean {
   activeCredSSP = false
   status.value = 'connecting'
   errorMessage.value = ''
-  rdpLog('NLA handshake failed; retrying with TLS login')
+  rdpLog(`NLA handshake failed (${reason}); retrying with TLS login`)
   if (reconnecting) pendingNlaFallback = true
   else void reconnect()
   return true
@@ -905,14 +1019,13 @@ let lastResizeRequest: RdpDesktopSize | null = null
 // when the server does not handle Display Control resize requests.
 let displayControlUsable: boolean | null = null
 function isAdaptive(): boolean {
-  const cfg = props.config
-  return !!cfg && (cfg.rdpFixedWidth === -2 || cfg.rdpFixedHeight === -2 || (!cfg.rdpFixedWidth && !cfg.rdpFixedHeight))
+  return activeResolution.value === 'adaptive'
 }
 
 function adaptiveDesktopSize(): RdpDesktopSize | null {
   const bounds = viewportEl.value?.getBoundingClientRect()
   return bounds && bounds.width > 0 && bounds.height > 0
-    ? adaptiveRdpSize(bounds.width, bounds.height, displayPixelRatio.value)
+    ? adaptiveRdpSize(bounds.width, bounds.height, adaptiveSizeRatio(zoom.value, displayPixelRatio.value))
     : null
 }
 
@@ -1062,6 +1175,7 @@ onMounted(() => {
         }
         break
       case 'error':
+        rdpLog(`session error: ${data.errorMessage || '(empty)'}`)
         if (retryWithoutNLA(backendErrorTextOf(data.errorMessage || ''))) break
         clearConnectTimer()
         status.value = 'error'
@@ -1144,10 +1258,31 @@ watch(() => props.sessionId, (newId) => {
 })
 
 watch(status, value => value === 'connected' ? onFocusIn() : onFocusOut(), { flush: 'post' })
-watch(scaleViewport, () => nextTick(() => {
+watch(zoom, () => nextTick(() => {
   viewportEl.value?.scrollTo(0, 0)
   onContainerResize()
 }))
+// Pick up quality/resolution edits from the connection form; applies at the
+// next (re)connect without yanking a live session. Read from the connection
+// store, not props.config — the panel holds a snapshot taken at creation and
+// never sees later edits.
+const savedConnection = computed(() => {
+  const id = props.config?.id
+  return id ? connectionStore.connections.find(c => c.id === id) : undefined
+})
+watch(() => savedConnection.value?.rdpQuality, (q) => {
+  const next = normalizeRdpQuality(q)
+  if (next !== activeQuality.value) activeQuality.value = next
+}, { immediate: true })
+watch(() => [savedConnection.value?.rdpFixedWidth, savedConnection.value?.rdpFixedHeight], () => {
+  const next = seedResolutionChoice(savedConnection.value)
+  if (next !== activeResolution.value) activeResolution.value = next
+}, { immediate: true })
+// Fit/stretch zoom is only offered for fixed/fullscreen resolutions —
+// adaptive resolution already fills the pane, so those entries coerce to 100%.
+watch(activeResolution, (mode) => {
+  if (mode === 'adaptive' && (zoom.value === 'adaptive' || zoom.value === 'stretch')) zoom.value = 1
+})
 </script>
 
 <style scoped>
@@ -1234,6 +1369,16 @@ watch(scaleViewport, () => nextTick(() => {
 }
 .rdp-status-sep { color: var(--text-disabled); }
 .rdp-status-label { font-size: 0.6875rem; }
+.rdp-quality-select {
+  width: 8.5rem;
+  --el-select-width: 8.5rem;
+}
+.rdp-statusbar .rdp-quality-select :deep(.el-select__wrapper) {
+  min-height: 1.125rem;
+  height: 1.125rem;
+  padding: 0 0.25rem;
+  font-size: 0.6875rem;
+}
 .rdp-status-spacer { flex: 1; }
 .rdp-fullscreen-btn {
   border: 1px solid var(--border-default);

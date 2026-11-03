@@ -24,6 +24,12 @@
         </div>
       </div>
 
+      <div v-if="allowRemote">
+        <label class="mcp-setup-label" for="mcp-remote-host">{{ t('mcp.remoteHost') }}</label>
+        <el-input id="mcp-remote-host" v-model="remoteHost" placeholder="192.168.1.100" />
+        <p class="mcp-setup-hint">{{ t('mcp.remoteHostHint') }}</p>
+      </div>
+
       <el-tabs v-model="activeClient">
         <el-tab-pane v-for="c in clients" :key="c.id" :name="c.id" :label="c.label">
           <p v-if="c.hint" class="mcp-setup-hint">{{ c.hint }}</p>
@@ -57,6 +63,7 @@ const props = defineProps<{
   visible: boolean
   token: string
   port: number
+  allowRemote?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -65,6 +72,7 @@ const emit = defineEmits<{
 
 const activeClient = ref('claude')
 const copied = ref('')
+const remoteHost = ref('')
 
 watch(() => props.visible, v => {
   if (v) {
@@ -73,7 +81,11 @@ watch(() => props.visible, v => {
   }
 })
 
-const url = computed(() => `http://127.0.0.1:${props.port}/mcp`)
+const url = computed(() => {
+  const host = props.allowRemote ? remoteHost.value.trim() || 'YOUR_HOST_IP' : '127.0.0.1'
+  const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `http://${authority}:${props.port}/mcp`
+})
 
 const clients = computed(() => [
   {

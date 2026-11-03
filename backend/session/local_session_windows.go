@@ -250,9 +250,15 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 				log.Writef("wsl: cwd hook skipped (unsupported shell %q)", sh)
 			}
 		}
-		wslArgs := buildWSLStartArgs(distro, config.Cwd, nil)
-		commandLine = "wsl.exe " + strings.Join(wslArgs, " ")
-		cmd = exec.Command("wsl.exe", wslArgs...)
+		// The command line keeps ShellArgs verbatim: splitShellArgs strips
+		// the quotes, and re-joining the pieces would break arguments with
+		// spaces (e.g. sh -c "echo hi") under CreateProcess parsing. The
+		// split form is only for exec.Command, which takes separate argv.
+		commandLine = "wsl.exe " + strings.Join(buildWSLStartArgs(distro, config.Cwd, nil), " ")
+		if config.ShellArgs != "" {
+			commandLine += " " + config.ShellArgs
+		}
+		cmd = exec.Command("wsl.exe", buildWSLStartArgs(distro, config.Cwd, splitShellArgs(config.ShellArgs))...)
 		cmd.Env = os.Environ()
 	} else if strings.HasPrefix(strings.ToLower(shell), "wsl://") {
 		// The wsl:// prefix is there but parseWSLPath rejected the distro
@@ -270,14 +276,15 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		cmd = exec.Command("cmd.exe")
 		cmd.Env = append(os.Environ(), clinkEnv...)
 	} else {
-		commandLine = buildCommandLine(shell)
+		commandLine = buildCommandLine(shell, config.ShellArgs)
+		extraArgs := splitShellArgs(config.ShellArgs)
 		lowerShell := strings.ToLower(shell)
 		if strings.Contains(lowerShell, "bash") {
 			if strings.Contains(lowerShell, "system32") || strings.Contains(lowerShell, "wsl") {
-				cmd = exec.Command(shell)
+				cmd = exec.Command(shell, extraArgs...)
 				cmd.Env = os.Environ()
 			} else {
-				cmd = exec.Command(shell, "--login", "-i")
+				cmd = exec.Command(shell, append([]string{"--login", "-i"}, extraArgs...)...)
 				// MSYS bash reads TERM from the environment; honor the
 				// connection's explicit terminal type when one is set.
 				term := "TERM=" + DefaultTermType
@@ -288,7 +295,14 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 				isMSYSBash = true
 			}
 		} else {
-			cmd = exec.Command(shell)
+			// Mirror the ConPTY command line: cmd.exe gets /k there too, so
+			// the pipe fallback must not silently drop it.
+			var cmdArgs []string
+			if strings.Contains(lowerShell, "cmd.exe") {
+				cmdArgs = append(cmdArgs, "/k")
+			}
+			cmdArgs = append(cmdArgs, extraArgs...)
+			cmd = exec.Command(shell, cmdArgs...)
 			cmd.Env = os.Environ()
 		}
 	}
@@ -542,21 +556,31 @@ func buildWSLStartArgs(distro string, cwd string, startArgs []string) []string {
 	return append(args, startArgs...)
 }
 
-func buildCommandLine(shell string) string {
+// buildCommandLine builds the CreateProcess command line for a local shell.
+// extraArgs (ConnectionConfig.ShellArgs) is appended verbatim after the
+// shell's default flags; for cmd.exe it is consumed by /k as the command to
+// run, which is how users launch another terminal program with parameters.
+func buildCommandLine(shell, extraArgs string) string {
 	lower := strings.ToLower(shell)
 	quoted := quoteWindowsArg(shell)
+	var commandLine string
 
 	if strings.Contains(lower, "bash") {
 		// WSL bash (inside System32) does not support --login -i passed this way.
 		if strings.Contains(lower, "system32") || strings.Contains(lower, "wsl") {
-			return quoted
+			commandLine = quoted
+		} else {
+			commandLine = quoted + " --login -i"
 		}
-		return quoted + " --login -i"
+	} else if strings.Contains(lower, "cmd.exe") {
+		commandLine = quoted + " /k"
+	} else {
+		commandLine = quoted
 	}
-	if strings.Contains(lower, "cmd.exe") {
-		return quoted + " /k"
+	if extraArgs != "" {
+		commandLine += " " + extraArgs
 	}
-	return quoted
+	return commandLine
 }
 
 // quoteWindowsArg wraps s as one Windows command-line token using the
@@ -836,11 +860,13 @@ func (s *LocalSession) runPostLoginScript(script string) {
 		}
 	}()
 
+	// Route through s.Write so all three transports are covered — including
+	// the elevated relay (s.admin), whose sessions previously never received
+	// the script because the send closure only knew about cpty/stdin — and
+	// so non-UTF-8 encodings are applied like ordinary typed input.
 	send := func(data []byte) {
-		if s.cpty != nil {
-			s.cpty.Write(data)
-		} else if s.stdin != nil {
-			s.stdin.Write(data)
+		if err := s.Write(data); err != nil {
+			log.Writef("local: post-login write failed: %v", err)
 		}
 	}
 	s.baseSession.RunPostLoginScript(ctx, script, send, s.IsConnected)

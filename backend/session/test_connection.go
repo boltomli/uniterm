@@ -32,7 +32,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/ys-ll/uniterm/backend/database"
-	"github.com/ys-ll/uniterm/backend/log"
 )
 
 // ProbeConnection dispatches a connectivity probe by config.Type.
@@ -88,16 +87,16 @@ func probeSSH(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
 			if err != nil {
 				return nil, nil, err
 			}
-			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: cb}, cleanup, nil
+			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), "")}, cleanup, nil
 		}
 	}
 	// Honor a materialized proxy (set by App.materializeProxy) on the first hop,
@@ -116,9 +115,6 @@ func probeSSH(config ConnectionConfig) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ssh: %w", err)
 	}
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
-	}
 	defer client.Close()
 	return fmt.Sprintf("ssh: connected as %s@%s:%d", config.User, config.Host, config.Port), nil
 }
@@ -131,16 +127,16 @@ func probeSFTP(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
 			if err != nil {
 				return nil, nil, err
 			}
-			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: cb}, cleanup, nil
+			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), "")}, cleanup, nil
 		}
 	}
 	var keyboardConfig sshClientConfigFactory
@@ -156,9 +152,6 @@ func probeSFTP(config ConnectionConfig) (string, error) {
 	})
 	if err != nil {
 		return "", fmt.Errorf("sftp: %w", err)
-	}
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
 	}
 	defer client.Close()
 	sc, err := sftp.NewClient(client)
@@ -176,16 +169,16 @@ func probeSCP(config ConnectionConfig) (string, error) {
 		return nil, fmt.Errorf("interactive auth not allowed during connection test")
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	cb, trust := NewHostKeyVerifier(hostKeyPinAddr(config, addr))
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
 			if err != nil {
 				return nil, nil, err
 			}
-			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: cb}, cleanup, nil
+			return &ssh.ClientConfig{User: config.User, Auth: authMethods, Timeout: 15 * time.Second, HostKeyCallback: HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), "")}, cleanup, nil
 		}
 	}
 	var keyboardConfig sshClientConfigFactory
@@ -201,9 +194,6 @@ func probeSCP(config ConnectionConfig) (string, error) {
 	})
 	if err != nil {
 		return "", fmt.Errorf("scp: %w", err)
-	}
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", hostKeyPinAddr(config, addr), trust.Fingerprint)
 	}
 	defer client.Close()
 	sess, err := client.NewSession()

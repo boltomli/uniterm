@@ -17,6 +17,7 @@ export interface MCPStatus {
 // never in synced settings.
 export interface MCPSettings {
   enabled: boolean
+  allowRemote?: boolean
   port?: number
   policy?: string
   execMode?: string
@@ -24,6 +25,7 @@ export interface MCPSettings {
 
 export const DEFAULT_MCP_SETTINGS: MCPSettings = {
   enabled: false,
+  allowRemote: false,
   policy: 'confirm_write',
   execMode: 'background',
 }

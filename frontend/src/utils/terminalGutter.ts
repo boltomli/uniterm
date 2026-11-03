@@ -11,6 +11,22 @@
  * renumber anything.
  */
 
+/** Reserve ordinary build-log line numbers before the first render. */
+export const MIN_LINE_NUMBER_DIGITS = 5
+
+/** Column size in canonical font cells, not the fitted terminal cell width.
+ * Retain the returned digit count on the shared terminal: scrolling, clears,
+ * alternate buffers and gutter remounts must not shrink its reservation.
+ * Pixel width may still change deliberately when the user changes the font. */
+export function lineNumberColumnMetrics(
+  cellWidth: number,
+  maxLineNumber: number,
+  reservedDigits = MIN_LINE_NUMBER_DIGITS,
+): { digits: number; width: number } {
+  const digits = Math.max(MIN_LINE_NUMBER_DIGITS, reservedDigits, String(Math.max(maxLineNumber, 1)).length)
+  return { digits, width: Math.max(Math.ceil(cellWidth * digits) + 8, 24) }
+}
+
 /** Default timestamp format, e.g. "12:34:56". */
 export const DEFAULT_TIMESTAMP_FORMAT = 'HH:mm:ss'
 

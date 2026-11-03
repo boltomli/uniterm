@@ -72,6 +72,22 @@ describe('writeClipboard', () => {
     expect(writeText).not.toHaveBeenCalled()
   })
 
+  it('accepts the Wails v3 void success result on macOS without a second browser write', async () => {
+    stubNavigatorMember('userAgent', MAC_UA)
+    mockClipboardSetText.mockResolvedValue(undefined)
+    expect(await writeClipboard('# 分析结果\n\n```sh\necho hello\n```')).toBe(true)
+    expect(mockClipboardSetText).toHaveBeenCalledTimes(1)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('accepts the Wails v3 void result after a Windows browser failure', async () => {
+    writeText.mockRejectedValue(new Error('document not focused'))
+    mockClipboardSetText.mockResolvedValue(undefined)
+    expect(await writeClipboard('hello')).toBe(true)
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(mockClipboardSetText).toHaveBeenCalledWith('hello')
+  })
+
   it('falls back to the browser API when Wails resolves false on macOS', async () => {
     stubNavigatorMember('userAgent', MAC_UA)
     mockClipboardSetText.mockResolvedValue(false)

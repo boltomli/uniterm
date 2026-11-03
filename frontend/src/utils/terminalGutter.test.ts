@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildGutterLines,
+  lineNumberColumnMetrics,
+  MIN_LINE_NUMBER_DIGITS,
   formatTimestampMs,
   resolveRowMeta,
   type BuildGutterLinesOptions,
@@ -155,5 +157,37 @@ describe('resolveRowMeta', () => {
   it('returns undefined when no row in the group is registered', () => {
     const m = resolveRowMeta(1, 0, getLine, () => undefined)
     expect(m).toBeUndefined()
+  })
+})
+
+
+describe('line-number column reservation', () => {
+  it('reserves the same five-digit width from initialization through 99999', () => {
+    const initial = lineNumberColumnMetrics(8, 0)
+    expect(initial).toEqual({ digits: MIN_LINE_NUMBER_DIGITS, width: 48 })
+    for (const line of [1, 9, 10, 99, 100, 999, 1000, 9999, 10000, 99999]) {
+      expect(lineNumberColumnMetrics(8, line)).toEqual(initial)
+    }
+  })
+
+  it('expands beyond five digits and retains the reservation when visible numbers decrease', () => {
+    const expanded = lineNumberColumnMetrics(8, 100000)
+    expect(expanded).toEqual({ digits: 6, width: 56 })
+    // The shared terminal carries digits through scrollback, alternate-screen
+    // switches, line-registry clears and gutter component remounts.
+    for (const line of [99999, 100, 24, 1, 0]) {
+      expect(lineNumberColumnMetrics(8, line, expanded.digits)).toEqual(expanded)
+    }
+    expect(lineNumberColumnMetrics(8, 1000000, expanded.digits)).toEqual({ digits: 7, width: 64 })
+  })
+
+  it('recomputes pixel width for a font change without losing reserved digits', () => {
+    const expanded = lineNumberColumnMetrics(8, 100000)
+    expect(lineNumberColumnMetrics(10.25, 1, expanded.digits)).toEqual({ digits: 6, width: 70 })
+    expect(lineNumberColumnMetrics(6, 1, expanded.digits)).toEqual({ digits: 6, width: 44 })
+  })
+
+  it('starts a new terminal at five digits instead of carrying another session width', () => {
+    expect(lineNumberColumnMetrics(8, 1)).toEqual({ digits: 5, width: 48 })
   })
 })

@@ -62,6 +62,15 @@ const { FakeWebglAddon, settingsState, createdTerminals, FakeTerminal } = vi.hoi
 })
 
 vi.mock('@wailsio/runtime', () => ({
+  // The generated bindings construct their type descriptors at module load.
+  Create: {
+    Any: {},
+    Array: () => ({}),
+    ByteSlice: () => ({}),
+    Events: () => ({}),
+    Map: () => ({}),
+    Nullable: () => ({}),
+  },
   Events: { On: vi.fn(() => () => {}), Off: vi.fn() },
 }))
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }))

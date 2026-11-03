@@ -78,10 +78,12 @@ func (a *App) ensureMCPServer() *mcp.Server {
 }
 
 // mcpEndpoint is the endpoint configuration StartMCP applied. Two of them
-// compare equal when the endpoint would bind identically.
+// compare equal when the endpoint would bind identically (same port and
+// same remote-access mode).
 type mcpEndpoint struct {
-	enabled bool
-	port    int
+	enabled     bool
+	port        int
+	allowRemote bool
 }
 
 func (a *App) mcpLastEndpoint() *mcpEndpoint {
@@ -121,14 +123,14 @@ func (a *App) StartMCP() error {
 	}
 	srv.SetTokens(a.mcpLoadTokens())
 
-	want := mcpEndpoint{enabled: true, port: mcp.DefaultPort}
+	want := mcpEndpoint{enabled: true, port: mcp.DefaultPort, allowRemote: cfg.AllowRemote}
 	if cfg.Port > 0 {
 		want.port = cfg.Port
 	}
 	if prev := a.mcpLastEndpoint(); prev != nil && *prev == want && srv.Running() {
 		return nil
 	}
-	if err := srv.Start(want.port); err != nil {
+	if err := srv.Start(want.port, want.allowRemote); err != nil {
 		return err
 	}
 	a.setMCPLastEndpoint(&want)
@@ -1330,7 +1332,11 @@ func (a *App) SendKey(sessionID, text, control string, sendEnter bool) error {
 	var data string
 	switch control {
 	case "ctrl_c":
-		data = "\x03"
+		// Built-in AI and MCP send-key calls share this path. Sending ETX
+		// alone cannot finish jobs on CLIs without a shell completion marker.
+		return a.jobRegistry().InterruptSession(sessionID, func() error {
+			return s.Write([]byte{3})
+		})
 	case "ctrl_d":
 		data = "\x04"
 	case "enter":

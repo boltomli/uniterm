@@ -1,6 +1,6 @@
 import { chat, AVAILABLE_TOOLS, ChatCancelledError, ChatTimeoutError, captureChatConfiguration } from './llm'
 import { prepareAgentContext } from './contextCompaction'
-import { executeCommand, startCommand, captureTerminal, collectOutput, sendTerminalKey } from './terminalAgent'
+import { executeCommand, startCommand, captureTerminal, collectOutput, sendTerminalKey, interruptJob } from './terminalAgent'
 import type { ExecuteResult } from './terminalAgent'
 import { useAIStore } from '../stores/aiStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -819,6 +819,21 @@ function formatExecuteResult(result: ExecuteResult): string {
     + `• If the command is stuck and unresponsive → use interrupt_command to cancel`
 }
 
+// A start rejected because the previous execution still owns the session must
+// tell the model how to proceed, not just that it failed — otherwise the model
+// can only guess between retrying (futile while busy) and giving up.
+function busyOrError(prefix: string, e: any): string {
+  const message = String(e?.message ?? e)
+  if (message.includes('session is busy')) {
+    return '[COMMAND NOT STARTED: session is busy with a previous execution]\n\n'
+      + `⚠️ An earlier command may still be running in the terminal.\n`
+      + `Do not resend this command yet.\n`
+      + `• If the previous command is still producing output → use collect_output to keep waiting for it\n`
+      + `• If it is stuck → use interrupt_command to cancel it, then retry`
+  }
+  return `[${prefix}: ${message}]`
+}
+
 function getShellName(path?: string): string {
   if (!path) return 'Unknown'
   const lower = path.toLowerCase()
@@ -1269,8 +1284,29 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       return
     }
 
-    // Enforce single tool call
+    // Enforce single tool call.
+    //
+    // When the model answers with parallel tool calls, only the first one is
+    // executed. The dropped ones stay in assistantMsg._rawApiMsg but never
+    // receive a tool_result, which leaves a *dangling* tool_use in the stored
+    // session. contextGroups() (aiContext.ts) treats an invocation without a
+    // result as unresolved and keeps its group open, so it swallows the whole
+    // remaining transcript into a single group. compactionCut() cannot trim
+    // that group ("the newest meaningful group is always retained"), and the
+    // request then exceeds CONTEXT_TRIGGER_TOKENS and the turn dies with
+    // ai.contextTooLarge.
+    //
+    // Record a tool_result for every dropped call so the stored history stays
+    // consistent — same shape as the stopRequested path above.
     if (toolUses.length > 1) {
+      for (const skipped of toolUses.slice(1)) {
+        store.addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'tool',
+          content: '[Skipped: uniTerm executes one tool call per turn.]',
+          tool_call_id: skipped.id
+        })
+      }
       toolUses.splice(1)
     }
 
@@ -1386,7 +1422,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         store.addMessage({
           id: `msg-${Date.now()}`,
           role: 'tool',
-          content: `[Error executing command: ${e.message ?? e}]`,
+          content: busyOrError('Error executing command', e),
           tool_call_id: tu.id
         })
       }
@@ -1439,7 +1475,7 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         store.addMessage({
           id: `msg-${Date.now()}`,
           role: 'tool',
-          content: `[Error starting command: ${e.message ?? e}]`,
+          content: busyOrError('Error starting command', e),
           tool_call_id: tu.id
         })
       }
@@ -1464,6 +1500,8 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
         })
       }
     } else if (tu.name === 'collect_output') {
+      // Honor the model-provided timeout as-is (no clamping); `|| 30` falls
+      // back to 30s when the argument is missing or invalid.
       const timeoutMs = positiveMilliseconds(tu.input.timeout_ms, 30000)
       try {
         const headLines = nonNegativeLines(tu.input.head_lines, 100, 'head_lines')
@@ -1570,6 +1608,10 @@ export async function runAgent(userInput: string, skillName?: string, skillBody?
       try {
         store.status = 'executing'
         const panelTitle = tu.input.panel as string | undefined
+        // Close the backend watcher (frees the session busy lock) before
+        // killing the foreground process: after Ctrl+C the shell acknowledgement
+        // never prints, so the watcher alone would hold the lock until the TTL.
+        await interruptJob(panelTitle)
         const result = await sendTerminalKey(undefined, 'ctrl_c', true, panelTitle)
         store.addMessage({
           id: `msg-${Date.now()}`,

@@ -381,3 +381,29 @@ describe('failed AI turns remain in saved session history', () => {
     expect(store.isRunning).toBe(false)
   })
 })
+
+describe('parallel tool calls: only the first executes, the rest get results', () => {
+  beforeEach(() => {
+    settings.ai.maxTurns = 20
+    setupActiveTerminalPanel()
+  })
+
+  it('records a skipped tool_result for every dropped parallel call', async () => {
+    const store = useAIStore()
+    store.createSession()
+    vi.mocked(chat).mockImplementationOnce(async (opts: any) => {
+      opts.onToolUse({ id: 'tu-1', name: 'ask_user', input: { question: 'Continue?' } })
+      opts.onToolUse({ id: 'tu-2', name: 'execute_command', input: { command: 'echo one' } })
+      opts.onToolUse({ id: 'tu-3', name: 'execute_command', input: { command: 'echo two' } })
+    })
+
+    await runAgent('do things')
+
+    // Every dropped call gets a matching tool_result so the stored history
+    // keeps tool_use/tool_result pairs consistent (no dangling tool_use).
+    const skipped = store.messages.filter(m => m.role === 'tool' && m.content.includes('[Skipped'))
+    expect(skipped.map(m => m.tool_call_id)).toEqual(['tu-2', 'tu-3'])
+    // Only the first call proceeds to dispatch.
+    expect(store.pendingQuestion?.toolId).toBe('tu-1')
+  })
+})

@@ -227,7 +227,7 @@ sudo rpm -i uniterm.rpm
 
 - [Go](https://go.dev/dl/) 1.26+
 - [Node.js](https://nodejs.org/) 20+
-- [wails3 CLI](https://wails.io/docs/) v3.0.0-beta.27 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.27`)
+- [wails3 CLI](https://wails.io/docs/) v3.0.0 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0`)
 - macOS needs Xcode Command Line Tools
 - Linux needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`
 - Android builds additionally need JDK 21 and the Android SDK/NDK (`sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"`)
@@ -336,6 +336,12 @@ Thanks to the following people for contributing code and improvements, and to ev
     <td align="center"><a href="https://github.com/lutzr400">@lutzr400</a></td>
     <td align="center"><a href="https://github.com/Merrcurys">@Merrcurys</a></td>
     <td align="center"><a href="https://github.com/etanman">@etanman</a></td>
+    <td align="center"><a href="https://github.com/wuqiang57">@wuqiang57</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/lijinxiao1982">@lijinxiao1982</a></td>
+    <td align="center"><a href="https://github.com/mikemikimike">@mikemikimike</a></td>
+    <td align="center"><a href="https://github.com/macoladik">@macoladik</a></td>
   </tr>
 </table>
 

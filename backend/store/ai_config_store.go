@@ -9,14 +9,18 @@ import (
 
 const aiConfigFileName = "ai.json"
 
-// AIStoreData is the syncable slice of the AI settings: the model catalog and
-// the agent turn limit. It lives in its own ai.json file so it can ride the
+// AIStoreData is the syncable slice of the AI settings: the model catalog,
+// agent turn limit and context preferences. It lives in its own ai.json so it can ride the
 // cloud sync while the rest of settings.json stays device-local. The active
 // model choice lives in local_state.json — it is per-device
 // "current selection" state, not a shareable asset.
 type AIStoreData struct {
-	MaxTurns *int            `json:"maxTurns"`
-	Models   []AIModelConfig `json:"models"`
+	MaxTurns           *int            `json:"maxTurns"`
+	// Nil keeps automatic compaction enabled for older configurations.
+	AutoCompact        *bool           `json:"autoCompact,omitempty"`
+	ContextTokenBudget int             `json:"contextTokenBudget,omitempty"`
+	SummaryModelID     string          `json:"summaryModelId,omitempty"`
+	Models             []AIModelConfig `json:"models"`
 }
 
 type AIConfigStore struct {
@@ -127,7 +131,9 @@ func (s *AIConfigStore) MigrateFromSettingsIfNeeded(settings AppSettings) error 
 		t := defaultMaxTurns
 		maxTurns = &t
 	}
-	return s.Save(AIStoreData{MaxTurns: maxTurns, Models: settings.AI.Models})
+	return s.Save(AIStoreData{MaxTurns: maxTurns, Models: settings.AI.Models,
+		AutoCompact: settings.AI.AutoCompact, ContextTokenBudget: settings.AI.ContextTokenBudget,
+		SummaryModelID: settings.AI.SummaryModelID})
 }
 
 // BlobName, ExportPlain and ImportPlain implement the sync exchange contract

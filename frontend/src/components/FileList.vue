@@ -178,7 +178,7 @@
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doChmod">{{ t('sftp.changePermission') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
+          <MenuItem shortcut="F5" @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'dir'">
           <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
@@ -200,7 +200,7 @@
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doChmod">{{ t('sftp.changePermission') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
+          <MenuItem shortcut="F5" @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'batch'">
           <MenuItem @click="doCopyToClipboard">{{ t('sftp.copy') }}</MenuItem>
@@ -219,7 +219,7 @@
           <MenuItem @click="doDelete">{{ t('sftp.delete') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" class="disabled">{{ t('sftp.chmodDisabled') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
+          <MenuItem shortcut="F5" @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
         <template v-else-if="menuType === 'empty'">
           <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
@@ -230,7 +230,7 @@
           <MenuItem @click="doSelectAll">{{ t('sftp.selectAll') }}</MenuItem>
           <MenuItem v-if="mode === 'remote'" @click="doUpload">{{ t('sftp.upload') }}</MenuItem>
           <MenuDivider />
-          <MenuItem @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
+          <MenuItem shortcut="F5" @click="doRefresh">{{ t('sftp.refresh') }}</MenuItem>
         </template>
     </Menu>
 
@@ -595,6 +595,14 @@ function onListClick(e: MouseEvent) {
 }
 
 function onListKeydown(e: KeyboardEvent) {
+  // Handle refresh before the editable-field guard so F5 also works while
+  // filtering. Keep modified function keys available to other shortcuts.
+  if (e.key === 'F5' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!e.repeat) doRefresh()
+    return
+  }
   const t = e.target as HTMLElement | null
   // Never hijack typing that is going somewhere else (filter box, editors).
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return

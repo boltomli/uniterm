@@ -362,6 +362,120 @@ func TestChatCompletionAnthropic_ThinkingBlocks(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolInput(t *testing.T) {
+	for _, input := range []interface{}{nil, "", "null", "[]", "{broken", []interface{}{}} {
+		if got := normalizeToolInput(input); got == nil || len(got) != 0 {
+			t.Fatalf("input %#v: expected empty object, got %#v", input, got)
+		}
+	}
+	for _, input := range []interface{}{`{"panel":"one"}`, map[string]interface{}{"panel": "one"}} {
+		if got := normalizeToolInput(input); got["panel"] != "one" {
+			t.Fatalf("input %#v: lost object: %#v", input, got)
+		}
+	}
+}
+
+func TestAnthropicEmptyToolInput(t *testing.T) {
+	stream := "data: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\"}}\n\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"interrupt_command\",\"input\":{}}}\n\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\"}}\n\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+	client := &http.Client{Transport: llmRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream))}, nil
+	})}
+	result, err := (&App{}).chatCompletionAnthropic("k", "https://example.com", "model", map[string]interface{}{"messages": []interface{}{}}, "test", "", "", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg struct {
+		Content []struct {
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(result), &msg); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Content) != 1 || string(msg.Content[0].Input) != "{}" {
+		t.Fatalf("expected empty object, got %s", result)
+	}
+}
+
+func TestOpenAIProtocolsEmptyToolInput(t *testing.T) {
+	streams := map[string]string{
+		"openai":    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"function\":{\"name\":\"interrupt_command\",\"arguments\":\"\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+		"responses": "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"t1\",\"name\":\"interrupt_command\"}}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0}\n\ndata: {\"type\":\"response.completed\"}\n\n",
+	}
+	for protocol, stream := range streams {
+		t.Run(protocol, func(t *testing.T) {
+			client := &http.Client{Transport: llmRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream))}, nil
+			})}
+			var result string
+			var err error
+			if protocol == "openai" {
+				result, err = (&App{}).chatCompletionOpenAI("k", "https://example.com", "model", map[string]interface{}{}, "test", "", "", client)
+			} else {
+				result, err = (&App{}).chatCompletionResponses("k", "https://example.com", "model", map[string]interface{}{}, "test", "", "", client)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msg struct {
+				Content []struct {
+					Input json.RawMessage `json:"input"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(result), &msg); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.Content) != 1 || string(msg.Content[0].Input) != "{}" {
+				t.Fatalf("expected empty object, got %s", result)
+			}
+		})
+	}
+}
+
+func TestToolInputWithArguments(t *testing.T) {
+	streams := map[string]string{
+		"anthropic": "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"run\",\"input\":{}}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"panel\\\":\\\"one\\\"}\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_stop\"}\n\n",
+		"openai":    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"function\":{\"name\":\"run\",\"arguments\":\"{\\\"panel\\\":\\\"one\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+		"responses": "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"t1\",\"name\":\"run\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"panel\\\":\\\"one\\\"}\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0}\n\ndata: {\"type\":\"response.completed\"}\n\n",
+	}
+	for protocol, stream := range streams {
+		t.Run(protocol, func(t *testing.T) {
+			client := &http.Client{Transport: llmRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream))}, nil
+			})}
+			app := &App{}
+			var result string
+			var err error
+			switch protocol {
+			case "anthropic":
+				result, err = app.chatCompletionAnthropic("k", "https://example.com", "model", map[string]interface{}{}, "test", "", "", client)
+			case "openai":
+				result, err = app.chatCompletionOpenAI("k", "https://example.com", "model", map[string]interface{}{}, "test", "", "", client)
+			case "responses":
+				result, err = app.chatCompletionResponses("k", "https://example.com", "model", map[string]interface{}{}, "test", "", "", client)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msg struct {
+				Content []struct {
+					Input map[string]interface{} `json:"input"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(result), &msg); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.Content) != 1 || msg.Content[0].Input["panel"] != "one" {
+				t.Fatalf("lost arguments: %s", result)
+			}
+		})
+	}
+}
+
 // --- Attachment support -----------------------------------------------------
 
 // tinyPNGBase64 is a valid 1x1 PNG, used as the image payload in converter and

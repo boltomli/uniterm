@@ -5,7 +5,7 @@
 // authenticated clients, and gates every command behind an approval dialog
 // surfaced in the UI.
 //
-// Transport: Streamable HTTP on 127.0.0.1 only, authenticated with a
+// Transport: Streamable HTTP on loopback by default (remote access is opt-in), authenticated with a
 // per-client bearer token (stored as SHA-256, shown once at creation).
 package mcp
 
@@ -255,6 +255,9 @@ type Server struct {
 	httpSrv *http.Server
 	port    int
 	started bool
+	// allowRemote mirrors the last Start's remote-access mode: the guard
+	// yields its loopback-only Host/Origin policy only while it is set.
+	allowRemote bool
 	// finishedBg caches sync-completed background results for the unified
 	// uniterm_exec_result poll path (keyed by bg- jobId).
 	finishedBg       map[string]finishedBackground
@@ -302,19 +305,22 @@ func (s *Server) SetTokens(tokens map[string]TokenInfo) {
 	s.tokens = tokens
 }
 
-// Start brings up the listener on 127.0.0.1:port. Starting the port the
-// server already listens on is a no-op: the App layer calls Start from
-// SaveLocalState, which fires on every UI toggle, and a restart would drop
-// every connected MCP client and its in-flight tool calls. Requesting a
-// different port (or 0 = "pick one") stops the running server first.
-func (s *Server) Start(port int) error {
+// Start restarts the listener on the requested port. Remote access must be
+// explicitly enabled; otherwise both the listener and SDK restrict it to
+// localhost. Callers decide whether a restart is warranted (the App layer
+// skips Start when the effective endpoint is unchanged, so a UI toggle does
+// not drop live MCP clients and their in-flight tool calls).
+func (s *Server) Start(port int, allowRemote bool) error {
 	s.mu.Lock()
-	running, current := s.started, s.port
+	running, current, currentRemote := s.started, s.port, s.allowRemote
 	s.mu.Unlock()
-	if running && (port == 0 || port == current) {
+	// Same effective endpoint → no-op: the App layer calls Start from
+	// SaveLocalState (every UI toggle), and a restart would drop every
+	// connected MCP client and its in-flight tool calls. A change of the
+	// remote-access mode must still rebind, so it is part of the comparison.
+	if running && (port == 0 || port == current) && currentRemote == allowRemote {
 		return nil
 	}
-
 	s.Stop()
 
 	srv := mcp.NewServer(&mcp.Implementation{
@@ -325,14 +331,18 @@ func (s *Server) Start(port int) error {
 
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return srv
-	}, nil)
+	}, &mcp.StreamableHTTPOptions{DisableLocalhostProtection: allowRemote})
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	host := "127.0.0.1"
+	if allowRemote {
+		host = "0.0.0.0"
+	}
+	ln, err := net.Listen("tcp4", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return fmt.Errorf("mcp: listen: %w", err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.guardMiddleware(s.authMiddleware(handler)))
+	mux.Handle("/mcp", s.authMiddleware(s.guardMiddleware(handler)))
 	httpSrv := &http.Server{
 		Handler: mux,
 		// F-06: without timeouts any local process could Slowloris the
@@ -349,6 +359,7 @@ func (s *Server) Start(port int) error {
 	s.ln = ln
 	s.httpSrv = httpSrv
 	s.port = ln.Addr().(*net.TCPAddr).Port
+	s.allowRemote = allowRemote
 	s.started = true
 	s.mu.Unlock()
 
@@ -357,7 +368,7 @@ func (s *Server) Start(port int) error {
 			log.Writef("mcp: serve: %v", err)
 		}
 	}()
-	log.Writef("mcp: server listening on 127.0.0.1:%d", s.port)
+	log.Writef("mcp: server listening on %s:%d", host, s.port)
 	return nil
 }
 
@@ -370,6 +381,7 @@ func (s *Server) Stop() {
 	s.handler = nil
 	s.port = 0
 	s.started = false
+	s.allowRemote = false
 	s.mu.Unlock()
 	if httpSrv != nil {
 		_ = httpSrv.Close()
@@ -441,21 +453,36 @@ func scoped[I any, O any](class Scope, h func(context.Context, *mcp.CallToolRequ
 	}
 }
 
-// guardMiddleware is the pre-auth depth-of-defense layer (F-06):
-//   - browser Origins are rejected — a web page must never reach the endpoint
-//     even if it learned the port (DNS-rebinding / CSRF style abuse);
-//   - the Host header must name a loopback address (DNS-rebinding defense);
-//   - request bodies are capped so no local process can park unbounded
-//     memory in the SDK handler.
+// guardMiddleware is the depth-of-defense layer in front of the SDK handler
+// (F-06):
+//   - while the listener is local-only, browser Origins are rejected — a web
+//     page must never reach the endpoint even if it learned the port (DNS-
+//     rebinding / CSRF style abuse) — and the Host header must name a loopback
+//     address;
+//   - with remote access explicitly enabled the endpoint serves remote
+//     clients by design, so the loopback policy yields to it (the SDK's
+//     localhost protection is disabled for the handler, and authMiddleware
+//     still pins Origin to the request's own Host);
+//   - request bodies are capped in both modes so no local process can park
+//     unbounded memory in the SDK handler.
+//
+// It runs behind authMiddleware: an unauthenticated request must be answered
+// with a proper 401 rather than leaking the endpoint's host policy, and no
+// request reaches the SDK handler without a valid token either way.
 func (s *Server) guardMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" && !isLoopbackOrigin(origin) {
-			http.Error(w, "cross-origin requests rejected", http.StatusForbidden)
-			return
-		}
-		if !isLoopbackHost(r.Host) {
-			http.Error(w, "host not allowed", http.StatusForbidden)
-			return
+		s.mu.Lock()
+		remote := s.allowRemote
+		s.mu.Unlock()
+		if !remote {
+			if origin := r.Header.Get("Origin"); origin != "" && !isLoopbackOrigin(origin) {
+				http.Error(w, "cross-origin requests rejected", http.StatusForbidden)
+				return
+			}
+			if !isLoopbackHost(r.Host) {
+				http.Error(w, "host not allowed", http.StatusForbidden)
+				return
+			}
 		}
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, maxMCPRequestBody)
@@ -509,6 +536,12 @@ func isLoopbackHostname(host string) bool {
 // handlers can label approvals/audit entries and enforce their scope.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Validate browser origins on every method, including GET streams.
+		// CLI clients and SSH forwarding normally send no Origin header.
+		if !validRequestOrigin(r) {
+			http.Error(w, "Forbidden: invalid Origin header", http.StatusForbidden)
+			return
+		}
 		token := bearerToken(r)
 		key := HashToken(token)
 		name, scope := "", ""
@@ -529,6 +562,23 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), tokenContextKey{}, tokenContext{Name: name, Scope: scope})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func validRequestOrigin(r *http.Request) bool {
+	origins := r.Header.Values("Origin")
+	if len(origins) == 0 {
+		return true
+	}
+	if len(origins) != 1 || origins[0] == "" {
+		return false
+	}
+	origin, err := url.Parse(origins[0])
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return err == nil && origin.Scheme == scheme && strings.EqualFold(origin.Host, r.Host) &&
+		origin.User == nil && origin.Path == "" && origin.RawQuery == "" && !origin.ForceQuery && origin.Fragment == ""
 }
 
 // bearerToken extracts the Authorization: Bearer value.

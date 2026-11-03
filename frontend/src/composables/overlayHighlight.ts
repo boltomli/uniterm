@@ -16,6 +16,7 @@
 // max-wait escape so sustained output still gets highlighted. Matching is per
 // logical line: rows the terminal soft-wrapped (isWrapped) are stitched
 // together before matching so wrapped strings highlight as one run.
+import { isCommandContinuation, isLogicalContinuation, updateCommandWraps } from '../services/terminalCommandWrap'
 import type { Terminal as XTerm, IBufferCell, IBufferLine, ICellColorSpan, IDisposable } from '@xterm/xterm'
 import { matchTextSpans, HIGHLIGHT_RULES, stitchLogicalText, splitSpansToRows, type HighlightCategory, type StitchedRows } from './highlightRules'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -308,7 +309,7 @@ export class OverlayHighlighter {
     }
 
     this.disposables.push(
-      this.term.onWriteParsed(() => this.triggerWriteRefresh()),
+      this.term.onWriteParsed(() => { updateCommandWraps(this.term); this.triggerWriteRefresh() }),
       this.term.onResize(() => {
         this.invalidateAll()
         this.lastViewportY = -1
@@ -553,9 +554,9 @@ export class OverlayHighlighter {
       const line = buffer.getLine(y)
       if (!line) break
       rows.push(line)
-      texts.push(line.translateToString(true, 0, cols))
+      texts.push(line.translateToString(!isCommandContinuation(this.term, y + 1), 0, cols))
       const next = buffer.getLine(y + 1)
-      if (!next || !next.isWrapped) break
+      if (!next || !isLogicalContinuation(this.term, y + 1)) break
       y++
     }
     return { startY, rows, texts, stitched: stitchLogicalText(texts) }
@@ -682,7 +683,7 @@ export class OverlayHighlighter {
 
       // Walk up to the logical line's first row: continuation rows above are
       // stitched into this scan so matches can straddle the wrap seam.
-      const startY = logicalLineStart((y) => buffer.getLine(y), lineY, MAX_STITCH_ROWS)
+      const startY = logicalLineStart((y) => ({ isWrapped: isLogicalContinuation(this.term, y) }), lineY, MAX_STITCH_ROWS)
 
       // Standalone scrollback row: cacheable per row as before — content up
       // there is immutable, so no text validation is needed.

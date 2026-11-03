@@ -199,7 +199,6 @@ func (r *SSHRunner) run(ctx context.Context, argv []string, stdin []byte) (out [
 	// 写入并关闭 stdin 后再等退出，避免管道死锁。
 	w, err := sess.StdinPipe()
 	if err != nil {
-		_ = sess.Close()
 		return nil, err
 	}
 	if err := sess.Start(JoinShellCommand(argv)); err != nil {

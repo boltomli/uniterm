@@ -9,7 +9,7 @@
   <div
     ref="fullscreenToolbar"
     class="remote-desktop-fullscreen-toolbar"
-    :class="{ 'is-hidden': !toolbarPinned && !toolbarExpanded, 'has-cursor-toggle': showDotCursor !== undefined }"
+    :class="{ 'is-hidden': !toolbarPinned && !toolbarExpanded, 'has-cursor-toggle': showDotCursor !== undefined, 'has-selects': selects }"
     role="toolbar"
     :aria-label="t('remoteDesktop.fullscreenToolbar')"
     @pointerenter="showFullscreenToolbar"
@@ -41,17 +41,14 @@
     </template>
     <slot name="displays" />
     <label class="remote-desktop-toolbar-scale">
-      <span>{{ t('remoteDesktop.scale') }}</span>
-      <el-switch
-        :model-value="scaleViewport"
-        @update:model-value="emit('update:scaleViewport', $event)"
-        inline-prompt
-        :active-text="t('vnc.scaleOn')"
-        :inactive-text="t('vnc.scaleOff')"
-        :aria-label="t('remoteDesktop.scale')"
+      <RemoteDesktopZoomSelect
+        :model-value="zoom"
+        class="remote-desktop-toolbar-select"
+        :compact="false"
+        :teleported="false"
         :disabled="disabled"
-        style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
-        @change="focusDesktop"
+        :allow-fit="allowFit"
+        @update:model-value="value => { emit('update:zoom', value); focusDesktop() }"
       />
     </label>
     <template v-if="showDotCursor !== undefined">
@@ -96,18 +93,26 @@ import { ref, onBeforeUnmount } from 'vue'
 import { Pin, PinOff, Minus, Copy } from '@lucide/vue'
 import { Window } from '@wailsio/runtime'
 import { useI18n } from '../i18n'
+import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
+import type { RdpZoom } from '../utils/rdpZoom'
 
 const { t } = useI18n()
 withDefaults(defineProps<{
   host: string
   port: number
   resolution?: string
-  scaleViewport: boolean
+  zoom: RdpZoom
+  // Whether the fit ('自适应') zoom entry is offered; RDP adaptive
+  // resolution already fills the pane, so it hides the entry.
+  allowFit?: boolean
+  // The RDP toolbar embeds three selects (resolution/quality/zoom); it gets
+  // a wider, wrap-enabled layout so the labels never fold vertically.
+  selects?: boolean
   showDotCursor?: boolean
   disabled: boolean
-}>(), { showDotCursor: undefined })
+}>(), { showDotCursor: undefined, resolution: undefined, allowFit: true, selects: false })
 const emit = defineEmits<{
-  'update:scaleViewport': [value: boolean]
+  'update:zoom': [value: RdpZoom]
   'update:showDotCursor': [value: boolean]
   restore: []
   focusDesktop: []
@@ -198,6 +203,18 @@ onBeforeUnmount(clearToolbarHideTimer)
   width: min(44rem, 100%);
   flex-wrap: wrap;
 }
+/* RDP embeds three selects in the toolbar; give them room to breathe. */
+.remote-desktop-fullscreen-toolbar.has-selects {
+  width: min(52rem, 100%);
+  flex-wrap: wrap;
+}
+.remote-desktop-fullscreen-toolbar :deep(.rdp-status-label),
+.remote-desktop-fullscreen-toolbar .remote-desktop-toolbar-scale > span {
+  white-space: nowrap;
+}
+.remote-desktop-fullscreen-toolbar :deep(.rdp-status-sep) {
+  color: var(--text-disabled);
+}
 .remote-desktop-fullscreen-toolbar.is-hidden {
   transform: translate(-50%, -100%);
   visibility: hidden;
@@ -254,6 +271,19 @@ onBeforeUnmount(clearToolbarHideTimer)
   flex: none;
   gap: 0.5rem;
   white-space: nowrap;
+  font-size: 0.75rem;
+}
+/* Uniform metrics for every dropdown in the fullscreen toolbar. The popper
+   must stay unteleported there: a body portal is invisible in fullscreen.
+   Slot content (resolution/quality) belongs to the host's scope, so the
+   selectors go through :deep from the toolbar root. */
+.remote-desktop-fullscreen-toolbar :deep(.remote-desktop-toolbar-select) {
+  width: 6rem;
+  flex: none;
+}
+.remote-desktop-fullscreen-toolbar :deep(.remote-desktop-toolbar-select .el-select__wrapper) {
+  min-height: 1.5rem;
+  height: 1.5rem;
   font-size: 0.75rem;
 }
 @media (prefers-reduced-motion: reduce) {

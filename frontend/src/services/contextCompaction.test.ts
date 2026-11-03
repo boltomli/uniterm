@@ -7,7 +7,11 @@ vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   LoadAISessions: vi.fn().mockResolvedValue({ sessions: [] }),
   SaveAISessions: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('../stores/settingsStore', () => ({ useSettingsStore: () => ({ activeModel: {
+const preferences = vi.hoisted(() => ({
+  autoCompact: true, contextTokenBudget: 32000, summaryModelId: '',
+  models: [] as Array<{ id: string; apiKey: string; baseURL: string; model: string; protocol: string; userAgent?: string; proxyId?: string }>,
+}))
+vi.mock('../stores/settingsStore', () => ({ useSettingsStore: () => ({ ai: preferences, activeModel: {
   apiKey: 'test', baseURL: 'https://example.invalid/v1', model: 'test', protocol: 'openai',
 } }) }))
 
@@ -32,6 +36,7 @@ describe('incremental context compaction', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    Object.assign(preferences, { autoCompact: true, contextTokenBudget: 32000, summaryModelId: '', models: [] })
     vi.mocked(SummarizeAIContext).mockResolvedValue('Goal: pending fix. Completed: inspected logs. Next: apply fix.')
   })
 
@@ -42,6 +47,61 @@ describe('incremental context compaction', () => {
     const result = await prepareAgentContext('rules', [])
     expect(SummarizeAIContext).not.toHaveBeenCalled()
     expect(result.messages).toEqual(store.conversation)
+  })
+
+  it('sends the full history when disabled, including history behind an existing checkpoint', async () => {
+    const store = longSession()
+    await prepareAgentContext('rules', [])
+    expect(store.contextSummary).toBeDefined()
+    vi.mocked(SummarizeAIContext).mockClear()
+    preferences.autoCompact = false
+    const result = await prepareAgentContext('rules', [], true)
+    expect(result.messages).toEqual(store.buildConversation(store.messages))
+    expect(JSON.stringify(result.messages)).toContain('0:history')
+    expect(SummarizeAIContext).not.toHaveBeenCalled()
+    expect(result.failed).toBe(false)
+    expect(store.contextNotice).toBe('')
+  })
+
+  it('uses the configured budget instead of compacting every model at 32K', async () => {
+    const store = longSession()
+    preferences.contextTokenBudget = 512000
+    const result = await prepareAgentContext('rules', [])
+    expect(estimateRequestTokens('rules', result.messages, [])).toBeGreaterThan(32000)
+    expect(result.messages).toEqual(store.buildConversation(store.messages))
+    expect(SummarizeAIContext).not.toHaveBeenCalled()
+  })
+
+  it('uses the selected summary model with its own credentials, protocol and proxy', async () => {
+    longSession()
+    preferences.summaryModelId = 'summary'
+    preferences.models = [{ id: 'summary', apiKey: 'summary-key', baseURL: 'https://summary.invalid',
+      model: 'small-model', protocol: 'responses', userAgent: 'summary-agent', proxyId: 'summary-proxy' }]
+    await prepareAgentContext('rules', [], false, () => true, {
+      id: 'main', name: 'main', apiKey: 'main-key', baseURL: 'https://main.invalid', model: 'large', protocol: 'openai',
+    })
+    expect(vi.mocked(SummarizeAIContext).mock.calls[0].slice(0, 6)).toEqual([
+      'summary-key', 'https://summary.invalid', 'small-model', 'responses', 'summary-agent', 'summary-proxy',
+    ])
+  })
+
+  it('scales the retained history with the configured compaction budget', async () => {
+    const store = longSession()
+    preferences.contextTokenBudget = 64000
+    const result = await prepareAgentContext('rules', [])
+    const size = estimateRequestTokens('rules', result.messages, [])
+    expect(size).toBeGreaterThan(20000)
+    expect(size).toBeLessThan(64000)
+    expect(store.contextSummary).toBeDefined()
+  })
+
+  it('falls back to the request model when the summary model no longer exists', async () => {
+    longSession()
+    preferences.summaryModelId = 'removed'
+    await prepareAgentContext('rules', [], false, () => true, {
+      id: 'snapshot', name: 'snapshot', apiKey: 'snapshot-key', baseURL: 'https://snapshot.invalid', model: 'snapshot', protocol: 'openai',
+    })
+    expect(vi.mocked(SummarizeAIContext).mock.calls[0][0]).toBe('snapshot-key')
   })
 
   it('compresses incrementally, saves a checkpoint and preserves full history', async () => {

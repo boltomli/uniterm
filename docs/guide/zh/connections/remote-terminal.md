@@ -2,6 +2,12 @@
 
 uniTerm 支持 **SSH**、**Telnet**、**Mosh** 和 **Raw TCP** 远程终端协议。
 
+## 命令编辑快捷键
+
+在已连接的非 Windows SSH、Mosh、Unix 本地终端和 WSL 中，`Ctrl+Backspace` 会发送 `Ctrl+W`，用于删除光标前一个词；光标后的内容保留。默认 Unix 行编辑通常以空白分隔词，具体行为由 shell 的键绑定决定。
+
+`Ctrl+U` 可在支持该绑定的 shell 中删除光标到行首的内容。Windows 本地终端、已识别的 Windows SSH、连接认证阶段和备用屏幕应用保留原生按键行为。普通 Backspace 仍遵循连接中的「退格键」设置。
+
 ## SSH
 
 SSH（Secure Shell）是最常用的远程服务器管理协议，提供加密的安全连接。

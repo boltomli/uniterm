@@ -138,6 +138,11 @@ export function installTerminalFocusRestore(): () => void {
           (now.tagName === 'INPUT' || now.tagName === 'TEXTAREA' || now.isContentEditable)) {
         return
       }
+      // File-list clicks deliberately focus the list for keyboard navigation
+      // and F5 refresh. Preserve that focus when coming from a terminal.
+      if (now instanceof HTMLElement && now.classList.contains('sftp-file-list')) {
+        return
+      }
       if (capturedPanelId) {
         focusPanelTerminal(capturedPanelId)
       } else {
@@ -166,6 +171,34 @@ export function installTerminalFocusRestore(): () => void {
   }
 
   window.addEventListener('mousedown', onMouseDown, true)
+  // A native minimise button retains DOM focus while the app is inactive.
+  // On return from the taskbar, restore typing only from window chrome or
+  // an empty document; inputs, file lists, and other deliberate targets win.
+  let activationTimer: ReturnType<typeof setTimeout> | null = null
+  const cancelActivation = () => {
+    if (activationTimer !== null) clearTimeout(activationTimer)
+    activationTimer = null
+  }
+  const onWindowFocus = () => {
+    cancelActivation()
+    activationTimer = setTimeout(() => {
+      activationTimer = null
+      if (document.hidden || !document.hasFocus()) return
+      const active = document.activeElement
+      if (active && active !== document.body && active !== document.documentElement &&
+          !(active instanceof HTMLElement && active.closest('.window-controls'))) return
+      // A dialog/menu may be waiting for its focus trap to run. Do not
+      // focus a terminal behind it, including while a native dialog closes.
+      const overlays = document.querySelectorAll<HTMLElement>('[role="dialog"], .conn-context-menu')
+      if (Array.from(overlays).some(el => el.getClientRects().length > 0)) return
+      const panelId = useTabStore().getActivePanelId()
+      if (!panelId) return
+      const terminal = document.querySelector(`[data-panel-id="${panelId}"] .xterm-helper-textarea`)
+      if (terminal instanceof HTMLTextAreaElement) terminal.focus({ preventScroll: true })
+    }, 0)
+  }
+  window.addEventListener('focus', onWindowFocus)
+  window.addEventListener('blur', cancelActivation)
   // --wails-draggable is set in CSS, but theme swaps can re-resolve custom
   // properties on existing elements. Drop the cache so the next click pays
   // the (now-cheap) one-time walk and re-caches.
@@ -176,6 +209,9 @@ export function installTerminalFocusRestore(): () => void {
   )
   return () => {
     window.removeEventListener('mousedown', onMouseDown, true)
+    window.removeEventListener('focus', onWindowFocus)
+    window.removeEventListener('blur', cancelActivation)
+    cancelActivation()
     stopWatch()
   }
 }

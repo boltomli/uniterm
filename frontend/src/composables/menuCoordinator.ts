@@ -35,12 +35,22 @@ export interface MenuCoordinator {
   deactivate(menu: ActiveMenu): void
   isActive(menu: ActiveMenu): boolean
   listenersBound(): boolean
+  /** Pause outside-click / Escape dismissal while a host modal (e.g. an
+   *  ElMessageBox prompt) floats above the open menu, so row actions can be
+   *  repeated without reopening it. Returns the resume function; a newer pause
+   *  supersedes one whose resume was never called. */
+  pauseDismiss(): () => void
 }
 
 export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget): MenuCoordinator {
   let active: ActiveMenu | null = null
   let retained = 0
   let bound = false
+  // Modal pause: while set, outside-click / Escape must not dismiss the menu
+  // (the host opened a dialog on top of it). Generation-counted so a lost
+  // resume() from a superseded pause can never clobber a newer one.
+  let dismissPaused = false
+  let pauseGen = 0
 
   // Closing the active menu when any surface broadcasts the legacy
   // global:close-context-menus event (opening a dialog, keyboard nav,
@@ -55,12 +65,13 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
   // closes it. Clicks inside a teleported flyout (MenuSubmenu) live outside
   // the menu root in the DOM but must count as inside.
   const onDocClick = (e: Event) => {
-    if (!active) return
+    if (!active || dismissPaused) return
     const target = e.target as HTMLElement | null
     const el = active.el()
     if (el && target && !el.contains(target) && !target.closest('.menu-submenu')) active.close()
   }
   const onDocKeydown = (e: Event) => {
+    if (dismissPaused) return
     if ((e as KeyboardEvent).key === 'Escape') active?.close()
   }
 
@@ -109,6 +120,10 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
       // Re-activating the SAME menu (open()/openAt() emit update:visible true
       // and the visible-prop watcher ALSO calls activate) is a no-op.
       if (active === menu) return
+      // A different menu is taking over: any modal-pause belonging to the
+      // previous interaction is dead (its dialog goes away with the menu it
+      // guarded) — drop it before the new host can pause again.
+      dismissPaused = false
       win.dispatchEvent(new Event('global:close-context-menus'))
       active?.close()
       active = menu
@@ -120,6 +135,14 @@ export function createMenuCoordinator(win: ListenerTarget, doc: ListenerTarget):
 
     isActive: (menu) => active === menu,
     listenersBound: () => bound,
+
+    pauseDismiss() {
+      dismissPaused = true
+      const token = ++pauseGen
+      return () => {
+        if (token === pauseGen) dismissPaused = false
+      }
+    },
   }
 }
 

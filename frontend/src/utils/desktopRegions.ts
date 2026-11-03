@@ -30,10 +30,11 @@ export function deleteDesktopRegion(view: DesktopView, id: string): DesktopView 
   }
 }
 
+// Quick-pick rectangles for the region editor's suggestion logic. The
+// labelKey field is gone: presets are geometry-only now (the old
+// remoteDesktop.* label translations were never rendered).
 export interface RegionPreset {
   id: string
-  labelKey: string
-  number?: number
   rect: DesktopRect
 }
 
@@ -41,9 +42,9 @@ export function desktopRegionPresets(width: number, height: number, displays: De
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return []
   const halfWidth = Math.floor(width / 2), halfHeight = Math.floor(height / 2)
   const centerWidth = Math.max(1, Math.floor(width * 0.8)), centerHeight = Math.max(1, Math.floor(height * 0.8))
-  const preset = (id: string, rect: DesktopRect): RegionPreset => ({ id, labelKey: `remoteDesktop.${id}`, rect })
+  const preset = (id: string, rect: DesktopRect): RegionPreset => ({ id, rect })
   return [
-    ...displays.map((display, index) => ({ id: `screen:${display.id}`, labelKey: 'remoteDesktop.displayNumber', number: index + 1,
+    ...displays.map(display => ({ id: `screen:${display.id}`,
       rect: { x: display.x, y: display.y, width: display.width, height: display.height } })),
     preset('fullDesktop', { x: 0, y: 0, width, height }),
     preset('centerRegion', { x: Math.floor((width - centerWidth) / 2), y: Math.floor((height - centerHeight) / 2), width: centerWidth, height: centerHeight }),

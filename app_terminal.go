@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.bug.st/serial"
 
@@ -386,22 +388,20 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 		} else if targetPort < 100 {
 			targetPort += 5900
 		}
+	} else if sessionType == "rdp" && targetPort <= 0 {
+		targetPort = session.DefaultRDPPort
 	}
+	tunnelStart := time.Now()
 	localPort, err := a.tunnelService.Start(sessionID, *tunnelSSHConfig, config.Host, targetPort, config.Proxy)
 	if err != nil {
+		log.Writef("[tunnel] start failed for session=%s via ssh=%s after %s: %v",
+			sessionID, config.TunnelSSHConnID, time.Since(tunnelStart).Round(time.Millisecond), err)
 		return fmt.Errorf("tunnel start: %w", err)
 	}
 	log.Writef("[tunnel] established for session=%s via ssh=%s, localPort=%d",
 		sessionID, config.TunnelSSHConnID, localPort)
-	// Record the ORIGINAL target host:port before rewriting the dial address.
-	// Every session dial path verifies and pins the host key under this
-	// address (hostKeyPinAddr), so a jump-host connection checks the target's
-	// real identity instead of re-trusting a fresh 127.0.0.1:<ephemeral>
-	// first-use entry on every connect — and known_hosts.json stops growing
-	// one entry per ephemeral port (security.md, "Jump-host targets are
-	// pinned under 127.0.0.1:<ephemeral port>").
-	config.HostKeyPinHost = config.Host
-	config.HostKeyPinPort = targetPort
+	config.TunnelTargetHost = config.Host
+	config.TunnelTargetPort = targetPort
 	config.Host = "127.0.0.1"
 	config.Port = localPort
 	config.Proxy = nil // proxy was consumed by the jump-host dial; local dial is direct
@@ -950,6 +950,18 @@ func (a *App) SetMonitorPaused(sessionID string, paused bool) error {
 	return nil
 }
 
+// SetMonitorSections toggles which monitor sections the poll loop collects
+// (cpu/allCpu/memory/disk/network). Disabled sections' remote commands are
+// not sent, reducing load on the monitored node.
+func (a *App) SetMonitorSections(sessionID string, sections map[string]bool) error {
+	ms, err := a.getMonitorSession(sessionID)
+	if err != nil {
+		return err
+	}
+	ms.SetMonitorSections(sections)
+	return nil
+}
+
 func (a *App) GetProcessDetail(sessionID string, pid int) (map[string]interface{}, error) {
 	ms, err := a.getMonitorSession(sessionID)
 	if err != nil {
@@ -1288,6 +1300,12 @@ func (a *App) panelLogTitle(panelID string) (name, host, protocol string) {
 // The log is bound to the panel, not the session \u2014 so a reconnect
 // (which creates a fresh session under the same panel) keeps writing
 // to the same file.
+// DefaultSessionLogDir exposes the OS-default session log directory so the
+// UI can open it even when no panel log is currently running.
+func (a *App) DefaultSessionLogDir() string {
+	return session.DefaultSessionLogDir()
+}
+
 func (a *App) EnableSessionOutputLog(panelID, dir string) (string, error) {
 	if panelID == "" {
 		return "", fmt.Errorf("panelID required")
@@ -1451,4 +1469,19 @@ func (a *App) GetDefaultSessionLogDir() string {
 // form's algorithm editor.
 func (a *App) GetSupportedSSHAlgorithms() session.SupportedSSHAlgorithms {
 	return session.GetSupportedSSHAlgorithms()
+}
+
+// AcceptHostKeyChange replaces the known_hosts fingerprint for host:port
+// with the new key after the user confirmed a host key change in the
+// frontend dialog. See session.AcceptHostKeyChange.
+func (a *App) AcceptHostKeyChange(host, keyType, newKeyB64 string, port int) error {
+	return session.AcceptHostKeyChange(host, strconv.Itoa(port), keyType, newKeyB64)
+}
+
+// AcceptHostKeyOnce records a one-shot bypass for host:port, letting the
+// next connection present the given key without recording it in
+// known_hosts ("connect once, don't save" in the change dialog). See
+// session.AcceptHostKeyOnce.
+func (a *App) AcceptHostKeyOnce(host, keyType, newKeyB64 string, port int) error {
+	return session.AcceptHostKeyOnce(host, strconv.Itoa(port), newKeyB64)
 }

@@ -98,20 +98,40 @@
             <MenuItem :shortcut="menuShortcut('terminalSearch')" @click="triggerSearch(); moreMenuVisible = false">
               {{ t('terminal.searchText') }}
             </MenuItem>
-            <MenuItem @click="triggerExport(); moreMenuVisible = false">{{ t('terminal.export') }}</MenuItem>
-            <MenuItem @click="triggerResetOutput(); moreMenuVisible = false">{{ t('terminal.resetOutput') }}</MenuItem>
-            <MenuItem @click="triggerClearScrollback(); moreMenuVisible = false">{{ t('terminal.clearScrollback') }}</MenuItem>
-            <MenuItem @click="toggleOutputLog(); moreMenuVisible = false">
-              {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
-            </MenuItem>
-            <MenuItem v-if="isOutputLogOn" @click="openLogDir(); moreMenuVisible = false">
-              {{ t('session.openLogDir') }}
-            </MenuItem>
+            <MenuSubmenu :label="t('terminal.display')">
+              <MenuItem @click="togglePanelLineNumbers(); moreMenuVisible = false">
+                {{ settingsStore.settings.terminal.showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
+              </MenuItem>
+              <MenuItem @click="togglePanelTimestamps(); moreMenuVisible = false">
+                {{ settingsStore.settings.terminal.showTimestamps ? t('settings.hideTimestamps') : t('settings.showTimestamps') }}
+              </MenuItem>
+            </MenuSubmenu>
+            <MenuSubmenu :label="t('terminal.clearScreen')">
+              <MenuItem @click="triggerResetOutput(); moreMenuVisible = false">{{ t('terminal.resetOutput') }}</MenuItem>
+              <MenuItem @click="triggerClearScrollback(); moreMenuVisible = false">{{ t('terminal.clearScrollback') }}</MenuItem>
+            </MenuSubmenu>
+            <MenuSubmenu :label="t('session.logRecordMenu')">
+              <MenuItem @click="toggleOutputLog(); moreMenuVisible = false">
+                {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
+              </MenuItem>
+              <MenuItem @click="openLogDir(); moreMenuVisible = false">
+                {{ t('session.openLogDir') }}
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem @click="triggerExport(); moreMenuVisible = false">{{ t('terminal.export') }}</MenuItem>
+              <MenuDivider />
+              <MenuItem @click="togglePanelRecording(); moreMenuVisible = false">
+                {{ isPanelRecording() ? t('record.stop') : t('record.start') }}
+              </MenuItem>
+              <MenuItem @click="openRecordListEvent(); moreMenuVisible = false">{{ t('record.openList') }}</MenuItem>
+            </MenuSubmenu>
 
             <!-- ③ 连接功能（ssh） -->
             <MenuDivider />
-            <MenuItem v-if="panel.type === 'ssh'" @click="connectSftp(); moreMenuVisible = false">{{ t(connectFileMenuKey(panel.config)) }}</MenuItem>
-            <MenuItem v-if="panel.type === 'ssh'" @click="uploadFileRz(); moreMenuVisible = false">{{ t('terminal.uploadFileRz') }}</MenuItem>
+            <MenuSubmenu v-if="panel.type === 'ssh'" :label="t('terminal.transfer')">
+              <MenuItem @click="connectSftp(); moreMenuVisible = false">{{ t(connectFileMenuKey(panel.config)) }}</MenuItem>
+              <MenuItem @click="uploadFileRz(); moreMenuVisible = false">{{ t('terminal.uploadFileRz') }}</MenuItem>
+            </MenuSubmenu>
             <MenuItem v-if="panel.type === 'ssh'" @click="connectMonitor(); moreMenuVisible = false">{{ t('sidebar.connectMonitor') }}</MenuItem>
 
             <!-- ④ 关闭 -->
@@ -144,6 +164,9 @@ import BaseTerminal from './BaseTerminal.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
+import { getSessionRecorder, maybeWarnSensitive } from '../services/terminalRecorder'
+import { getManagedTerminal } from '../services/terminalManager'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -159,6 +182,7 @@ import {
   EnableSessionOutputLog,
   DisableSessionOutputLog,
   GetSessionOutputLogInfo,
+  DefaultSessionLogDir,
   OpenPathInExplorer,
   SessionStart,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
@@ -170,6 +194,7 @@ import { connectFileMenuKey } from '../utils/fileTransferUtils'
 import { isMobilePlatform } from '../utils/platform'
 import type { ConnectionConfig } from '../types/session'
 import type { CredentialResult } from './CredentialPrompt.vue'
+import { applyRetryCredentials } from '../composables/applyRetryCredentials'
 import { Clipboard } from '@wailsio/runtime'
 
 // Escape sequences to disable all xterm mouse tracking modes.
@@ -385,12 +410,62 @@ async function toggleOutputLog() {
 }
 
 async function openLogDir() {
-  if (!outputLogPath.value) return
+  // Always available: without a running panel log, fall back to the
+  // OS-default session log directory.
+  let dir = outputLogPath.value
+  if (!dir) {
+    try {
+      dir = await DefaultSessionLogDir()
+    } catch {
+      return
+    }
+  }
+  if (!dir) return
   try {
-    await OpenPathInExplorer(outputLogPath.value)
+    await OpenPathInExplorer(dir)
   } catch (e: any) {
     msg.error(String(e?.message ?? e))
   }
+}
+
+// Cast v2 recording controls (same session-keyed recorder the terminal uses).
+// State is read at menu render time, so labels refresh on every menu open.
+function isPanelRecording(): boolean {
+  const sid = props.panel.sessionId
+  return !!sid && getSessionRecorder(sid).isRecording()
+}
+
+async function togglePanelRecording() {
+  const sid = props.panel.sessionId
+  if (!sid) return
+  const recorder = getSessionRecorder(sid)
+  try {
+    if (recorder.isRecording()) {
+      const path = await recorder.stop()
+      msg.copyable(t('record.stopped', { path }), 'info')
+    } else {
+      const managed = getManagedTerminal(sid)
+      const path = await recorder.start(sid, managed?.terminal.cols || 80, managed?.terminal.rows || 24, props.panel.config?.name || sid)
+      maybeWarnSensitive(t('record.sensitiveWarning'))
+      msg.copyable(t('record.started', { path }), 'success')
+    }
+  } catch (e: any) {
+    msg.error(t('record.startFailed', { error: String(e?.message ?? e) }))
+  }
+}
+
+// One RecordList instance lives in BaseTerminal; reuse the event pattern the
+// export/reset actions already use.
+function openRecordListEvent() {
+  window.dispatchEvent(new CustomEvent('terminal:record-list', { detail: { panelId: props.panel.id } }))
+}
+
+function togglePanelLineNumbers() {
+  settingsStore.updateTerminal({ showLineNumbers: !settingsStore.settings.terminal.showLineNumbers })
+}
+
+function togglePanelTimestamps() {
+  settingsStore.updateTerminal({ showTimestamps: !settingsStore.settings.terminal.showTimestamps })
 }
 
 function connectSftp() {
@@ -495,8 +570,7 @@ async function repromptCredentials() {
     ''
   )
   if (!result) return
-  config.user = result.user || config.user
-  config.password = result.password
+  props.panel.config = await applyRetryCredentials(config, result)
   retryAttempt = 0
   await retryConnection()
 }
@@ -583,8 +657,7 @@ async function retryConnection() {
       baseTerminalRef.value?.setRetryOnEnter(true)
       return
     }
-    props.panel.config.user = result.user || props.panel.config.user
-    props.panel.config.password = result.password
+    props.panel.config = await applyRetryCredentials(props.panel.config, result)
   }
 
   const now = new Date()

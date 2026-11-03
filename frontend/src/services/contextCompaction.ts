@@ -16,20 +16,34 @@ export async function prepareAgentContext(system: string, tools: unknown[], skip
   failed: boolean
 }> {
   const store = useAIStore()
+  const settings = useSettingsStore()
+  const preferences = settings.ai
   const sessionId = store.currentSessionId
   const revision = store.contextRevision
   const started = performance.now()
+  if (preferences?.autoCompact === false) {
+    checkCurrent()
+    store.contextNotice = ''
+    store.contextStats = null
+    // Full history remains available even if this session has an earlier
+    // checkpoint. Disabling compaction must not silently omit that history.
+    return { messages: store.buildConversation(store.messages), failed: false }
+  }
+  const configuredBudget = preferences?.contextTokenBudget
+  const triggerTokens = typeof configuredBudget === 'number' && Number.isFinite(configuredBudget)
+    ? Math.max(16000, Math.min(2000000, Math.floor(configuredBudget))) : CONTEXT_TRIGGER_TOKENS
+  const targetTokens = Math.floor(triggerTokens * CONTEXT_TARGET_TOKENS / CONTEXT_TRIGGER_TOKENS)
   const prior = store.contextSummary
   const history = activeHistory(store.messages, prior)
   checkCurrent()
   const original = store.buildConversation(history, prior)
   const inputTokens = estimateRequestTokens(system, original, tools)
-  if (inputTokens < CONTEXT_TRIGGER_TOKENS) return { messages: original, failed: false }
+  if (inputTokens < triggerTokens) return { messages: original, failed: false }
 
   const overhead = estimateRequestTokens(system, [], tools)
-  const recentBudget = Math.max(1024, CONTEXT_TARGET_TOKENS - overhead - SUMMARY_MAX_TOKENS)
+  const recentBudget = Math.max(1024, targetTokens - overhead - SUMMARY_MAX_TOKENS)
   const cut = compactionCut(history, recentBudget)
-  if (cut === 0 || overhead + SUMMARY_MAX_TOKENS >= CONTEXT_TRIGGER_TOKENS) {
+  if (cut === 0 || overhead + SUMMARY_MAX_TOKENS >= triggerTokens) {
     throw new Error(t('ai.contextTooLarge'))
   }
 
@@ -40,13 +54,15 @@ export async function prepareAgentContext(system: string, tools: unknown[], skip
   }
 
   const recent = history.slice(cut)
-  if (estimateRequestTokens(system, store.buildConversation(recent), tools) >= CONTEXT_TRIGGER_TOKENS) {
+  if (estimateRequestTokens(system, store.buildConversation(recent), tools) >= triggerTokens) {
     throw new Error(t('ai.contextTooLarge'))
   }
   let summary: AIContextSummary | undefined
   let failed = skipCompaction
   if (!skipCompaction) {
-    const configuredModel = modelSnapshot || useSettingsStore().activeModel
+    // A removed summary model falls back to the current request's model.
+    const configuredModel = preferences?.models?.find(m => m.id === preferences.summaryModelId)
+      || modelSnapshot || settings.activeModel
     const model = configuredModel ? { ...configuredModel } : undefined
     const requestId = `compact-${crypto.randomUUID()}`
     store.compactionRequestId = requestId
@@ -68,7 +84,7 @@ export async function prepareAgentContext(system: string, tools: unknown[], skip
       checkCurrent()
       // Validate the candidate before committing a checkpoint. An enormous
       // latest input is never silently shortened or removed.
-      if (estimateRequestTokens(system, store.buildConversation(recent, summary), tools) >= CONTEXT_TRIGGER_TOKENS) {
+      if (estimateRequestTokens(system, store.buildConversation(recent, summary), tools) >= triggerTokens) {
         throw new Error(t('ai.contextTooLarge'))
       }
       if (!store.applyContextSummary(summary, revision)) throw new ChatCancelledError()
@@ -98,7 +114,7 @@ export async function prepareAgentContext(system: string, tools: unknown[], skip
   } : prior)
   const messages = store.buildConversation(recent, requestSummary)
   const outputTokens = estimateRequestTokens(system, messages, tools)
-  if (outputTokens >= CONTEXT_TRIGGER_TOKENS) throw new Error(t('ai.contextTooLarge'))
+  if (outputTokens >= triggerTokens) throw new Error(t('ai.contextTooLarge'))
   if (failed) store.contextNotice = t('ai.compactionFailed')
   store.contextStats = { beforeTokens: inputTokens, afterTokens: outputTokens, durationMs: Math.round(performance.now() - started), fallback: failed }
   return { messages, failed }

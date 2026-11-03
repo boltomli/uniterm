@@ -4,18 +4,17 @@
     :class="`platform-${platform}`"
     @dblclick="onDblClick"
   >
-    <!-- macOS: custom traffic lights (Wails frameless hides the native ones) -->
-    <WindowControls
-      v-if="showWindowControls && platform === 'darwin'"
-      variant="mac"
-      :is-maximised="isMaximised"
-      @minimise="onMinimise"
-      @maximise="onMaximise"
-      @close="onClose"
-    />
+    <!-- macOS: reserve the left gutter for the native traffic lights
+         (close/minimise/zoom). The backend keeps the real AppKit buttons
+         visible on the frameless window (app_darwin.go MacTitleBarHidden), so
+         we no longer render CSS facsimiles — just leave room for them. -->
+    <div
+      v-if="platform === 'darwin' && showMacTrafficLightGutter"
+      class="mac-traffic-light-gutter"
+    ></div>
 
     <!-- Connections button (icon only, leftmost) -->
-    <button class="header-btn" @click="emit('toggle-sidebar')" :title="t('header.connections') + shortcutSuffix('toggleSidebar')">
+    <button class="header-btn" :class="{ active: sidebarVisible }" @click="emit('toggle-sidebar')" :title="t('sidebar.locSidebar') + shortcutSuffix('toggleSidebar')">
       <el-icon><PanelLeft :size="lucideSize('0.875rem')" /></el-icon>
     </button>
 
@@ -31,8 +30,20 @@
       />
     </div>
 
+    <!-- Bottom panel toggle (left of the AI button); hidden in narrow
+         layout, where the bottom panel's views merge into the sidebar. -->
+    <button
+      v-if="!uiLayout.narrowLayout"
+      class="header-btn"
+      :class="{ active: bottomPanelShown }"
+      @click="emit('toggle-bottom-panel')"
+      :title="t('sidebar.locBottom')"
+    >
+      <el-icon><PanelBottom :size="lucideSize('0.875rem')" /></el-icon>
+    </button>
+
     <!-- AI button -->
-    <button class="header-btn" @click="emit('toggle-ai')" :title="t('header.ai') + shortcutSuffix('focusAI')">
+    <button class="header-btn" :class="{ active: aiStore.visible }" @click="emit('toggle-ai')" :title="t('header.ai') + shortcutSuffix('focusAI')">
       <el-icon><Bot :size="lucideSize('0.875rem')" /></el-icon>
     </button>
 
@@ -160,7 +171,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
-import { Menu as MenuIcon, PanelLeft, Bot } from '@lucide/vue'
+import { Menu as MenuIcon, PanelLeft, PanelBottom, Bot } from '@lucide/vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
 import type { CheckboxValueType } from 'element-plus'
 import { useI18n } from '../i18n'
@@ -169,7 +180,9 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
+import { useAIStore } from '../stores/aiStore'
 import { useLocalStateStore } from '../stores/localStateStore'
+import { useUiLayoutStore } from '../stores/uiLayoutStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { LANGUAGE_OPTIONS, TERMINAL_THEMES, FOLLOW_APP_THEME } from '../types/settings'
 import type { AppSettings, ShortcutAction } from '../types/settings'
@@ -318,8 +331,23 @@ const hasActiveConnections = computed(() =>
   })
 )
 
+// Bottom panel button active state — the toggle opens the panel even when
+// it has no tabs (empty panel offers dockable options). Read straight from
+// the layout store (no prop drilling).
+const uiLayout = useUiLayoutStore()
+const bottomPanelShown = computed(() => uiLayout.bottomPanelVisible)
+
+// Sidebar/AI/bottom-panel toggle buttons mirror their panel's open state
+// with the shared .header-btn.active pressed style.
+defineProps<{
+  sidebarVisible?: boolean
+}>()
+
+const aiStore = useAIStore()
+
 const emit = defineEmits<{
   'toggle-ai': []
+  'toggle-bottom-panel': []
   'toggle-sidebar': []
   'open-settings': [category?: string]
   'open-netscan': []
@@ -343,6 +371,18 @@ const showWindowControls = computed(
   () =>
     !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar) &&
     !isMobilePlatform(platform.value)
+)
+
+// On macOS the real AppKit traffic lights overlay the top-left of the
+// frameless web content (backend MacTitleBarHidden). We hide our own window
+// controls there and just leave a left gutter so the native buttons don't
+// collide with the Connections button. When the user opted into the full
+// system title bar, the traffic lights live in the system frame instead, so
+// no gutter is needed.
+const showMacTrafficLightGutter = computed(
+  () =>
+    platform.value === 'darwin' &&
+    !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar)
 )
 
 async function updateMaximisedState() {
@@ -522,9 +562,16 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+/* Open-panel state: color the icon only — no pressed background. Hover
+   still shows the standard hover surface on top of it. */
 .header-btn.active {
-  background: var(--bg-active, var(--bg-hover));
-  color: var(--accent, var(--text-primary));
+  background: transparent;
+  color: var(--accent);
+}
+
+.header-btn.active:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
 }
 
 .header-btn:disabled {
@@ -539,6 +586,15 @@ onUnmounted(() => {
 
 .header-btn .el-icon {
   font-size: 0.875rem;
+}
+
+/* Left spacer that gives the macOS native traffic lights (close / minimise /
+   zoom) room to display over the frameless window. Width matches the stock
+   macOS titlebar insets; leave it draggable so double-click-to-maximise and
+   window drag keep working over the empty area. */
+.mac-traffic-light-gutter {
+  flex: 0 0 4.75rem;
+  --wails-draggable: drag;
 }
 
 .app-header :deep(.window-controls) {

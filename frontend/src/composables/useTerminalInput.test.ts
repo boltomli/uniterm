@@ -114,6 +114,34 @@ describe('useTerminalInput', () => {
       expect(t.cursorIndex.value).toBe(0)
     })
 
+    it.each([
+      ['curl --header value', 19, 'curl --header ', 14],
+      ['echo hello   ', 13, 'echo ', 5],
+      ['echo foo/bar.txt', 16, 'echo ', 5],
+      ['echo 你好😀', 8, 'echo ', 5],
+      ['one two three', 7, 'one  three', 4],
+      ['   ', 3, '', 0],
+      ['', 0, '', 0],
+      ['command', 0, 'command', 0],
+    ])('Ctrl+W updates the word before the cursor: %s', (text, cursor, expected, expectedCursor) => {
+      const t = useTerminalInput(null, { mode: 'ssh', sessionId: null })
+      t.lineBuffer.value = text as string
+      t.cursorIndex.value = cursor as number
+      t.handleInput('\x17')
+      expect(t.lineBuffer.value).toBe(expected)
+      expect(t.cursorIndex.value).toBe(expectedCursor)
+      expect(t.currentToken.value).toBe((expected as string).slice(0, expectedCursor as number).trim())
+    })
+
+    it('does not update the suggestion model in an alternate-screen application', () => {
+      const t = useTerminalInput(null, { mode: 'ssh', sessionId: null })
+      t.lineBuffer.value = 'echo hello'
+      t.cursorIndex.value = 10
+      t.handleSessionData('\x1b[?1049h')
+      t.handleInput('\x17')
+      expect(t.lineBuffer.value).toBe('echo hello')
+    })
+
     it('Enter clears the local buffer', () => {
       const t = useTerminalInput(null, { mode: 'ssh', sessionId: null })
       t.handleInput('ls')

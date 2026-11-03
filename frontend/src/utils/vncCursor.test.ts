@@ -85,15 +85,17 @@ describe('VNC fullscreen cursor using the noVNC cursor renderer', () => {
     d.stop()
   })
 
-  it('hides over toolbars, on blur and for an empty cursor, then restores the current image', async () => {
+  it('hides over toolbars and for an empty cursor, then restores the current image', async () => {
     const d = await desktop()
     d.image(); d.move(); d.fullscreen(true)
     d.hover(new Element())
     expect(d.overlay.style.visibility).toBe('hidden')
     d.hover(d.target)
     expect(d.overlay.style.visibility).toBe('visible')
+    // An unfocused window must still paint the overlay: the native cursor is
+    // suppressed on the canvas, so hiding the overlay would leave nothing.
     d.focus(false)
-    expect(d.overlay.style.visibility).toBe('hidden')
+    expect(d.overlay.style.visibility).toBe('visible')
     d.focus(true)
     expect(d.overlay.style.visibility).toBe('visible')
     d.cursor.clear()

@@ -140,8 +140,11 @@ type AIModelConfig struct {
 }
 
 type AISettings struct {
-	MaxTurns *int            `json:"maxTurns"`
-	Models   []AIModelConfig `json:"models"`
+	MaxTurns           *int            `json:"maxTurns"`
+	AutoCompact        *bool           `json:"autoCompact,omitempty"`
+	ContextTokenBudget int             `json:"contextTokenBudget,omitempty"`
+	SummaryModelID     string          `json:"summaryModelId,omitempty"`
+	Models             []AIModelConfig `json:"models"`
 	// Read only for migration to local_state.json. New clients omit this field.
 	ActiveModelID string `json:"activeModelId,omitempty"`
 	// ExecutionMode is the AI panel's confirmation policy:
@@ -166,9 +169,13 @@ type AISettings struct {
 // and side effects are governed by the approval policy alone; the stale
 // field is ignored on load.
 type MCPSettings struct {
-	// Enabled starts the localhost Streamable HTTP endpoint on launch.
+	// Enabled starts the Streamable HTTP endpoint on launch.
 	Enabled bool `json:"enabled"`
-	// Port for the 127.0.0.1 listener; 0 = DefaultPort.
+	// AllowRemote opts into listening on all IPv4 interfaces and accepting
+	// non-local Host headers, including requests forwarded over SSH.
+	// Defaults to false so existing installations stay loopback-only.
+	AllowRemote bool `json:"allowRemote,omitempty"`
+	// Port for the HTTP listener; 0 = DefaultPort.
 	Port int `json:"port,omitempty"`
 	// Policy is the approval policy: confirm_write (default) / confirm_all /
 	// confirm_dangerous / bypass. Unknown or empty values fall back to
@@ -251,6 +258,20 @@ type AppSettings struct {
 	// newConnection shortcut) opens: "startPage" or "localTerminal".
 	// Empty means the frontend falls back to "startPage".
 	NewTabAction string `json:"newTabAction,omitempty"`
+	// ConnectionsDisplayMode selects the connections panel list density:
+	// "full" (each connection shows a subtitle line) or "compact"
+	// (single-line rows). Empty means the frontend falls back to "full".
+	ConnectionsDisplayMode string `json:"connectionsDisplayMode,omitempty"`
+	// QuickCommandsDisplayMode selects the quick-commands panel display
+	// style: "list" (rows with name + command) or "buttons" (name-only
+	// buttons tiled horizontally). Empty means the frontend falls back to
+	// "list".
+	QuickCommandsDisplayMode string `json:"quickCommandsDisplayMode,omitempty"`
+	// MonitorSections toggles which monitor sections are enabled (basic/
+	// cpu/allCpu/memory/disk/allDisk/network). Disabled sections are hidden
+	// in the UI and skipped by the monitor poll loop. Nil means "use the
+	// frontend defaults" (everything enabled).
+	MonitorSections map[string]bool `json:"monitorSections,omitempty"`
 	// SidebarTabs toggles which connection-sidebar tab icons are visible,
 	// keyed by view id (connections/files/monitor/tunnels/quickCommands/
 	// history/personalization). "connections" is always shown in the UI and
@@ -258,6 +279,14 @@ type AppSettings struct {
 	// builds (which lack this field) still load; a nil map means "use the
 	// frontend defaults" (everything visible).
 	SidebarTabs map[string]bool `json:"sidebarTabs,omitempty"`
+	// PanelLocations maps sidebar view id (connections/files/monitor/
+	// tunnels/quickCommands/history/personalization) to its dock position:
+	// "sidebar" or "bottom". Nil means "use the frontend defaults"
+	// (PANEL_LOCATION_DEFAULTS).
+	PanelLocations map[string]string `json:"panelLocations,omitempty"`
+	// PanelOrder is the global tab order across both docks (view ids);
+	// views absent from the list append in default order.
+	PanelOrder []string `json:"panelOrder,omitempty"`
 	// StartPage controls which blocks (search/favorites/recent/groups) the
 	// start page shows and in what order. Pointer + omitempty so
 	// settings.json written by older builds (which lack this field) still

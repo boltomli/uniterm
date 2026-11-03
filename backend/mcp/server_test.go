@@ -149,7 +149,7 @@ func newTestServerWithPolicy(t *testing.T, policy Policy) (url, token string) {
 	srv := NewServer(env)
 	token, hash := GenerateToken()
 	srv.SetTokens(map[string]TokenInfo{hash: {Name: "test-agent"}})
-	if err := srv.Start(0); err != nil { // :0 → ephemeral port
+	if err := srv.Start(0, false); err != nil { // :0 → ephemeral port
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Stop)
@@ -258,7 +258,7 @@ func TestDeniedApprovalBlocksExec(t *testing.T) {
 	srv := NewServer(env)
 	token, hash := GenerateToken()
 	srv.SetTokens(map[string]TokenInfo{hash: {Name: "deny-agent"}})
-	if err := srv.Start(0); err != nil {
+	if err := srv.Start(0, false); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Stop)
@@ -352,7 +352,7 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 	srv := NewServer(env)
 	token, hash := GenerateToken()
 	srv.SetTokens(map[string]TokenInfo{hash: {Name: "file-agent"}})
-	if err := srv.Start(0); err != nil {
+	if err := srv.Start(0, false); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Stop)
@@ -455,7 +455,7 @@ func TestDownloadFileGradesAtLeastWrite(t *testing.T) {
 	srv := NewServer(env)
 	token, hash := GenerateToken()
 	srv.SetTokens(map[string]TokenInfo{hash: {Name: "dl-agent"}})
-	if err := srv.Start(0); err != nil {
+	if err := srv.Start(0, false); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Stop)
@@ -508,7 +508,7 @@ func TestStartSamePortKeepsExistingListener(t *testing.T) {
 	}
 
 	s := NewServer(Env{})
-	if err := s.Start(port); err != nil {
+	if err := s.Start(port, false); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer s.Stop()
@@ -519,7 +519,7 @@ func TestStartSamePortKeepsExistingListener(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := s.Start(port); err != nil {
+	if err := s.Start(port, false); err != nil {
 		t.Fatalf("re-start on the same port: %v", err)
 	}
 	if !s.Running() || s.Port() != port {
@@ -555,11 +555,11 @@ func TestStartNewPortRebinds(t *testing.T) {
 	oldPort, newPort := reserve(), reserve()
 
 	s := NewServer(Env{})
-	if err := s.Start(oldPort); err != nil {
+	if err := s.Start(oldPort, false); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	defer s.Stop()
-	if err := s.Start(newPort); err != nil {
+	if err := s.Start(newPort, false); err != nil {
 		t.Fatalf("re-start on new port: %v", err)
 	}
 	if s.Port() != newPort {

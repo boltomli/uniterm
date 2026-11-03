@@ -63,6 +63,7 @@
       <MenuItem :class="{ disabled: !menu.hasSelection.value }" :shortcut="menuShortcut('copy')" @click="menu.copySelection">
         {{ t('terminal.copy') }}
       </MenuItem>
+      <MenuItem :class="{ disabled: !menu.hasSelection.value }" @click="menu.copySingleLine">{{ t('terminal.copySingleLine') }}</MenuItem>
       <MenuItem :class="{ disabled: !menu.hasSelection.value }" @click="menu.copyAndPaste">
         {{ t('terminal.copyAndPaste') }}
       </MenuItem>
@@ -76,31 +77,43 @@
         {{ t('terminal.askAI') }}
       </MenuItem>
 
-      <!-- ② 会话文本操作 -->
+      <!-- ② 查找 / 视图 / 记录 -->
       <MenuDivider />
       <MenuItem :shortcut="menuShortcut('terminalSearch')" @click="triggerSearch">
         {{ t('terminal.searchText') }}
       </MenuItem>
-      <MenuItem @click="menu.closeMenu(); exportContent()">{{ t('terminal.export') }}</MenuItem>
-      <MenuItem @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
-      <MenuItem @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
-      <MenuItem :shortcut="menuShortcut('toggleLineNumbers')" @click="toggleLineNumbers">
-        {{ showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
-      </MenuItem>
-      <MenuItem :shortcut="menuShortcut('toggleTimestamps')" @click="toggleTimestamps">
-        {{ showTimestamps ? t('settings.hideTimestamps') : t('settings.showTimestamps') }}
-      </MenuItem>
-      <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
-        {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
-      </MenuItem>
-      <MenuItem v-if="supportsOutputLog && isOutputLogOn" @click="openLogDir">
-        {{ t('session.openLogDir') }}
-      </MenuItem>
+      <MenuSubmenu :label="t('terminal.display')">
+        <MenuItem :shortcut="menuShortcut('toggleLineNumbers')" @click="toggleLineNumbers">
+          {{ showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
+        </MenuItem>
+        <MenuItem :shortcut="menuShortcut('toggleTimestamps')" @click="toggleTimestamps">
+          {{ showTimestamps ? t('settings.hideTimestamps') : t('settings.showTimestamps') }}
+        </MenuItem>
+      </MenuSubmenu>
+      <MenuSubmenu :label="t('terminal.clearScreen')">
+        <MenuItem @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
+        <MenuItem @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
+      </MenuSubmenu>
+      <MenuSubmenu :label="t('session.logRecordMenu')">
+        <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
+          {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
+        </MenuItem>
+        <MenuItem v-if="supportsOutputLog" @click="openLogDir">
+          {{ t('session.openLogDir') }}
+        </MenuItem>
+        <MenuDivider />
+        <MenuItem @click="menu.closeMenu(); exportContent()">{{ t('terminal.export') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem @click="toggleRecording">{{ recordingActive ? t('record.stop') : t('record.start') }}</MenuItem>
+        <MenuItem @click="openRecordList">{{ t('record.openList') }}</MenuItem>
+      </MenuSubmenu>
 
-      <!-- ③ SSH 连接功能 -->
+      <!-- ④ 连接功能（SSH） -->
       <MenuDivider />
-      <MenuItem v-if="isSsh" @click="openSftp">{{ t(connectFileMenuKey(panel?.config)) }}</MenuItem>
-      <MenuItem v-if="isSsh" @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
+      <MenuSubmenu v-if="isSsh" :label="t('terminal.transfer')">
+        <MenuItem @click="openSftp">{{ t(connectFileMenuKey(panel?.config)) }}</MenuItem>
+        <MenuItem @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
+      </MenuSubmenu>
       <MenuItem v-if="isSsh" @click="openMonitor">{{ t('sidebar.connectMonitor') }}</MenuItem>
     </Menu>
 
@@ -131,6 +144,15 @@
 
     <!-- Screen preview on scrollbar hover (issue #729) -->
     <TerminalScreenPreview :session-id="props.sessionId || ''" />
+
+    <!-- Recording indicator: independent of menu state, click to stop. -->
+    <div v-if="recordingActive" class="rec-badge" :title="t('record.stop')" @click="toggleRecording">
+      <span class="rec-dot"></span>
+      REC {{ recordingElapsed }}
+    </div>
+
+    <!-- Terminal session recording list + replay dialog -->
+    <RecordList v-model:visible="recordListVisible" />
   </div>
 </template>
 
@@ -142,7 +164,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { createDisposeBag } from '../utils/disposeBag'
 import '@xterm/xterm/css/xterm.css'
 import { SessionResize, SessionEndZmodem, SessionPauseOutput, SessionResumeOutput } from '../../bindings/github.com/ys-ll/uniterm/app'
-import { queuedSessionWrite } from '../services/sessionWriter'
+import { queuedSessionWrite as queueRawSessionWrite } from '../services/sessionWriter'
+import { observeCommandInput, updateCommandWraps, getTerminalSelection } from '../services/terminalCommandWrap'
 import { WriteFileBase64, SaveFileDialog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
@@ -166,6 +189,7 @@ import { DcsReassembler } from '../utils/dcsReassembler'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
 import { useI18n } from '../i18n'
 import {
   acquireTerminal,
@@ -184,6 +208,7 @@ import { installGhostText, pickGhostSuggestion, type GhostText } from '../utils/
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { stripCursorBlink } from '../utils/cursor'
 import { applyBackspaceKey } from '../utils/terminalOptions'
+import { handleTerminalWordDelete } from '../utils/terminalWordDelete'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { normalizePastedText, pasteWithScroll } from '../utils/terminalPaste'
 import {
@@ -200,6 +225,8 @@ import { recordWrite, stampCommandLine, currentAbsoluteLine, clearRegistry } fro
 import { useZmodemStore } from '../stores/zmodemStore'
 import ZmodemTransfer from './ZmodemTransfer.vue'
 import TerminalScreenPreview from './TerminalScreenPreview.vue'
+import RecordList from './RecordList.vue'
+import { getSessionRecorder, maybeWarnSensitive } from '../services/terminalRecorder'
 import { Browser, Events } from '@wailsio/runtime'
 import type { ISearchOptions } from '@xterm/addon-search'
 import { CaseSensitive, ChevronUp, ChevronDown, Regex, WholeWord, X } from '@lucide/vue'
@@ -305,6 +332,7 @@ function writeStamped(data: string, onParsed?: () => void) {
   trackOutputWrite(data.length)
   t.write(data, () => {
     trackOutputParsed(data.length)
+    updateCommandWraps(t)
     recordWrite(sid, before, ts)
     onParsed?.()
   })
@@ -379,6 +407,7 @@ let onOpenSearch: ((e: Event) => void) | null = null
 let onExport: ((e: Event) => void) | null = null
 let onResetOutput: ((e: Event) => void) | null = null
 let onClearScrollback: ((e: Event) => void) | null = null
+let onRecordList: ((e: Event) => void) | null = null
 let onSendRz: ((e: Event) => void) | null = null
 let onTerminalCopy: ((e: Event) => void) | null = null
 let onTerminalPaste: ((e: Event) => void) | null = null
@@ -691,7 +720,7 @@ function getSearchAddon() {
 }
 
 function getSelection(): string {
-  return terminal?.getSelection() || ''
+  return terminal ? getTerminalSelection(terminal) : ''
 }
 
 // The suggestion to hint inline (fish / zsh-autosuggestions style), gated on
@@ -1040,6 +1069,12 @@ function onSplitResizeEnd() {
   })
 }
 
+function queuedSessionWrite(sessionId: string, data: string) {
+  const managed = getManagedTerminal(sessionId)
+  if (managed && managed.activeRefs.size > 0) observeCommandInput(managed.terminal, data)
+  return queueRawSessionWrite(sessionId, data)
+}
+
 function writeTerminalInput(data: string, inAlternateScreen: boolean) {
   const sid = props.sessionId
   const filtered = filterTerminalInput(data, inAlternateScreen)
@@ -1086,6 +1121,15 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
     return false
   }
 
+  if (terminal && handleTerminalWordDelete(e, {
+    connectionType: panel.value?.config?.type ?? panel.value?.type,
+    connected: !!props.sessionId && sessionStore.getStatus(props.sessionId) === 'connected',
+    alternateScreen: terminal.buffer.active.type === 'alternate',
+    passwordPrompt: terminalInput?.isPasswordMode() ?? false,
+    remoteOS: props.sessionId ? sessionStore.getRemoteOS(props.sessionId) : undefined,
+    hostPlatform: document.documentElement.dataset.platform,
+  }, data => terminal?.input(data))) return false
+
   // macOS 26 WKWebView: xterm's modifier handling for Shift+Delete is
   // unreliable and may emit no sequence, so the key silently fails to delete
   // (issue #538). Inject the standard CSI delete sequence ESC[3~ directly for
@@ -1116,7 +1160,7 @@ function handleTerminalKey(e: KeyboardEvent): boolean {
   // macOS Cmd+C: copy selection when there is one. With no selection, don't
   // intercept — let it pass through (Ctrl+C interrupt uses ctrlKey, unaffected).
   if (isMac && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C') && e.type === 'keydown') {
-    const sel = terminal?.getSelection()
+    const sel = (terminal ? getTerminalSelection(terminal) : undefined)
     if (sel) {
       e.preventDefault()
       writeClipboard(sel)
@@ -1291,9 +1335,19 @@ function onTerminalTouchEnd() {
   touchPan.raf = requestAnimationFrame(step)
 }
 
+function onNativeTerminalCopy(event: ClipboardEvent) {
+  if (!isActive.value || !terminal || !event.clipboardData) return
+  const text = getTerminalSelection(terminal)
+  if (text === terminal.getSelection()) return
+  event.clipboardData.setData('text/plain', text)
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+
 onMounted(() => {
   nativeDrop.bind()
   if (!terminalRef.value) return
+  terminalRef.value.addEventListener('copy', onNativeTerminalCopy, true)
 
   // Acquire shared terminal from manager (or create if first mount)
   const opts = getTerminalOptions()
@@ -1655,7 +1709,7 @@ onMounted(() => {
   terminal.onSelectionChange(() => {
     if (settingsStore.settings.terminal.selectionAction !== 'copy') return
     setTimeout(() => {
-      const text = terminal?.getSelection()
+      const text = (terminal ? getTerminalSelection(terminal) : undefined)
       if (!text) {
         // Selection cleared: reset the dedup guard, or re-selecting the same
         // text would never re-copy and a lost write could never be retried.
@@ -1828,6 +1882,14 @@ onMounted(() => {
         terminal?.write('\r\n\x1b[31mConnection failed. Press Enter to retry.\x1b[0m\r\n')
       } else if (payload.status === 'disconnected') {
         retryOnEnter = true
+        // Session gone: finalize the recording so the cast file is closed
+        // cleanly instead of dangling until the terminal is disposed.
+        if (props.sessionId) {
+          const rec = getSessionRecorder(props.sessionId)
+          if (rec.isRecording()) {
+            void rec.stop().then(() => stopRecordingUi())
+          }
+        }
         if (props.onSessionStatus) {
           props.onSessionStatus(payload.status)
         }
@@ -1879,6 +1941,14 @@ onMounted(() => {
   }
   window.addEventListener('terminal:export', onExport)
 
+  onRecordList = (e: Event) => {
+    if (!isActive.value) return
+    const detail = (e as CustomEvent).detail
+    if (!props.panelId || detail?.panelId !== props.panelId) return
+    recordListVisible.value = true
+  }
+  window.addEventListener('terminal:record-list', onRecordList)
+
   onResetOutput = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -1910,7 +1980,7 @@ onMounted(() => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
     if (detail?.panelId && detail.panelId !== props.panelId) return
-    const sel = terminal?.getSelection()
+    const sel = (terminal ? getTerminalSelection(terminal) : undefined)
     if (sel) {
       writeClipboard(sel)
     }
@@ -2326,6 +2396,7 @@ watch(
 onBeforeUnmount(() => {
   // P-02: never leave a session paused behind an unmounted component.
   resumeBackendOutput()
+  terminalRef.value?.removeEventListener('copy', onNativeTerminalCopy, true)
   if (props.sessionId && terminalRef.value) {
     detachTerminal(props.sessionId, terminalRef.value)
   }
@@ -2334,6 +2405,12 @@ onBeforeUnmount(() => {
 
 onUnmounted(() => {
   nativeDrop.unbind()
+  // The recording keeps running (session-scoped), but this component's badge
+  // timer must die with it.
+  if (recordingTimer) {
+    clearInterval(recordingTimer)
+    recordingTimer = null
+  }
   // Release anything the reorder buffer is still holding rather than dropping
   // a half-finished rewrite on the floor.
   imeOrder.dispose()
@@ -2388,6 +2465,7 @@ onUnmounted(() => {
   unsubNativeResizeEnd = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
+  if (onRecordList) window.removeEventListener('terminal:record-list', onRecordList)
   if (onResetOutput) window.removeEventListener('terminal:reset-output', onResetOutput)
   if (onClearScrollback) window.removeEventListener('terminal:clear-scrollback', onClearScrollback)
   if (onSendRz) window.removeEventListener('terminal:send-rz', onSendRz)
@@ -2577,6 +2655,67 @@ function openMonitor() {
   }
 }
 
+// Terminal session recording list (cast replay) dialog visibility.
+// Cast v2 session recording. The recorder lives in a session-keyed registry
+// (survives component unmount); the raw output stream is fed centrally from
+// the headless mirror hook in terminalManager so background output is
+// captured too. BaseTerminal only drives start/stop and the REC badge.
+const recordingActive = ref(getSessionRecorder(props.sessionId || '').isRecording())
+const recordingElapsed = ref('')
+let recordingTimer: ReturnType<typeof setInterval> | null = null
+let recordingStartedAt = 0
+
+function stopRecordingUi() {
+  recordingActive.value = false
+  if (recordingTimer) {
+    clearInterval(recordingTimer)
+    recordingTimer = null
+  }
+  recordingElapsed.value = ''
+}
+
+function formatRecordingElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000)
+  const hh = Math.floor(total / 3600)
+  const mm = Math.floor((total % 3600) / 60)
+  const ss = total % 60
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`
+}
+
+async function toggleRecording() {
+  menu.closeMenu()
+  if (!props.sessionId || !terminal) return
+  const recorder = getSessionRecorder(props.sessionId)
+  try {
+    if (recordingActive.value) {
+      const path = await recorder.stop()
+      stopRecordingUi()
+      msg.copyable(t('record.stopped', { path }), 'info')
+    } else {
+      const path = await recorder.start(props.sessionId, terminal.cols, terminal.rows, panel.value?.config?.name || props.sessionId)
+      recordingActive.value = true
+      recordingStartedAt = Date.now()
+      recordingElapsed.value = '00:00'
+      recordingTimer = setInterval(() => {
+        recordingElapsed.value = formatRecordingElapsed(Date.now() - recordingStartedAt)
+      }, 1000)
+      maybeWarnSensitive(t('record.sensitiveWarning'))
+      msg.copyable(t('record.started', { path }), 'success')
+    }
+  } catch (e: any) {
+    recordingActive.value = recorder.isRecording()
+    if (!recordingActive.value) stopRecordingUi()
+    msg.error(t('record.startFailed', { error: String(e?.message ?? e) }))
+  }
+}
+
+const recordListVisible = ref(false)
+function openRecordList() {
+  menu.closeMenu()
+  recordListVisible.value = true
+}
+
 const terminalMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 // Gutter context menu (right-click on the line-number/time columns) and the
 // gutter component ref, for hit-testing where a right-click landed.
@@ -2586,6 +2725,7 @@ const gutterRef = ref<{ $el: HTMLElement } | null>(null)
 const menu = useTerminalMenu({
   getSelection,
   onSelectAll: () => terminal?.selectAll(),
+  clearSelection: () => terminal?.clearSelection(),
   openAt: (x, y) => terminalMenuRef.value?.openAt(x, y),
   onPaste: async (text) => {
     if (props.mode === 'ssh' || props.mode === 'local') {
@@ -2750,5 +2890,34 @@ defineExpose({
   padding: 0.75rem 1.5rem;
   border: 0.125rem dashed var(--border-hover);
   border-radius: var(--radius-sm);
+}
+.rec-badge {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--scrim);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  cursor: pointer;
+  user-select: none;
+  backdrop-filter: blur(4px);
+}
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: rec-blink 1.2s ease-in-out infinite;
+}
+@keyframes rec-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
 }
 </style>

@@ -34,6 +34,18 @@ import { getMenuCoordinator, type ActiveMenu } from '../composables/menuCoordina
 // document listeners on every mount (security.md #12).
 const menuCoordinator = getMenuCoordinator()
 
+// Hosts call this (via the exposed wrapper) right before opening a modal that
+// floats above the open menu. The pause must be synchronous because the click
+// that triggered the host handler is still propagating to onDocClick; the
+// returned resume() (call it when the dialog closes) lets outside-click/Escape
+// dismissal take effect again. A newer pause supersedes an older one whose
+// resume was never called.
+function pauseDocClose(): () => void {
+  // Dismissal lives in the module-scope coordinator (security.md #12), so the
+  // pause state does too — a per-instance copy would leak listeners again.
+  return menuCoordinator.pauseDismiss()
+}
+
 const props = defineProps<{
   visible: boolean
   align?: 'start' | 'end'
@@ -132,7 +144,7 @@ function toggle(anchorEl: HTMLElement, data?: unknown) {
   }
 }
 
-defineExpose({ open, openAt, toggle, close: closeFn })
+defineExpose({ open, openAt, toggle, close: closeFn, pauseDocClose })
 
 // Hovering anywhere outside a submenu-wrap or its open flyout collapses it.
 function onInnerMouseOver(e: MouseEvent) {
@@ -306,5 +318,13 @@ watch(() => props.visible, (v) => {
 .menu-submenu .menu-item.active {
   color: var(--accent);
   font-weight: 500;
+}
+/* Iconic rows inside a submenu flyout need the same flex+gap as the main
+   menu's (.conn-context-menu .menu-item.iconic) — without it the leading
+   icon hugs the label with baseline misalignment. */
+.menu-submenu .menu-item.iconic {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
 }
 </style>

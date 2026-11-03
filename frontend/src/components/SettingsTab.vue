@@ -620,6 +620,7 @@
               <el-select v-model="settingsStore.settings.terminal.rightClickAction" @change="settingsStore.save()">
                 <el-option :label="t('settings.rightClickMenu')" value="menu" />
                 <el-option :label="t('settings.rightClickPaste')" value="paste" />
+                <el-option :label="t('settings.rightClickCopyOrPaste')" value="copyOrPaste" />
                 <el-option :label="t('settings.selectionNone')" value="none" />
               </el-select>
             </div>
@@ -1263,6 +1264,39 @@
         <div class="settings-group">
           <div class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.autoCompact') }}</div>
+              <div class="setting-desc">{{ t('settings.autoCompactDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch v-model="settingsStore.settings.ai.autoCompact" @change="settingsStore.save()" />
+            </div>
+          </div>
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.contextTokenBudget') }}</div>
+              <div class="setting-desc">{{ t('settings.contextTokenBudgetDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-input-number v-model="settingsStore.settings.ai.contextTokenBudget"
+                :min="16000" :max="2000000" :step="1000" :precision="0" controls-position="right"
+                :disabled="settingsStore.settings.ai.autoCompact === false" @change="settingsStore.save()" />
+            </div>
+          </div>
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.summaryModel') }}</div>
+              <div class="setting-desc">{{ t('settings.summaryModelDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.ai.summaryModelId" style="width: 14rem"
+                :disabled="settingsStore.settings.ai.autoCompact === false" @change="settingsStore.save()">
+                <el-option :label="t('settings.summaryModelCurrent')" value="" />
+                <el-option v-for="model in settingsStore.settings.ai.models" :key="model.id" :label="model.name" :value="model.id" />
+              </el-select>
+            </div>
+          </div>
+          <div class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.maxTurns') }}</div>
               <div class="setting-desc">{{ t('settings.maxTurnsDesc') }}</div>
             </div>
@@ -1344,7 +1378,7 @@
             <div class="setting-info">
               <div class="setting-title">{{ t('settings.mcpEnabled') }}</div>
               <div class="setting-desc">{{ t('settings.mcpEnabledDesc') }}</div>
-              <div v-if="mcpStatus.running" class="setting-desc mcp-running">{{ t('settings.mcpRunningOn', { port: mcpStatus.port }) }}</div>
+              <div v-if="mcpStatus.running" class="setting-desc mcp-running">{{ t('settings.mcpRunningOn', { host: mcp.allowRemote ? '0.0.0.0' : '127.0.0.1', port: mcpStatus.port }) }}</div>
               <div v-else-if="mcp.enabled" class="setting-desc mcp-running mcp-error">{{ t('settings.mcpNotRunning') }}</div>
             </div>
             <div class="setting-control switch-control">
@@ -1358,6 +1392,16 @@
             </div>
             <div class="setting-control">
               <el-input-number v-model="mcpPort" :disabled="mcpStatus.running || mcpSaving" :min="1" :max="65535" controls-position="right" @change="saveMcp()" />
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.mcpAllowRemote') }}</div>
+              <div class="setting-desc">{{ t('settings.mcpAllowRemoteDesc') }}</div>
+            </div>
+            <div class="setting-control switch-control">
+              <el-switch v-model="mcp.allowRemote" :loading="mcpSaving" :disabled="mcpSaving" @change="saveMcp()" />
             </div>
           </div>
 
@@ -1503,6 +1547,7 @@
       v-model:visible="mcpSetupVisible"
       :token="mcpTokenCreated"
       :port="mcpStatus.port || mcpPort"
+      :allow-remote="mcp.allowRemote"
       @close="onMcpSetupClose"
     />
 
@@ -2123,7 +2168,7 @@ const mcpSetupVisible = ref(false)
 // Mirror persisted settings into the reactive form once loaded.
 watch(() => localStateStore.state.mcp, (v) => {
   if (v) {
-    Object.assign(mcp, v)
+    Object.assign(mcp, DEFAULT_MCP_SETTINGS, v)
     mcpPort.value = v.port || 61207
   }
 }, { immediate: true })
@@ -2139,6 +2184,7 @@ async function saveMcp() {
     await localStateStore.update({
       mcp: {
         enabled: mcp.enabled,
+        allowRemote: mcp.allowRemote ?? false,
         port: mcpPort.value,
         policy: mcp.policy,
         execMode: mcp.execMode || 'background',

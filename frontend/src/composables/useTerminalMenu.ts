@@ -1,3 +1,4 @@
+import { selectionAsSingleLine } from '../services/terminalCommandWrap'
 import { ref } from 'vue'
 import type { Ref } from 'vue'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -8,6 +9,9 @@ export interface UseTerminalMenuOptions {
   onAskAI?: (text: string) => void
   /** Select the entire scrollback buffer. Host wires it to term.selectAll(). */
   onSelectAll?: () => void
+  /** Clear the current selection (used by the "copyOrPaste" right-click mode,
+   *  issue #1329: copy on right-click must also drop the highlight). */
+  clearSelection?: () => void
   /** Position + open the actual menu. The host wires this to its <Menu>
    *  instance (openAt), so the composable stays decoupled from the component
    *  and its viewport clamping lives in Menu. */
@@ -21,6 +25,7 @@ export interface UseTerminalMenuReturn {
   openMenu: (e: MouseEvent) => void
   closeMenu: () => void
   copySelection: () => void
+  copySingleLine: () => void
   selectAll: () => void
   copyAndPaste: () => Promise<void>
   pasteFromClipboard: () => Promise<void>
@@ -57,6 +62,20 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
       pasteFromClipboard()
       return
     }
+    // Windows Terminal style (issue #1329): right-click on a selection copies
+    // it and clears the highlight, right-click with nothing selected pastes.
+    if (rightClickAction === 'copyOrPaste' && !forceMenu) {
+      e.preventDefault()
+      e.stopPropagation()
+      const text = options.getSelection()
+      if (text) {
+        writeClipboard(text)
+        options.clearSelection?.()
+      } else {
+        pasteFromClipboard()
+      }
+      return
+    }
     openMenu(e)
   }
 
@@ -80,6 +99,12 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
     if (text) {
       writeClipboard(text)
     }
+    closeMenu()
+  }
+
+  function copySingleLine() {
+    const text = options.getSelection()
+    if (text) writeClipboard(selectionAsSingleLine(text))
     closeMenu()
   }
 
@@ -127,6 +152,7 @@ export function useTerminalMenu(options: UseTerminalMenuOptions): UseTerminalMen
     openMenu,
     closeMenu,
     copySelection,
+    copySingleLine,
     selectAll,
     copyAndPaste,
     pasteFromClipboard,

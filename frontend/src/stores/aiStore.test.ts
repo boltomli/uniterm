@@ -32,6 +32,31 @@ import { usePanelStore } from './panelStore'
 import { t } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 
+describe('replaying saved tool calls', () => {
+  it('repairs an empty string input without mutating saved history', () => {
+    setActivePinia(createPinia())
+    const ai = useAIStore()
+    const raw = { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'interrupt_command', input: '' }] }
+    const history = [
+      { id: 'a', role: 'assistant' as const, content: '', _rawApiMsg: raw },
+      { id: 'b', role: 'tool' as const, content: 'done', tool_call_id: 't1' },
+    ]
+    const conversation = ai.buildConversation(history)
+    expect(conversation[0].content).toEqual([{ type: 'tool_use', id: 't1', name: 'interrupt_command', input: {} }])
+    expect(raw.content[0].input).toBe('')
+  })
+
+  it.each([null, [], 'invalid', 42])('repairs invalid saved input %s', (input) => {
+    setActivePinia(createPinia())
+    const ai = useAIStore()
+    const history = [
+      { id: 'a', role: 'assistant' as const, content: '', _rawApiMsg: { content: [{ type: 'tool_use', id: 't1', input }] } },
+      { id: 'b', role: 'tool' as const, content: 'done', tool_call_id: 't1' },
+    ]
+    expect(ai.buildConversation(history)[0].content).toEqual([{ type: 'tool_use', id: 't1', input: {} }])
+  })
+})
+
 function sshConfig(overrides: Partial<ConnectionConfig> = {}): ConnectionConfig {
   return {
     id: 'conn-1',

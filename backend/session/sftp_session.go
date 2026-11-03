@@ -89,10 +89,9 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 	defer cleanup()
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	pinAddr := hostKeyPinAddr(config, addr)
-	cb, trust := NewHostKeyVerifier(pinAddr)
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return err
@@ -101,7 +100,7 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 		User:              config.User,
 		Auth:              authMethods,
 		Timeout:           30 * time.Second,
-		HostKeyCallback:   cb,
+		HostKeyCallback:   HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), s.id),
 		Config:            algoSet.config(),
 		HostKeyAlgorithms: algoSet.HostKeys,
 	}
@@ -110,9 +109,6 @@ func (s *SFTPSession) Connect(config ConnectionConfig) error {
 	if err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("ssh dial: %w", err)
-	}
-	if trust != nil && trust.FirstTrust {
-		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + pinAddr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	sc, err := sftp.NewClient(client, sftpClientOptions()...)

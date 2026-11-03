@@ -49,20 +49,14 @@
       <span class="spice-status-sep">|</span>
       <span>{{ config?.host }}:{{ config?.port || 5900 }}</span>
       <span class="spice-status-sep">|</span>
-      <span class="spice-status-label">{{ t('spice.scale') }}</span>
-      <el-switch
-        v-model="scaleViewport"
-        inline-prompt
-        :active-text="t('vnc.scaleOn')"
-        :inactive-text="t('vnc.scaleOff')"
-        style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
-      />
+      <span class="spice-status-label">{{ t('remoteDesktop.scale') }}</span>
+      <RemoteDesktopZoomSelect v-model="zoom" />
       <span class="spice-status-spacer" />
       <button class="spice-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
     </div>
     <RemoteDesktopToolbar
       v-if="isFullscreen"
-      v-model:scale-viewport="scaleViewport"
+      v-model:zoom="zoom"
       :host="config?.host || ''"
       :port="config?.port || 5900"
       :resolution="resolution || undefined"
@@ -79,6 +73,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
 import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { spiceDesktopGeometry } from '../utils/spiceGeometry'
 import { SpiceKeyboard } from '../utils/spiceKeyboard'
@@ -111,7 +106,7 @@ const container = ref<HTMLDivElement | null>(null)
 const viewport = ref<HTMLDivElement | null>(null)
 const desktop = ref<HTMLDivElement | null>(null)
 const spiceContainer = ref<HTMLDivElement | null>(null)
-const { scaleViewport } = useRemoteDesktopPreferences(() => props.config)
+const { zoom, scaleViewport } = useRemoteDesktopPreferences(() => props.config)
 const isFullscreen = ref(false)
 const resolution = ref('')
 const keyboardFocused = ref(false)
@@ -341,7 +336,7 @@ function applyScale() {
   const primary = sc?.display?.surfaces?.[sc.display.primary_surface]?.canvas as HTMLCanvasElement | undefined
   const canvas = primary && screen.contains(primary) ? primary : screen.querySelector('canvas')
   const geometry = canvas && spiceDesktopGeometry(canvas.width, canvas.height,
-    area.clientWidth, area.clientHeight, scaleViewport.value, window.devicePixelRatio)
+    area.clientWidth, area.clientHeight, zoom.value, window.devicePixelRatio)
   if (!geometry || !canvas) {
     resolution.value = ''
     bounds.style.width = bounds.style.height = ''
@@ -352,10 +347,10 @@ function applyScale() {
   bounds.style.height = `${geometry.height}px`
   screen.style.width = `${canvas.width}px`
   screen.style.height = `${canvas.height}px`
-  screen.style.transform = `scale(${geometry.scale})`
+  screen.style.transform = `scale(${geometry.scaleX}, ${geometry.scaleY})`
 }
 
-watch(scaleViewport, applyScale, { flush: 'post' })
+watch(zoom, applyScale, { flush: 'post' })
 
 function onPixelRatioChange() {
   pixelRatioQuery?.removeEventListener('change', onPixelRatioChange)

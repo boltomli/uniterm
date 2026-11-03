@@ -47,12 +47,24 @@ export function isContextMessage(m: AIMessage): boolean {
 
 // A tool invocation and ALL of its results form an indivisible group.
 // An unresolved invocation protects the remaining suffix from compaction.
+//
+// "Unresolved" means the invocation has no matching tool_result anywhere in
+// the transcript. A tool_use that never got a result (the model asked for a
+// parallel call that was never executed) would otherwise keep `pending`
+// non-empty forever and swallow the entire remaining transcript into one
+// group — an unsplittable group that compactionCut() must retain, which then
+// pushes the request past CONTEXT_TRIGGER_TOKENS and fails the turn with
+// ai.contextTooLarge.
 export function contextGroups(messages: AIMessage[]): AIMessage[][] {
+  const resolved = new Set<string>()
+  for (const m of messages) {
+    if (m.role === 'tool' && m.tool_call_id) resolved.add(m.tool_call_id)
+  }
   const groups: AIMessage[][] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     const group = [m]
-    const pending = new Set(toolIds(m))
+    const pending = new Set(toolIds(m).filter(id => resolved.has(id)))
     if (pending.size) {
       while (i + 1 < messages.length && pending.size) {
         const next = messages[++i]

@@ -1,3 +1,4 @@
+import { isLogicalContinuation } from './terminalCommandWrap'
 import { getManagedTerminal } from './terminalManager'
 import { useSettingsStore } from '../stores/settingsStore'
 
@@ -87,9 +88,9 @@ export interface RegistryBufferLike {
 }
 
 /** Adapter from an xterm buffer to the registry's row probe. */
-export function bufferRowSource(buf: RegistryBufferLike): LineRegistryRowSource {
+export function bufferRowSource(buf: RegistryBufferLike, continuation?: (row: number) => boolean): LineRegistryRowSource {
   return {
-    isWrapped: (y) => buf.getLine(y)?.isWrapped ?? false,
+    isWrapped: (y) => continuation?.(y) ?? buf.getLine(y)?.isWrapped ?? false,
     hasContent: (y) => {
       const line = buf.getLine(y)
       if (!line?.translateToString) return false
@@ -375,7 +376,7 @@ export function recordWrite(sessionId: string, beforeAbs: number, ts: number): v
     lineOffset: managed.lineOffset,
     beforeAbs: before,
     afterAbs,
-    source: bufferRowSource(buf),
+    source: bufferRowSource(buf, y => isLogicalContinuation(t, y)),
     now: ts,
     rows: t.rows,
   })
@@ -401,7 +402,7 @@ export function stampCommandLine(sessionId: string, ts: number): void {
   const cursorRow = buf.baseY + buf.cursorY
 
   let startRow = cursorRow
-  while (startRow > 0 && buf.getLine(startRow)?.isWrapped) startRow -= 1
+  while (startRow > 0 && isLogicalContinuation(t, startRow)) startRow -= 1
 
   const abs = offset + startRow
   const entry = registry.entries.get(abs)

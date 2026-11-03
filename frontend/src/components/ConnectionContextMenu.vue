@@ -10,6 +10,7 @@
     <MenuItem v-if="config?.type === 'wsl'" @click="onConnectClick($event, 'wsl-file')">{{ t('sidebar.connectWslFile') }}</MenuItem>
     <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'monitor')">{{ t('sidebar.connectMonitor') }}</MenuItem>
     <MenuItem v-if="config && canLocate" @click="locateSession">{{ t('sidebar.locateSession') }}</MenuItem>
+    <MenuItem v-if="canBatchExecute" @click="onBatchExecute">{{ t('sidebar.batchExecute') }}</MenuItem>
     <MenuDivider />
     <MenuItem :class="{ disabled: targets.length > 1 }" @click="targets.length === 1 && onEditClick()">{{ t('sidebar.edit') }}</MenuItem>
     <MenuItem @click="duplicate()">{{ t('sidebar.duplicate') }}</MenuItem>
@@ -20,6 +21,9 @@
     <MenuDivider />
     <MenuItem class="danger" @click="onDeleteClick">{{ t('sidebar.delete') }}</MenuItem>
   </Menu>
+
+  <!-- Batch execute dialog (opened from the context menu) -->
+  <BatchExecuteDialog v-model="batchDialogVisible" :hosts="batchHosts" />
 </template>
 
 <script setup lang="ts">
@@ -34,6 +38,7 @@ import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
+import BatchExecuteDialog from './BatchExecuteDialog.vue'
 import type { ConnectionConfig } from '../types/session'
 import { CONNECTION_TYPES } from '../utils/connectionTypes'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
@@ -104,6 +109,21 @@ const canLocate = computed(() => {
 })
 
 const isFavorite = computed(() => (props.config ? favoriteStore.isFavorite(props.config.id) : false))
+
+// Batch execute: shown when ≥ 2 selected hosts are SSH or local (the only
+// types BatchExecuteDialog supports). Non-supported types are filtered by the
+// dialog itself, but we gate the menu item here so it only appears when it
+// would be useful.
+const batchHosts = computed(() =>
+  props.targets.filter(h => h.type === 'ssh' || h.type === 'local'),
+)
+const canBatchExecute = computed(() => batchHosts.value.length >= 2)
+const batchDialogVisible = ref(false)
+
+function onBatchExecute() {
+  close()
+  batchDialogVisible.value = true
+}
 
 function close() {
   emit('update:visible', false)

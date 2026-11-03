@@ -47,6 +47,19 @@ var (
 	llmProxyRefresh time.Time
 )
 
+func normalizeToolInput(input interface{}) map[string]interface{} {
+	if obj, ok := input.(map[string]interface{}); ok && obj != nil {
+		return obj
+	}
+	if s, ok := input.(string); ok {
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(s), &obj) == nil && obj != nil {
+			return obj
+		}
+	}
+	return map[string]interface{}{}
+}
+
 func llmProxy(req *http.Request) (*url.URL, error) {
 	llmProxyMu.Lock()
 	defer llmProxyMu.Unlock()
@@ -456,6 +469,9 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 			}
 			if deltaType == "input_json_delta" && currentBlock != nil {
 				partial, _ := delta["partial_json"].(string)
+				if partial == "" {
+					continue
+				}
 				if currentBlock["input"] == nil || fmt.Sprintf("%T", currentBlock["input"]) != "string" {
 					currentBlock["input"] = ""
 				}
@@ -467,12 +483,7 @@ func (a *App) chatCompletionAnthropic(apiKey, baseURL, model string, reqBody map
 		case "content_block_stop":
 			if currentBlock != nil {
 				if blockType, _ := currentBlock["type"].(string); blockType == "tool_use" {
-					if inputStr, ok := currentBlock["input"].(string); ok && inputStr != "" {
-						var inputObj map[string]interface{}
-						if err := json.Unmarshal([]byte(inputStr), &inputObj); err == nil {
-							currentBlock["input"] = inputObj
-						}
-					}
+					currentBlock["input"] = normalizeToolInput(currentBlock["input"])
 				}
 				contentBlocks = append(contentBlocks, currentBlock)
 				currentBlock = nil
@@ -1003,7 +1014,7 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 					"type":  "tool_use",
 					"id":    tc.ID,
 					"name":  "",
-					"input": "",
+					"input": map[string]interface{}{},
 				}
 				// F-320: typed payload.
 				a.emit("ai:block_start", aiBlockStartEvent{
@@ -1047,22 +1058,10 @@ func (a *App) chatCompletionOpenAI(apiKey, baseURL, model string, reqBody map[st
 			}
 			// Close tool_use blocks and parse their input JSON
 			for idx, tc := range activeToolCalls {
-				// F-307: prefer the per-tool buffer over the
-				// possibly-empty tc["input"] string.
 				if buf, ok := toolInputBufs[idx]; ok && buf.Len() > 0 {
-					inputStr := buf.String()
-					var inputObj map[string]interface{}
-					if err := json.Unmarshal([]byte(inputStr), &inputObj); err == nil {
-						tc["input"] = inputObj
-					} else {
-						tc["input"] = inputStr
-					}
-				} else if inputStr, ok := tc["input"].(string); ok && inputStr != "" {
-					var inputObj map[string]interface{}
-					if err := json.Unmarshal([]byte(inputStr), &inputObj); err == nil {
-						tc["input"] = inputObj
-					}
+					tc["input"] = buf.String()
 				}
+				tc["input"] = normalizeToolInput(tc["input"])
 				contentBlocks = append(contentBlocks, tc)
 				a.emit("ai:content_block_stop", aiContentBlockStopEvent{
 					Index: idx,
@@ -1426,7 +1425,7 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 					"type":  "tool_use",
 					"id":    item.CallID,
 					"name":  item.Name,
-					"input": "",
+					"input": map[string]interface{}{},
 				}
 				blockByOutputIdx[ev.OutputIndex] = block
 				idxByOutputIdx[ev.OutputIndex] = nextBlockIndex
@@ -1514,19 +1513,12 @@ func (a *App) chatCompletionResponses(apiKey, baseURL, model string, reqBody map
 			}
 			if buf, ok := inputBufs[ev.OutputIndex]; ok {
 				if buf.Len() > 0 {
-					inputStr := buf.String()
-					if block["type"] == "tool_use" {
-						var inputObj map[string]interface{}
-						if json.Unmarshal([]byte(inputStr), &inputObj) == nil {
-							block["input"] = inputObj
-						} else {
-							block["input"] = map[string]interface{}{}
-						}
-					} else {
-						block["input"] = inputStr
-					}
+					block["input"] = buf.String()
 				}
 				delete(inputBufs, ev.OutputIndex)
+			}
+			if block["type"] == "tool_use" {
+				block["input"] = normalizeToolInput(block["input"])
 			}
 			if buf, ok := reasoningBufs[ev.OutputIndex]; ok {
 				if buf.Len() > 0 && block["type"] == "thinking" {

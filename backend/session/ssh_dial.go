@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/ys-ll/uniterm/backend/log"
 )
 
 type sshConnDialer func() (net.Conn, error)
@@ -60,8 +59,8 @@ func dialSSHWithCipherFallback(addr string, sets []sshAlgoSet, newConfig sshClie
 		// (OpenSSH behavior) so a server that added a second key type keeps
 		// negotiating the pinned one — see preferPinnedHostKeyAlgorithms.
 		// addr is the dial address; for a jump-host rewrite it holds no pin,
-		// which leaves the order untouched (hostKeyPinAddr callers below
-		// reorder against the original host:port themselves).
+		// which leaves the order untouched (callers that have the
+		// ConnectionConfig reorder against hostKeyVerifyTarget themselves).
 		attempt.HostKeyAlgorithms = preferPinnedHostKeyAlgorithms(set.HostKeys, addr)
 		// Bound the handshake itself: ClientConfig.Timeout only covers
 		// ssh.Dial's TCP connect, so a server or middlebox that accepts TCP
@@ -158,10 +157,10 @@ func dialSSHTCP(addr string, clientConfig *ssh.ClientConfig, upstream *SocksProx
 // 此上下文中无法应答 challenge，提供它只会让普通密码拒绝被回调自身的错误掩盖。
 func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	pinAddr := hostKeyPinAddr(config, addr)
-	cb, trust := NewHostKeyVerifier(pinAddr)
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
+	verifyKey := knownHostsKey(verifyHost, strconv.Itoa(verifyPort))
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -172,7 +171,7 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 				User:            config.User,
 				Auth:            authMethods,
 				Timeout:         30 * time.Second,
-				HostKeyCallback: cb,
+				HostKeyCallback: HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), ""),
 			}, cleanup, nil
 		}
 	}
@@ -183,7 +182,7 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	// Pin-aware host key order (the dial helper only sees the dial address,
 	// which a jump-host rewrite replaced with 127.0.0.1:<ephemeral>).
 	for i := range sets {
-		sets[i].HostKeys = preferPinnedHostKeyAlgorithms(sets[i].HostKeys, pinAddr)
+		sets[i].HostKeys = preferPinnedHostKeyAlgorithms(sets[i].HostKeys, verifyKey)
 	}
 	factory := newConfig(nil)
 	client, err := dialSSHWithAuthRetry(addr, sets, factory, factory, func() (net.Conn, error) {
@@ -194,9 +193,6 @@ func DialSSHClient(config ConnectionConfig) (*ssh.Client, error) {
 	})
 	if err != nil {
 		return nil, err
-	}
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
 	}
 	return client, nil
 }

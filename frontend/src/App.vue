@@ -3,6 +3,7 @@
   <div class="app-container" :class="{ 'has-bg': bgVisible }">
     <div v-if="bgVisible" class="app-bg" :style="bgStyle"></div>
     <AppHeader
+      :sidebar-visible="sidebarVisible"
       @toggle-ai="aiStore.toggle"
       @toggle-sidebar="sidebarVisible = !sidebarVisible"
       @open-settings="openSettings"
@@ -11,11 +12,13 @@
       @close-tab="closeTab"
       @close-tab-batch="closeTabBatch"
       @toggle-ai-lock="onToggleAiLock"
+      @toggle-bottom-panel="onToggleBottomPanel"
       @tab-dragstart="onTabDragStart"
       @new-local-terminal="createNewTab"
     />
     <div class="main-content">
       <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)" @connect-only="onConnectOnly" @open-netscan="openNetscan" />
+      <div class="center-column">
       <div class="tab-area">
         <template v-if="activeTab">
           <KeepAlive>
@@ -124,6 +127,8 @@
           </KeepAlive>
         </template>
       </div>
+      <BottomPanel @select="onBottomPanelSelect" />
+      </div>
       <AISidebar ref="aiSidebarRef" @open-settings="openSettings" />
     </div>
     <ConnectionForm v-model="showConnectionForm" :edit-config="editConfig ?? undefined" :default-group-id="pendingGroupId" @save="onSaveOnly" @connect="(c: ConnectionConfig, ko?: boolean) => { const wasEdit = !!editConfig?.id; editConfig = null; onConnect(c, ko, wasEdit) }" @connect-only="onConnectOnly" @cancel="editConfig = null" />
@@ -160,6 +165,7 @@
     <MobileKeyBar v-if="keyBarSessionId" :key="keyBarSessionId" :session-id="keyBarSessionId" />
     <NetworkScanTabContent v-model:visible="netscanVisible" @new-connection="onNetscanNewConnection" />
     <LocalServices v-model:visible="localServicesVisible" />
+    <HostKeyChangedDialog />
   </div>
   </el-config-provider>
 </template>
@@ -181,8 +187,10 @@ import { installExternalLinkGuard } from './utils/externalLinks'
 // Overlay views are always visible (not tab bodies), so they stay eager;
 // every tab content below is lazy-loaded via defineAsyncComponent.
 import NetworkScanTabContent from './components/netscan/NetworkScanTabContent.vue'
+import HostKeyChangedDialog from './components/HostKeyChangedDialog.vue'
 import LocalServices from './components/localsrv/LocalServices.vue'
 import AISidebar from './components/AISidebar.vue'
+import BottomPanel from './components/BottomPanel.vue'
 import SyncConflictDialog from './components/SyncConflictDialog.vue'
 import WorkspaceSaveDialog from './components/WorkspaceSaveDialog.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
@@ -211,12 +219,14 @@ import { useSkillStore } from './stores/skillStore'
 import { useCommandStore } from './stores/commandStore'
 import { useTunnelStore } from './stores/tunnelStore'
 import { useLocalStateStore } from './stores/localStateStore'
+import { useUiLayoutStore } from './stores/uiLayoutStore'
+import type { SidebarView } from './stores/uiLayoutStore'
 import { useContainerStore } from './stores/containerStore'
 import { useSyncStore } from './stores/syncStore'
 import { useCredentialStore } from './stores/credentialStore'
 import { disposeSessionStore } from './stores/sessionStore'
 import { useUpdateCheck } from './composables/useUpdateCheck'
-import { loadKeybindings, installGlobalListener, uninstallGlobalListener, matchDigitShortcut, isRebinding } from './composables/useKeyboardShortcuts'
+import { loadKeybindings, installGlobalListener, uninstallGlobalListener, matchDigitShortcut, isRebinding, isTabRenameShortcut } from './composables/useKeyboardShortcuts'
 import { focusPanelTerminal, installTerminalFocusRestore } from './composables/useFocusTerminal'
 import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
@@ -234,7 +244,7 @@ import { getShellLabel as getShellLabelBase, parseWslFromShell } from './utils/s
 import { reconnectFileTransferPanel } from './composables/usePanelReconnect'
 import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, launchContainerFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
 import { openSavedWorkspace } from './composables/savedWorkspace'
-import { installTabSnapshotSaver, restoreTabsSnapshot } from './composables/tabSnapshot'
+import { installTabSnapshotSaver, maybeRestoreLastTabs } from './composables/tabSnapshot'
 import { createWorkspaceFromSelection } from './composables/createWorkspace'
 
 // ── Deferred tab bodies ────────────────────────────────────────
@@ -395,6 +405,7 @@ const aiStore = useAIStore()
 const companionStore = useCompanionStore()
 const settingsStore = useSettingsStore()
 const localStateStore = useLocalStateStore()
+const uiLayout = useUiLayoutStore()
 const containerStore = useContainerStore()
 const syncStore = useSyncStore()
 const tunnelStore = useTunnelStore()
@@ -781,6 +792,16 @@ function onPlatformSystemShortcut(e: KeyboardEvent) {
   // Stand down while the settings page captures a rebind — otherwise
   // recording e.g. Ctrl+1 would switch tabs (and Cmd+Q would quit on mac).
   if (e.defaultPrevented || isRebinding() || remoteDesktopOwnsKey(e)) return
+  // F2 opens the active tab's rename box (issue #1336 补充说明). Renaming
+  // start/settings/netscan tabs is meaningless but harmless, same as dblclick.
+  if (isTabRenameShortcut(e)) {
+    const tab = tabStore.activeTab
+    if (!tab) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    tabStore.beginTabRename(tab.id)
+    return
+  }
   const digitMatch = e.code.match(/^Digit([1-9])$/)
   if (digitMatch) {
     const kb = settingsStore.settings.keyboard
@@ -824,6 +845,8 @@ onMounted(async () => {
 
   // Load local-only state (sidebar visibility, background image, etc.)
   await localStateStore.init()
+  // Panel dock layout (sidebar/bottom locations, bottom panel size)
+  await uiLayout.init()
   await loadBackgroundImage()
   // Mobile always opens with both sidebars closed, regardless of the
   // persisted desktop state — screen space is too tight to restore panels.
@@ -841,7 +864,21 @@ onMounted(async () => {
   // Reopen-last-session prompt (issue #937): ask before touching tabs, then
   // start recording so the snapshot always mirrors what's open. Not awaited —
   // the dialog must not block the rest of the mount sequence.
-  maybeRestoreLastTabs()
+  maybeRestoreLastTabs(
+    count => ElMessageBox.confirm(
+      t('start.restoreTabsMessage', { count }),
+      t('start.restoreTabsTitle'),
+      {
+        confirmButtonText: t('start.restoreTabsConfirm'),
+        cancelButtonText: t('common.cancel'),
+        type: 'info'
+      }
+    ),
+    {
+      connectTerminal: (c, p) => connectTerminalSession(c, p, undefined),
+      connectMember: workspaceConnectMember
+    }
+  )
   installTabSnapshotSaver()
   // Pre-load noVNC so VNC tab switches don't pay the dynamic import cost.
   import('@novnc/novnc').then((m: any) => {
@@ -1012,8 +1049,6 @@ function createNewTab() {
 // reads the sidebar's real activeView, not the companionStore flags — those
 // only control whether the files/monitor content is loaded and can drift from
 // the view actually shown.
-type SidebarTabView = 'connections' | 'files' | 'monitor'
-
 // Collapse the left sidebar and hand focus back to the current panel's
 // terminal. The files/monitor load flags are left to Sidebar's own view logic.
 function closeSidebar() {
@@ -1022,17 +1057,41 @@ function closeSidebar() {
   if (pid) nextTick(() => focusPanelTerminal(pid))
 }
 
-// Open the left sidebar with its visible tab switched to the given view,
-// exactly like clicking that tab (Sidebar.openTab routes to each tab's own
-// open logic).
-function openSidebarToTab(view: SidebarTabView) {
-  sidebarVisible.value = true
-  nextTick(() => sidebarRef.value?.openTab(view))
+// Toggle a view on whichever dock it currently lives in (left sidebar or
+// bottom panel): not in the foreground → open it there; already in the
+// foreground → collapse its dock and hand focus back to the terminal.
+function sidebarViewShortcut(view: SidebarView, usePanelOpener = false) {
+  const atBottom = uiLayout.panelLocation(view) === 'bottom'
+  const isForeground = atBottom
+    ? uiLayout.bottomPanelVisible && uiLayout.bottomActiveView === view
+    : sidebarVisible.value && sidebarRef.value?.activeView === view
+  if (isForeground) {
+    if (atBottom) uiLayout.setBottomPanelVisible(false)
+    else closeSidebar()
+    return
+  }
+  if (atBottom) {
+    if (!uiLayout.bottomPanelVisible) uiLayout.setBottomPanelVisible(true)
+  } else {
+    sidebarVisible.value = true
+  }
+  nextTick(() => {
+    if (usePanelOpener) sidebarRef.value?.openQuickCommands()
+    else sidebarRef.value?.openTab(view)
+  })
 }
 
-function sidebarViewShortcut(view: SidebarTabView) {
-  if (sidebarVisible.value && sidebarRef.value?.activeView === view) closeSidebar()
-  else openSidebarToTab(view)
+// ── Bottom panel (docked panel under the tab area) ──
+
+function onToggleBottomPanel() {
+  uiLayout.setBottomPanelVisible(!uiLayout.bottomPanelVisible)
+}
+
+// Bottom-panel tab click: route through Sidebar.openTab so files/monitor
+// tabs keep their companion-session open logic; activeView lives in the
+// shared uiLayout store, so both strips highlight the same view.
+function onBottomPanelSelect(view: string) {
+  sidebarRef.value?.openTab(view)
 }
 
 const actionHandlers: Record<ShortcutAction, () => void> = {
@@ -1042,10 +1101,7 @@ const actionHandlers: Record<ShortcutAction, () => void> = {
   toggleSidebar: () => sidebarViewShortcut('connections'),
   toggleFilePanel: () => sidebarViewShortcut('files'),
   toggleMonitor: () => sidebarViewShortcut('monitor'),
-  openQuickCommands: () => {
-    sidebarVisible.value = true
-    nextTick(() => sidebarRef.value?.openQuickCommands())
-  },
+  openQuickCommands: () => sidebarViewShortcut('quickCommands', true),
   focusTerminal: () => {
     const pid = tabStore.getActivePanelId()
     if (pid) focusPanelTerminal(pid)
@@ -1476,37 +1532,6 @@ function closeStartAndReposition(prevTab: any): (newTabId: string) => void {
 }
 
 configureLauncher({ ensureCredentials, closeStartAndReposition })
-
-// ── Reopen last session's tabs (issue #937-4) ──
-// The snapshot itself is written continuously by installTabSnapshotSaver;
-// this is the startup half: prompt (when the setting is on) and re-open the
-// recorded tabs through the regular connect flows.
-async function maybeRestoreLastTabs() {
-  if (!settingsStore.settings.restoreTabsPrompt) return
-  const snapshot = localStateStore.state.lastTabsSnapshot
-  if (!snapshot?.tabs?.length) return
-  try {
-    await ElMessageBox.confirm(
-      t('start.restoreTabsMessage', { count: snapshot.tabs.length }),
-      t('start.restoreTabsTitle'),
-      {
-        confirmButtonText: t('start.restoreTabsConfirm'),
-        cancelButtonText: t('common.cancel'),
-        type: 'info'
-      }
-    )
-  } catch {
-    // One-shot prompt: a decline means "don't offer these tabs again", so
-    // drop the snapshot. It only re-accumulates once the user actually opens
-    // tabs (the watcher in installTabSnapshotSaver re-records on change).
-    localStateStore.update({ lastTabsSnapshot: null })
-    return // user declined
-  }
-  await restoreTabsSnapshot(snapshot, {
-    connectTerminal: (c, p) => connectTerminalSession(c, p, undefined),
-    connectMember: workspaceConnectMember
-  })
-}
 
 async function onConnect(config: ConnectionConfig, keepOpen?: boolean, wasEdit?: boolean, persist = true, targetWorkspaceId?: string) {
   // Saved workspace connection: open it as a live workspace instead of the
@@ -1951,6 +1976,16 @@ watch(
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-base);
+}
+
+/* Center column between the left sidebar and the AI sidebar: active tab
+   content on top, optional docked bottom panel underneath. */
+.center-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .group-list {

@@ -67,6 +67,9 @@ export const useSettingsStore = defineStore('settings', () => {
     const models = aiCfg.models.length ? aiCfg.models : settings.value.ai.models
     settings.value.ai = {
       maxTurns: aiCfg.maxTurns,
+      autoCompact: aiCfg.autoCompact,
+      contextTokenBudget: aiCfg.contextTokenBudget,
+      summaryModelId: aiCfg.summaryModelId,
       models,
       // executionMode is device-local (settings.json only — ai.json carries
       // maxTurns + models), so recomposing the synced slice must not drop it.
@@ -79,11 +82,14 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   function syncAiConfigFromSettings() {
-    const aiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
+    const aiJson = JSON.stringify(settings.value.ai)
     if (aiJson === lastSavedAiJson) return
     lastSavedAiJson = aiJson
     const aiCfg = useAIConfigStore()
     aiCfg.maxTurns = settings.value.ai.maxTurns
+    aiCfg.autoCompact = settings.value.ai.autoCompact ?? true
+    aiCfg.contextTokenBudget = settings.value.ai.contextTokenBudget || 32000
+    aiCfg.summaryModelId = settings.value.ai.summaryModelId || ''
     aiCfg.models = settings.value.ai.models
     aiCfg.save()
   }
@@ -158,7 +164,7 @@ export const useSettingsStore = defineStore('settings', () => {
       if (legacyModelId) await SaveSettings(settings.value)
       settingsReadyToSave = true
     }
-    lastSavedAiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
+    lastSavedAiJson = JSON.stringify(settings.value.ai)
     applyUiFontSize()
     try {
       availableShells.value = await GetAvailableShells()
@@ -294,6 +300,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const idx = settings.value.ai.models.findIndex(m => m.id === id)
     if (idx >= 0) {
       settings.value.ai.models.splice(idx, 1)
+      if (settings.value.ai.summaryModelId === id) settings.value.ai.summaryModelId = ''
       void useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id)).catch(() => {})
       save()
     }
@@ -382,10 +389,13 @@ export const useSettingsStore = defineStore('settings', () => {
   // AI config changed via a sync pull — refresh the local composition.
   unsubAiChanged?.()
   unsubAiChanged = Events.On('store:ai:changed', (ev) => {
-    const data = ev.data as { maxTurns?: number; models?: AIModelConfig[] } | null
+    const data = ev.data as Partial<AppSettings['ai']> | null
     if (data) {
       const aiCfg = useAIConfigStore()
       aiCfg.maxTurns = data.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns
+      aiCfg.autoCompact = data.autoCompact ?? true
+      aiCfg.contextTokenBudget = data.contextTokenBudget || 32000
+      aiCfg.summaryModelId = data.summaryModelId || ''
       aiCfg.models = data.models?.length ? data.models : aiCfg.models
       const wasApplyingSettings = applyingLoadedSettings
       applyingLoadedSettings = true
@@ -395,7 +405,7 @@ export const useSettingsStore = defineStore('settings', () => {
         applyingLoadedSettings = wasApplyingSettings
       }
       void useLocalStateStore().ensureAISelection(settings.value.ai.models.map(m => m.id)).catch(() => {})
-      lastSavedAiJson = JSON.stringify({ maxTurns: settings.value.ai.maxTurns, models: settings.value.ai.models })
+      lastSavedAiJson = JSON.stringify(settings.value.ai)
     }
   })
 
@@ -456,6 +466,9 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     },
     ai: {
       maxTurns: loaded.ai?.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns,
+      autoCompact: loaded.ai?.autoCompact ?? true,
+      contextTokenBudget: loaded.ai?.contextTokenBudget || 32000,
+      summaryModelId: loaded.ai?.summaryModelId || '',
       models: loaded.ai?.models?.length ? loaded.ai.models : structuredClone(DEFAULT_SETTINGS.ai.models),
       // F-02: an unknown/hand-edited value falls back to the safe default
       // instead of being trusted (the Go side validates too).
@@ -482,6 +495,12 @@ function mergeSettings(loaded: AppSettings): AppSettings {
     tabCloseButton: loaded.tabCloseButton || DEFAULT_SETTINGS.tabCloseButton,
     showTabShortcutHints: loaded.showTabShortcutHints ?? DEFAULT_SETTINGS.showTabShortcutHints,
     hostListMenuStyle: loaded.hostListMenuStyle || DEFAULT_SETTINGS.hostListMenuStyle,
+    connectionsDisplayMode: loaded.connectionsDisplayMode === 'compact' ? 'compact' : 'full',
+    quickCommandsDisplayMode: loaded.quickCommandsDisplayMode === 'buttons' ? 'buttons' : 'list',
+    monitorSections: {
+      ...DEFAULT_SETTINGS.monitorSections,
+      ...(loaded.monitorSections || {})
+    },
     newTabAction: loaded.newTabAction || DEFAULT_SETTINGS.newTabAction,
     // Per-key merge so a settings.json written before a view existed (or
     // with a key dropped) still gets the default for that view.
@@ -489,6 +508,16 @@ function mergeSettings(loaded: AppSettings): AppSettings {
       ...DEFAULT_SETTINGS.sidebarTabs,
       ...(loaded.sidebarTabs || {})
     },
+    // Dock layout: per-key merge like sidebarTabs; the tab order is
+    // validated against known view ids and backfilled with any missing
+    // views (orderedViews computes the append at read time).
+    panelLocations: {
+      ...DEFAULT_SETTINGS.panelLocations,
+      ...(loaded.panelLocations || {})
+    },
+    panelOrder: (loaded.panelOrder || []).filter(v =>
+      Object.keys(DEFAULT_SETTINGS.panelLocations).includes(v)
+    ),
     // Per-key visible merge; the order is validated against the known block
     // ids and backfilled with any missing blocks (older settings.json files
     // or hand-edited ones).

@@ -13,10 +13,10 @@ import (
 // that the WebView2 browser subprocess (msedgewebview2.exe) terminates before
 // the process calls ExitProcess.
 //
-// Why this is needed: wails v3 beta.27's app-close path (Application.Quit ->
+// Why this is needed: wails v3's app-close path (as of v3.0.0; Application.Quit ->
 // cleanup -> window.Close) never actually releases the WebView2 COM objects.
 // WebviewWindow.Close() only emits the WindowClosing event, and
-// edge.Chromium.ShuttingDown() only sets a flag — the ICoreWebView2Controller,
+// edge.Chromium.ShuttingDown() only nils the host callbacks and resets a flag — the ICoreWebView2Controller,
 // ICoreWebView2 and ICoreWebView2Environment COM references are retained for
 // the life of the process. The WebView2 runtime therefore keeps its browser
 // subprocess alive, and when ExitProcess runs its DLL-detach teardown it

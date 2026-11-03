@@ -16,7 +16,7 @@ uniTerm (127.0.0.1:61207/mcp)
 Saved SSH connections (credentials stay in the app)
 ```
 
-- **Loopback-only listener** (127.0.0.1) — unreachable from the network
+- **Loopback-only by default** (127.0.0.1); remote access must be explicitly enabled
 - **One Bearer token per client**; the plaintext is shown exactly once at creation, only a SHA-256 hash is stored
 - Every call is logged to `<data-dir>/mcp-audit.log` (JSONL) with the client name, command, and exit code
 
@@ -140,6 +140,26 @@ kimi mcp add --transport http uniterm http://127.0.0.1:61207/mcp \
 }
 ```
 
+## Remote Clients and Port Forwarding
+
+For direct access, use a trusted network: MCP uses plain HTTP, so traffic and tokens are not encrypted by this endpoint.
+
+1. In **Settings → MCP Server**, turn on **Allow Remote Access**. The listener changes to `0.0.0.0:<port>`; existing MCP connections are closed during the restart.
+2. Configure the remote client with `http://<desktop-ip>:61207/mcp` and its Bearer token. Use the desktop’s reachable IPv4 address or hostname, not `0.0.0.0`. Allow the listening port through the desktop firewall if needed.
+3. In the token setup wizard, enter that address before copying the client configuration. If a forwarding rule uses a different port, update the port in the copied configuration too.
+
+Remote mode also permits non-local `Host` headers when port forwarding, fixing `Forbidden: invalid Host header`. Authentication and command approvals still apply. Requests with an `Origin` header must match the endpoint’s origin; arbitrary cross-origin browser requests remain blocked.
+
+For an encrypted connection from an agent on a remote Linux server, a loopback SSH reverse tunnel can keep **Allow Remote Access** off. Run on the computer running uniTerm:
+
+```bash
+ssh -N -R 127.0.0.1:61208:127.0.0.1:61207 user@remote-linux
+```
+
+On the remote Linux server, point the agent to `http://127.0.0.1:61208/mcp` and supply its Bearer token. The SSH server must permit remote forwarding; keep the SSH command running while the agent connects. The loopback `Host` header works in the default local-only mode.
+
+Turning **Allow Remote Access** off restarts the endpoint on `127.0.0.1` and restores local-only Host validation.
+
 ## Using It
 
 Once connected, just describe the task in natural language:
@@ -196,7 +216,7 @@ The **local side** of `upload_file` / `download_file` must be inside an allowed 
 
 | Layer | Mechanism |
 |-------|-----------|
-| Transport | Loopback-only listener; local processes still need a Bearer token |
+| Transport | Loopback by default; opt-in remote IPv4 access; Origin validation; all clients need a Bearer token. Use SSH for encryption |
 | Auth | Per-client token, SHA-256 at rest, revocable, hot-reloaded |
 | Authorization | Approval policy matrix (commands are risk-classified; the policy decides when to prompt) |
 | Execution | Dedicated exec channel, never touches your interactive terminal; concurrency cap 8, 5-minute hard timeout per command |

@@ -357,6 +357,20 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.containerManager.SetEventEmitter(func(name string, payload any) {
 		a.emit(name, payload)
 	})
+	// Host key change events: resolve the sessionId→panel binding so the
+	// frontend dialog can offer "accept and reconnect" on the right panel.
+	session.SetHostKeyEmitter(func(name string, payload any) {
+		if m, ok := payload.(map[string]any); ok {
+			if sid, _ := m["sessionId"].(string); sid != "" {
+				a.panelLogMu.Lock()
+				if pid := a.sessionToPanel[sid]; pid != "" {
+					m["panelId"] = pid
+				}
+				a.panelLogMu.Unlock()
+			}
+		}
+		a.emit(name, payload)
+	})
 
 	// Init logger first so subsequent log.Writef calls actually write
 	if err := log.Init(); err != nil {
@@ -449,10 +463,12 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 	// grant them once — they are Go-derived locations, never webview input.
 	fileGrants.addDir(filepath.Join(dataDir, "commands"))
 	fileGrants.addDir(filepath.Join(dataDir, "skills"))
-	// Trust-on-first-use host-key store lives next to the other stores;
-	// until this runs, session dials stay in legacy accept-all mode (see
-	// backend/session/knownhosts.go).
-	session.ConfigureKnownHosts(filepath.Join(dataDir, "known_hosts.json"))
+	// Fold pins recorded by the older JSON store (known_hosts.json) into the
+	// OpenSSH-format known_hosts the host-key verifier reads, so upgrading
+	// never silently re-trusts a host the user already pinned.
+	if err := session.MigrateLegacyKnownHosts(filepath.Join(dataDir, "known_hosts.json")); err != nil {
+		log.Writef("[known_hosts] legacy store migration: %v", err)
+	}
 
 	cs, err := store.NewConnectionStore(dataDir)
 	if err != nil {
@@ -770,30 +786,16 @@ func (a *App) saveWindowStateFromRuntime() {
 	if a.win().IsMinimised() {
 		return
 	}
-	ls, err := a.localStateStore.Load()
-	if err != nil {
-		return
-	}
-	ls.WindowX, ls.WindowY = a.window.Position()
-	ls.WindowWidth, ls.WindowHeight = a.window.Size()
-	ls.WindowMaximised = a.window.IsMaximised()
-	_ = a.localStateStore.Save(ls)
+	x, y := a.window.Position()
+	width, height := a.window.Size()
+	_ = a.localStateStore.SaveGeometry(x, y, width, height, a.window.IsMaximised())
 }
 
 func (a *App) SaveWindowState(x, y, width, height int, maximised bool) {
 	if a.localStateStore == nil {
 		return
 	}
-	ls, err := a.localStateStore.Load()
-	if err != nil {
-		return
-	}
-	ls.WindowX = x
-	ls.WindowY = y
-	ls.WindowWidth = width
-	ls.WindowHeight = height
-	ls.WindowMaximised = maximised
-	a.localStateStore.Save(ls)
+	_ = a.localStateStore.SaveGeometry(x, y, width, height, maximised)
 }
 
 // resetWindowGeometry recovers a lost window (tray menu item): shows it,
@@ -990,6 +992,12 @@ func (a *App) watchForeground(ctx context.Context) {
 // streams run on context.Background(), so without Close those goroutines
 // (and the HTTP bodies they block on) would outlive the app.
 func (a *App) shutdown() {
+	// Persist the geometry on every quit path (tray menu, Cmd+Q, OS close,
+	// relaunch) — the frontend only saves on resize/close inside the app, so
+	// without this the next launch opens at the default size (issue #1279).
+	// Runs before Hide(): Hide() is what makes the teardown invisible.
+	a.saveWindowStateFromRuntime()
+
 	// Hide the window first so the user perceives an instant close — the exact
 	// "disappear" behaviour of the upstream build. Releasing WebView2 below calls
 	// ICoreWebView2Controller::Close(), which gracefully tears down the control's

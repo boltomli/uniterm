@@ -194,9 +194,9 @@ func (r *Registry) start(pty Pty, sessionID, command, newline string, hardLimit 
 	}
 	wireCommand := command
 	if shell, ok := pty.(interface{ ForegroundShell() string }); ok && !observe {
-		if wrapped, supported := CompletionCommand(command, shell.ForegroundShell(), job.ID); supported {
+		if wrapped, scanner, supported := CompletionCommand(command, shell.ForegroundShell(), job.ID, newline); supported {
 			wireCommand = wrapped
-			job.completion = &completionScanner{prefix: []byte("__UT_" + job.ID + ";")}
+			job.completion = scanner
 		}
 	}
 	if cols > 0 && rows > 0 {
@@ -398,6 +398,23 @@ func (r *Registry) Interrupt(jobID string) error {
 	running := !job.finished
 	job.mu.Unlock()
 	if running {
+		r.finish(job, StateKilled, -1, ErrInterrupted)
+	}
+	return nil
+}
+
+// InterruptSession sends a terminal interrupt, then cancels the execution that
+// owned the session when the interrupt began. Snapshot before writing: the write
+// can synchronously complete that job, and a new job must not be cancelled.
+// A failed write leaves the existing execution tracked and locked.
+func (r *Registry) InterruptSession(sessionID string, sendInterrupt func() error) error {
+	r.mu.Lock()
+	job := r.jobs[r.busy[sessionID]]
+	r.mu.Unlock()
+	if err := sendInterrupt(); err != nil {
+		return err
+	}
+	if job != nil {
 		r.finish(job, StateKilled, -1, ErrInterrupted)
 	}
 	return nil

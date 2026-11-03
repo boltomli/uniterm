@@ -28,7 +28,7 @@ func TestHTTPServerConfiguresTimeouts(t *testing.T) {
 		Approve:         func(req ApprovalRequest) error { return nil },
 		Audit:           func(entry AuditEntry) {},
 	})
-	if err := srv.Start(0); err != nil {
+	if err := srv.Start(0, false); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(srv.Stop)
@@ -183,7 +183,7 @@ func TestTokenScopeGatesToolsOverHTTP(t *testing.T) {
 		srv := NewServer(env)
 		token, hash := GenerateToken()
 		srv.SetTokens(map[string]TokenInfo{hash: {Name: "scoped-agent", Scope: scope}})
-		if err := srv.Start(0); err != nil {
+		if err := srv.Start(0, false); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
 		t.Cleanup(srv.Stop)

@@ -51,14 +51,8 @@
         @create-region="openRegionEditor()" @edit-region="openRegionEditor"
       />
       <span class="vnc-status-sep">|</span>
-      <span class="vnc-status-label">{{ t('vnc.scale') }}</span>
-      <el-switch
-        v-model="scaleViewport"
-        inline-prompt
-        :active-text="t('vnc.scaleOn')"
-        :inactive-text="t('vnc.scaleOff')"
-        style="--el-switch-on-color: var(--success); --el-switch-off-color: var(--text-disabled)"
-      />
+      <span class="vnc-status-label">{{ t('remoteDesktop.scale') }}</span>
+      <RemoteDesktopZoomSelect v-model="zoom" />
       <span class="vnc-status-sep">|</span>
       <span class="vnc-status-label">{{ t('vnc.viewOnly') }}</span>
       <el-switch
@@ -82,7 +76,7 @@
     </div>
     <RemoteDesktopToolbar
       v-if="isFullscreen"
-      v-model:scale-viewport="scaleViewport"
+      v-model:zoom="zoom"
       v-model:show-dot-cursor="showDotCursor"
       :host="config?.host || ''"
       :port="config?.port || 5900"
@@ -115,6 +109,7 @@ import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nex
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
 import RemoteDisplaySelect from './RemoteDisplaySelect.vue'
+import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
 import DesktopRegionEditor from './DesktopRegionEditor.vue'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
@@ -153,7 +148,7 @@ const container = ref<HTMLDivElement | null>(null)
 const isFullscreen = ref(false)
 const vncContainer = ref<HTMLDivElement | null>(null)
 const savedPassword = ref<string>('')
-const { scaleViewport, viewOnly, showDotCursor } = useRemoteDesktopPreferences(() => props.config)
+const { zoom, scaleViewport, viewOnly, showDotCursor } = useRemoteDesktopPreferences(() => props.config)
 const displayState = ref<DesktopDisplayState>({ displays: [], width: 0, height: 0, view: { selected: 'all' } })
 let displayController: ReturnType<typeof installVncDisplays> | null = null
 const regionEditor = ref<{ preview: DesktopPreview; region: DesktopRegion; editingExisting: boolean } | null>(null)
@@ -262,6 +257,11 @@ async function resolvePassword(): Promise<string> {
     return ''
   }
 }
+// RFB version-negotiation retry state: currentProxyAddr powers the 3.3
+// downgrade rebuild; everConnected/rfb33Retried guard the one-shot retry.
+let currentProxyAddr = ''
+let everConnected = false
+let rfb33Retried = false
 
 async function connect() {
   if (!props.config) return
@@ -313,7 +313,7 @@ async function reconnect() {
   await connect()
 }
 
-function initRFB(proxyAddr: string, password: string) {
+function initRFB(proxyAddr: string, password: string, forceRfb33 = false) {
   if (isIniting) return
   isIniting = true
   onFocusOut()
@@ -326,6 +326,14 @@ function initRFB(proxyAddr: string, password: string) {
   restoreCursor?.()
   restoreCursor = null
 
+  // Fresh attempt (not the 3.3 downgrade retry): reset negotiation state
+  // and remember the proxy address the downgrade retry would reuse.
+  if (!forceRfb33) {
+    currentProxyAddr = proxyAddr
+    everConnected = false
+    rfb33Retried = false
+  }
+
   if (rfb) {
     try { rfb.disconnect() } catch (_) {}
     rfb = null
@@ -336,14 +344,14 @@ function initRFB(proxyAddr: string, password: string) {
 
   const RFB = (window as any).__novnc_RFB
   if (RFB) {
-    createRFB(RFB, proxyAddr, password)
+    createRFB(RFB, proxyAddr, password, forceRfb33)
     return
   }
 
   import('@novnc/novnc').then((module: any) => {
     const LoadedRFB = module.default || module
     ;(window as any).__novnc_RFB = LoadedRFB
-    createRFB(LoadedRFB, proxyAddr, password)
+    createRFB(LoadedRFB, proxyAddr, password, forceRfb33)
   }).catch((e: any) => {
     console.error('Failed to load noVNC module:', e)
     lastError.value = e?.message || String(e)
@@ -356,7 +364,7 @@ function applyRFBOptions() {
   if (!rfb) return
   displayController?.dispose()
   restorePixelScaling?.()
-  restorePixelScaling = installVncPixelScaling(rfb)
+  restorePixelScaling = installVncPixelScaling(rfb, () => zoom.value)
   restoreCursor?.()
   if (container.value) restoreCursor = installVncCursor(rfb, container.value)
   rfb.viewOnly = viewOnly.value
@@ -499,7 +507,7 @@ function onVisibilityChange() {
   else onFocusIn()
 }
 
-function createRFB(RFB: any, proxyAddr: string, password: string) {
+function createRFB(RFB: any, proxyAddr: string, password: string, forceRfb33 = false) {
   if (!vncContainer.value || vncContainer.value.childElementCount > 0) {
     isIniting = false
     return
@@ -519,13 +527,32 @@ function createRFB(RFB: any, proxyAddr: string, password: string) {
     return
   }
 
-  // Force RFB 3.3 negotiation. RealVNC Server advertises a private
-  // "RFB 005.000" banner which noVNC maps to 3.8; in 3.8 the server then
-  // offers a security-type list ([6,130,2,...]) and noVNC picks RA2ne (6)
-  // ahead of VNC Auth (2), failing with a 1006 close. Cap the max version to
-  // 3.3 so noVNC replies "RFB 003.003" and the server falls back to legacy
-  // single-security-type negotiation, sending VNC Auth (2) directly.
-  rfb._rfbMaxVersion = 3.3
+  // Smart RFB version negotiation (replaces the old blanket
+  // `_rfbMaxVersion = 3.3` hammer):
+  //
+  // - Default (modern servers): normal 3.8 list negotiation. noVNC picks
+  //   from the server's offered security types (VncAuth / None / MS-Logon
+  //   II all reachable). Two types are skipped in the preference order:
+  //   RA2ne (6) — RealVNC advertises [6,130,2,...] and noVNC's RA2ne
+  //   implementation dies with an unexplained 1006 against RealVNC
+  //   servers; and VeNCrypt (19) — noVNC only implements the Plain
+  //   sub-type while TigerVNC-style servers offer TLS sub-types, so
+  //   picking 19 fails the handshake instead of falling through to the
+  //   VNC Auth (2) they also offer.
+  // - Legacy fallback (forceRfb33, auto-retried once): cap to RFB 3.3 so
+  //   legacy servers (UltraVNC 003.003/003.006 banners) that reject 3.8
+  //   viewers or single-handedly dictate a security type still connect.
+  //   This preserves the original RealVNC workaround as a fallback instead
+  //   of penalising every server.
+  if (forceRfb33) {
+    rfb._rfbMaxVersion = 3.3
+  } else {
+    const origIsSupported = rfb._isSupportedSecurityType?.bind(rfb)
+    if (typeof origIsSupported === 'function') {
+      rfb._isSupportedSecurityType = (type: number) =>
+        type !== 6 && type !== 19 && origIsSupported(type)
+    }
+  }
 
   applyRFBOptions()
 
@@ -547,6 +574,7 @@ function onRfbConnect() {
   // screen with no error on security failure or wrong password.
   lastError.value = ''
   status.value = 'connected'
+  everConnected = true
 }
 
 function onRfbSecurityFailure(e: any) {
@@ -562,6 +590,20 @@ function onRfbCredentialsRequired(e: any) {
 }
 
 function onRfbDisconnect(e: any) {
+  // Auto-downgrade retry: if the 3.8 negotiation dies without ever
+  // reaching 'connected' (typical symptom: unexplained 1006 close or a
+  // legacy server that refuses modern viewers), rebuild once under
+  // RFB 3.3 before surfacing the error to the user.
+  if (!e.detail.clean && !everConnected && !rfb33Retried && currentProxyAddr) {
+    rfb33Retried = true
+    status.value = 'connecting'
+    // Give the backend VNCProxy a beat to release the previous
+    // WebSocket/TCP pair before reconnecting through it.
+    setTimeout(() => {
+      initRFB(currentProxyAddr, savedPassword.value, true)
+    }, 500)
+    return
+  }
   if (!e.detail.clean) {
     if (!lastError.value) lastError.value = t('vnc.errorClosed')
     status.value = 'error'
@@ -706,6 +748,10 @@ onMounted(() => {
     rfb = cached.rfb
     panelStore.removeVNCCache(props.panelId)
     status.value = 'connected'
+    // Cached RFB instances already completed their handshake; mark them so
+    // a later disconnect doesn't fire the 3.3 downgrade retry against a
+    // stale proxy address.
+    everConnected = true
     applyRFBOptions()
     // Rebind the handlers: the cached rfb still carries the previous
     // component instance's listeners, which write to that dead instance's
@@ -772,8 +818,10 @@ watch(() => props.sessionId, (newId) => {
   }
 })
 
-watch(scaleViewport, (val) => {
-  if (rfb) rfb.scaleViewport = val
+watch(zoom, () => {
+  if (!rfb) return
+  rfb.scaleViewport = scaleViewport.value
+  rfb._updateScale?.()
 })
 watch(viewOnly, (val) => {
   if (val) onFocusOut()

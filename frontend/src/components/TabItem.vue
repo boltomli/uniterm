@@ -104,21 +104,41 @@
       <MenuItem v-if="tab.type === 'terminal'" :shortcut="menuShortcut('terminalSearch')" @click="triggerSearch">
         {{ t('terminal.searchText') }}
       </MenuItem>
-      <MenuItem v-if="tab.type === 'terminal'" @click="triggerExport">{{ t('terminal.export') }}</MenuItem>
-      <MenuItem v-if="tab.type === 'terminal'" @click="triggerResetOutput">{{ t('terminal.resetOutput') }}</MenuItem>
-      <MenuItem v-if="tab.type === 'terminal'" @click="triggerClearScrollback">{{ t('terminal.clearScrollback') }}</MenuItem>
-      <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
-        {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
-      </MenuItem>
-      <MenuItem v-if="supportsOutputLog && isOutputLogOn" @click="openLogDir">
-        {{ t('session.openLogDir') }}
-      </MenuItem>
+      <MenuSubmenu v-if="tab.type === 'terminal'" :label="t('terminal.display')">
+        <MenuItem @click="toggleTabLineNumbers">
+          {{ settingsStore.settings.terminal.showLineNumbers ? t('settings.hideLineNumbers') : t('settings.showLineNumbers') }}
+        </MenuItem>
+        <MenuItem @click="toggleTabTimestamps">
+          {{ settingsStore.settings.terminal.showTimestamps ? t('settings.hideTimestamps') : t('settings.showTimestamps') }}
+        </MenuItem>
+      </MenuSubmenu>
+      <MenuSubmenu v-if="tab.type === 'terminal'" :label="t('terminal.clearScreen')">
+        <MenuItem @click="triggerResetOutput">{{ t('terminal.resetOutput') }}</MenuItem>
+        <MenuItem @click="triggerClearScrollback">{{ t('terminal.clearScrollback') }}</MenuItem>
+      </MenuSubmenu>
+      <MenuSubmenu v-if="tab.type === 'terminal'" :label="t('session.logRecordMenu')">
+        <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
+          {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
+        </MenuItem>
+        <MenuItem v-if="supportsOutputLog" @click="openLogDir">
+          {{ t('session.openLogDir') }}
+        </MenuItem>
+        <MenuDivider />
+        <MenuItem @click="triggerExport">{{ t('terminal.export') }}</MenuItem>
+        <MenuDivider />
+        <MenuItem @click="toggleTabRecording">
+          {{ isTabRecording() ? t('record.stop') : t('record.start') }}
+        </MenuItem>
+        <MenuItem @click="openRecordListEvent">{{ t('record.openList') }}</MenuItem>
+      </MenuSubmenu>
 
       <!-- ③ 连接功能（ssh / rdp） -->
       <MenuDivider />
       <MenuItem v-if="tab.type === 'rdp' || tab.type === 'vnc' || tab.type === 'spice'" @click="enterDesktopFullScreen">{{ t('remoteDesktop.fullscreen') }}</MenuItem>
-      <MenuItem v-if="isSsh" @click="openSftp">{{ t(fileMenuKey) }}</MenuItem>
-      <MenuItem v-if="isSsh" @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
+      <MenuSubmenu v-if="isSsh" :label="t('terminal.transfer')">
+        <MenuItem @click="openSftp">{{ t(fileMenuKey) }}</MenuItem>
+        <MenuItem @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
+      </MenuSubmenu>
       <MenuItem v-if="isSsh" @click="openMonitor">{{ t('sidebar.connectMonitor') }}</MenuItem>
       <MenuItem v-if="isSftpOverSsh" @click="openTerminal">{{ t('tab.openTerminal') }}</MenuItem>
 
@@ -135,7 +155,7 @@
 
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -150,6 +170,7 @@ import {
   EnableSessionOutputLog,
   DisableSessionOutputLog,
   GetSessionOutputLogInfo,
+  DefaultSessionLogDir,
   OpenPathInExplorer,
 } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
@@ -162,6 +183,9 @@ import { useDuplicateSession } from '../composables/useDuplicateSession'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
+import MenuSubmenu from './MenuSubmenu.vue'
+import { getSessionRecorder, maybeWarnSensitive } from '../services/terminalRecorder'
+import { getManagedTerminal } from '../services/terminalManager'
 import { Clipboard } from '@wailsio/runtime'
 import { isMobilePlatform } from '../utils/platform'
 import { SquareTerminal, FolderUp, X, ArrowDownUp, Lock, Radio } from '@lucide/vue'
@@ -496,6 +520,7 @@ function startEdit() {
 function confirmEdit() {
   if (!editing.value) return
   editing.value = false
+  tabStore.endTabRename()
   const newName = editName.value.trim()
   if (newName && newName !== props.tab.name) {
     tabStore.renameTab(props.tab.id, newName)
@@ -504,7 +529,13 @@ function confirmEdit() {
 
 function cancelEdit() {
   editing.value = false
+  tabStore.endTabRename()
 }
+
+// F2 (issue #1336): the store asks the active tab to open its rename box.
+watch(() => tabStore.renamingTabId, id => {
+  if (id === props.tab.id && !editing.value) startEdit()
+})
 
 function toggleLock() {
   tabStore.toggleTabLock(props.tab.id)
@@ -687,12 +718,72 @@ async function toggleOutputLog() {
 
 async function openLogDir() {
   closeContextMenu()
-  if (!outputLogPath.value) return
+  // Always available: without a running panel log, fall back to the
+  // OS-default session log directory.
+  let dir = outputLogPath.value
+  if (!dir) {
+    try {
+      dir = await DefaultSessionLogDir()
+    } catch {
+      return
+    }
+  }
+  if (!dir) return
   try {
-    await OpenPathInExplorer(outputLogPath.value)
+    await OpenPathInExplorer(dir)
   } catch (e: any) {
     msg.error(String(e?.message ?? e))
   }
+}
+
+// Cast v2 recording controls (same session-keyed recorder the terminal uses).
+function terminalSessionId(): string {
+  if (props.tab.type !== 'terminal') return ''
+  const panel = panelStore.getPanel((props.tab as TerminalTab).panelId)
+  return panel?.sessionId || ''
+}
+
+function isTabRecording(): boolean {
+  const sid = terminalSessionId()
+  return !!sid && getSessionRecorder(sid).isRecording()
+}
+
+async function toggleTabRecording() {
+  closeContextMenu()
+  const sid = terminalSessionId()
+  if (!sid) return
+  const recorder = getSessionRecorder(sid)
+  try {
+    if (recorder.isRecording()) {
+      const path = await recorder.stop()
+      msg.copyable(t('record.stopped', { path }), 'info')
+    } else {
+      const managed = getManagedTerminal(sid)
+      const panel = panelStore.getPanel((props.tab as TerminalTab).panelId)
+      const path = await recorder.start(sid, managed?.terminal.cols || 80, managed?.terminal.rows || 24, panel?.config?.name || sid)
+      maybeWarnSensitive(t('record.sensitiveWarning'))
+      msg.copyable(t('record.started', { path }), 'success')
+    }
+  } catch (e: any) {
+    msg.error(t('record.startFailed', { error: String(e?.message ?? e) }))
+  }
+}
+
+// One RecordList instance lives in BaseTerminal; reuse the event pattern the
+// export/reset actions already use.
+function openRecordListEvent() {
+  window.dispatchEvent(new CustomEvent('terminal:record-list', { detail: { panelId: (props.tab as TerminalTab).panelId } }))
+  closeContextMenu()
+}
+
+function toggleTabLineNumbers() {
+  closeContextMenu()
+  settingsStore.updateTerminal({ showLineNumbers: !settingsStore.settings.terminal.showLineNumbers })
+}
+
+function toggleTabTimestamps() {
+  closeContextMenu()
+  settingsStore.updateTerminal({ showTimestamps: !settingsStore.settings.terminal.showTimestamps })
 }
 
 function triggerSearch() {

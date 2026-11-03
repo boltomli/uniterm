@@ -20,6 +20,10 @@ func TestAIConfigStore_MigrateFromSettings(t *testing.T) {
 	ss.SetPasswordStore(fakeCipherStore{})
 	settings := defaultSettings()
 	settings.AI.Models[0].APIKey = "sk-user-key"
+	disabled := false
+	settings.AI.AutoCompact = &disabled
+	settings.AI.ContextTokenBudget = 512000
+	settings.AI.SummaryModelID = "model-default"
 	if err := ss.Save(settings); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
@@ -38,6 +42,9 @@ func TestAIConfigStore_MigrateFromSettings(t *testing.T) {
 	}
 	if cfg.MaxTurns == nil || *cfg.MaxTurns != defaultMaxTurns {
 		t.Fatalf("migrated maxTurns: %v", cfg.MaxTurns)
+	}
+	if cfg.AutoCompact == nil || *cfg.AutoCompact || cfg.ContextTokenBudget != 512000 || cfg.SummaryModelID != "model-default" {
+		t.Fatalf("context preferences lost during migration: %+v", cfg)
 	}
 
 	// The settings.json copy must stay intact for rollback compatibility.
@@ -102,6 +109,41 @@ func TestAIConfigStore_RoundTripEncryption(t *testing.T) {
 	}
 }
 
+func TestAIConfigStore_ContextPreferencesSurviveRestartAndSync(t *testing.T) {
+	dir := t.TempDir()
+	disabled := false
+	acs, err := NewAIConfigStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := acs.Save(AIStoreData{MaxTurns: intPtr(20), AutoCompact: &disabled,
+		ContextTokenBudget: 1000000, SummaryModelID: "summary-model"}); err != nil {
+		t.Fatal(err)
+	}
+	// Read from a new store instance, then exercise the cloud-sync envelope.
+	restarted, err := NewAIConfigStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := restarted.ExportPlain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced, err := NewAIConfigStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := synced.ImportPlain(raw); err != nil {
+		t.Fatal(err)
+	}
+	got, err := synced.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AutoCompact == nil || *got.AutoCompact || got.ContextTokenBudget != 1000000 || got.SummaryModelID != "summary-model" {
+		t.Fatalf("context preferences lost: %+v", got)
+	}
+}
 
 func mustAIStore(t *testing.T) *AIConfigStore {
 	t.Helper()

@@ -117,7 +117,7 @@ jobs:
           # does not affect the APK.
           TAGS=""
           if [[ "${{ matrix.slug }}" == linux* || "${{ matrix.slug }}" == "android" ]]; then TAGS="-tags gtk3"; fi
-          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.27
+          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
 
       - name: Set version
         shell: bash

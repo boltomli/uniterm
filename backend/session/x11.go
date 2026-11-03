@@ -11,7 +11,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ys-ll/uniterm/backend/log"
 )
+
+const vcxsrvReadyTimeout = 5 * time.Second
 
 // ParseDisplay parses an X11 $DISPLAY string into its host, display number,
 // and screen number. host is "" for local (":0", "unix:0", or a full XQuartz
@@ -138,21 +142,17 @@ func findFreeDisplay(startFrom int) int {
 	return -1
 }
 
-// launchVcXsrv starts a new VcXsrv instance on the given display number
-// and waits up to 5 s for it to become ready. Returns the exec.Cmd so the
-// caller can manage the process lifetime (e.g. kill it when done). Returns
-// nil if VcXsrv is already running on this display, the binary cannot be
-// found, or the process fails to become ready within the timeout.
+// startVcXsrv starts a VcXsrv process on the given display without waiting
+// for it to accept connections. Returns the process handle on success.
 // Extra args (e.g. "-multiwindow") are appended after "-clipboard".
-// No-op on non-Windows platforms.
-func launchVcXsrv(disp int, extraArgs ...string) *exec.Cmd {
+func startVcXsrv(disp int, extraArgs ...string) (*exec.Cmd, error) {
 	if runtime.GOOS != "windows" {
-		return nil
+		return nil, fmt.Errorf("x11: VcXsrv is only available on Windows")
 	}
 	port := fmt.Sprintf("127.0.0.1:%d", 6000+disp)
 	if c, err := net.DialTimeout("tcp", port, 200*time.Millisecond); err == nil {
 		c.Close()
-		return nil // already running
+		return nil, fmt.Errorf("x11: display :%d is already in use", disp)
 	}
 	dispStr := strconv.Itoa(disp)
 	for _, path := range vcxsrvCandidates() {
@@ -164,20 +164,47 @@ func launchVcXsrv(disp int, extraArgs ...string) *exec.Cmd {
 		home, _ := os.UserHomeDir()
 		cmd.Dir = home
 		if err := cmd.Start(); err != nil {
-			return nil
+			continue
 		}
-		// Wait for VcXsrv to open its TCP socket (up to 5 s).
-		for i := 0; i < 50; i++ {
-			time.Sleep(100 * time.Millisecond)
-			if c, err := net.DialTimeout("tcp", port, 200*time.Millisecond); err == nil {
-				c.Close()
-				return cmd
-			}
+		return cmd, nil
+	}
+	return nil, fmt.Errorf("x11: vcxsrv.exe not found")
+}
+
+// waitForVcXsrv waits up to timeout for VcXsrv to accept TCP connections.
+func waitForVcXsrv(disp int, timeout time.Duration) bool {
+	port := fmt.Sprintf("127.0.0.1:%d", 6000+disp)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if c, err := net.DialTimeout("tcp", port, 200*time.Millisecond); err == nil {
+			c.Close()
+			return true
 		}
-		// Timed out — kill the partial process so we don't leak zombies.
-		cmd.Process.Kill()
+	}
+	return false
+}
+
+// launchVcXsrv starts a new VcXsrv instance on the given display number
+// and waits up to 5 s for it to become ready. Returns the exec.Cmd so the
+// caller can manage the process lifetime (e.g. kill it when done). Returns
+// nil if VcXsrv is already running on this display, the binary cannot be
+// found, or the process fails to become ready within the timeout.
+// Extra args (e.g. "-multiwindow") are appended after "-clipboard".
+// No-op on non-Windows platforms.
+func launchVcXsrv(disp int, extraArgs ...string) *exec.Cmd {
+	if runtime.GOOS != "windows" {
 		return nil
 	}
+	cmd, err := startVcXsrv(disp, extraArgs...)
+	if err != nil {
+		return nil
+	}
+	if waitForVcXsrv(disp, vcxsrvReadyTimeout) {
+		return cmd
+	}
+	// Timed out — kill the partial process so we don't leak zombies.
+	cmd.Process.Kill()
 	return nil
 }
 
@@ -259,12 +286,13 @@ func vcxsrvCandidates() []string {
 
 var (
 	sshX11Mu      sync.Mutex
-	sshX11Display string   // e.g. "localhost:0"
+	sshX11Display string    // e.g. "localhost:0"
 	sshX11Vcxsrv  *exec.Cmd // nil on non-Windows or if launch failed
 )
 
 // ResolveSSHX11Display returns the X11 display for SSH X11 forwarding sessions.
-// On Windows it starts a dedicated VcXsrv instance on a free display; on other
+// On Windows it starts a dedicated VcXsrv instance on a free display without
+// blocking the SSH connection while the server becomes ready; on other
 // platforms it returns $DISPLAY (or probes /tmp/.X11-unix). Idempotent —
 // subsequent calls return the same display without side effects.
 func ResolveSSHX11Display() string {
@@ -280,10 +308,16 @@ func ResolveSSHX11Display() string {
 		if d < 0 {
 			return ""
 		}
-		sshX11Display = "localhost:" + strconv.Itoa(d)
 		// -multiwindow: each X client gets its own Windows window
 		// (the opposite of X11 Desktop which uses single-window mode).
-		sshX11Vcxsrv = launchVcXsrv(d, "-multiwindow")
+		cmd, err := startVcXsrv(d, "-multiwindow")
+		if err != nil {
+			log.Writef("x11: failed to start VcXsrv on :%d: %v", d, err)
+			return ""
+		}
+		sshX11Display = "localhost:" + strconv.Itoa(d)
+		sshX11Vcxsrv = cmd
+		go monitorSSHX11Server(d, cmd)
 	} else {
 		display := os.Getenv("DISPLAY")
 		if display == "" {
@@ -292,6 +326,28 @@ func ResolveSSHX11Display() string {
 		sshX11Display = display
 	}
 	return sshX11Display
+}
+
+// monitorSSHX11Server clears the cached display if the shared VcXsrv never
+// becomes ready, so the next connection retries instead of reusing a dead
+// display. It runs after ResolveSSHX11Display has already returned.
+func monitorSSHX11Server(disp int, cmd *exec.Cmd) {
+	if waitForVcXsrv(disp, vcxsrvReadyTimeout) {
+		return
+	}
+	sshX11Mu.Lock()
+	current := sshX11Vcxsrv == cmd
+	if current {
+		sshX11Vcxsrv = nil
+		sshX11Display = ""
+	}
+	sshX11Mu.Unlock()
+	if !current {
+		return
+	}
+	log.Writef("x11: VcXsrv on :%d was not ready within %s; retrying on next connection",
+		disp, vcxsrvReadyTimeout)
+	_ = cmd.Process.Kill()
 }
 
 // CleanupSSHX11Server kills the shared VcXsrv process started for SSH X11

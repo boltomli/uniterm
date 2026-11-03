@@ -361,14 +361,9 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	kbCallback := s.keyboardInteractiveChallenge(config, &kbAutoAnswered)
 
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Host-key verification keys on the ORIGINAL host:port when a jump-host
-	// tunnel rewrote the dial address to 127.0.0.1:<ephemeral>
-	// (setupJumpHostTunnel fills HostKeyPinHost/Port): the target is then
-	// verified against its real identity instead of being re-trusted as a
-	// fresh first-use host on every connection, and known_hosts.json stops
-	// growing one entry per ephemeral port.
-	pinAddr := hostKeyPinAddr(config, addr)
-	cb, trust := NewHostKeyVerifier(pinAddr)
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
 	newConfig := func(challenge ssh.KeyboardInteractiveChallenge) sshClientConfigFactory {
 		return func() (*ssh.ClientConfig, func(), error) {
 			authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(config, challenge)
@@ -379,7 +374,7 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 				User:            config.User,
 				Auth:            authMethods,
 				Timeout:         30 * time.Second,
-				HostKeyCallback: cb,
+				HostKeyCallback: HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), s.id),
 			}, cleanup, nil
 		}
 	}
@@ -403,9 +398,6 @@ func (s *SSHSession) Connect(config ConnectionConfig) error {
 	if err != nil {
 		s.setStatus(StatusError)
 		return wrapSSHAlgorithmError(sshAlgoModeOf(config.SSHAlgorithms), err)
-	}
-	if trust != nil && trust.FirstTrust {
-		s.emitData([]byte("\x1b[33m[host key not seen before — trusted and saved: " + pinAddr + " " + trust.Fingerprint + "]\x1b[0m\r\n"))
 	}
 
 	// Detect Windows OpenSSH from the server identification string exchanged
@@ -804,21 +796,32 @@ func (s *SSHSession) startKeepAlive() {
 }
 
 func (s *SSHSession) Write(data []byte) error {
-	// During keyboard-interactive auth, route input to the auth callback.
+	// Shell channel first: once stdin is wired, input must reach the PTY.
+	// authAnswerCh stays non-nil until Connect's deferred cleanup runs, and
+	// attach emits StatusConnected before its synchronous cwd discovery —
+	// so a writer notified by 'connected' (e.g. batch execution) can land
+	// in that window. Routing post-shell input into the buffered auth
+	// channel would silently swallow it: nobody drains the buffer after
+	// auth completes. The auth channel's consumers (the pre-handshake
+	// password prompt and the keyboard-interactive challenge) both run
+	// before Shell() wires stdin, so the stdin check is a strictly safer
+	// discriminator than the channel's lifetime.
 	s.mu.RLock()
+	stdin := s.stdin
 	ch := s.authAnswerCh
 	s.mu.RUnlock()
+	if stdin != nil {
+		enc := s.encodeInput(data)
+		s.lastSent.Store(append([]byte(nil), enc...))
+		_, err := stdin.Write(enc)
+		return err
+	}
 	if ch != nil {
+		// During keyboard-interactive auth, route input to the auth callback.
 		ch <- data
 		return nil
 	}
-	if s.stdin == nil {
-		return fmt.Errorf("not connected")
-	}
-	enc := s.encodeInput(data)
-	s.lastSent.Store(append([]byte(nil), enc...))
-	_, err := s.stdin.Write(enc)
-	return err
+	return fmt.Errorf("not connected")
 }
 
 // Disconnect tears down the SSH session. It uses sync.Once so the entire

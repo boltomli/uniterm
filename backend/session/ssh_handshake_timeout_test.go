@@ -136,7 +136,7 @@ func TestDialChainTimesOutOnStalledHandshake(t *testing.T) {
 	}}
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := ts.dialChain(context.Background(), chain, nil)
+		_, _, err := ts.dialChain(context.Background(), chain, nil, "")
 		done <- err
 	}()
 

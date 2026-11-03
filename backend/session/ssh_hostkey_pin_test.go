@@ -4,10 +4,11 @@ package session
 //
 //   - P1: a jump-host tunnel rewrites the dial address to
 //     127.0.0.1:<ephemeral> (app_terminal.setupJumpHostTunnel). The host key
-//     must still be pinned and verified under the ORIGINAL host:port,
-//     otherwise every connection is a fresh first-trust (a compromised jump
-//     host can MITM the target) and known_hosts grows one entry per
-//     ephemeral port.
+//     must still be verified and recorded under the ORIGINAL host:port carried
+//     in TunnelTargetHost/Port (hostKeyVerifyTarget), otherwise every
+//     connection is a fresh first-trust — a compromised jump host can MITM the
+//     target — and known_hosts grows one entry per ephemeral port, breaking
+//     when the port is reused for another target.
 //
 // The P0 finding this file originally pinned (a cwd-hook shell probe dialing
 // with InsecureIgnoreHostKey) no longer applies: SSH cwd discovery no longer
@@ -18,7 +19,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,40 +29,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// configureKnownHostsAt points the global TOFU store at a fresh file holding
-// entries (nil = start empty) and restores legacy mode (empty path) afterwards
-// so every other test keeps accepting all host keys.
-func configureKnownHostsAt(t *testing.T, entries []knownHostFileEntry) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "known_hosts.json")
-	if entries != nil {
-		data, err := json.Marshal(entries)
-		if err != nil {
-			t.Fatalf("marshal known_hosts: %v", err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatalf("write known_hosts: %v", err)
-		}
-	}
-	t.Cleanup(func() { ConfigureKnownHosts("") })
-	ConfigureKnownHosts(path)
-	return path
-}
-
-// knownHostEntry pins keys under hostport in the known_hosts file format.
-func knownHostEntry(hostport string, keys ...ssh.PublicKey) knownHostFileEntry {
-	e := knownHostFileEntry{Host: hostport}
-	for _, k := range keys {
-		e.Keys = append(e.Keys, knownKey{
-			Type: k.Type(),
-			Blob: base64.StdEncoding.EncodeToString(k.Marshal()),
-		})
-	}
-	return e
-}
-
-// foreignPublicKey returns a throwaway ed25519 key no test server presents.
-func foreignPublicKey(t *testing.T) ssh.PublicKey {
+// newTestPublicKey returns a throwaway ed25519 key no test server presents.
+func newTestPublicKey(t *testing.T) ssh.PublicKey {
 	t.Helper()
 	_, pub, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -75,10 +43,42 @@ func foreignPublicKey(t *testing.T) ssh.PublicKey {
 	return signer.PublicKey()
 }
 
+// writeKnownHostLine records one host key line in the known_hosts file at
+// path (creating the directory when needed), the same format the verifier
+// writes.
+func writeKnownHostLine(t *testing.T, path, host, keyType, keyB64 string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	line := host + " " + keyType + " " + keyB64 + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatalf("seed known_hosts: %v", err)
+	}
+}
+
+// readKnownHosts returns the non-empty, non-comment lines of path.
+func readKnownHosts(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read known_hosts: %v", err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // TestHostKeyPinVerifiedUnderOriginalHostPort is the P1 regression: a config
 // whose dial address was rewritten to 127.0.0.1:<ephemeral> must still verify
-// the key under the original host:port carried in HostKeyPinHost/Port.
+// the key under the original host:port carried in TunnelTargetHost/Port.
 func TestHostKeyPinVerifiedUnderOriginalHostPort(t *testing.T) {
+	path := withTempKnownHosts(t)
 	addr, _ := startProbeTrackingServer(t, false)
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -92,20 +92,20 @@ func TestHostKeyPinVerifiedUnderOriginalHostPort(t *testing.T) {
 		Port:     port,
 		AuthType: "password",
 		Password: "pw",
-		// Jump-host shape: dial 127.0.0.1:<ephemeral>, pin "the original".
-		HostKeyPinHost: "jump-target.example.com",
-		HostKeyPinPort: 22,
+		// Jump-host shape: dial 127.0.0.1:<ephemeral>, verify "the original".
+		TunnelTargetHost: "jump-target.example.com",
+		TunnelTargetPort: 22,
 	}
-	configureKnownHostsAt(t, []knownHostFileEntry{
-		knownHostEntry("jump-target.example.com:22", foreignPublicKey(t)),
-	})
+	foreign := newTestPublicKey(t)
+	writeKnownHostLine(t, path, "jump-target.example.com", foreign.Type(),
+		base64.StdEncoding.EncodeToString(foreign.Marshal()))
 
 	_, err = DialSSHClient(cfg)
 	if err == nil {
-		t.Fatalf("dial succeeded although jump-target.example.com:22 has a different pinned key — the verifier keyed on the ephemeral dial address %s", addr)
+		t.Fatalf("dial succeeded although jump-target.example.com has a different pinned key — the verifier keyed on the ephemeral dial address %s", addr)
 	}
-	if !strings.Contains(err.Error(), "host key CHANGED") {
-		t.Fatalf("dial error = %v, want host key CHANGED for the pinned address", err)
+	if !strings.Contains(err.Error(), "host key for jump-target.example.com:22 changed") {
+		t.Fatalf("dial error = %v, want host key changed for the pinned address", err)
 	}
 }
 
@@ -113,6 +113,7 @@ func TestHostKeyPinVerifiedUnderOriginalHostPort(t *testing.T) {
 // must pin the target once, not add a 127.0.0.1:<ephemeral> entry that breaks
 // when the port is reused and bloats the file on every reconnect.
 func TestHostKeyPinDoesNotGrowKnownHostsPerEphemeralPort(t *testing.T) {
+	path := withTempKnownHosts(t)
 	addr, _ := startProbeTrackingServer(t, false)
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -121,15 +122,14 @@ func TestHostKeyPinDoesNotGrowKnownHostsPerEphemeralPort(t *testing.T) {
 	port, _ := strconv.Atoi(portStr)
 
 	cfg := ConnectionConfig{
-		User:           "admin",
-		Host:           host,
-		Port:           port,
-		AuthType:       "password",
-		Password:       "pw",
-		HostKeyPinHost: "jump-target.example.com",
-		HostKeyPinPort: 22,
+		User:             "admin",
+		Host:             host,
+		Port:             port,
+		AuthType:         "password",
+		Password:         "pw",
+		TunnelTargetHost: "jump-target.example.com",
+		TunnelTargetPort: 22,
 	}
-	path := configureKnownHostsAt(t, nil)
 
 	client, err := DialSSHClient(cfg)
 	if err != nil {
@@ -137,23 +137,24 @@ func TestHostKeyPinDoesNotGrowKnownHostsPerEphemeralPort(t *testing.T) {
 	}
 	defer client.Close()
 
+	lines := readKnownHosts(t, path)
+	if len(lines) != 1 {
+		t.Fatalf("known_hosts has %d entries (%v), want exactly 1", len(lines), lines)
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) < 3 || fields[0] != "jump-target.example.com" {
+		t.Fatalf("known_hosts entry host = %q, want the original host:port", fields[0])
+	}
+	if strings.Contains(string(mustRead(t, path)), "127.0.0.1:"+portStr) {
+		t.Fatalf("known_hosts grew an entry for the ephemeral dial address 127.0.0.1:%s", portStr)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read known_hosts: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	var entries []knownHostFileEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		t.Fatalf("parse known_hosts: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("known_hosts has %d entries (%+v), want exactly 1", len(entries), entries)
-	}
-	if entries[0].Host != "jump-target.example.com:22" {
-		t.Fatalf("known_hosts entry host = %q, want the original host:port", entries[0].Host)
-	}
-	for _, e := range entries {
-		if e.Host == "127.0.0.1:"+portStr {
-			t.Fatalf("known_hosts grew an entry for the ephemeral dial address %s", e.Host)
-		}
-	}
+	return data
 }

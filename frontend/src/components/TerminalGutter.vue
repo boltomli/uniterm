@@ -21,10 +21,11 @@
 </template>
 
 <script setup lang="ts">
+import { isLogicalContinuation } from '../services/terminalCommandWrap'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { Terminal } from '@xterm/xterm'
 import { getManagedTerminal } from '../services/terminalManager'
-import { buildGutterLines, formatTimestampMs, TIMESTAMP_WIDTH_SAMPLE_MS, type GutterRow } from '../utils/terminalGutter'
+import { buildGutterLines, lineNumberColumnMetrics, formatTimestampMs, TIMESTAMP_WIDTH_SAMPLE_MS, type GutterRow } from '../utils/terminalGutter'
 import { useSettingsStore } from '../stores/settingsStore'
 
 const props = defineProps<{
@@ -52,19 +53,20 @@ interface GutterLayout {
   numWidth: number
 }
 
+const INITIAL_CELL_WIDTH = 8
 const layout = ref<GutterLayout>({
   lines: [],
   rowHeight: 18,
   topPadding: 0,
   fontFamily: 'inherit',
   fontSize: 12,
-  cellWidth: 8,
+  cellWidth: INITIAL_CELL_WIDTH,
   background: '',
   number: '',
   timestamp: '',
   border: '',
   timeWidth: 0,
-  numWidth: 24,
+  numWidth: lineNumberColumnMetrics(INITIAL_CELL_WIDTH, 1, getManagedTerminal(props.sessionId || '')?.lineNumberDigits).width,
 })
 
 const visible = computed(() => props.showLineNumbers || props.showTimestamps)
@@ -102,6 +104,10 @@ function clearSubscriptions() {
 function bindTerminal() {
   const managed = props.sessionId ? getManagedTerminal(props.sessionId) : undefined
   terminal = managed?.terminal ?? null
+  layout.value = {
+    ...layout.value,
+    numWidth: lineNumberColumnMetrics(layout.value.cellWidth, 1, managed?.lineNumberDigits).width,
+  }
 
   // The parent acquires the terminal in its own onMounted, which runs after a
   // child's, so the managed instance may not exist on first mount — retry.
@@ -182,7 +188,7 @@ function compute() {
     lineOffset,
     showTimestamps: props.showTimestamps,
     cursorAbsoluteY: buf.baseY + buf.cursorY,
-    getLine: (n) => buf.getLine(n),
+    getLine: (n) => ({ isWrapped: isLogicalContinuation(t, n) }),
     getMeta: (abs) => {
       // Alternate screen lines are transient — fall back to per-screen
       // positional numbers, no timestamps.
@@ -193,13 +199,14 @@ function compute() {
     formatTimestamp: (ms) => formatTimestampMs(ms, tsFormat),
   })
 
-  const maxDigits = String(Math.max(result.maxLineNumber, 1)).length
+  const numberMetrics = lineNumberColumnMetrics(cellWidth, result.maxLineNumber, managed?.lineNumberDigits)
+  if (managed) managed.lineNumberDigits = numberMetrics.digits
   const timeWidth = props.showTimestamps
     ? Math.ceil(cellWidth * formatTimestampMs(TIMESTAMP_WIDTH_SAMPLE_MS, tsFormat).length) + 2
     : 0
-  const numWidth = props.showLineNumbers
-    ? Math.max(Math.ceil(cellWidth * maxDigits) + 8, 24)
-    : 0
+  // Keep the reservation even while hidden, so enabling line numbers does
+  // not first render a zero-width column before the scheduled update.
+  const numWidth = numberMetrics.width
 
   layout.value = {
     lines: result.lines,

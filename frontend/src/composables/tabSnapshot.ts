@@ -14,6 +14,7 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useLocalStateStore } from '../stores/localStateStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { launchConnection } from './connectionLauncher'
 import { openSavedWorkspace, serializeWorkspaceState } from './savedWorkspace'
 import type { ConnectionConfig, MemberConnectResult, MemberConnectStatus } from '../types/session'
@@ -85,6 +86,33 @@ export function installTabSnapshotSaver() {
   )
 }
 
+// Settings load in parallel with mounting. Wait before reading the startup
+// preference so a saved false cannot be mistaken for the default true (#1292).
+export async function maybeRestoreLastTabs(
+  confirmRestore: (count: number) => Promise<unknown>,
+  deps: RestoreDeps,
+): Promise<void> {
+  const settingsStore = useSettingsStore()
+  const localStateStore = useLocalStateStore()
+  if (!settingsStore.loaded) {
+    await new Promise<void>(resolve => {
+      watch(() => settingsStore.loaded, () => resolve(), { once: true })
+    })
+  }
+  if (!settingsStore.settings.restoreTabsPrompt) return
+  const snapshot = localStateStore.state.lastTabsSnapshot
+  if (!snapshot?.tabs?.length) return
+  try {
+    await confirmRestore(snapshot.tabs.length)
+  } catch {
+    // A decline means "don't offer these tabs again". The saver records a
+    // new snapshot when the user opens or changes tabs.
+    await localStateStore.update({ lastTabsSnapshot: null })
+    return
+  }
+  await restoreTabsSnapshot(snapshot, deps)
+}
+
 // Re-open every saved tab in order. Entries that cannot be resolved anymore
 // (connection deleted, self-contained panel without enough info) are skipped
 // silently — restore is best-effort, mirroring openSavedWorkspace's policy.
@@ -111,7 +139,9 @@ export async function restoreTabsSnapshot(snapshot: SavedTabsSnapshot, deps: Res
         ? connectionStore.connections.find(c => c.id === entry.connectionId)
         : undefined
       if (host) {
-        await launchConnection({ ...host }, { persist: false, connectTerminal: deps.connectTerminal })
+        // Title the tab with the name the user renamed it to; the launcher
+        // titles tabs from config.name (persist:false keeps the store untouched).
+        await launchConnection({ ...host, name: entry.name || host.name }, { persist: false, connectTerminal: deps.connectTerminal })
         continue
       }
       // Self-contained local/wsl panel: rebuild from type + shellPath.

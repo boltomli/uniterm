@@ -181,6 +181,8 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { writeClipboard } from '../composables/useClipboardWrite'
 import { Copy, Check, BookOpen, Terminal, FileText } from '@lucide/vue'
 import { useAIStore } from '../stores/aiStore'
 import { useI18n } from '../i18n'
@@ -327,37 +329,34 @@ const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="0.75rem" heigh
 const CHECK_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="0.75rem" height="0.75rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
 
 async function copyAsMarkdown() {
-  try {
-    await navigator.clipboard.writeText(props.message.content)
-    copyMdLabel.value = t('ai.copied')
-    setTimeout(() => { copyMdLabel.value = t('ai.copyMarkdown') }, 2000)
-  } catch {
-    copyMdLabel.value = t('ai.copyFailed')
-    setTimeout(() => { copyMdLabel.value = t('ai.copyMarkdown') }, 2000)
-  }
+  const copied = await writeClipboard(props.message.content)
+  copyMdLabel.value = t(copied ? 'ai.copied' : 'ai.copyFailed')
+  setTimeout(() => { copyMdLabel.value = t('ai.copyMarkdown') }, 2000)
 }
 
 const copiedTool = ref('')
 
 async function copyToolText(text: string, key: string) {
-  try {
-    await navigator.clipboard.writeText(text)
+  if (await writeClipboard(text)) {
     copiedTool.value = key
     setTimeout(() => { copiedTool.value = '' }, 2000)
-  } catch {
-    // ignore
+  } else {
+    ElMessage.error(t('ai.copyFailed'))
   }
 }
 
-function onTextClick(event: MouseEvent) {
+async function onTextClick(event: MouseEvent) {
   const btn = (event.target as HTMLElement).closest('.code-copy-btn') as HTMLElement | null
   if (!btn) return
   const wrapper = btn.closest('.code-block-wrapper')
   const code = wrapper?.querySelector('code')?.textContent
   if (code) {
-    navigator.clipboard.writeText(code)
-    btn.innerHTML = CHECK_ICON
-    setTimeout(() => { btn.innerHTML = COPY_ICON }, 2000)
+    if (await writeClipboard(code)) {
+      btn.innerHTML = CHECK_ICON
+      setTimeout(() => { btn.innerHTML = COPY_ICON }, 2000)
+    } else {
+      ElMessage.error(t('ai.copyFailed'))
+    }
   }
 }
 

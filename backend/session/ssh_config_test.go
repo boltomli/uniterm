@@ -6,7 +6,6 @@ import (
 	"crypto/rsa"
 	"io"
 	"net"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -262,9 +261,7 @@ func indexOfAlgo(order []string, algo string) int {
 // perfectly ordinary key addition. The callback itself must stay strict — a
 // key of an unpinned type is still refused.
 func TestHostKeyAlgorithmsPreferPinnedType(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "known_hosts.json")
-	ConfigureKnownHosts(path)
-	configureLegacy(t)
+	withTempKnownHosts(t)
 	const addr = "pinned.example:22"
 
 	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -275,7 +272,7 @@ func TestHostKeyAlgorithmsPreferPinnedType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ssh rsa public key: %v", err)
 	}
-	if cb, _ := NewHostKeyVerifier(addr); cb(addr, nil, pinned) != nil {
+	if err := HostKeyCallback("pinned.example", "22", "")("pinned.example", nil, pinned); err != nil {
 		t.Fatal("first connection must be trusted")
 	}
 
@@ -299,12 +296,9 @@ func TestHostKeyAlgorithmsPreferPinnedType(t *testing.T) {
 	if got := negotiateHostKeyAlgo(order, serverOffer); got != ssh.KeyAlgoRSASHA256 {
 		t.Fatalf("negotiated %q, want the pinned rsa-sha2-256 (order: %v)", got, order)
 	}
-	cb, trust := NewHostKeyVerifier(addr)
-	if err := cb(addr, nil, pinned); err != nil {
+	cb := HostKeyCallback("pinned.example", "22", "")
+	if err := cb("pinned.example", nil, pinned); err != nil {
 		t.Fatalf("server adding an ed25519 key must not report CHANGED: %v", err)
-	}
-	if trust.FirstTrust {
-		t.Fatal("reconnecting the pinned key must not report FirstTrust")
 	}
 
 	// Baseline: without the preference the server's ed25519 key wins and the
@@ -312,7 +306,7 @@ func TestHostKeyAlgorithmsPreferPinnedType(t *testing.T) {
 	if got := negotiateHostKeyAlgo(sshHostKeys(), serverOffer); got != ssh.KeyAlgoED25519 {
 		t.Fatalf("test premise broken: raw order negotiates %q, want ssh-ed25519", got)
 	}
-	if err := cb(addr, nil, newTestPublicKey(t)); err == nil {
+	if err := cb("pinned.example", nil, newTestPublicKey(t)); err == nil {
 		t.Fatal("a key of an unpinned type must still be rejected")
 	}
 

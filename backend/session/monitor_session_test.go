@@ -570,13 +570,16 @@ func unwrapMonitorCmd(t *testing.T, cmd string) (timeoutSec int, script string) 
 func TestMonitorRemoteCommandsHaveTimeout(t *testing.T) {
 	hardwareProbe := "exec 2>/dev/null\nipmitool sensor list\nexit 0"
 
+	// The performance script is assembled per enabled section at runtime
+	// (collectPerformance); any body exercises the same wrapping.
+	perfSample := "exec 2>/dev/null\nuptime\n"
 	for _, tc := range []struct {
 		name string
 		cmd  string
 		want int
 		raw  string
 	}{
-		{"performance poll", monitorPerformanceCmd(), monitorPollTimeoutSec, monitorPerformanceScript},
+		{"performance poll", monitorRemoteCmd(monitorPollTimeoutSec, perfSample), monitorPollTimeoutSec, perfSample},
 		{"process poll", monitorProcessCmd(), monitorPollTimeoutSec, monitorProcessScript},
 		{"hardware probe", monitorRemoteCmd(monitorHardwareTimeoutSec, hardwareProbe), monitorHardwareTimeoutSec, hardwareProbe},
 	} {

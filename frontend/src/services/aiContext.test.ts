@@ -26,11 +26,36 @@ describe('AI context budgeting and compaction boundaries', () => {
     expect(compactionCut(history, 100)).toBe(4)
   })
 
-  it('protects an unresolved tool chain and keeps an enormous latest input intact', () => {
+  it('treats a dangling tool_use as compactable but still keeps the newest meaningful group', () => {
+    // Legacy sessions can contain a tool_use whose result never arrived (e.g.
+    // a dropped parallel call from before the skip-result fix). It must not
+    // glue the entire remaining transcript into one unsplittable group — that
+    // made compactionCut a no-op and every later turn died with
+    // ai.contextTooLarge. buildConversation filters the dangling block from
+    // the request, so compaction may cut through it.
     const pending = { ...message('call', 'assistant'), tool_calls: [{ id: 'pending', type: 'function' as const, function: { name: 'run', arguments: '{}' } }] }
-    const history = [message('old', 'user'), pending, message('latest', 'user', 'x'.repeat(200000))]
-    expect(contextGroups(history)[1].map(m => m.id)).toEqual(['call', 'latest'])
-    expect(compactionCut(history, 100)).toBe(1)
+    const history = [message('old', 'user', 'x'.repeat(10000)), pending, message('latest', 'user', 'x'.repeat(200000))]
+    expect(contextGroups(history).map(g => g.map(m => m.id))).toEqual([
+      ['old'], ['call'], ['latest'],
+    ])
+    // The dangling call can be trimmed under budget pressure, but the newest
+    // meaningful group (the enormous latest input) is always retained intact.
+    expect(compactionCut(history, 100)).toBe(2)
+  })
+
+  it('closes a resolved chain at its result and keeps the newest group intact', () => {
+    // A resolved invocation groups itself with ALL of its results, then the
+    // group closes — following messages form their own groups. The enormous
+    // latest input is still never compacted away: compactionCut retains the
+    // newest meaningful group.
+    const call = { ...message('call', 'assistant'), tool_calls: [{ id: 'run1', type: 'function' as const, function: { name: 'run', arguments: '{}' } }] }
+    const history = [message('old', 'user', 'x'.repeat(10000)), call,
+      { ...message('run1-result', 'tool', 'x'.repeat(10000)), tool_call_id: 'run1' }, message('latest', 'user', 'x'.repeat(200000))]
+    expect(contextGroups(history).map(g => g.map(m => m.id))).toEqual([
+      ['old'], ['call', 'run1-result'], ['latest'],
+    ])
+    // Under tight budget pressure only the newest meaningful group survives.
+    expect(compactionCut(history, 100)).toBe(3)
   })
 
   it('uses checkpoint IDs and ignores missing or unsupported checkpoints', () => {

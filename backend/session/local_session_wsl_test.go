@@ -197,7 +197,7 @@ func TestBuildCommandLineQuoteBreakout(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		got := buildCommandLine(c.shell)
+		got := buildCommandLine(c.shell, "")
 		if got != c.want {
 			t.Errorf("%s: buildCommandLine(%q) = %q, want %q", c.name, c.shell, got, c.want)
 			continue

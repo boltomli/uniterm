@@ -15,7 +15,6 @@ import (
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
 
-	"github.com/ys-ll/uniterm/backend/log"
 )
 
 type MoshSession struct {
@@ -62,10 +61,10 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	}
 	defer cleanup()
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	pinAddr := hostKeyPinAddr(config, addr)
-	cb, trust := NewHostKeyVerifier(pinAddr)
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(config)
+	verifyKey := knownHostsKey(verifyHost, strconv.Itoa(verifyPort))
 	algoSet, _, err := resolveSSHAlgorithms(config.SSHAlgorithms)
 	if err != nil {
 		return fmt.Errorf("mosh ssh auth: %w", err)
@@ -74,9 +73,9 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 		User:              config.User,
 		Auth:              authMethods,
 		Timeout:           30 * time.Second,
-		HostKeyCallback:   cb,
+		HostKeyCallback:   HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), s.id),
 		Config:            algoSet.config(),
-		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
+		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, verifyKey),
 	}
 
 	conn, err := dialFirstHop(addr, config.Proxy)
@@ -97,9 +96,6 @@ func (s *MoshSession) Connect(config ConnectionConfig) error {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(sshConn, chans, reqs)
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
-	}
 
 	key, udpPort, err := startMoshServer(client)
 	if err != nil {

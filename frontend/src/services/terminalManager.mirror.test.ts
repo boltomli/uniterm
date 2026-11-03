@@ -57,6 +57,15 @@ const {
 })
 
 vi.mock('@wailsio/runtime', () => ({
+  // The generated bindings construct their type descriptors at module load.
+  Create: {
+    Any: {},
+    Array: () => ({}),
+    ByteSlice: () => ({}),
+    Events: () => ({}),
+    Map: () => ({}),
+    Nullable: () => ({}),
+  },
   Events: {
     On: vi.fn((name: string, cb: (ev: any) => void) => {
       if (name === 'session:data') sessionDataHandlers.push(cb)

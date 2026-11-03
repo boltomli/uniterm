@@ -87,10 +87,10 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	}
 	defer cleanup()
 	addr := net.JoinHostPort(sshConfig.Host, strconv.Itoa(sshConfig.Port))
-	// Pin under the original host:port — see hostKeyPinAddr (jump-host
-	// tunnels rewrite the dial address to 127.0.0.1:<ephemeral>).
-	pinAddr := hostKeyPinAddr(sshConfig, addr)
-	cb, trust := NewHostKeyVerifier(pinAddr)
+	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+	verifyHost, verifyPort := hostKeyVerifyTarget(sshConfig)
+	verifyKey := knownHostsKey(verifyHost, strconv.Itoa(verifyPort))
 	algoSet, _, err := resolveSSHAlgorithms(sshConfig.SSHAlgorithms)
 	if err != nil {
 		release()
@@ -100,9 +100,9 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 		User:              sshConfig.User,
 		Auth:              authMethods,
 		Timeout:           sshHandshakeTimeout,
-		HostKeyCallback:   cb,
+		HostKeyCallback:   HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), sessionID),
 		Config:            algoSet.config(),
-		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
+		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, verifyKey),
 	}
 
 	conn, err := dialFirstHop(addr, upstream)
@@ -121,17 +121,17 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	// Bound the handshake (see dialSSHWithCipherFallback); cleared below so
 	// the long-lived tunnel connection is unaffected by the deadline.
 	_ = conn.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
+	handshakeStart := time.Now()
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
 	if err != nil {
+		log.Writef("[tunnel] ssh handshake %s failed after %s: %v",
+			addr, time.Since(handshakeStart).Round(time.Millisecond), err)
 		conn.Close()
 		release()
 		return 0, fmt.Errorf("tunnel ssh handshake: %w", err)
 	}
 	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(sshConn, chans, reqs)
-	if trust != nil && trust.FirstTrust {
-		log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
-	}
 
 	// 2. Listen on random local port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -152,8 +152,11 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 				return
 			}
 			go func() {
+				dialStart := time.Now()
 				remoteConn, err := client.Dial("tcp", target)
+				dialDur := time.Since(dialStart).Round(time.Millisecond)
 				if err != nil {
+					log.Writef("[tunnel] forward dial %s failed after %s: %v", target, dialDur, err)
 					localConn.Close()
 					return
 				}

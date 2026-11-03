@@ -18,7 +18,6 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
 
-	"github.com/ys-ll/uniterm/backend/log"
 )
 
 // ConnResolver resolves a saved SSH connection by its ID. app.go supplies one
@@ -173,7 +172,7 @@ func (ts *TunnelService) openUserTunnel(ctx context.Context, t Tunnel, resolve C
 	if err != nil {
 		return nil, nil, err
 	}
-	exit, clients, err := ts.dialChain(ctx, chain, t.Upstream)
+	exit, clients, err := ts.dialChain(ctx, chain, t.Upstream, t.SSHConnID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -390,7 +389,10 @@ func buildHopChain(exitID string, resolve ConnResolver) ([]ConnectionConfig, err
 // client (chain tail) plus every client for teardown. The first hop is dialed
 // directly (or through the upstream proxy); each subsequent hop is dialed
 // through the previous client — the standard ProxyJump chaining.
-func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig, upstream *SocksProxy) (*ssh.Client, []*ssh.Client, error) {
+// dialChain dials the hop chain. chainSessionID identifies the tunnel's SSH
+// connection; it rides along in host key change events so the frontend can
+// relate the dialog to the right connection.
+func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig, upstream *SocksProxy, chainSessionID string) (*ssh.Client, []*ssh.Client, error) {
 	var clients []*ssh.Client
 	var prev *ssh.Client
 	var stopClose []func() bool
@@ -430,8 +432,10 @@ func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig
 		}
 
 		stopClose = append(stopClose, context.AfterFunc(ctx, func() { raw.Close() }))
-		pinAddr := hostKeyPinAddr(cfg, addr)
-		cb, trust := NewHostKeyVerifier(pinAddr)
+		// Verify and record under the ORIGINAL host:port when a jump-host tunnel
+		// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
+		verifyHost, verifyPort := hostKeyVerifyTarget(cfg)
+		verifyKey := knownHostsKey(verifyHost, strconv.Itoa(verifyPort))
 		algoSet, _, err := resolveSSHAlgorithms(cfg.SSHAlgorithms)
 		if err != nil {
 			cleanup()
@@ -443,9 +447,9 @@ func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig
 			User:              cfg.User,
 			Auth:              authMethods,
 			Timeout:           sshHandshakeTimeout,
-			HostKeyCallback:   cb,
+			HostKeyCallback:   HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), chainSessionID),
 			Config:            algoSet.config(),
-			HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, pinAddr),
+			HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, verifyKey),
 		}
 		// Bound the handshake like the other SSH dial paths (ClientConfig.
 		// Timeout alone only covers ssh.Dial's TCP connect). Best-effort:
@@ -461,9 +465,6 @@ func (ts *TunnelService) dialChain(ctx context.Context, chain []ConnectionConfig
 		}
 		_ = raw.SetDeadline(time.Time{})
 		client := ssh.NewClient(sshConn, chans, reqs)
-		if trust != nil && trust.FirstTrust {
-			log.Writef("[known_hosts] host key not seen before — trusted and saved: %s %s", pinAddr, trust.Fingerprint)
-		}
 		clients = append(clients, client)
 		prev = client
 	}

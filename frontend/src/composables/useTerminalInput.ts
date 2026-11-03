@@ -193,6 +193,15 @@ export function useTerminalInput(terminal: Terminal | null, options: UseTerminal
       } else if (code === 11) {
         // Ctrl+K — delete from cursor to end of line
         lineChars.value.length = cursorIndex.value
+      } else if (code === 23) {
+        // Ctrl+W (also Ctrl+Backspace on Unix): mirror unix-word-rubout.
+        // This is only the suggestion model; the remote shell edits itself.
+        const end = Math.min(cursorIndex.value, lineChars.value.length)
+        let start = end
+        while (start > 0 && /\s/u.test(lineChars.value[start - 1])) start--
+        while (start > 0 && !/\s/u.test(lineChars.value[start - 1])) start--
+        lineChars.value.splice(start, end - start)
+        cursorIndex.value = start
       } else if (code === 21) {
         // Ctrl+U — delete from beginning to cursor
         lineChars.value.splice(0, cursorIndex.value)

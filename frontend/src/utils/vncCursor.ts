@@ -40,8 +40,12 @@ export function installVncCursor(rfb: VncCursorTarget, fullscreenRoot: HTMLEleme
     if (!active) nativeCursor = target.style.cursor
     active = true
     target.style.cursor = 'none'
+    // The overlay must paint whenever the pointer is over the remote screen,
+    // regardless of window focus: mousemove keeps flowing when the window is
+    // unfocused (multi-monitor, alt-tab), and hiding the overlay while the
+    // native cursor is suppressed leaves no visible cursor at all.
     const visible = position && overlay.width > 0 && overlay.height > 0 &&
-      document.hasFocus() && document.elementFromPoint(position.x, position.y) === target
+      document.elementFromPoint(position.x, position.y) === target
     overlay.style.visibility = visible ? 'visible' : 'hidden'
     if (position) {
       overlay.style.left = `${position.x - cursor._hotSpot.x}px`
@@ -95,19 +99,18 @@ export function installVncCursor(rfb: VncCursorTarget, fullscreenRoot: HTMLEleme
   }
   document.addEventListener('fullscreenchange', sync)
   document.addEventListener('scroll', sync, true)
-  window.addEventListener('mousemove', onMove, { passive: true })
-  window.addEventListener('mouseout', onLeave, { passive: true })
-  window.addEventListener('blur', sync)
-  window.addEventListener('focus', sync)
+  // Capture phase: noVNC's canvas mouse handlers stopPropagation, which
+  // cancels bubble-phase window listeners exactly while the pointer is over
+  // the remote screen — the one place the overlay must keep tracking.
+  window.addEventListener('mousemove', onMove, { passive: true, capture: true })
+  window.addEventListener('mouseout', onLeave, { passive: true, capture: true })
   updateImage()
 
   return () => {
     document.removeEventListener('fullscreenchange', sync)
     document.removeEventListener('scroll', sync, true)
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseout', onLeave)
-    window.removeEventListener('blur', sync)
-    window.removeEventListener('focus', sync)
+    window.removeEventListener('mousemove', onMove, true)
+    window.removeEventListener('mouseout', onLeave, true)
     if (cursor.change === change) cursor.change = originalChange
     if (cursor.clear === clear) cursor.clear = originalClear
     if (cursor.detach === detach) cursor.detach = originalDetach

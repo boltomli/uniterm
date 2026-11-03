@@ -26,7 +26,10 @@ build/darwin/*
 # (backend/update/signature.go embeds only the public half)
 !build/signcmd/
 build/release-signing.key
-uniTerm.exe
+# .lproj bundles declare the app's localizations so AppKit localizes the
+# native window-management (traffic-light) menu to follow the system language
+!build/darwin/*.lproj/
+!build/darwin/*.lproj/*uniTerm.exe
 __debug*
 
 # Build output (Wails v3 emits the compiled app + runtime data into bin/)

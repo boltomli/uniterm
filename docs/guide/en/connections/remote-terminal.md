@@ -2,6 +2,12 @@
 
 uniTerm supports **SSH**, **Telnet**, **Mosh**, and **Raw TCP** remote terminal protocols.
 
+## Command editing shortcuts
+
+In connected non-Windows SSH, Mosh, Unix local terminals, and WSL, `Ctrl+Backspace` sends `Ctrl+W` to delete the word before the cursor while preserving text after it. Default Unix line editing normally treats whitespace as the word boundary; the shell's key bindings determine the actual behavior.
+
+`Ctrl+U` deletes from the cursor to the beginning of the line in shells that support that binding. Windows local terminals, detected Windows SSH sessions, connection authentication, and alternate-screen applications keep their native key behavior. Plain Backspace still follows the connection's Backspace setting.
+
 ## SSH
 
 SSH (Secure Shell) is the most commonly used protocol for remote server management, providing encrypted secure connections.
