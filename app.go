@@ -382,6 +382,13 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	a.configureMacKeyRepeat()
 
 	a.sessionManager = session.NewSessionManager()
+	// P-02 drift guard: report pause-watchdog auto-resumes to the frontend
+	// (BaseTerminal re-engages its flow control on
+	// session:output-pause-expired). Set before any session can exist — the
+	// manager it guards is created right here.
+	session.OutputPauseExpired = func(sessionID string) {
+		a.emit("session:output-pause-expired", map[string]interface{}{"id": sessionID})
+	}
 	a.tunnelService = session.NewTunnelService()
 
 	// Defer EventsEmit from WndProc to avoid blocking the modal resize/move loop.

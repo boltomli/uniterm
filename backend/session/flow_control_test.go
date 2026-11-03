@@ -180,3 +180,54 @@ func TestOutputPauseWithoutEmitLoopIsNoop(t *testing.T) {
 		t.Fatalf("delivered %q, want %q", got, "sync")
 	}
 }
+
+// The watchdog's auto-resume must be reported: the frontend's outputPaused
+// latch is the other half of the P-02 state, and without the notification
+// it stays set after an expiry — trackOutputWrite then suppresses every
+// later SessionPauseOutput and flow control is silently off for the rest
+// of the flood. An EXPLICIT resume must stay silent (the frontend already
+// knows about that one).
+func TestOutputPauseWatchdogReportsExpiry(t *testing.T) {
+	old := outputPauseTimeout
+	outputPauseTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { outputPauseTimeout = old })
+
+	expired := make(chan string, 4)
+	prev := OutputPauseExpired
+	OutputPauseExpired = func(id string) { expired <- id }
+	t.Cleanup(func() { OutputPauseExpired = prev })
+
+	h := newPauseHarness()
+	t.Cleanup(h.stop)
+	h.s.id = "pause-exp"
+
+	h.s.SetOutputPaused(true)
+	select {
+	case id := <-expired:
+		if id != "pause-exp" {
+			t.Fatalf("expiry reported for session %q, want %q", id, "pause-exp")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog did not report the auto-resume; the frontend could never re-engage flow control")
+	}
+	// The auto-resume must have actually released the stream (the report is
+	// not a substitute for SetOutputPaused(false)).
+	h.s.emitData([]byte("flows"))
+	deadline := time.Now().Add(2 * time.Second)
+	for h.delivered() != "flows" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := h.delivered(); got != "flows" {
+		t.Fatalf("stream still held after the reported expiry, delivered %q", got)
+	}
+
+	// Second hold, released EXPLICITLY: no report may fire.
+	h.s.SetOutputPaused(true)
+	h.s.SetOutputPaused(false)
+	select {
+	case id := <-expired:
+		t.Fatalf("explicit resume reported an expiry for session %q", id)
+	case <-time.After(150 * time.Millisecond):
+		// The watchdog timer of the explicit hold (60ms) went stale — silent.
+	}
+}

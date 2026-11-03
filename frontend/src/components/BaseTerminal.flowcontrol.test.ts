@@ -45,4 +45,32 @@ describe('BaseTerminal.vue output flow control (P-02)', () => {
     // already point at a different id after a reconnect.
     expect(script).toMatch(/const sid = outputPausedSid/)
   })
+
+  it('re-engages flow control when the backend watchdog drops the hold', () => {
+    // The backend auto-resumes an unreleased pause after outputPauseTimeout
+    // and reports it as session:output-pause-expired. Without the listener,
+    // outputPaused stays latched and no later pause is ever sent for the
+    // rest of the flood (the P-02 drift).
+    expect(script).toMatch(/Events\.On\('session:output-pause-expired'/)
+    expect(script).toMatch(/function onOutputPauseExpired\(sid: string\)/)
+    // Renewal: a backlog that drained during the hold re-pauses for the
+    // next watchdog window.
+    expect(script).toMatch(/outputPendingBytes < pausePendingMark/)
+    expect(script).toMatch(/pausePendingMark = outputPendingBytes/)
+  })
+
+  it('stands down when the hold cannot drain, and re-arms below the low-water mark', () => {
+    // A full watchdog window without a single parsed byte means the write
+    // callbacks are wedged — re-pinning would freeze the stream forever.
+    expect(script).toMatch(/flowControlSuspended = true/)
+    expect(script).toMatch(/if \(outputPaused \|\| flowControlSuspended \|\|/)
+    // Any explicit release (resume, deactivate, unmount, id switch) and the
+    // next healthy drain re-arm flow control.
+    expect(script).toMatch(/function resumeBackendOutput\(\) \{\s*flowControlSuspended = false/)
+    expect(script).toMatch(/if \(outputPendingBytes < OUTPUT_PENDING_LOW\) flowControlSuspended = false/)
+  })
+
+  it('disposes the watchdog-expiry listener with the component', () => {
+    expect(script).toMatch(/outputPauseExpiredUnsub\?\.\(\)/)
+  })
 })

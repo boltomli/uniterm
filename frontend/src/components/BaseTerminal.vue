@@ -289,31 +289,83 @@ const showTimestamps = computed(() => settingsStore.settings.terminal.showTimest
 // every pause with a watchdog (5s auto-resume), and deactivation, unmount
 // and session-switch below also release defensively — a paused session must
 // never outlive the component that paused it.
+//
+// The watchdog's auto-resume is also reported back as
+// session:output-pause-expired: without it this component's outputPaused
+// flag would stay latched after an expiry (backend flowing again while we
+// believe it held), suppressing every later pause for the rest of the
+// flood — flow control silently off until the backlog drains below LOW. On
+// expiry, pending is compared against `pausePendingMark`: a draining
+// backlog renews the hold, a backlog that did not move for a whole
+// watchdog window means the write callbacks are not coming — stop holding
+// and stop pausing (flowControlSuspended) until pending is provably
+// drained again.
 const OUTPUT_PENDING_HIGH = 512 * 1024
 const OUTPUT_PENDING_LOW = 128 * 1024
 let outputPendingBytes = 0
 let outputPaused = false
 let outputPausedSid: string | null = null
+// Pending bytes when the current hold engaged — the progress reference for
+// the expiry decision in onOutputPauseExpired.
+let pausePendingMark = 0
+// Set when an expiry proved the hold can never drain: pause requests are
+// suppressed until pending falls below OUTPUT_PENDING_LOW again (xterm's
+// own discard watermark still bounds a wedged parser).
+let flowControlSuspended = false
+let outputPauseExpiredUnsub: (() => void) | null = null
 
 function trackOutputWrite(len: number) {
   outputPendingBytes += len
-  if (outputPaused || outputPendingBytes <= OUTPUT_PENDING_HIGH) return
+  if (outputPaused || flowControlSuspended || outputPendingBytes <= OUTPUT_PENDING_HIGH) return
   outputPaused = true
   outputPausedSid = props.sessionId || null
+  pausePendingMark = outputPendingBytes
   if (outputPausedSid) SessionPauseOutput(outputPausedSid).catch(() => {})
 }
 
 function trackOutputParsed(len: number) {
   outputPendingBytes = Math.max(0, outputPendingBytes - len)
+  if (outputPendingBytes < OUTPUT_PENDING_LOW) flowControlSuspended = false
   if (outputPaused && outputPendingBytes < OUTPUT_PENDING_LOW) resumeBackendOutput()
 }
 
 function resumeBackendOutput() {
+  flowControlSuspended = false
   if (!outputPaused) return
   outputPaused = false
   const sid = outputPausedSid
   outputPausedSid = null
+  pausePendingMark = 0
   if (sid) SessionResumeOutput(sid).catch(() => {})
+}
+
+// session:output-pause-expired: the backend's watchdog dropped a hold this
+// component never released. Decide between renewing it (the parser is
+// draining) and standing down (it is wedged), keeping both sides' state
+// consistent either way.
+function onOutputPauseExpired(sid: string) {
+  if (!outputPaused || sid !== outputPausedSid) return
+  if (outputPendingBytes < OUTPUT_PENDING_LOW) {
+    // Already drained below the low-water mark — the resume just lost a
+    // race with the parse callback; release normally.
+    resumeBackendOutput()
+    return
+  }
+  if (outputPendingBytes < pausePendingMark) {
+    // Progress: xterm is parsing; renew the hold for another watchdog
+    // window (the backend has resumed, so this is a fresh pause).
+    pausePendingMark = outputPendingBytes
+    if (outputPausedSid) SessionPauseOutput(outputPausedSid).catch(() => {})
+    return
+  }
+  // Not one byte moved in a whole watchdog window: the write callbacks are
+  // wedged (or lost). The backend has resumed — stand down instead of
+  // re-pinning a stream nothing is draining; flow control re-arms in
+  // trackOutputParsed once pending is below the low-water mark again.
+  outputPaused = false
+  outputPausedSid = null
+  pausePendingMark = 0
+  flowControlSuspended = true
 }
 
 // Write terminal data and fold it into the logical-line registry for the
@@ -1759,6 +1811,15 @@ onMounted(() => {
   }
   document.addEventListener('auxclick', onTerminalAuxClick)
 
+  // P-02 drift guard: the backend watchdog's auto-resume keeps this
+  // component's pause bookkeeping honest (handler next to the flow-control
+  // block above). Not gated on isActive — a deactivated instance has
+  // already released its hold, so the handler is a cheap no-op for it.
+  outputPauseExpiredUnsub = Events.On('session:output-pause-expired', (ev) => {
+    const payload = ev.data as { id: string }
+    if (payload.id === props.sessionId) onOutputPauseExpired(payload.id)
+  })
+
   // Session data
   unsubscribe =Events.On('session:data', (ev) => { const payload: { id: string; data: string } = ev.data;
     if (!isActive.value) {
@@ -2448,6 +2509,8 @@ onUnmounted(() => {
     releaseTerminal(props.sessionId, terminalInstanceRef)
   }
 
+  outputPauseExpiredUnsub?.()
+  outputPauseExpiredUnsub = null
   unsubscribe?.()
   statusUnsubscribe?.()
   if (onDocumentMouseDown) {

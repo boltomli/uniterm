@@ -683,6 +683,18 @@ func (s *baseSession) setStatus(st SessionStatus) {
 
 // startEmitLoop enables the async, bounded emit path for this session.
 // Called by terminal session types from Connect. Idempotent.
+// OutputPauseExpired, when set (by the App layer, before sessions are
+// created), reports that the pause watchdog auto-resumed a session's output
+// stream. The frontend owns the other half of the flow-control state
+// (BaseTerminal's outputPaused flag) and would otherwise stay latched:
+// believing the stream still held, trackOutputWrite suppresses every later
+// SessionPauseOutput for the rest of the flood — the P-02 drift, where a
+// 5s watchdog expiry silently disables flow control until the backlog
+// drains below the low-water mark. The event lets the frontend re-engage
+// (or stand down deliberately) instead. Package-level var, following the
+// emitFlushInterval convention; nil (tests, embedded use) is a no-op.
+var OutputPauseExpired func(sessionID string)
+
 func (s *baseSession) startEmitLoop() {
 	s.emitOnce.Do(func() {
 		// A (re)connect starts a fresh byte stream; a stale tail from the
@@ -1045,6 +1057,13 @@ func (s *baseSession) SetOutputPaused(v bool) {
 			}
 			log.Writef("session %s: output pause watchdog expired after %s, auto-resuming", s.id, timeout)
 			s.SetOutputPaused(false)
+			// Report the auto-resume so the frontend can correct its own
+			// bookkeeping (see OutputPauseExpired). Read the sink into a
+			// local: it is set once during App startup, but the watchdog
+			// runs on a timer goroutine.
+			if notify := OutputPauseExpired; notify != nil {
+				notify(s.id)
+			}
 		})
 		s.emitMu.Unlock()
 		return
