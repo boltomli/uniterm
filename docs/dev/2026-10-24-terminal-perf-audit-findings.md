@@ -312,3 +312,31 @@ cd frontend && npx vue-tsc --noEmit && npx vitest run && npm run build
 
 - 基线上 `GOOS=linux/darwin go build ./backend/session` 因 `copyFile` 只定义在 Windows 专属文件而失败，已随后修复（`f5d11b3b`，移到跨平台 `file_copy.go`）。注：从 Windows 交叉编译完整应用（`go build ./...`）仍会因 wails 依赖自身的 Linux 构建要求（gtk/webkit）失败，这属于构建环境限制，非本仓库代码问题。
 - P-04 的 WebGL 渲染器在「背景图透明」组合下的视觉效果、P-08 的事件上限档位、P-02 的手工延迟对比（`yes` 后 Ctrl+C ≤100ms）需要在 `wails3 dev` + DevTools Performance 中实测确认。
+
+---
+
+## 5. 2026-11-03 跟进：输出「卡住再继续」的追查与修复
+
+报告现象：本地终端（PowerShell/CMD/WSL）里 `ls` 大目录或 `git pull`，画面完全停顿数秒后一次性补出。追查基线 `a67b97c4`（P-01…P-10 全部已含）。在既有修复之外定位到四个问题，均已修复，一次一项单独提交：
+
+| ID | 等级 | 一句话 | 提交 |
+|---|---|---|---|
+| F-11 | **高** | P-02 漂移：pause watchdog 5s 自动恢复后，前端 `outputPaused` 永久闩锁，本场洪水里 `trackOutputWrite` 不再发任何 pause，流控静默失效直到积压跌回 LOW | `789b3f46` |
+| F-12 | 中 | P-09 遗留第 3 项：`sessionCaptureFor` 给每个会话挂内联 `Screen.Feed`，解析同步跑在 readLoop 上（~47MB/s 封顶洪水投递）；改为有界有序队列 + 每 capture 一个喂入 goroutine，`closeFeed` 排干后才允许 SessionResize 快照 seed | `4bb5fe79` |
+| F-13 | 中 | 测试可写真实用户 bootstrap（2026-10-13 事故根因）：`SetDataDir → store.WriteBootstrap` 走真实 `os.UserConfigDir`，根包加 TestMain 沙箱化 APPDATA / XDG_CONFIG_HOME | `3a7977e5` |
+| F-14 | 低 | 停顿无法归因：`flushEmitChunks` 超 500ms 节流（每会话 10s）记一条日志，与既有的 pause-expiry、queue-overflow 两条日志凑齐三种停顿成因的诊断三角 | `8c54cfd7` |
+
+F-11 修法（不动既有「重复 pause 不续期」语义）：watchdog 自动恢复后发 `session:output-pause-expired`；前端拿事件时的 pending 与 pause 时刻的 `pausePendingMark` 比较——有进展则续约（再发一次 pause），整个窗口零进展则判 write callback 卡死，撤除流控挂起（`flowControlSuspended`）直到 pending 重新跌破 LOW。显式 resume 不发事件；sink 对嵌入/测试会话 nil 安全。
+
+### 重新分析后不做的两项（修正此前的判断）
+
+- **「水位到就短放行一小批」不需要**：暂停期间 xterm 一直在解析已入队的 pending（12ms 分片），且 128KiB 水位先于 pending 归零触发 resume——P-02 滞回本身不会造成整段静止；整段静止的成因是后端投递停顿（F-14 诊断）与 F-11 漂移。
+- **`emitQueueCapacity=64` 不扩容**：队列满意味着消费者已停顿 ≥3s（才会撞 `emitBlockWatchdog`），扩容只会把停顿换成恢复后更深的补发突发；drop-oldest 仍是 issue #1053 既定的最后手段。
+
+### 验证
+
+`go vet ./...`、`go test ./...`（1926 passed；`TestWebDAVBackendFetchAllRejectsBeforeWritingAnything` 为既有偶发——它扫描整个 `%TEMP%`，全量并发时其他包建临时目录即触发，单跑必过）、`vue-tsc --noEmit`、`vitest run`（1566 passed）、`npm run build`、`wails3 build` 全部通过。
+
+### 事故附记
+
+`%APPDATA%\uniTerm\bootstrap.json\bootstrap.json`（旧双拼接布局）曾被测试写成 `Temp\TestSetDataDir_MigrateToSelfRefuses…` 的死指针，已恢复为规范文件 `{"type":"default"}`；本机实际数据在 `bin\data`（portable 指针，exe/data 优先解析，未受影响）。
