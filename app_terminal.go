@@ -612,6 +612,10 @@ func (a *App) SessionResize(sessionID string, cols, rows int) error {
 	var carried mcp.ScreenSeed
 	a.captureMu.Lock()
 	if old, ok := a.captures[sessionID]; ok {
+		// Apply the queued tail before the snapshot: PromptSeed below seeds
+		// foreground jobs, and the worker-fed emulator may still be a few
+		// chunks behind the tap.
+		old.closeFeed()
 		old.mu.Lock()
 		carried = old.screen.PromptSeed()
 		if carried.Line == "" {

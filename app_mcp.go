@@ -1248,6 +1248,67 @@ type sessionCapture struct {
 	// this capture. Remotes that don't repaint after a resize (SSH) leave the
 	// fresh emulator blank, so foreground jobs fall back to this seed.
 	carriedSeed mcp.ScreenSeed
+	// feedCh/feedWorker move Screen.Feed OFF the session readLoop (P-09
+	// follow-up): the inline tap made every output byte pay the emulator's
+	// parse cost before emitData could even queue it for the frontend — a
+	// multi-megabyte flood delivered itself at Feed's ~47MB/s. The tap now
+	// copies the chunk into a bounded queue (blocking only when the worker
+	// truly falls behind, so no bytes are ever dropped and ordering is
+	// preserved) and one goroutine per capture feeds the emulator. Readers
+	// (Tail/PromptSeed) keep taking mu, exactly as before.
+	feedCh   chan []byte
+	feedQuit chan struct{}
+	feedDone chan struct{}
+	feedOnce sync.Once
+}
+
+// captureFeedQueue bounds the pending feed queue in chunks (≤16KiB each —
+// the readLoop size), i.e. ~4MiB of backpressure slack before the tap
+// blocks the readLoop the way the inline tap used to.
+const captureFeedQueue = 256
+
+// applyFeed feeds one queued chunk under the capture lock so readers never
+// observe a torn emulator state.
+func (c *sessionCapture) applyFeed(b []byte) {
+	c.mu.Lock()
+	c.screen.Feed(b)
+	c.mu.Unlock()
+}
+
+// feedWorker drains feedCh into the emulator. On quit it first applies
+// everything already queued: closeFeed's caller (SessionResize) snapshots
+// PromptSeed from this emulator to seed foreground jobs, so the queued tail
+// must land before the worker reports done.
+func (c *sessionCapture) feedWorker() {
+	defer close(c.feedDone)
+	for {
+		select {
+		case <-c.feedQuit:
+			for {
+				select {
+				case b := <-c.feedCh:
+					c.applyFeed(b)
+				default:
+					return
+				}
+			}
+		case b := <-c.feedCh:
+			c.applyFeed(b)
+		}
+	}
+}
+
+// closeFeed stops the feed worker and blocks until every chunk queued before
+// the stop has been applied. Idempotent; a capture without a worker (session
+// type without taps) is a no-op. The tap stops enqueueing at quit, so no
+// ordering can invert: chunks racing the close are dropped with the capture
+// — the same window the old snapshot-then-untap sequence had.
+func (c *sessionCapture) closeFeed() {
+	if c.feedQuit == nil {
+		return
+	}
+	c.feedOnce.Do(func() { close(c.feedQuit) })
+	<-c.feedDone
 }
 
 // CaptureScreen snapshots a live session's terminal screen — what the user
@@ -1284,10 +1345,24 @@ func (a *App) sessionCaptureFor(s session.Session) *sessionCapture {
 	screen := mcp.NewScreen(cols, rows)
 	c := &sessionCapture{screen: screen}
 	if taps, ok := s.(tapSource); ok {
+		c.feedCh = make(chan []byte, captureFeedQueue)
+		c.feedQuit = make(chan struct{})
+		c.feedDone = make(chan struct{})
+		go c.feedWorker()
 		c.dataOff = taps.AddDataTap(func(b []byte) {
-			c.mu.Lock()
-			screen.Feed(b)
-			c.mu.Unlock()
+			// Copy: readLoops reuse their read buffer across iterations
+			// (queueEmit documents the same hazard) and the worker may
+			// read this chunk after the next read overwrote the slice.
+			buf := append([]byte(nil), b...)
+			select {
+			case <-c.feedQuit:
+				return // capture closing; nothing enqueues past quit
+			default:
+			}
+			select {
+			case <-c.feedQuit:
+			case c.feedCh <- buf:
+			}
 		})
 		// Detach asynchronously: the untap helpers take the session mutex,
 		// which the tap callback itself may be running under.
@@ -1308,6 +1383,9 @@ func (a *App) removeCapture(id string) {
 	delete(a.captures, id)
 	a.captureMu.Unlock()
 	if ok {
+		// Stop the feed worker first so nothing stays queued behind the
+		// detach; closeFeed waits for the queued tail to land.
+		c.closeFeed()
 		if c.dataOff != nil {
 			c.dataOff()
 		}
