@@ -503,6 +503,9 @@ type baseSession struct {
 	emitQuit chan struct{}
 	emitDone chan struct{}
 	emitOnce sync.Once
+	// Last time a dispatch-stall warning was logged for this session
+	// (emitDispatchWarnInterval). Guarded by emitMu.
+	emitLastDispatchWarn time.Time
 	// Output flow control (P-02): the frontend pauses the stream while its
 	// xterm write backlog is above the high-water mark. outputPaused is
 	// atomic so zmodem entry (under s.mu) can drop a hold without emitting
@@ -560,6 +563,21 @@ var (
 	// on WebView2 below ~8KiB, so never go that low). Splits happen only
 	// at complete UTF-8 rune boundaries.
 	emitChunkMaxBytes = 64 * 1024
+)
+
+var (
+	// emitDispatchWarnAfter bounds when a flushEmitChunks call counts as a
+	// delivery stall. flushEmitChunks runs the synchronous Wails event
+	// emit, so a long call means the UI-side delivery chain (eval →
+	// WebView2 main thread) is backed up: the emit queue fills behind it,
+	// the readLoop blocks in queueEmit, and the user sees output freeze
+	// until the backlog flushes. Together with the pause-expiry and
+	// queue-overflow logs this attributes the three distinct stall modes.
+	// Package-level vars so tests can shorten them.
+	emitDispatchWarnAfter = 500 * time.Millisecond
+	// emitDispatchWarnInterval throttles the warning per session so a
+	// sustained flood logs once per interval instead of once per flush.
+	emitDispatchWarnInterval = 10 * time.Second
 )
 
 const (
@@ -893,6 +911,23 @@ func emitChunked(cb func([]byte), data []byte) {
 	}
 }
 
+// shouldLogDispatchStall reports whether a flushEmitChunks that took d must
+// be logged (past the threshold, past this session's throttle window) and
+// records the warning time. Called from the emitLoop goroutine.
+func (s *baseSession) shouldLogDispatchStall(d time.Duration) bool {
+	if d < emitDispatchWarnAfter {
+		return false
+	}
+	s.emitMu.Lock()
+	defer s.emitMu.Unlock()
+	now := time.Now()
+	if !s.emitLastDispatchWarn.IsZero() && now.Sub(s.emitLastDispatchWarn) < emitDispatchWarnInterval {
+		return false
+	}
+	s.emitLastDispatchWarn = now
+	return true
+}
+
 func (s *baseSession) emitLoop() {
 	defer close(s.emitDone)
 	timer := time.NewTimer(time.Hour)
@@ -943,7 +978,11 @@ func (s *baseSession) emitLoop() {
 			if len(chunks) == 0 {
 				break
 			}
+			flushStart := time.Now()
 			s.flushEmitChunks(chunks)
+			if d := time.Since(flushStart); s.shouldLogDispatchStall(d) {
+				log.Writef("session %s: terminal event dispatch blocked for %s (frontend delivery chain busy?)", s.id, d.Round(time.Millisecond))
+			}
 			// Chunks arrived while we were emitting: flush them immediately
 			// instead of adding another coalescing delay.
 			coalesce = !s.emitQueuePending()
