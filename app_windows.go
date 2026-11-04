@@ -424,10 +424,28 @@ func (a *App) subclassMainWindow() {
 	user32 := windows.NewLazySystemDLL("user32.dll")
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW := user32.NewProc("CallWindowProcW")
+	procGetFocus := user32.NewProc("GetFocus")
+	procSetFocus := user32.NewProc("SetFocus")
+	procIsChild := user32.NewProc("IsChild")
+	procGetForegroundWindow := user32.NewProc("GetForegroundWindow")
+	var focusBeforeMove uintptr
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
 		case WM_ENTERSIZEMOVE:
+			// Remember the native focus target before the OS enters its modal
+			// move/size loop. The loop hands focus back to the top-level window
+			// on exit, which leaves Chromium's TSF client attached to a stale
+			// target: the IME stops composing in the page and positions its
+			// candidate window from the old caret rect. WM_EXITSIZEMOVE puts
+			// the focus back (see below). Only descendants of this window are
+			// eligible — focus living outside the app must stay outside.
+			focusBeforeMove, _, _ = procGetFocus.Call()
+			if focusBeforeMove != 0 && focusBeforeMove != uintptr(hwnd) {
+				if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
+					focusBeforeMove = 0
+				}
+			}
 			a.inSizeMove = true
 			a.emitMoveResize("rdp:move-resize-start")
 			// Do not forward to Wails. Its handler calls SetFocus(parent) to close
@@ -454,6 +472,20 @@ func (a *App) subclassMainWindow() {
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
 		if msg == WM_EXITSIZEMOVE {
+			// The modal loop returns keyboard focus to the host window rather
+			// than the WebView2 child it started on. Win32 then considers the
+			// host the focus owner while Chromium's TSF client still points at
+			// the old target: the IME stops composing in the page, its candidate
+			// window is placed from a stale caret rect (so it drifts to a screen
+			// edge and gets clipped), and commits arrive as WM_CHAR that xterm
+			// sends once from keypress and again from its textarea diff — the
+			// word lands twice. Restoring the exact pre-drag child HWND makes
+			// WebView2 re-attach its TSF client to the caret.
+			foreground, _, _ := procGetForegroundWindow.Call()
+			if foreground == uintptr(hwnd) && focusBeforeMove != 0 {
+				procSetFocus.Call(focusBeforeMove)
+			}
+			focusBeforeMove = 0
 			a.emitMoveResize("rdp:move-resize-end")
 		}
 		return ret

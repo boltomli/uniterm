@@ -43,6 +43,37 @@ export interface KeystrokeReorder {
   dispose(): void
 }
 
+/** The platforms whose input methods actually need reordering. */
+function isEventTapPlatform(): boolean {
+  return typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+}
+
+/**
+ * The reorder buffer for the current platform.
+ *
+ * The mechanism above exists for macOS event-tap IMEs (XKey/EVKey/OpenKey):
+ * they edit text already on the line and WKWebView delivers their delete and
+ * replacement through different paths in an order the page does not control.
+ *
+ * Everywhere else it is pure cost. The buffer only engages after a non-ASCII
+ * character, and it stays armed for IME_ACTIVE_MS — so on Windows every
+ * keystroke following a Chinese/Japanese commit is held for QUIET_MS, and a
+ * DEL chunk gets hoisted ahead of text it was never meant to precede (a
+ * genuine `rm -f x` backspace-then-insert would be reordered). No known
+ * rewrite IME needs it off macOS, so pass those keystrokes straight through.
+ */
+export function createImeKeystrokeReorder(
+  emit: (data: string) => void,
+): KeystrokeReorder {
+  if (!isEventTapPlatform()) {
+    return {
+      push: (data: string) => emit(data),
+      dispose() {},
+    }
+  }
+  return createKeystrokeReorder(emit)
+}
+
 export function createKeystrokeReorder(
   emit: (data: string) => void,
   quietMs: number = QUIET_MS,

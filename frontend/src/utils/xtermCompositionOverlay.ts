@@ -9,9 +9,21 @@ import type { Terminal } from '@xterm/xterm'
 // no longer be corrected before committing.
 //
 // This overlay renders the same composition string pinned to the terminal
-// cursor, but ONLY while the native view is not visibly rendered, so the two
-// never draw the string twice. Every takeover is logged (see DEBUG_KEY) with
-// the measured geometry, which is what identifies the cause in the field.
+// cursor and hides xterm's view while it is up, so the string is never drawn
+// twice. It owns the preedit for the whole composition because it can do two
+// things xterm's view cannot:
+//
+//   * clamp horizontally. `.terminal-host` clips with `overflow: clip` and the
+//     custom scrollbar strip sits over the last columns, so a preedit that
+//     starts near the right edge loses its tail — the user watches the pinyin
+//     they typed disappear off the side of the terminal.
+//   * use the cursor's *viewport* row. `buffer.cursorY` is relative to baseY,
+//     so on a scrolled terminal xterm's own view (and a naive mirror) draws the
+//     preedit rows above the cursor, or on screen for a cursor scrolled out of
+//     view entirely.
+//
+// Every takeover is logged (see DEBUG_KEY) with the measured geometry, which
+// is what identifies the cause in the field.
 
 export interface Disposable {
   dispose(): void
@@ -47,6 +59,45 @@ export function isNativeCompositionVisible(native: Rect, host: Rect): boolean {
     native.left < host.left + host.width &&
     native.top + native.height > host.top &&
     native.top < host.top + host.height
+}
+
+/**
+ * The cursor's row inside the *visible* viewport.
+ *
+ * `buffer.cursorY` is `buffer.y`, which is relative to `baseY` rather than to
+ * the top of the screen; the screen is never translated on scroll (xterm
+ * repaints the rows), so a preedit row must be computed the same way
+ * `Buffer.isCursorInViewport` does: absolute row minus `viewportY`.
+ */
+export function cursorViewportRow(baseY: number, cursorY: number, viewportY: number): number {
+  return baseY + cursorY - viewportY
+}
+
+/**
+ * Left edge for a preedit that must stay inside the screen.
+ *
+ * The caret's column is only a starting point: `cursorX * cellWidth` can land
+ * past the right edge (a full line, stale cell metrics after a window drag or
+ * a DPI change), and `.terminal-host`'s `overflow: clip` would then hide the
+ * tail of whatever the user is typing. Pull the whole string back on screen
+ * instead — a preedit that is not where the caret is beats one you cannot read.
+ * Absent geometry skips the clamp; absurd cell metrics collapse to 0 rather
+ * than to an unpositionable value.
+ */
+export function preeditLeft(
+  cursorX: number,
+  cellWidth: number,
+  textWidth: number,
+  screenWidth: number,
+): number {
+  const desired = Number.isFinite(cursorX) && Number.isFinite(cellWidth)
+    ? Math.max(0, cursorX) * cellWidth
+    : 0
+  const safeDesired = Number.isFinite(desired) ? Math.max(0, desired) : 0
+  // Unknown geometry means "do not clamp" rather than "collapse to zero":
+  // the caret position is still better than nothing.
+  if (!Number.isFinite(screenWidth) || !Number.isFinite(textWidth)) return safeDesired
+  return Math.min(safeDesired, Math.max(0, screenWidth - textWidth))
 }
 
 function log(message: string) {
@@ -86,18 +137,35 @@ export function installImeCompositionOverlay(terminal: Terminal): Disposable {
     'border-radius: 2px',
     'box-shadow: 0 0 0 1px currentColor',
   ].join(';')
-  root.appendChild(overlay)
+  // Anchored to `.xterm-screen`, not the `.xterm` root: the screen is the text
+  // area the cells are painted in, so screen-relative cell maths needs no
+  // padding subtraction and cannot drift when the root's padding changes.
+  screen.appendChild(overlay)
 
   let composing = false
   let hiddenNative: string | null = null
   let lastText = ''
+  let anchorTimer: ReturnType<typeof setTimeout> | null = null
 
-  const hideOverlay = () => {
+  const hideOverlay = (restoreNative = true) => {
     overlay.style.display = 'none'
-    if (hiddenNative !== null && nativeView) {
+    if (anchorTimer !== null) {
+      clearTimeout(anchorTimer)
+      anchorTimer = null
+    }
+    if (restoreNative && hiddenNative !== null && nativeView) {
       nativeView.style.visibility = hiddenNative
       hiddenNative = null
     }
+  }
+
+  // Keep xterm's view down while ours owns the preedit, so the string is
+  // never drawn twice — including the cases where we deliberately draw
+  // nothing (cursor scrolled out of the viewport).
+  const suppressNative = () => {
+    if (!nativeView) return
+    if (hiddenNative === null) hiddenNative = nativeView.style.visibility
+    nativeView.style.visibility = 'hidden'
   }
 
   const cellSize = (): { width: number; height: number } => {
@@ -115,40 +183,77 @@ export function installImeCompositionOverlay(terminal: Terminal): Disposable {
     }
   }
 
-  const render = () => {
+  const render = (): string | null => {
     const text = compositionText(lastText, textarea.value)
     const buffer = terminal.buffer.active
     const cell = cellSize()
     const screenRect = rectOf(screen)
-    const rootRect = rectOf(root)
-    if (text.length === 0 || cell.width <= 0 || cell.height <= 0) {
+    if (
+      text.length === 0 ||
+      cell.width <= 0 ||
+      cell.height <= 0 ||
+      screenRect.width <= 0 ||
+      terminal.rows <= 0
+    ) {
       hideOverlay()
-      return
+      return null
+    }
+
+    const row = cursorViewportRow(buffer.baseY, buffer.cursorY, buffer.viewportY)
+    // The cursor is scrolled out of view: there is no caret to pin to, and
+    // xterm's own view would paint the string at a stale row — so draw
+    // nothing and keep its view down too.
+    if (row < 0 || row >= terminal.rows) {
+      hideOverlay(false)
+      suppressNative()
+      return null
     }
 
     const cursorX = Math.max(0, Math.min(buffer.cursorX, terminal.cols - 1))
-    const left = Math.max(0, screenRect.left - rootRect.left + cursorX * cell.width)
-    const top = screenRect.top - rootRect.top + buffer.cursorY * cell.height
 
-    const theme = terminal.options.theme ?? {}
-    const fontFamily = terminal.options.fontFamily ?? 'monospace'
-    const fontSize = terminal.options.fontSize ?? 14
     overlay.textContent = text
+    // Laid out before measuring: the clamp needs the string's real width.
+    overlay.style.display = 'block'
+    const textWidth = overlay.getBoundingClientRect().width
+    const left = preeditLeft(cursorX, cell.width, textWidth, screenRect.width)
+
     overlay.style.left = `${left}px`
-    overlay.style.top = `${top}px`
+    overlay.style.top = `${row * cell.height}px`
     overlay.style.height = `${cell.height}px`
     overlay.style.lineHeight = `${cell.height}px`
-    overlay.style.fontFamily = fontFamily
-    overlay.style.fontSize = `${fontSize}px`
+    overlay.style.fontFamily = terminal.options.fontFamily ?? 'monospace'
+    overlay.style.fontSize = `${terminal.options.fontSize ?? 14}px`
+    const theme = terminal.options.theme ?? {}
     overlay.style.background = theme.background ?? '#000'
     overlay.style.color = theme.foreground ?? '#fff'
-    overlay.style.display = 'block'
 
     // Never draw the preedit twice: hide xterm's view while ours is up.
-    if (nativeView) {
-      if (hiddenNative === null) hiddenNative = nativeView.style.visibility
-      nativeView.style.visibility = 'hidden'
-    }
+    suppressNative()
+
+    // The IME anchors its candidate window to `.xterm-helper-textarea`, which
+    // xterm parks at the caret — i.e. possibly under the same clipped right
+    // edge. Re-point it at the string the user can actually read, after
+    // xterm's own positioning (it schedules its own setTimeout(0) from
+    // compositionupdate; this one is queued later, so it lands last).
+    if (anchorTimer !== null) clearTimeout(anchorTimer)
+    anchorTimer = setTimeout(() => {
+      anchorTimer = null
+      if (!composing) return
+      textarea.style.left = `${left}px`
+      textarea.style.top = `${row * cell.height}px`
+      textarea.style.width = `${Math.max(textWidth, 1)}px`
+      textarea.style.height = `${cell.height}px`
+      textarea.style.lineHeight = `${cell.height}px`
+    }, 0)
+
+    if (!imeDebugEnabled()) return null
+    const nativeRect = nativeView ? rectOf(nativeView) : null
+    return (
+      `preedit "${text}" at ${left},${row * cell.height} ` +
+      `(cell=${cell.width}x${cell.height} cursorX=${cursorX} row=${row}) ` +
+      `native=${nativeRect ? JSON.stringify(nativeRect) : 'none'} ` +
+      `screen=${JSON.stringify(screenRect)}`
+    )
   }
 
   const onCompositionStart = (event: CompositionEvent) => {
@@ -169,13 +274,10 @@ export function installImeCompositionOverlay(terminal: Terminal): Disposable {
       log(`composition update without start: ${JSON.stringify(event.data ?? '')}`)
     }
     lastText = event.data ?? ''
-    if (imeDebugEnabled() && nativeView) {
-      const nativeRect = rectOf(nativeView)
-      if (!isNativeCompositionVisible(nativeRect, rectOf(screen))) {
-        log(`native preedit not visible (${nativeRect.width}x${nativeRect.height} at ${nativeRect.left},${nativeRect.top}); overlay takes over`)
-      }
-    }
-    render()
+    // Once per IME keystroke, not once per cursor move: this line is what
+    // identifies a misplaced preedit in the field.
+    const geometry = render()
+    if (geometry) log(geometry)
   }
 
   const onCompositionEnd = () => {
@@ -197,6 +299,17 @@ export function installImeCompositionOverlay(terminal: Terminal): Disposable {
     hideOverlay()
   }
 
+  // A resize or a scroll changes the cell grid under the caret while a
+  // composition is live — the window-drag case in particular, where the
+  // terminal re-fits up to 150ms after the drag ends. Without a re-render the
+  // preedit keeps its stale offset and drifts away from the cursor.
+  const rerenderIfComposing = () => {
+    if (composing) render()
+  }
+  const resizeDispose = terminal.onResize(rerenderIfComposing)
+  const scrollDispose = terminal.onScroll(rerenderIfComposing)
+  const cursorDispose = terminal.onCursorMove(rerenderIfComposing)
+
   textarea.addEventListener('compositionstart', onCompositionStart, true)
   textarea.addEventListener('compositionupdate', onCompositionUpdate, true)
   textarea.addEventListener('compositionend', onCompositionEnd, true)
@@ -210,6 +323,9 @@ export function installImeCompositionOverlay(terminal: Terminal): Disposable {
       textarea.removeEventListener('compositionend', onCompositionEnd, true)
       textarea.removeEventListener('input', onInput, true)
       textarea.removeEventListener('blur', onBlur, true)
+      resizeDispose.dispose()
+      scrollDispose.dispose()
+      cursorDispose.dispose()
       hideOverlay()
       overlay.remove()
     },

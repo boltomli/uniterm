@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createKeystrokeReorder } from './imeKeystrokeOrder'
+import { createImeKeystrokeReorder, createKeystrokeReorder } from './imeKeystrokeOrder'
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 /** Applies the emitted stream to a line the way a shell would. */
@@ -144,5 +145,59 @@ describe('createKeystrokeReorder', () => {
     r.push('ê')
     r.dispose()
     expect(out.join('')).toBe('ê')
+  })
+})
+
+describe('createImeKeystrokeReorder', () => {
+  const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'
+  const windows = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+
+  function platformReorder(userAgent: string | undefined) {
+    vi.useFakeTimers()
+    if (userAgent === undefined) {
+      vi.stubGlobal('navigator', undefined)
+    } else {
+      vi.stubGlobal('navigator', { userAgent })
+    }
+    const out: string[] = []
+    return { out, r: createImeKeystrokeReorder(d => out.push(d)) }
+  }
+
+  it('reorders a macOS event-tap rewrite', () => {
+    const { out, r } = platformReorder(mac)
+    // The replacement lands before the delete meant for the character it
+    // replaces — the captured VietTelex trace.
+    r.push('ê')
+    r.push('\x7f')
+    expect(out).toEqual([])
+    vi.runAllTimers()
+    expect(apply('tie', out)).toBe('tiê')
+  })
+
+  it('delays non-ASCII typing on macOS only while a burst is open', () => {
+    const { out, r } = platformReorder(mac)
+    r.push('ê')
+    expect(out).toEqual([])
+    vi.runAllTimers()
+    expect(out).toEqual(['ê'])
+  })
+
+  it('passes every keystroke straight through on Windows', () => {
+    const { out, r } = platformReorder(windows)
+    // The buffer exists for macOS event-tap IMEs; on Windows it would only
+    // hold each keystroke after a Chinese commit for QUIET_MS.
+    r.push('ê')
+    r.push('\x7f')
+    r.push('l')
+    expect(out).toEqual(['ê', '\x7f', 'l'])
+    vi.runAllTimers()
+    expect(out).toEqual(['ê', '\x7f', 'l'])
+  })
+
+  it('passes through when there is no navigator at all', () => {
+    const { out, r } = platformReorder(undefined)
+    r.push('ê')
+    r.push('\x7f')
+    expect(out).toEqual(['ê', '\x7f'])
   })
 })

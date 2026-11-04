@@ -203,7 +203,7 @@ import {
   refreshTerminalRenderer,
 } from '../services/terminalManager'
 import { getXtermTheme } from '../composables/useTerminal'
-import { createKeystrokeReorder } from '../utils/imeKeystrokeOrder'
+import { createImeKeystrokeReorder } from '../utils/imeKeystrokeOrder'
 import { installGhostText, pickGhostSuggestion, type GhostText } from '../utils/terminalGhostText'
 import { resolveXtermBackground, applyTerminalBgVar, resolveTerminalThemeName } from '../composables/useTerminalTheme'
 import { stripCursorBlink } from '../utils/cursor'
@@ -420,8 +420,9 @@ let terminal: Terminal | null = null
 let ghostText: GhostText | null = null
 let processTerminalData: (data: string) => void = () => {}
 // Input methods can deliver a rewrite's delete and its replacement out of
-// order; this restores the intent before anything downstream sees it.
-const imeOrder = createKeystrokeReorder((data) => processTerminalData(data))
+// order; this restores the intent before anything downstream sees it. Only
+// macOS event-tap IMEs need it — elsewhere it is a no-op pass-through.
+const imeOrder = createImeKeystrokeReorder((data) => processTerminalData(data))
 let onDataDispose: { dispose(): void } | null = null
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
@@ -1099,7 +1100,43 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
+  reanchorImeAfterNativeMove()
   resizeTimer = setTimeout(() => resize(), 100)
+}
+
+// The native move/size modal loop can leave WebView2's TSF client anchored to
+// the caret rect the window had before the drag: the IME then composes against
+// a stale position (its candidate window drifts toward a screen edge and gets
+// clipped) and a composition the loop interrupted can leave xterm's send flags
+// stuck, so the next committed word goes out through two paths at once.
+//
+// Cycling DOM focus fixes both: resetXtermInputState clears the stuck flags,
+// cancels the deferred commit reads and re-syncs the helper textarea to the
+// cursor (that rect is what the IME positions its window from), and the
+// re-focus makes WebView2 read it again. Deliberate targets are never robbed —
+// the same policy the window-activation path uses.
+function reanchorImeAfterNativeMove() {
+  if (!isActive.value) return
+  const textarea = terminal?.textarea
+  if (!textarea) return
+  const active = document.activeElement
+  // An input/textarea/contenteditable the user clicked (a dialog field, the
+  // tab-rename box, another split's terminal) keeps focus.
+  if (
+    active instanceof HTMLElement &&
+    active !== textarea &&
+    active !== document.body &&
+    active !== document.documentElement &&
+    (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)
+  ) {
+    return
+  }
+  // A dialog may be waiting on its focus trap; do not focus a terminal behind it.
+  const overlays = document.querySelectorAll<HTMLElement>('[role="dialog"], .conn-context-menu')
+  if (Array.from(overlays).some(el => el.getClientRects().length > 0)) return
+
+  resetXtermInputState(terminal)
+  textarea.focus({ preventScroll: true })
 }
 
 function onSplitResizeStart() {

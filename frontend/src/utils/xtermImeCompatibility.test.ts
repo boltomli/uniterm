@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installImeCompatibilityPatch } from './xtermImeCompatibility'
+import { installImeCompatibilityPatch, resetXtermInputState } from './xtermImeCompatibility'
 
 interface FakeCore {
   [key: string]: unknown
@@ -512,4 +512,258 @@ describe('installImeCompatibilityPatch', () => {
     ])
   })
 
+})
+
+describe('windows duplicate-commit guard', () => {
+  beforeEach(() => {
+    vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0; Win64; x64' })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  interface WindowsHelper {
+    _isComposing?: boolean
+    _isSendingComposition?: boolean
+    isComposing?: boolean
+    _compositionPosition?: { start?: number; end?: number }
+    _dataAlreadySent?: string
+    _lastCommittedText?: string
+    _coreService?: { triggerDataEvent?: (data: string, wasUserInput?: boolean) => void }
+    compositionstart?: (this: WindowsHelper) => void
+    compositionupdate?: (this: WindowsHelper, ev: Pick<CompositionEvent, 'data'>) => void
+    _finalizeComposition?: (this: WindowsHelper, waitForPropagation: boolean) => void
+    _handleAnyTextareaChanges?: (this: WindowsHelper) => void
+    _resetWindowsIme?: () => void
+  }
+
+  interface WindowsCore {
+    [key: string]: unknown
+    _inputEvent: (this: WindowsCore, ev: InputEvent) => boolean
+    _keyDownSeen: boolean
+    _keyDownHandled: boolean
+    _keyPressHandled: boolean
+    _unprocessedDeadKey: boolean
+    _compositionHelper: WindowsHelper
+    _helperContainer?: {
+      querySelector?: (selector: string) => { classList: { remove: (token: string) => void } } | null
+    }
+    _syncTextArea?: () => void
+    textarea: {
+      value: string
+      listeners: Map<string, EventListener>
+      addEventListener: (type: string, fn: EventListener) => void
+      removeEventListener: (type: string, fn: EventListener) => void
+      blur: () => void
+      focus: () => void
+    }
+  }
+
+  /** A core carrying the helper pieces installWindowsImePatch patches. */
+  function makeWindowsCore() {
+    const sent: string[] = []
+    const originalCalls: InputEvent[] = []
+    const helper: WindowsHelper = {
+      _isComposing: false,
+      _isSendingComposition: false,
+      _compositionPosition: { start: 0, end: 0 },
+      _dataAlreadySent: '',
+      _lastCommittedText: '',
+      _coreService: { triggerDataEvent: (data: string) => { sent.push(data) } },
+      compositionstart() {
+        this._isComposing = true
+        this._dataAlreadySent = ''
+      },
+      compositionupdate() {
+        this._isComposing = true
+      },
+      // Stands in for xterm's real finalize, which records the state it sets.
+      _finalizeComposition(waitForPropagation: boolean) {
+        if (!waitForPropagation) this._isComposing = false
+      },
+      _handleAnyTextareaChanges() {},
+    }
+    const core: WindowsCore = {
+      _inputEvent: function (this: WindowsCore, ev: InputEvent) {
+        originalCalls.push(ev)
+        // Mirror the browser: by the time the input event is dispatched the
+        // textarea already holds the inserted data.
+        if (ev.data) this.textarea.value += ev.data
+        return true
+      },
+      _keyDownSeen: true,
+      _keyDownHandled: false,
+      _keyPressHandled: false,
+      _unprocessedDeadKey: false,
+      _compositionHelper: helper,
+      _helperContainer: {
+        querySelector: () => ({ classList: { remove: () => {} } }),
+      },
+      textarea: {
+        value: '',
+        listeners: new Map(),
+        addEventListener(type: string, fn: EventListener) {
+          core.textarea.listeners.set(type, fn)
+        },
+        removeEventListener(type: string, fn: EventListener) {
+          if (core.textarea.listeners.get(type) === fn) core.textarea.listeners.delete(type)
+        },
+        blur: () => {},
+        focus: () => {},
+      },
+    }
+    return { core, helper, sent, originalCalls }
+  }
+
+  const term = (core: WindowsCore) => fakeTerminal(core as unknown as FakeCore)
+
+  it('suppresses the direct input path while a composition commit is pending', () => {
+    const { core, helper, originalCalls } = makeWindowsCore()
+    helper._isSendingComposition = true
+    // The browser inserts the committed text before dispatching input, so the
+    // pending compositionend read would deliver it a second time.
+    core.textarea.value = '词'
+    installImeCompatibilityPatch(term(core))
+
+    // keyup already reset _keyDownSeen — vanilla xterm would send directly.
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    expect(originalCalls).toHaveLength(0)
+  })
+
+  it('suppresses the direct input path mid-composition', () => {
+    const { core, helper, originalCalls } = makeWindowsCore()
+    helper._isComposing = true
+    core.textarea.value = '词'
+    installImeCompatibilityPatch(term(core))
+
+    core._keyDownSeen = false
+    expect(core._inputEvent.call(core, insertText('词'))).toBe(true)
+    expect(originalCalls).toHaveLength(0)
+  })
+
+  it('passes input through when the composition region does not cover it', () => {
+    const { core, helper, originalCalls } = makeWindowsCore()
+    helper._isSendingComposition = true
+    // Blur cleared the textarea: the pending read will deliver nothing, so the
+    // input must not be swallowed or the keystroke would be lost.
+    core.textarea.value = ''
+    installImeCompatibilityPatch(term(core))
+
+    core._inputEvent.call(core, insertText('词'))
+    expect(originalCalls).toHaveLength(1)
+  })
+
+  it('passes input through when no composition is in flight', () => {
+    const { core, originalCalls } = makeWindowsCore()
+    core.textarea.value = ''
+    installImeCompatibilityPatch(term(core))
+
+    core._inputEvent.call(core, insertText('a'))
+    expect(originalCalls).toHaveLength(1)
+  })
+
+  it('drops an input event that repeats the text already committed', () => {
+    const { core, helper, sent, originalCalls } = makeWindowsCore()
+    core.textarea.value = '世界'
+    helper._compositionPosition = { start: 0, end: 2 }
+    installImeCompatibilityPatch(term(core))
+
+    // The finalize path owns the commit.
+    helper._finalizeComposition!(false)
+    expect(sent).toEqual(['世界'])
+    expect(helper._lastCommittedText).toBe('世界')
+
+    // The same text arriving again through the direct path is a duplicate.
+    expect(core._inputEvent.call(core, insertText('世界'))).toBe(true)
+    expect(sent).toEqual(['世界'])
+    expect(originalCalls).toHaveLength(0)
+  })
+
+  it('does not read a straggler compositionend as a fresh commit', () => {
+    const { core, helper, sent } = makeWindowsCore()
+    core.textarea.value = 'already typed'
+    helper._compositionPosition = { start: 0, end: 0 }
+    installImeCompatibilityPatch(term(core))
+
+    // No composition was ever started: xterm would substring the whole
+    // textarea and re-send everything typed since the last commit.
+    helper._finalizeComposition!(true)
+    expect(sent).toEqual([])
+  })
+
+  it('rebase a composition region when compositionstart was dropped', () => {
+    const { core, helper } = makeWindowsCore()
+    installImeCompatibilityPatch(term(core))
+
+    core.textarea.value = 'abc预'
+    helper.compositionupdate!({ data: '预' })
+
+    expect(helper._isComposing).toBe(true)
+    expect(helper._compositionPosition?.start).toBe(3)
+    expect(helper._dataAlreadySent).toBe('')
+  })
+
+  it('flushes a pending commit when the next composition starts', () => {
+    vi.useFakeTimers()
+    const { core, helper, sent } = makeWindowsCore()
+    core.textarea.value = '词'
+    helper._compositionPosition = { start: 0, end: 1 }
+    helper._isComposing = true
+    installImeCompatibilityPatch(term(core))
+
+    helper._finalizeComposition!(true)
+    expect(helper._isSendingComposition).toBe(true)
+
+    // A new composition beginning before the deferred read fires must not
+    // lose the previous commit. compositionstart fires before the new preedit
+    // is inserted, so the read still sees only the committed text.
+    helper.compositionstart!()
+    vi.runAllTimers()
+
+    expect(sent).toEqual(['词'])
+  })
+
+  it('reset cancels a pending commit instead of letting it fire', () => {
+    vi.useFakeTimers()
+    const { core, helper, sent } = makeWindowsCore()
+    core.textarea.value = '词'
+    helper._compositionPosition = { start: 0, end: 1 }
+    helper._isComposing = true
+    installImeCompatibilityPatch(term(core))
+
+    helper._finalizeComposition!(true)
+    expect(helper._isSendingComposition).toBe(true)
+
+    resetXtermInputState(term(core))
+    vi.runAllTimers()
+
+    expect(sent).toEqual([])
+    expect(core.textarea.value).toBe('')
+    expect(helper._lastCommittedText).toBe('')
+  })
+
+  it('dispose restores the original handler', () => {
+    const { core } = makeWindowsCore()
+    const originalInputEvent = core._inputEvent
+    const disposable = installImeCompatibilityPatch(term(core))
+    expect(core._inputEvent).not.toBe(originalInputEvent)
+
+    disposable.dispose()
+    expect(core._inputEvent).toBe(originalInputEvent)
+  })
+
+  it('is a no-op on platforms without a dedicated patch', () => {
+    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
+    const { core, originalCalls } = makeWindowsCore()
+    const originalInputEvent = core._inputEvent
+    const disposable = installImeCompatibilityPatch(term(core))
+
+    expect(core._inputEvent).toBe(originalInputEvent)
+    core._inputEvent.call(core, insertText('a'))
+    expect(originalCalls).toHaveLength(1)
+    disposable.dispose()
+    expect(core._inputEvent).toBe(originalInputEvent)
+  })
 })

@@ -270,6 +270,13 @@ func (a *App) emit(name string, data ...any) {
 // main.go calls this once the window is shown. Later calls are no-ops.
 func (a *App) attachMainWindow(hwnd uintptr) {
 	if hwnd == 0 {
+		// WindowShow normally carries a live handle, but if it ever fires
+		// before the native window exists the WndProc hook (and with it the
+		// drag/IME focus repair) would silently never install. Fall back to
+		// enumerating our own top-level window rather than giving up.
+		hwnd = a.findMainWindow()
+	}
+	if hwnd == 0 {
 		return
 	}
 	a.mainWindowAttach.Do(func() {
