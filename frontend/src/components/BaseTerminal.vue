@@ -472,6 +472,13 @@ let resizeTimer: ReturnType<typeof setTimeout> | null = null
 // resizeTimer so it never cancels another handler's pending resize.
 let deferredResizeTimer: ReturnType<typeof setTimeout> | null = null
 let unsubNativeResizeEnd: (() => void) | null = null
+// Windows only: re-anchor the WebView2 IME after the window regains focus
+// (Alt+Tab, taskbar, another app and back). Both the Wails window event and
+// the DOM focus event feed the same debounced handler; released on unmount.
+let unsubWindowsActivate: (() => void) | null = null
+let unsubWindowsClickActivate: (() => void) | null = null
+let onImeWindowFocus: (() => void) | null = null
+let imeReanchorTimer: ReturnType<typeof setTimeout> | null = null
 let isResizing = false
 let splitResizing = false
 let suppressResizeUntil = 0
@@ -1100,34 +1107,44 @@ function onNativeResizeEnd() {
   if (resizeTimer) clearTimeout(resizeTimer)
   isResizing = false
   terminalRef.value?.classList.remove('resizing')
-  reanchorImeAfterNativeMove()
+  reanchorImeAfterFocusChange()
   resizeTimer = setTimeout(() => resize(), 100)
 }
 
-// The native move/size modal loop can leave WebView2's TSF client anchored to
-// the caret rect the window had before the drag: the IME then composes against
-// a stale position (its candidate window drifts toward a screen edge and gets
-// clipped) and a composition the loop interrupted can leave xterm's send flags
-// stuck, so the next committed word goes out through two paths at once.
+// WebView2's TSF client can be left detached from the caret by anything that
+// bounces native focus through the host window: the native move/size modal
+// loop (WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE) and a window activation (Alt+Tab,
+// taskbar, clicking another app and back) both do it. app_windows.go repairs
+// the native half of both cases (a SetFocus back onto the WebView2 child);
+// what it cannot touch is xterm's transient input state. Clearing that here is
+// what stops a composition the switch interrupted from going out through two
+// send paths at once (the reported word landing twice).
 //
-// Cycling DOM focus fixes both: resetXtermInputState clears the stuck flags,
-// cancels the deferred commit reads and re-syncs the helper textarea to the
-// cursor (that rect is what the IME positions its window from), and the
-// re-focus makes WebView2 read it again. Deliberate targets are never robbed —
-// the same policy the window-activation path uses.
-function reanchorImeAfterNativeMove() {
+// Cycling DOM focus fixes the JS half: resetXtermInputState clears the stuck
+// flags, cancels the deferred commit reads and re-syncs the helper textarea to
+// the cursor (that rect is what the IME positions its window from), and the
+// re-focus makes WebView2 read it again. A short debounce collapses the Wails
+// activation event and the DOM focus event a single Alt+Tab produces into one
+// reset — two blur/focus cycles in the same tick can themselves confuse the
+// IME. Deliberate targets are never robbed.
+let imeReanchorAt = 0
+function reanchorImeAfterFocusChange() {
   if (!isActive.value) return
+  const now = Date.now()
+  if (now - imeReanchorAt < 100) return
   const textarea = terminal?.textarea
   if (!textarea) return
   const active = document.activeElement
   // An input/textarea/contenteditable the user clicked (a dialog field, the
-  // tab-rename box, another split's terminal) keeps focus.
+  // tab-rename box, another split's terminal), or a window control the user is
+  // deliberately aiming at, keeps focus.
   if (
     active instanceof HTMLElement &&
     active !== textarea &&
     active !== document.body &&
     active !== document.documentElement &&
-    (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)
+    (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable ||
+      active.closest('.window-controls') !== null)
   ) {
     return
   }
@@ -1135,8 +1152,23 @@ function reanchorImeAfterNativeMove() {
   const overlays = document.querySelectorAll<HTMLElement>('[role="dialog"], .conn-context-menu')
   if (Array.from(overlays).some(el => el.getClientRects().length > 0)) return
 
+  imeReanchorAt = now
   resetXtermInputState(terminal)
   textarea.focus({ preventScroll: true })
+}
+
+// Activation runs the repair on the next macrotask: the browser's own focus
+// bookkeeping and any compositionend / input the switch delivers must settle
+// first, and the existing window-focus path (useFocusTerminal) defers its
+// re-focus for the same reason — a synchronous focus() at activation can race
+// a native dialog tearing down. One pending timer is enough: the Wails event
+// and the DOM focus event a single Alt+Tab produces land in the same turn.
+function scheduleImeReanchor() {
+  if (imeReanchorTimer !== null) return
+  imeReanchorTimer = setTimeout(() => {
+    imeReanchorTimer = null
+    reanchorImeAfterFocusChange()
+  }, 0)
 }
 
 function onSplitResizeStart() {
@@ -2023,6 +2055,22 @@ onMounted(() => {
   // fire a final window.resize at the settled size, so this is the reliable
   // trigger to re-fit the terminal (issue #656). Delivered as a Wails event.
   unsubNativeResizeEnd = Events.On('window:resize-end', () => onNativeResizeEnd())
+  // Window activation (Alt+Tab / taskbar / another app and back). The native
+  // half lives in app_windows.go: WM_ACTIVATE posts a repair that re-anchors
+  // the WebView2 TSF client to the caret, the same way WM_EXITSIZEMOVE repairs
+  // a drag. This half clears the xterm input state the switch left behind, and
+  // is the only half that still runs when the WndProc hook is not installed.
+  // Windows only: the WebView2 TSF detachment is the platform-specific cause,
+  // and on macOS/Linux the focus restore path already handles it. The DOM
+  // focus listener is the hook-independent safety net (the Wails event needs
+  // Wails' own handler).
+  if (detectPlatformSync() === 'windows') {
+    const reanchor = () => scheduleImeReanchor()
+    unsubWindowsActivate = Events.On('windows:WindowActive', reanchor)
+    unsubWindowsClickActivate = Events.On('windows:WindowClickActive', reanchor)
+    onImeWindowFocus = reanchor
+    window.addEventListener('focus', onImeWindowFocus)
+  }
   onOpenSearch = (e: Event) => {
     if (!isActive.value) return
     const detail = (e as CustomEvent).detail
@@ -2563,6 +2611,14 @@ onUnmounted(() => {
   window.removeEventListener('split:resize-end', onSplitResizeEnd)
   unsubNativeResizeEnd?.()
   unsubNativeResizeEnd = null
+  unsubWindowsActivate?.()
+  unsubWindowsActivate = null
+  unsubWindowsClickActivate?.()
+  unsubWindowsClickActivate = null
+  if (onImeWindowFocus) window.removeEventListener('focus', onImeWindowFocus)
+  onImeWindowFocus = null
+  if (imeReanchorTimer !== null) clearTimeout(imeReanchorTimer)
+  imeReanchorTimer = null
   if (onOpenSearch) window.removeEventListener('terminal:open-search', onOpenSearch)
   if (onExport) window.removeEventListener('terminal:export', onExport)
   if (onRecordList) window.removeEventListener('terminal:record-list', onRecordList)

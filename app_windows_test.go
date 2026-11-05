@@ -11,6 +11,32 @@ import (
 	"testing"
 )
 
+// activationWouldReanchor must fire when the window is being activated
+// (Alt+Tab / click) and must stay quiet when it is being deactivated, which
+// would steal focus from the window the user just switched to. Only the low
+// word of WM_ACTIVATE's wParam is the activation code; the high word carries
+// the minimise state and must not change the decision.
+func TestActivationWouldReanchor(t *testing.T) {
+	cases := []struct {
+		name   string
+		wparam uintptr
+		want   bool
+	}{
+		{"alt-tab activation", uintptr(WA_ACTIVE), true},
+		{"click activation", uintptr(WA_CLICKACTIVE), true},
+		{"deactivation", uintptr(WA_INACTIVE), false},
+		{"activation with minimised flag", uintptr(WA_ACTIVE | 0x00020000), true},
+		{"deactivation with minimised flag", uintptr(WA_INACTIVE | 0x00020000), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := activationWouldReanchor(tc.wparam); got != tc.want {
+				t.Fatalf("activationWouldReanchor(%#x) = %v, want %v", tc.wparam, got, tc.want)
+			}
+		})
+	}
+}
+
 // detectThirdPartyShells must offer well-known third-party shell installs
 // (Cygwin, MSYS2, Nushell) alongside the built-in shells, using only paths
 // that actually exist on the host.

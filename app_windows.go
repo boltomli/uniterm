@@ -344,10 +344,21 @@ func parseWSLDistros(raw []byte) []string {
 
 const (
 	GWLP_WNDPROC     = ^uintptr(3)
+	WM_ACTIVATE      = 0x0006
 	WM_ENTERSIZEMOVE = 0x0231
 	WM_EXITSIZEMOVE  = 0x0232
 	WM_SIZE          = 0x0005
 	WM_SYSCOMMAND    = 0x0112
+	// WA_* are the activation codes in the low word of WM_ACTIVATE's wParam.
+	WA_INACTIVE    = 0
+	WA_ACTIVE      = 1
+	WA_CLICKACTIVE = 2
+	// wmAppReanchorIme is a private WM_APP message the main window posts to
+	// itself to run the activation IME repair once the activation message has
+	// been fully processed. A SetFocus issued from inside WM_ACTIVATE can be
+	// dropped while window ownership is still settling, which is exactly the
+	// state the repair has to fix.
+	wmAppReanchorIme = 0x8000 + 1 // WM_APP + 1
 	// SC_* are wParam values of WM_SYSCOMMAND for the system menu commands
 	// that resize the window outside the size/move loop (maximise from the
 	// title-bar button, minimise, restore).
@@ -355,6 +366,58 @@ const (
 	SC_MINIMIZE = 0xF020
 	SC_RESTORE  = 0xF120
 )
+
+// activationWouldReanchor reports whether a WM_ACTIVATE wParam activates the
+// window. WA_ACTIVE comes from Alt+Tab / programmatic activation,
+// WA_CLICKACTIVE from clicking the window back; WA_INACTIVE is the window
+// being left and must not re-anchor focus (it would steal it from whatever
+// the user just switched to).
+func activationWouldReanchor(wparam uintptr) bool {
+	switch int(wparam & 0xffff) {
+	case WA_ACTIVE, WA_CLICKACTIVE:
+		return true
+	}
+	return false
+}
+
+// reanchorWebviewFocus forces a fresh WM_SETFOCUS on the WebView2 child window
+// so Chromium re-notifies its TSF client and re-anchors the IME to the caret.
+// A plain SetFocus(child) is a no-op when the child already owns keyboard
+// focus — the state an activation can leave behind, because Windows restores
+// focus to the child while the thread is still inactive and WebView2 never
+// processes it — so focus is dropped to the thread queue first, giving the
+// child the WM_KILLFOCUS/WM_SETFOCUS pair that re-anchors the composition. The
+// host takes focus back if the child cannot, so keyboard input is never lost.
+// remembered is the descendant captured before the switch; the currently
+// focused descendant wins when there is one, since it is the live anchor.
+func reanchorWebviewFocus(hwnd, remembered uintptr) {
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	procGetFocus := user32.NewProc("GetFocus")
+	procSetFocus := user32.NewProc("SetFocus")
+	procIsChild := user32.NewProc("IsChild")
+
+	target := remembered
+	if focused, _, _ := procGetFocus.Call(); focused != 0 && focused != hwnd {
+		if child, _, _ := procIsChild.Call(hwnd, focused); child != 0 {
+			target = focused
+		}
+	}
+	// Never move focus to something outside this window: activation of one
+	// window must not pull focus out of another.
+	if target == 0 || target == hwnd {
+		return
+	}
+	if child, _, _ := procIsChild.Call(hwnd, target); child == 0 {
+		return
+	}
+	if focused, _, _ := procGetFocus.Call(); focused == target {
+		procSetFocus.Call(0)
+	}
+	procSetFocus.Call(target)
+	if now, _, _ := procGetFocus.Call(); now != target {
+		procSetFocus.Call(hwnd)
+	}
+}
 
 func (a *App) findMainWindow() uintptr {
 	pid := windows.GetCurrentProcessId()
@@ -428,10 +491,39 @@ func (a *App) subclassMainWindow() {
 	procSetFocus := user32.NewProc("SetFocus")
 	procIsChild := user32.NewProc("IsChild")
 	procGetForegroundWindow := user32.NewProc("GetForegroundWindow")
+	procPostMessage := user32.NewProc("PostMessageW")
 	var focusBeforeMove uintptr
+	// childFocus is the descendant (the WebView2 child HWND) that owns
+	// keyboard focus while this window is active. Activation repairs hand
+	// focus back to it — see WM_ACTIVATE below.
+	var childFocus uintptr
+	rememberChildFocus := func(hwnd uintptr) {
+		if focused, _, _ := procGetFocus.Call(); focused != 0 && focused != hwnd {
+			if child, _, _ := procIsChild.Call(hwnd, focused); child != 0 {
+				childFocus = focused
+			}
+		}
+	}
 
 	cb := windows.NewCallback(func(hwnd windows.HWND, msg uint32, wparam, lparam uintptr) uintptr {
 		switch msg {
+		case wmAppReanchorIme:
+			// Deferred half of the activation repair: the activation message has
+			// been fully processed, so the window really is foreground and the
+			// focus transition sticks. Only act while we own the foreground.
+			if foreground, _, _ := procGetForegroundWindow.Call(); foreground == uintptr(hwnd) {
+				rememberChildFocus(uintptr(hwnd))
+				target := childFocus
+				if target == 0 {
+					target = wparam
+				}
+				reanchorWebviewFocus(uintptr(hwnd), target)
+			}
+			return 0
+		case WM_ACTIVATE:
+			// Capture the focused descendant while it still belongs to us, so
+			// the reactivation can put focus back on the exact HWND.
+			rememberChildFocus(uintptr(hwnd))
 		case WM_ENTERSIZEMOVE:
 			// Remember the native focus target before the OS enters its modal
 			// move/size loop. The loop hands focus back to the top-level window
@@ -445,6 +537,9 @@ func (a *App) subclassMainWindow() {
 				if child, _, _ := procIsChild.Call(uintptr(hwnd), focusBeforeMove); child == 0 {
 					focusBeforeMove = 0
 				}
+			}
+			if focusBeforeMove != 0 {
+				childFocus = focusBeforeMove
 			}
 			a.inSizeMove = true
 			a.emitMoveResize("rdp:move-resize-start")
@@ -471,6 +566,19 @@ func (a *App) subclassMainWindow() {
 			}
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
+		if msg == WM_ACTIVATE && activationWouldReanchor(wparam) {
+			// Wails' own WM_ACTIVATE handler already asks the WebView2 controller
+			// to take focus back (MoveFocus), but that only tells the renderer:
+			// Chromium's TSF client can stay attached to the caret the window had
+			// before the switch, so a composition the switch interrupted is
+			// committed through two paths and the word lands twice. Re-issue the
+			// native focus transition on the child (what WM_EXITSIZEMOVE does
+			// after a drag, and what dragging repairs when a switch left it
+			// broken), but post it: a SetFocus from inside WM_ACTIVATE can be
+			// swallowed while ownership is still settling.
+			rememberChildFocus(uintptr(hwnd))
+			procPostMessage.Call(uintptr(hwnd), wmAppReanchorIme, childFocus, 0)
+		}
 		if msg == WM_EXITSIZEMOVE {
 			// The modal loop returns keyboard focus to the host window rather
 			// than the WebView2 child it started on. Win32 then considers the
