@@ -49,6 +49,13 @@ afterEach(() => {
 
 describe('verified command-input hard wraps', () => {
   it('joins BusyBox CRLF echo for copy, gutter and highlighting without changing native wrap flags', async () => {
+    // Same determinism fix as overlayHighlight.refresh.test.ts: node has no
+    // rAF (the 3ms scan budget's continuation would throw and kill the
+    // highlighter), and a constant clock keeps that budget from tripping
+    // mid-scan on a cold/loaded start. The sweep is bottom-up, so a tripped
+    // budget leaves the top row uncolored — the assertion below then races
+    // the scheduler instead of testing the highlight itself.
+    vi.spyOn(performance, 'now').mockReturnValue(1_000)
     const t = await terminal()
     const command = "echo '" + 'a'.repeat(14) + '  ' + 'b'.repeat(24) + "'"
     observeCommandInput(t, command)
