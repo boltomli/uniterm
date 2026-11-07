@@ -99,6 +99,39 @@ var appIconTrayPNG []byte
 //go:embed build/appicon_tray_template.png
 var appIconTrayTemplatePNG []byte
 
+// windowsDisabledFeatures is the Chromium feature list handed to WebView2
+// through Wails' DisabledFeatures option. Keep it a function (not an inline
+// literal) so a test can pin the entries that fix real defects.
+//
+// Every entry must go through DisabledFeatures: Wails merges them into its
+// single --disable-features switch, and Chromium honours only the LAST
+// occurrence of that switch, so adding a second one in AdditionalBrowserArgs
+// would silently re-enable Wails' own disabled protections.
+func windowsDisabledFeatures() []string {
+	return []string{
+		// WebView2 runtimes 152.x/153.x call LogonUser(current local account,
+		// invalid password) once per environment creation at startup — a
+		// Chromium regression in the autofill-AI-wallet feature that emits a
+		// 4625 failed-logon event per launch and, on machines with an account
+		// lockout policy, can lock the user out of Windows entirely. Disabling
+		// the feature stops the logon attempt.
+		"AutofillAiWalletPrivatePasses",
+		// Chromium stops compositing a window it believes is occluded (covered
+		// by another window, display off, lock screen) and only resumes when
+		// its occlusion tracker says the window is visible again. Across
+		// sleep/hibernate/resume it can stay convinced the window is gone, and
+		// since uniTerm's window is frameless there is not even a title bar
+		// left to click: the window looks deleted while the process is alive
+		// and the taskbar button does nothing. Turning the tracker off keeps
+		// the renderer painting regardless of occlusion state. The cost is a
+		// little more CPU/GPU when the app sits behind another window, which is
+		// negligible for a terminal; the app's own foreground flag
+		// (IsForeground/SetAppVisibility) still pauses the work that actually
+		// costs anything. See window_recovery.go for the companion repair.
+		"CalculateNativeWinOcclusion",
+	}
+}
+
 func main() {
 	// Administrator-shell broker mode: an elevated copy of uniTerm launched
 	// via the "runas" verb relays ConPTY I/O for admin local terminals (see
@@ -216,7 +249,7 @@ func main() {
 	var window *application.WebviewWindow
 
 	w3app := application.New(application.Options{
-		Name:       "uniTerm",
+		Name: "uniTerm",
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 			// F-09b: production CSP + nosniff on every asset (dev server
@@ -241,18 +274,7 @@ func main() {
 		// harmless (ignored) on other platforms.
 		Windows: application.WindowsOptions{
 			WebviewUserDataPath: webviewDataPath,
-			// WebView2 runtimes 152.x/153.x call LogonUser(current local
-			// account, invalid password) once per environment creation at
-			// startup — a Chromium regression in the autofill-AI-wallet
-			// feature that emits a 4625 failed-logon event per launch and,
-			// on machines with an account lockout policy, can lock the
-			// user out of Windows entirely. Disabling that feature stops
-			// the logon attempt. Must go through DisabledFeatures so it
-			// merges into Wails' single --disable-features switch:
-			// Chromium honours only the LAST occurrence, so a second
-			// switch in AdditionalBrowserArgs would silently re-enable
-			// Wails' disabled SmartScreen protection.
-			DisabledFeatures: []string{"AutofillAiWalletPrivatePasses"},
+			DisabledFeatures:    windowsDisabledFeatures(),
 		},
 		// Fixed program name so the window's X11 WM_CLASS stays "uniterm" —
 		// the StartupWMClass in the .desktop file matches it under X11/XWayland.
@@ -420,6 +442,11 @@ func main() {
 	// the wails GlobalShortcutManager). Default Ctrl+M when unset; can be
 	// changed or disabled in Settings → Shortcuts.
 	applyGlobalShowHideHotkey(w3app, window, trayHotkeyBinding(&savedSettings))
+
+	// Post-resume recovery: re-show a window that the OS/power transition left
+	// hidden and re-assert its geometry and WebView2 surface. See
+	// window_recovery.go for the failure modes.
+	setupWindowRecovery(w3app, window)
 
 	// Local end-to-end update test hook — inert unless the env switch AND a
 	// loopback release-server API base are set (see autotest_update.go).
@@ -638,7 +665,7 @@ func setupTray(w3app *application.App, app *App, window *application.WebviewWind
 	// Left click toggles visibility, mirroring MobaXterm's tray behaviour.
 	tray.OnClick(func() {
 		if window.IsVisible() {
-			window.Hide()
+			hideMainWindow(window)
 		} else {
 			showMainWindow(window)
 		}
@@ -658,7 +685,7 @@ func buildTrayMenu(app *App, lang string) *application.Menu {
 		showMainWindow(app.window)
 	})
 	menu.Add(trayLabel(lang, trayHide)).OnClick(func(*application.Context) {
-		app.window.Hide()
+		hideMainWindow(app.window)
 	})
 	menu.AddSeparator()
 	menu.Add(trayLabel(lang, trayReset)).OnClick(func(*application.Context) {
@@ -705,11 +732,24 @@ func showMainWindow(window *application.WebviewWindow) {
 	if window == nil {
 		return
 	}
+	// Record the intent before touching the window: the post-resume repair
+	// consults it to tell a deliberately hidden window from one the OS lost.
+	noteWindowShown()
 	if !window.IsVisible() {
 		window.Show()
 	}
 	window.UnMinimise()
 	window.Focus()
+}
+
+// hideMainWindow hides the window and records that this was a deliberate
+// user/app action, so the post-resume repair leaves it alone.
+func hideMainWindow(window *application.WebviewWindow) {
+	if window == nil {
+		return
+	}
+	noteWindowHidden()
+	window.Hide()
 }
 
 // toggleMainWindow shows the window when hidden (or minimised), hides it
@@ -719,7 +759,7 @@ func toggleMainWindow(window *application.WebviewWindow) {
 		return
 	}
 	if window.IsVisible() {
-		window.Hide()
+		hideMainWindow(window)
 	} else {
 		showMainWindow(window)
 	}

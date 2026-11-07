@@ -349,6 +349,19 @@ const (
 	WM_EXITSIZEMOVE  = 0x0232
 	WM_SIZE          = 0x0005
 	WM_SYSCOMMAND    = 0x0112
+	// WM_POWERBROADCAST/WM_DISPLAYCHANGE/WM_WTSSESSION_CHANGE are the
+	// transitions after which the window can end up stranded: asleep, on a
+	// monitor that no longer exists, or hidden by the shell. The subclass
+	// schedules the repair (window_recovery.go) and forwards the message on,
+	// so Wails keeps receiving its power events.
+	WM_POWERBROADCAST       = 0x0218
+	WM_DISPLAYCHANGE        = 0x007E
+	WM_WTSSESSION_CHANGE    = 0x02B1
+	PBT_APMRESUMESUSPEND    = 0x0007
+	PBT_APMRESUMEAUTOMATIC  = 0x0012
+	WTS_SESSION_LOCK        = 0x7
+	WTS_SESSION_UNLOCK      = 0x8
+	NOTIFY_FOR_THIS_SESSION = 0x0
 	// WA_* are the activation codes in the low word of WM_ACTIVATE's wParam.
 	WA_INACTIVE    = 0
 	WA_ACTIVE      = 1
@@ -480,6 +493,16 @@ func (a *App) emitMoveResize(event string) {
 	}
 }
 
+// Session (lock/unlock) notifications. WTSRegisterSessionNotification makes
+// Windows deliver WM_WTSSESSION_CHANGE to the main window, which the WndProc
+// subclass turns into a post-unlock repair. Loaded lazily: wtsapi32 is always
+// present on desktop Windows, but a missing export must not abort startup.
+var (
+	wtsapi32                             = windows.NewLazySystemDLL("wtsapi32.dll")
+	procWTSRegisterSessionNotification   = wtsapi32.NewProc("WTSRegisterSessionNotification")
+	procWTSUnRegisterSessionNotification = wtsapi32.NewProc("WTSUnRegisterSessionNotification")
+)
+
 func (a *App) subclassMainWindow() {
 	if a.mainHwnd == 0 {
 		return
@@ -564,6 +587,26 @@ func (a *App) subclassMainWindow() {
 			if !a.inSizeMove {
 				a.emitMoveResize("window:resize-end")
 			}
+		case WM_POWERBROADCAST:
+			// Sleeping for hours is the trigger for the stranded-window bug:
+			// schedule a repair once the power transition has been processed.
+			// scheduleWindowRecovery only spawns a goroutine, so the UI thread
+			// (which is in the middle of the resume) is never blocked here.
+			switch wparam {
+			case PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND:
+				scheduleWindowRecovery(a.window, "power-resume")
+			}
+		case WM_DISPLAYCHANGE:
+			// A monitor disappeared or the resolution changed while the app was
+			// asleep/idle; the window may now sit on a rectangle no screen covers.
+			scheduleWindowRecovery(a.window, "display-change")
+		case WM_WTSSESSION_CHANGE:
+			// The lock screen flips the desktop away and back; the occlusion
+			// tracker (and DWM's surface for a frameless window) does not always
+			// survive that round trip.
+			if wparam == WTS_SESSION_UNLOCK {
+				scheduleWindowRecovery(a.window, "session-unlock")
+			}
 		}
 		ret, _, _ := procCallWindowProcW.Call(a.originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
 		if msg == WM_ACTIVATE && activationWouldReanchor(wparam) {
@@ -602,6 +645,13 @@ func (a *App) subclassMainWindow() {
 
 	orig, _, _ := procSetWindowLongPtrW.Call(a.mainHwnd, GWLP_WNDPROC, cb)
 	a.originalWndProc = orig
+
+	// Lock/unlock notifications: WM_WTSSESSION_CHANGE is only delivered to a
+	// window registered with WTSRegisterSessionNotification. Best-effort — a
+	// failure just means the session-unlock repair never fires.
+	if procWTSRegisterSessionNotification.Find() == nil {
+		procWTSRegisterSessionNotification.Call(a.mainHwnd, NOTIFY_FOR_THIS_SESSION)
+	}
 }
 
 func (a *App) unsubclassMainWindow() {
@@ -612,6 +662,9 @@ func (a *App) unsubclassMainWindow() {
 	procSetWindowLongPtrW := user32.NewProc("SetWindowLongPtrW")
 	procSetWindowLongPtrW.Call(a.mainHwnd, GWLP_WNDPROC, a.originalWndProc)
 	a.originalWndProc = 0
+	if procWTSUnRegisterSessionNotification.Find() == nil {
+		procWTSUnRegisterSessionNotification.Call(a.mainHwnd)
+	}
 }
 
 // configureMacKeyRepeat is a no-op on Windows; the press-and-hold accent
