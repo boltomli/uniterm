@@ -46,7 +46,7 @@ func TestCompletionCommandsInRealShells(t *testing.T) {
 			if shell == "powershell" {
 				command = `Write-Output "a'b"; Start-Sleep -Milliseconds 150; Get-Item .; Write-Output 'last line'; cmd /c exit 7`
 			}
-			wrapped, _, ok := CompletionCommand(command, shell, token, "\n")
+			wrapped, _, ok := CompletionCommand(command, shell, "", token, "\n")
 			if !ok {
 				t.Fatal("supported shell rejected")
 			}
@@ -73,6 +73,39 @@ func TestCompletionCommandsInRealShells(t *testing.T) {
 	}
 }
 
+// The GBK filter path (see session.LocalSession.ExecFilterEncoding) runs the
+// command's output through a fifo + Perl line filter inside the real shell.
+func TestCompletionCommandGBKFilter(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if runtime.GOOS == "windows" {
+		gitBash := `C:\Program Files\Git\bin\bash.exe`
+		if _, statErr := os.Stat(gitBash); statErr == nil {
+			bashPath, err = gitBash, nil
+		}
+	}
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	const token = "fg-test-gbk"
+	command := "printf 'GBK中文测试\n' | iconv -f utf-8 -t gbk; echo 中文直出"
+	wrapped, _, ok := CompletionCommand(command, "bash", "cp936", token, "\n")
+	if !ok {
+		t.Fatal("supported shell rejected")
+	}
+	out, err := exec.Command(bashPath, "--noprofile", "--norc", "-c", wrapped).CombinedOutput()
+	if err != nil {
+		t.Fatalf("wrapper failed: %v %q", err, out)
+	}
+	sc := completionScanner{prefix: []byte("__UT_" + token + ";")}
+	cleaned, code, done := sc.feed(out)
+	if !done || code != 0 {
+		t.Fatalf("missing completion: %q", cleaned)
+	}
+	if !strings.Contains(string(cleaned), "GBK中文测试") || !strings.Contains(string(cleaned), "中文直出") {
+		t.Fatalf("filter output wrong: %q", cleaned)
+	}
+}
+
 func TestTimeoutKeepsPartialLineAndOriginalSessionLock(t *testing.T) {
 	r := NewRegistry()
 	p := &fakePty{alive: true}
@@ -86,9 +119,10 @@ func TestTimeoutKeepsPartialLineAndOriginalSessionLock(t *testing.T) {
 	if string(out) != "partial" {
 		t.Fatalf("partial output lost: %q", out)
 	}
-	if _, err := r.Start(p, "s", "next", "\n", time.Second, 0); err != ErrSessionBusy {
-		t.Fatalf("running command unlocked: %v", err)
-	}
+	// The wait timeout keeps the session lock, but a NEW command supersedes
+	// the timed-out job (see TestTakeOverSupersedesTimedOutJob); this test
+	// exercises the no-new-command path: the tap stays installed, so output
+	// emitted after the timeout is still collected when Collect resumes.
 	p.emit(" continued\r\nlate line\r\n")
 	if resumed, ok := r.Collect("s", time.Second); !ok || resumed != j {
 		t.Fatal("did not resume original job")
@@ -114,7 +148,7 @@ func TestTimeoutKeepsPartialLineAndOriginalSessionLock(t *testing.T) {
 // a trailing newline (the filler echo guarantees the marker's leading
 // newline), and reports no exit code.
 func TestEchoFallbackCompletionForUnknownShell(t *testing.T) {
-	wire, sc, ok := CompletionCommand("uname -a", "", "fg-x", "\n")
+	wire, sc, ok := CompletionCommand("uname -a", "", "", "fg-x", "\n")
 	if !ok || sc == nil || !sc.plain {
 		t.Fatalf("unknown shell must get the plain echo fallback: ok=%v sc=%v", ok, sc)
 	}

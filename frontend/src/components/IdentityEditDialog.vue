@@ -90,6 +90,12 @@ import { backendErrorText } from '../utils/backendError'
 import { FolderOpen, Eye, EyeOff } from '@lucide/vue'
 import { useIdentityStore } from '../stores/identityStore'
 import type { Identity } from '../types/identity'
+import {
+  isWebServerMode,
+  pickBrowserFiles,
+  pickAndStageLocalFileInBrowser,
+  readBrowserFileAsText,
+} from '../services/webSftpBridge'
 
 const props = defineProps<{ visible: boolean; identity: Identity | null }>()
 // `saved` carries the persisted entity so callers (e.g. the connection form's
@@ -145,6 +151,13 @@ watch(() => props.visible, (v) => {
 
 async function selectKeyFile() {
   try {
+    // Web mode: stage into the janitor-exempt keep/ area (path is stored in
+    // the saved identity).
+    if (await isWebServerMode()) {
+      const staged = await pickAndStageLocalFileInBrowser('*/*', { keep: true })
+      if (staged) form.keyPath = staged.stagedPath
+      return
+    }
     const p = await OpenFileDialog('~/.ssh')
     if (p) form.keyPath = p
   } catch (e) { console.error('select key file:', e) }
@@ -167,6 +180,14 @@ async function revealKeyText() {
 
 async function importKeyText() {
   try {
+    if (await isWebServerMode()) {
+      const [file] = await pickBrowserFiles()
+      if (file) {
+        form.keyContent = await readBrowserFileAsText(file)
+        keyContentRevealed.value = true
+      }
+      return
+    }
     const content = await OpenPrivateKeyFile()
     if (content) {
       form.keyContent = content
@@ -193,8 +214,16 @@ async function save() {
     entity.hasPassword = false
     entity.hasKeyContent = false
   }
-  if (props.identity) await store.update(entity)
-  else await store.add(entity)
+  try {
+    if (props.identity) await store.update(entity)
+    else await store.add(entity)
+  } catch (e: any) {
+    // The store mutates before the backend save, so a failed save must be
+    // loud: otherwise the identity looks saved but is gone after a reload
+    // (issue #1423).
+    ElMessage.error(backendErrorText(e) || e?.message || String(e))
+    return
+  }
   ElMessage.success(t('settings.saved'))
   emit('saved', entity)
   emit('update:visible', false)

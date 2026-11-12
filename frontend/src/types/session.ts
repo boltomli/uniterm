@@ -35,6 +35,8 @@ export interface ConnectionConfig {
   authType: 'password' | 'key' | 'keyText' | 'agent' | 'identity' | 'kerberos' | 'apikey'
   kerberosRealm?: string // realm used for IP targets, e.g. EXAMPLE.COM
   sshAlgorithms?: SSHAlgoConfig // undefined = compatible default
+  totpEnabled?: boolean
+  totpSecret?: string
   password?: string
   keyPath?: string
   keyContent?: string // inline private-key text (authType === 'keyText')
@@ -130,7 +132,6 @@ export interface ConnectionConfig {
   sftpMaxConcurrency?: number
   // FTP-specific
   ftpEncryption?: string  // "none" | "auto" | "required"
-  ftpPassive?: boolean
   // Opt in to FTPS InsecureSkipVerify. Defaults to false (verify enabled).
   // Off by default preserves backwards compatibility for users today who
   // rely on it for self-signed certs — but the toggle now exists so the

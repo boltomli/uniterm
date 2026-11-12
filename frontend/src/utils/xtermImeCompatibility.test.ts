@@ -21,7 +21,13 @@ interface FakeCore {
 
 function makeFakeCore(inputEventResult: boolean = true) {
   const calls: { keyDownSeenAtCall: boolean | undefined }[] = []
+  const sent: string[] = []
   const core: FakeCore = {
+    coreService: {
+      triggerDataEvent(data: string) {
+        sent.push(data)
+      },
+    },
     _inputEvent: function (this: Record<string, unknown>, ev: InputEvent) {
       calls.push({ keyDownSeenAtCall: this._keyDownSeen as boolean | undefined })
       // Mirror the browser: by the time the input event is dispatched the
@@ -50,7 +56,13 @@ function makeFakeCore(inputEventResult: boolean = true) {
       focus: vi.fn(),
     },
   }
-  return { core, calls }
+  const send = (data: string) => {
+    const service = core.coreService as {
+      triggerDataEvent: (data: string, wasUserInput?: boolean) => void
+    }
+    service.triggerDataEvent(data, true)
+  }
+  return { core, calls, sent, send }
 }
 
 function fakeTerminal(core: FakeCore, input = vi.fn()) {
@@ -765,5 +777,124 @@ describe('windows duplicate-commit guard', () => {
     expect(originalCalls).toHaveLength(1)
     disposable.dispose()
     expect(core._inputEvent).toBe(originalInputEvent)
+  })
+})
+
+// Windows/WebView2: the CompositionHelper deferred send and the insertText
+// input event can both deliver one IME commit. Verified against the event
+// traces in xtermjs/xterm.js#5734 and the WeChat IME report in
+// binaricat/Netcatty#3421 (voice transcribe: interim + final + tail).
+describe('installImeCompatibilityPatch composition commit guard', () => {
+  beforeEach(() => {
+    // The commit guard is the non-macOS, non-Windows (Linux/Chromium) path —
+    // Windows is handled by installWindowsImePatch.
+    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
+  })
+
+  const compositionEnd = (core: FakeCore) => {
+    core.textarea.listeners.get('compositionend')!(new Event('compositionend'))
+  }
+
+  const compositionStart = (core: FakeCore) => {
+    core.textarea.listeners.get('compositionstart')!(new Event('compositionstart'))
+  }
+
+  it('delivers one copy when both commit paths send the same text', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('你好')
+    send('你好')
+
+    expect(sent).toEqual(['你好'])
+  })
+
+  it('keeps distinct payloads from the same commit', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('你好')
+    send('世界')
+
+    expect(sent).toEqual(['你好', '世界'])
+  })
+
+  it('never blocks control sequences or newlines during the window', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('\x1b[A')
+    send('\x1b[A')
+    send('\r')
+    send('\r')
+
+    expect(sent).toEqual(['\x1b[A', '\x1b[A', '\r', '\r'])
+  })
+
+  it('never collapses a lone ASCII character', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('a')
+    send('a')
+
+    expect(sent).toEqual(['a', 'a'])
+  })
+
+  it('reopens the window for a second composition of the same word', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('谢谢')
+    compositionStart(core)
+    compositionEnd(core)
+    send('谢谢')
+
+    expect(sent).toEqual(['谢谢', '谢谢'])
+  })
+
+  it('allows the same payload again after the window closes', () => {
+    vi.useFakeTimers()
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('好')
+    vi.advanceTimersByTime(200)
+    send('好')
+
+    expect(sent).toEqual(['好', '好'])
+  })
+
+  it('re-anchors the IME textarea when a composition starts', () => {
+    const { core } = makeFakeCore()
+    const updateCompositionElements = vi.fn()
+    core._compositionHelper.updateCompositionElements = updateCompositionElements
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionStart(core)
+
+    expect(updateCompositionElements).toHaveBeenCalledTimes(1)
+  })
+
+  it('dispose restores the data service and removes the listeners', () => {
+    const { core, sent, send } = makeFakeCore()
+    const service = core.coreService as { triggerDataEvent: unknown }
+    const original = service.triggerDataEvent
+    const disposable = installImeCompatibilityPatch(fakeTerminal(core))
+
+    expect(service.triggerDataEvent).not.toBe(original)
+    disposable.dispose()
+
+    expect(service.triggerDataEvent).toBe(original)
+    expect(core.textarea.listeners.size).toBe(0)
+    send('你好')
+    send('你好')
+    expect(sent).toEqual(['你好', '你好'])
   })
 })

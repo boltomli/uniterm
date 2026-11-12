@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { AIModelConfig } from '../types/settings'
-import { DEFAULT_SETTINGS } from '../types/settings'
+import { DEFAULT_SETTINGS, normalizeContextTokenBudget } from '../types/settings'
 import { LoadAIModels, SaveAIModels } from '../../bindings/github.com/ys-ll/uniterm/app'
 
 // aiConfigStore backs ai.json — the syncable slice of the AI settings
@@ -10,7 +10,7 @@ import { LoadAIModels, SaveAIModels } from '../../bindings/github.com/ys-ll/unit
 export const useAIConfigStore = defineStore('aiConfig', () => {
   const maxTurns = ref<number>(DEFAULT_SETTINGS.ai.maxTurns)
   const autoCompact = ref(true)
-  const contextTokenBudget = ref(32000)
+  const contextTokenBudget = ref(DEFAULT_SETTINGS.ai.contextTokenBudget)
   const summaryModelId = ref('')
   // structuredClone, not [...models]: the array copy still shared the model
   // OBJECTS with DEFAULT_SETTINGS, so editing the default model edited the
@@ -24,7 +24,7 @@ export const useAIConfigStore = defineStore('aiConfig', () => {
       if (cfg) {
         maxTurns.value = cfg.maxTurns ?? DEFAULT_SETTINGS.ai.maxTurns
         autoCompact.value = cfg.autoCompact ?? true
-        contextTokenBudget.value = cfg.contextTokenBudget || 32000
+        contextTokenBudget.value = normalizeContextTokenBudget(cfg.contextTokenBudget)
         summaryModelId.value = cfg.summaryModelId || ''
         models.value = cfg.models?.length ? cfg.models : structuredClone(DEFAULT_SETTINGS.ai.models)
       }

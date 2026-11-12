@@ -1,4 +1,5 @@
 import { ref, reactive, computed } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import {
@@ -15,6 +16,12 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { t as i18nT } from '../i18n'
 import { buildSkipList } from './useTransferTasks'
 import type { TransferTaskUI } from '../stores/panelStore'
+import {
+  isWebServerMode,
+  uploadFilesToRemoteInBrowser,
+  downloadRemoteFileInBrowser,
+  downloadRemoteArchiveInBrowser,
+} from '../services/webSftpBridge'
 
 // --- Global external-edit toast ---------------------------------------------
 // The "uploaded" event is broadcast app-wide while the file sidebar AND the
@@ -35,7 +42,17 @@ export function bindExtEditUploadedToast() {
 import type { FileItem } from '../components/FileList.vue'
 
 /** Max file size accepted by the in-app / external editor flows. */
-export const EDIT_FILE_MAX_SIZE = 1024 * 1024
+export const EDIT_FILE_MAX_SIZE = 10 * 1024 * 1024
+
+/** Files above this size still open, but only after a confirmation. */
+export const EDIT_FILE_WARN_SIZE = 1024 * 1024
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
+}
 
 const REMOVE_TIMEOUT_MS = 60000
 
@@ -588,6 +605,15 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
+      // Web server mode: the browser's own file picker replaces the native
+      // dialog and files stream straight into the remote SFTP session.
+      // Overwrite semantics come from SFTP create-truncate, so the local
+      // conflict dialog is skipped.
+      if (await isWebServerMode()) {
+        await uploadFilesToRemoteInBrowser({ sessionId: id, remoteDir: cwd.value })
+        refresh()
+        return
+      }
       const localPaths = await OpenMultipleFilesDialog(...await dialogStartDirs(opts.localCwd?.()))
       if (!localPaths?.length) return
       rememberDialogDir(parentDirOf(localPaths[0]))
@@ -613,6 +639,20 @@ export function useFilePanel(opts: FilePanelOptions) {
     const id = sid()
     if (!id) return
     try {
+      // Web server mode: the browser's download UI replaces the native
+      // directory picker. A single file streams directly; multi-select and
+      // directories go out as an on-the-fly .tar.gz archive. Progress shows
+      // in the browser's download bar rather than the transfer panel.
+      if (await isWebServerMode()) {
+        const picked = items.filter(i => i.name !== '..')
+        if (!picked.length) return
+        if (picked.length === 1 && !picked[0].isDir) {
+          downloadRemoteFileInBrowser(id, joinPath(cwd.value, picked[0].name))
+        } else {
+          downloadRemoteArchiveInBrowser(id, picked.map(i => joinPath(cwd.value, i.name)), 'uniterm-files.tar.gz')
+        }
+        return
+      }
       const dir = await OpenDirectoryDialog(...await dialogStartDirs(opts.localCwd?.()))
       if (!dir) return
       rememberDialogDir(dir)
@@ -653,12 +693,30 @@ export function useFilePanel(opts: FilePanelOptions) {
 
   // --- Editors ---------------------------------------------------------------
 
+  // Files between EDIT_FILE_WARN_SIZE and EDIT_FILE_MAX_SIZE still open, but
+  // only after an explicit confirmation — loading a multi-MB doc over the
+  // bridge (and through the full-content editor) is noticeably slow.
+  async function confirmLargeEdit(item: FileItem): Promise<boolean> {
+    if (item.size <= EDIT_FILE_WARN_SIZE) return true
+    try {
+      await ElMessageBox.confirm(
+        t('sftp.edit.fileLargeWarning', { size: formatSize(item.size) }),
+        item.name,
+        { type: 'warning' },
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async function onEditFile(item: FileItem) {
     if (item.isDir) return
     if (item.size > EDIT_FILE_MAX_SIZE) {
       msg.warning(t('sftp.edit.fileTooLarge'))
       return
     }
+    if (!(await confirmLargeEdit(item))) return
     const id = sid()
     if (!id) return
     const path = joinPath(cwd.value, item.name)
@@ -671,6 +729,7 @@ export function useFilePanel(opts: FilePanelOptions) {
       msg.warning(t('sftp.edit.fileTooLarge'))
       return
     }
+    if (!(await confirmLargeEdit(item))) return
     const id = sid()
     if (!id) return
     const editorCmd = localStateStore.state.externalEditor?.trim()
@@ -696,6 +755,7 @@ export function useFilePanel(opts: FilePanelOptions) {
       msg.warning(t('sftp.edit.fileTooLarge'))
       return
     }
+    if (!(await confirmLargeEdit(item))) return
     const id = sid()
     if (!id) return
     const path = joinPath(cwd.value, item.name)

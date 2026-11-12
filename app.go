@@ -27,10 +27,10 @@ import (
 	"github.com/ys-ll/uniterm/backend/credentials"
 	"github.com/ys-ll/uniterm/backend/importer"
 	"github.com/ys-ll/uniterm/backend/k8s"
+	"github.com/ys-ll/uniterm/backend/localsrv"
 	"github.com/ys-ll/uniterm/backend/log"
 	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/mcpclient"
-	"github.com/ys-ll/uniterm/backend/localsrv"
 	"github.com/ys-ll/uniterm/backend/netscan"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
@@ -42,17 +42,21 @@ import (
 )
 
 type App struct {
-	ctx                  context.Context
-	app                  *application.App
-	window               *application.WebviewWindow
-	tray                 *application.SystemTray
-	trayLang             string                             // resolved UI language the tray menu was last built with
-	notifier             *notifications.NotificationService // system notifications (MCP approval prompts)
-	sessionManager       *session.SessionManager
-	k8sManager           *k8s.Manager
-	netscanManager       *netscan.Manager
-	localsrvManager      *localsrv.Manager
-	containerManager     *container.Manager
+	ctx              context.Context
+	app              *application.App
+	window           *application.WebviewWindow
+	tray             *application.SystemTray
+	trayLang         string                             // resolved UI language the tray menu was last built with
+	notifier         *notifications.NotificationService // system notifications (MCP approval prompts)
+	sessionManager   *session.SessionManager
+	k8sManager       *k8s.Manager
+	netscanManager   *netscan.Manager
+	localsrvManager  *localsrv.Manager
+	containerManager *container.Manager
+	// quitting marks that the full shutdown sequence (App.shutdown) has begun.
+	// Set by shutdown(); the native-close hook (main.go) reads it to let
+	// already-quitting closes pass through to the default close handler.
+	quitting             atomic.Bool
 	connectionStore      *store.ConnectionStore
 	aiSessionStore       *store.AISessionStore
 	settingsStore        *store.SettingsStore
@@ -68,6 +72,10 @@ type App struct {
 	recentStore          *store.RecentStore
 	favoriteStore        *store.FavoriteStore
 	syncService          *sync.SyncService
+	// syncSecrets is the server-build encrypted-file backing store for the
+	// sync keychain (server_secrets.go); nil on desktop, which uses the OS
+	// keychain. Kept on the App so a master-password change rekeys it.
+	syncSecrets          secretRekeyer
 	tunnelService        *session.TunnelService
 	tunnelStartsMu       stdsync.Mutex
 	tunnelStarts         map[string]*tunnelStartRequest
@@ -261,6 +269,13 @@ func (a *App) emit(name string, data ...any) {
 	if a.app == nil {
 		return
 	}
+	// In the headless server build the gateway reaps idle workers by HTTP
+	// activity alone, which misses WebSocket-only usage (a user watching
+	// terminal output). Mark every real event emission as activity; no-op on
+	// desktop.
+	if serverMode {
+		touchWebActivity()
+	}
 	a.app.Event.Emit(name, data...)
 }
 
@@ -407,7 +422,14 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// window state tracking.
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
-	// defers all store init until the frontend calls SetDataDir.
+	// defers all store init until the frontend calls SetDataDir. The headless
+	// server build has no interactive first run — pin the default directory
+	// up front so stores initialize during startup.
+	if serverMode {
+		if dd0, err0 := store.ResolveDataDir(); err0 == nil && dd0.FirstRun {
+			_ = store.WriteBootstrap("default", "")
+		}
+	}
 	dd, err := store.ResolveDataDir()
 	if err != nil {
 		log.Writef("Failed to resolve data dir: %v", err)
@@ -582,6 +604,14 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 		// Normalize enc:v1: fields at the sync boundary using the credential
 		// store (set by initCredentials above).
 		syncSvc.SetPasswordStore(a.credentialStore)
+		// Server builds: the container has no OS keychain, so the sync
+		// keychain gets an encrypted-file backing store. Values re-encrypt
+		// under the login-password-derived master key, so they survive
+		// worker/container restarts (issue #1423, symptom 2).
+		if serverMode && a.credentialStore != nil {
+			a.syncSecrets = newFileSecretStore(dataDir, a.credentialStore)
+			syncSvc.SetSecretBackend(a.syncSecrets)
+		}
 		// Config-exchange registry: the sync layer holds only SyncableStore
 		// interface values (sync → store would cycle through credentials),
 		// so the concrete stores are assembled here — the only place that
@@ -641,19 +671,69 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 	}
 }
 
+// secretRekeyer is implemented by the server-build sync secret store
+// (fileSecretStore): a master-password change must carry the encrypted sync
+// secrets to the new key. Desktop has no implementation (OS keychain entries
+// are keyed by name, not by the master key) and leaves the field nil.
+type secretRekeyer interface {
+	sync.SecretStore
+	Rekey(oldKey, newKey []byte) error
+}
+
 // initCredentials wires the credential store as the PasswordStore for the
 // connection + settings stores, silently auto-upgrading existing users
 // (bootstrap + keychain mode + legacy migration) or auto-unlocking on the
 // normal path.
 func (a *App) initCredentials(dataDir string, upgrade bool) {
-	cred := credentials.New(dataDir, sync.NewKeychain())
+	cred := credentials.New(dataDir, credentialKeychain())
 	// The reset/setup ciphertext guards scan the data dir; the declaring
-	// manifest lives in the store package.
+	// manifest lives in the store package. Wired for both builds: server
+	// stores need the same reset/setup guard coverage as desktop.
 	secretFiles := make([]string, 0, len(store.SecretFiles))
 	for _, sf := range store.SecretFiles {
 		secretFiles = append(secretFiles, sf.File)
 	}
 	cred.SetSecretFiles(secretFiles)
+	// Server mode: the gateway forwards the tenant's login password via
+	// UNITERM_MASTER_PASSWORD and it doubles as the credential master
+	// password — no plaintext keychain.json holds the data key. Fresh stores
+	// auto-set-up in master-password mode; locked stores wait for the browser
+	// unlock dialog (the user re-enters their login password). Legacy
+	// keychain-mode server stores predate this model and cannot be migrated
+	// blindly, so they surface as keychain-lost/locked rather than silently
+	// re-encrypted.
+	if serverMode {
+		pw := os.Getenv("UNITERM_MASTER_PASSWORD")
+		meta, _ := credentials.ReadMeta(dataDir)
+		switch {
+		case meta == nil:
+			if pw != "" {
+				if err := cred.Setup(credentials.ModeMasterPassword, pw); err != nil {
+					log.Writef("[server] credential auto-setup failed: %v", err)
+				}
+			}
+		case meta.Mode == credentials.ModeMasterPassword:
+			if pw != "" {
+				// AutoUnlock first: it loads meta (a fresh Store has no mode
+				// loaded) and recovers an in-process keychain cache if any;
+				// Unlock then verifies the login-password-derived key.
+				_ = cred.AutoUnlock()
+				if !cred.Unlocked() {
+					if err := cred.Unlock(pw); err != nil {
+						log.Writef("[server] credential auto-unlock failed (locked until browser unlock): %v", err)
+					}
+				}
+			}
+		default:
+			// Pre-existing keychain-mode server store: the plaintext key file
+			// contradicts the login-password-as-master model. Force the
+			// browser setup dialog by leaving NeedsSetup/locked state.
+			log.Writef("[server] legacy keychain-mode store found; browser setup required")
+		}
+		a.credentialStore = cred
+		a.wirePasswordStore(cred, false)
+		return
+	}
 
 	if upgrade {
 		// Only this once (the upgrade migration) is worth logging; ordinary
@@ -704,6 +784,16 @@ func (a *App) initCredentials(dataDir string, upgrade bool) {
 		log.Writef("[cred-dialog] mode=%q unlocked=%v keychainLost=%v needsSetup=%v",
 			st.Mode, st.Unlocked, st.KeychainLost, st.NeedsSetup)
 	}
+	a.wirePasswordStore(cred, true)
+}
+
+// wirePasswordStore wires the credential store into every store that keeps
+// manifest-encrypted secret fields. Shared by desktop and server. Both halves
+// of the wiring must survive the mode split: dropping connection+settings
+// broke every connection save in server builds (ErrNoCipher), dropping
+// identity/proxy/ai/mcp made browser-created identities vanish on reload
+// (issue #1423). Safe to call twice for a store.
+func (a *App) wirePasswordStore(cred *credentials.Store, runMigrations bool) {
 	if a.connectionStore != nil {
 		a.connectionStore.SetPasswordStore(cred)
 		// Fall back to the pre-enc:v1 keychain (conn/<id>) so passwords from
@@ -718,7 +808,7 @@ func (a *App) initCredentials(dataDir string, upgrade bool) {
 		// One-shot settings->ai.json migration. Runs after the password store
 		// is wired so model apiKeys land encrypted; the settings.json copy is
 		// left intact so a rollback to a pre-split build still finds them.
-		if a.settingsStore != nil {
+		if runMigrations && a.settingsStore != nil {
 			if settings, err := a.settingsStore.Load(); err == nil {
 				if err := a.aiConfigStore.MigrateFromSettingsIfNeeded(settings); err != nil {
 					log.Writef("ai.json migration failed: %v", err)
@@ -1006,6 +1096,7 @@ func (a *App) watchForeground(ctx context.Context) {
 // streams run on context.Background(), so without Close those goroutines
 // (and the HTTP bodies they block on) would outlive the app.
 func (a *App) shutdown() {
+	a.quitting.Store(true)
 	// Persist the geometry on every quit path (tray menu, Cmd+Q, OS close,
 	// relaunch) — the frontend only saves on resize/close inside the app, so
 	// without this the next launch opens at the default size (issue #1279).
@@ -1554,6 +1645,34 @@ func (a *App) ExportConnections(destPath, password string) error {
 		return err
 	}
 	return os.WriteFile(destPath, out, 0600)
+}
+
+// ExportConnectionsData renders the .utm archive in memory and returns it
+// base64-encoded — the web-server-mode replacement for ExportConnections,
+// which writes through a native save dialog the headless server build does
+// not have (issue #1423). The browser turns the bytes into a download via
+// saveBase64FileInBrowser.
+func (a *App) ExportConnectionsData(password string) (string, error) {
+	if a.connectionStore == nil {
+		return "", fmt.Errorf("connection store not initialized")
+	}
+	data, err := a.connectionStore.Load()
+	if err != nil {
+		return "", err
+	}
+	resolve, err := a.identityResolver()
+	if err != nil {
+		return "", err
+	}
+	data, err = importer.MaterializeForExport(data, resolve)
+	if err != nil {
+		return "", err
+	}
+	out, err := importer.ExportUniterm(data, password)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(out), nil
 }
 
 // ParseImportFile parses a third-party or own-format file into an ImportResult
@@ -2481,6 +2600,9 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		// Rebuild the tray menu when the UI language changed (issue #1215).
 		// No-op when the resolved language is unchanged.
 		a.refreshTrayLanguage(settings.Language)
+		// Show/hide the tray icon when that toggle changed; creates the
+		// tray lazily if the app started with it disabled.
+		a.applyTrayVisibility(trayIconEnabled(&settings), settings.Language)
 	}
 	return err
 }
@@ -2922,13 +3044,23 @@ func (a *App) GetAppInfo() AppInfo {
 }
 
 // relaunchPending marks that the successor process should be spawned once
-// the current one has fully exited (checked in main() after w3app.Run()
-// returns). Quitting BEFORE spawning is what makes RelaunchApp compatible
+// shutdown has released the single-instance lock (in PostShutdown on macOS,
+// after w3app.Run() returns elsewhere). Quitting BEFORE spawning keeps it compatible
 // with single-instance locking: if the successor were spawned first, it
 // would see the lock still held and exit immediately, killing the app.
 // (The old spawn-first order existed to inherit Windows set-foreground
 // permission; the successor now focuses itself at startup instead.)
 var relaunchPending atomic.Bool
+
+func relaunchIfPending() {
+	// Consume the request so PostShutdown and the Run fallback cannot both
+	// launch a successor if the platform returns from its native event loop.
+	if relaunchPending.Swap(false) {
+		if err := spawnSuccessorProcess(); err != nil {
+			log.Writef("relaunch: spawn successor failed: %v", err)
+		}
+	}
+}
 
 // RelaunchApp quits the current instance and spawns a fresh one afterwards
 // so settings that are fixed at startup (e.g. the window title bar) can take
@@ -2946,6 +3078,11 @@ func (a *App) QuitApp() {
 }
 
 func (a *App) CheckForUpdate(source string) (*update.UpdateInfo, error) {
+	// In the headless server build updates come from the container image, not
+	// from a self-updating binary.
+	if serverMode {
+		return nil, errors.New("updates are managed by the container image in server mode")
+	}
 	info, err := update.Check(Version, source)
 	if err != nil {
 		return nil, err
@@ -2977,6 +3114,9 @@ func (a *App) DownloadUpdate() error {
 	if devBuild {
 		return fmt.Errorf("updates are disabled in development builds")
 	}
+	if serverMode {
+		return fmt.Errorf("updates are managed by the container image in server mode")
+	}
 	a.updateInfoMu.Lock()
 	info := a.lastUpdateInfo
 	a.updateInfoMu.Unlock()
@@ -2998,6 +3138,9 @@ func (a *App) DownloadUpdate() error {
 // NSIS installer after this process exits (the installer relaunches the app),
 // so it just quits instead of relaunching.
 func (a *App) ApplyUpdate() error {
+	if serverMode {
+		return fmt.Errorf("updates are managed by the container image in server mode")
+	}
 	if err := updateManager.Apply(a.emitUpdateProgress); err != nil {
 		return err
 	}
@@ -3202,7 +3345,7 @@ func (a *App) SetDataDir(kind, customDir string, migrate bool) error {
 		if cs := a.credentialStore; cs != nil {
 			st := cs.Status()
 			if st.Mode == credentials.ModeKeychain && st.Unlocked {
-				if err := credentials.New(target, sync.NewKeychain()).Rekey(credentials.ModeKeychain, nil, cs.Key()); err != nil {
+				if err := credentials.New(target, credentialKeychain()).Rekey(credentials.ModeKeychain, nil, cs.Key()); err != nil {
 					return err
 				}
 			}
@@ -3298,6 +3441,15 @@ func (a *App) SwitchCredentialMode(targetMode, masterPassword string) error {
 		_ = a.reencryptAll(cs, newKey, oldKey)
 		return err
 	}
+	if a.syncSecrets != nil {
+		if err := a.syncSecrets.Rekey(oldKey, newKey); err != nil {
+			// Restore consistency: put the sync secrets back under oldKey and
+			// roll the config stores back too, mirroring the Rekey rollback.
+			_ = a.syncSecrets.Rekey(newKey, oldKey)
+			_ = a.reencryptAll(cs, newKey, oldKey)
+			return err
+		}
+	}
 	if targetMode == credentials.ModeKeychain {
 		_ = cs.ClearKeychainCache()
 	}
@@ -3329,6 +3481,13 @@ func (a *App) ChangeMasterPassword(oldPassword, newPassword string) error {
 	if err := cs.Rekey(credentials.ModeMasterPassword, newSalt, newKey); err != nil {
 		_ = a.reencryptAll(cs, newKey, oldKey)
 		return err
+	}
+	if a.syncSecrets != nil {
+		if err := a.syncSecrets.Rekey(oldKey, newKey); err != nil {
+			_ = a.syncSecrets.Rekey(newKey, oldKey)
+			_ = a.reencryptAll(cs, newKey, oldKey)
+			return err
+		}
 	}
 	return nil
 }
@@ -3392,6 +3551,9 @@ func (a *App) reencryptAll(cs *credentials.Store, oldKey, newKey []byte) error {
 	// strand its ciphertext under oldKey forever (Load fails with a decrypt
 	// error, including tunnel auto-start).
 	tunnels, err := a.tunnelStore.Load()
+	if err != nil {
+		return err
+	}
 	mcpClients, err := a.mcpClientStore.Load()
 	if err != nil {
 		return err
@@ -3618,7 +3780,7 @@ func dirUnlockable(target string) bool {
 	if err != nil || meta == nil {
 		return true // no meta → new/empty dir is fine
 	}
-	probe := credentials.New(target, sync.NewKeychain())
+	probe := credentials.New(target, credentialKeychain())
 	if err := probe.AutoUnlock(); err != nil {
 		return false
 	}

@@ -273,6 +273,17 @@
             </div>
           </div>
 
+          <!-- System tray icon (macOS menu bar); no tray on mobile -->
+          <div v-if="!isMobile" class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.showTrayIcon') }}</div>
+              <div class="setting-desc">{{ t('settings.showTrayIconDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch v-model="settingsStore.settings.showTrayIcon" @change="settingsStore.save()" />
+            </div>
+          </div>
+
           <!-- Reopen last session's tabs at startup (issue #937) -->
           <div class="setting-card">
             <div class="setting-info">
@@ -652,6 +663,19 @@
                 <el-option :label="t('settings.rightClickPaste')" value="paste" />
                 <el-option :label="t('settings.rightClickMenu')" value="menu" />
                 <el-option :label="t('settings.selectionNone')" value="none" />
+              </el-select>
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.commandSendMode') }}</div>
+              <div class="setting-desc">{{ t('settings.commandSendModeDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.terminal.commandSendMode" @change="settingsStore.save()">
+                <el-option :label="t('settings.commandSendModeLines')" value="lines" />
+                <el-option :label="t('settings.commandSendModeBracketed')" value="bracketed" />
               </el-select>
             </div>
           </div>
@@ -1037,41 +1061,43 @@
             {{ t('settings.version') }}: {{ updateCheck.updateInfo?.current || '...' }}
           </div>
           <div class="about-links">
-            <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://uniterm.net')">
+            <a href="#" class="about-link" @click.prevent="openExternalUrl('https://uniterm.net')">
               <Globe :size="lucideSize('0.875rem')" class="about-link-icon" />
               {{ t('settings.homepage') }}
             </a>
-            <a href="#" class="about-link" @click.prevent="Browser.OpenURL(locale === 'zh-CN' ? 'https://uniterm.net/guide/zh/introduction' : 'https://uniterm.net/guide/en/introduction')">
+            <a href="#" class="about-link" @click.prevent="openExternalUrl(locale === 'zh-CN' ? 'https://uniterm.net/guide/zh/introduction' : 'https://uniterm.net/guide/en/introduction')">
               <BookOpen :size="lucideSize('0.875rem')" class="about-link-icon" />
               {{ t('settings.userManual') }}
             </a>
-            <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://github.com/ys-ll/uniterm')">
+            <a href="#" class="about-link" @click.prevent="openExternalUrl('https://github.com/ys-ll/uniterm')">
               <GitHubLogo class="about-link-icon" />
               GitHub
             </a>
-            <a href="#" class="about-link" @click.prevent="Browser.OpenURL('https://gitee.com/ys-l/uniterm')">
+            <a href="#" class="about-link" @click.prevent="openExternalUrl('https://gitee.com/ys-l/uniterm')">
               <GiteeLogo class="about-link-icon" />
               Gitee
             </a>
           </div>
-          <!-- In-app update download is desktop-only; mobile updates via APK -->
-          <div v-if="!isMobile" class="about-update-actions">
+          <!-- In-app update download is desktop-only; mobile updates via APK and
+               server (Docker) deployments update by pulling a new image, so the
+               update UI stays hidden there (the backend refuses the calls). -->
+          <div v-if="!isMobile && !webServerMode" class="about-update-actions">
             <el-button
-             
+
               :loading="updateCheck.checking"
               @click="handleCheckUpdate"
             >
               {{ updateCheck.checking ? t('settings.checking') : t('settings.checkUpdate') }}
             </el-button>
           </div>
-          <div v-if="!isMobile" class="about-auto-check">
+          <div v-if="!isMobile && !webServerMode" class="about-auto-check">
             <el-checkbox
               v-model="updateCheck.autoCheck"
             >
               {{ t('settings.autoCheckUpdate') }}
             </el-checkbox>
           </div>
-          <div v-if="!isMobile" class="about-update-source">
+          <div v-if="!isMobile && !webServerMode" class="about-update-source">
             <span class="about-update-source-label">{{ t('settings.updateSource') }}</span>
             <el-select
               v-model="updateCheck.source"
@@ -1794,6 +1820,12 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, reactive, watch, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { Settings, Monitor, MessageCircleMore, Info, RefreshCw, Pencil, Copy, Trash2, Globe, Keyboard, Plus, BookOpen, Wrench, SquareSlash, FolderOpen, Key, Network, ArrowRightLeft, ChevronLeft, ChevronRight, ChevronDown, Plug, Server, HardDrive } from '@lucide/vue'
 import { msg } from '../services/message'
+import { isWebServerMode, openExternalUrl, pickAndStageLocalFileInBrowser } from '../services/webSftpBridge'
+
+// Headless server deployments hide OS-bound features (window controls,
+// MCP server exposure); resolve once at setup and reuse in templates.
+const webServerMode = ref(false)
+isWebServerMode().then((v) => { webServerMode.value = v })
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useSyncStore, SYNC_FILE_ITEMS } from '../stores/syncStore'
@@ -1836,7 +1868,7 @@ import { useTunnelStore } from '../stores/tunnelStore'
 import { useTunnelCredentials } from '../composables/useTunnelCredentials'
 import type { Tunnel, TunnelMode } from '../stores/tunnelStore'
 import type { Identity } from '../types/identity'
-import { Browser, Events } from '@wailsio/runtime'
+import { Events } from '@wailsio/runtime'
 import { isMobilePlatform, supportsLocalTerminal } from '../utils/platform'
 import type { Proxy } from '../types/proxy'
 import { uiPx } from '../utils/uiScale'
@@ -2913,7 +2945,10 @@ const categories = computed(() => {
     { key: 'commands', label: t('settings.commands'), icon: SquareSlash, group: 'ai' },
     // MCP features have no mobile backend — hidden from the category list there.
     ...(!isMobile ? [{ key: 'mcp-client', label: t('settings.mcpClient'), icon: Plug, group: 'ai' }] : []),
-    ...(!isMobile ? [{ key: 'mcp', label: t('settings.mcp'), icon: Server, group: 'ai' }] : []),
+    // MCP server exposure is hidden in headless server deployments: the
+    // endpoint binds a worker's loopback port and is unreachable from outside
+    // the container.
+    ...(!isMobile && !webServerMode.value ? [{ key: 'mcp', label: t('settings.mcp'), icon: Server, group: 'ai' }] : []),
     { key: 'identities', label: t('settings.identities'), icon: Key, group: 'net' },
     { key: 'proxies', label: t('settings.proxies'), icon: Network, group: 'net' },
     { key: 'tunnels', label: t('settings.tunnels'), icon: ArrowRightLeft, group: 'net' },
@@ -2921,7 +2956,9 @@ const categories = computed(() => {
     // manage where configuration lives, so they share a group. The local-data
     // tab is desktop-only: on mobile the data dir is OS-managed and keychain
     // encryption is the only supported mode, so nothing is configurable there.
-    ...(!isMobile ? [{ key: 'local-data', label: t('settings.localData'), icon: HardDrive, group: 'data' }] : []),
+    // Local data (data dir / encryption mode / master password) is managed
+    // by the gateway in server mode — the tab has nothing to configure there.
+    ...(!isMobile && !webServerMode.value ? [{ key: 'local-data', label: t('settings.localData'), icon: HardDrive, group: 'data' }] : []),
     { key: 'sync', label: t('settings.sync'), icon: RefreshCw, group: 'data' },
     { key: 'about', label: t('settings.about'), icon: Info, group: 'other' },
   ]
@@ -2951,7 +2988,13 @@ const categoryGroups = computed(() => {
 // A persisted desktop-only active category would show an empty settings page
 // on mobile — fall back to basic.
 watch(categories, (cats) => {
-  if (isMobile && ['keyboard', 'local-data', 'mcp-client', 'mcp'].includes(settingsStore.activeCategory) && !cats.some(c => c.key === settingsStore.activeCategory)) {
+  // A persisted active category that is hidden on this platform (mobile
+  // hides keyboard/local-data/mcp tabs; server mode hides the MCP server)
+  // would render an empty settings page — fall back to basic.
+  const hidden = isMobile
+    ? ['keyboard', 'local-data', 'mcp-client', 'mcp']
+    : (webServerMode.value ? ['mcp', 'local-data'] : [])
+  if (hidden.includes(settingsStore.activeCategory) && !cats.some(c => c.key === settingsStore.activeCategory)) {
     settingsStore.activeCategory = 'basic'
   }
 }, { immediate: true })
@@ -3410,11 +3453,20 @@ async function refreshBgPreview() {
 }
 
 async function chooseBackground() {
-  const path = await OpenFileDialogFiltered(
-    t('settings.bgChoose'),
-    'Images',
-    '*.png;*.jpg;*.jpeg;*.webp'
-  )
+  // Web mode: stage the image into the worker; SetBackgroundImage copies it
+  // immediately, so the janitored (non-keep) staging area is fine.
+  let path = ''
+  if (await isWebServerMode()) {
+    const staged = await pickAndStageLocalFileInBrowser('.png,.jpg,.jpeg,.webp')
+    if (!staged) return
+    path = staged.stagedPath
+  } else {
+    path = await OpenFileDialogFiltered(
+      t('settings.bgChoose'),
+      'Images',
+      '*.png;*.jpg;*.jpeg;*.webp'
+    )
+  }
   if (!path) return
   try {
     const name = await SetBackgroundImage(path)
@@ -3432,7 +3484,7 @@ async function clearBackground() {
 }
 
 // The window frame is fixed at startup (Wails limitation) — changing it needs
-// a restart. Persist the choice, then offer to quit so the user can reopen.
+// a restart. Persist the choice, then offer to relaunch the app.
 async function onToggleSystemTitleBar(v: boolean) {
   await localStateStore.update({ systemTitleBar: v })
   try {

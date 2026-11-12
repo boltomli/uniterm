@@ -78,10 +78,9 @@ func (p *oracleProvider) PrepareExec(db execer, dbName string) error {
 }
 
 func (p *oracleProvider) DefaultTableQuery(dbName, tableName string, limit, offset int) string {
-	return fmt.Sprintf(
-		"SELECT * FROM %s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY",
-		p.Quote(tableName), offset, limit,
-	)
+	// ROWNUM wrapping instead of OFFSET ... FETCH NEXT: the latter is 12c+
+	// syntax and fails with ORA-00933 on 11g.
+	return oraclePagingWrap(fmt.Sprintf("SELECT * FROM %s", p.Quote(tableName)), offset, limit)
 }
 
 
@@ -235,6 +234,39 @@ func (p *oracleProvider) GetCapabilities() DBCapabilities {
 // and data queries resolve names through ALTER SESSION SET CURRENT_SCHEMA,
 // so any listed schema is fully browsable without extra privileges beyond
 // what the grants already allow.
+// systemSchemas lists the Oracle-maintained accounts shipped with pre-12c
+// releases. all_users only gained the oracle_maintained column in 12.1, so
+// older servers need this static list to keep system schemas out of the tree.
+var systemSchemas = []string{
+	"SYS", "SYSTEM", "OUTLN", "XDB", "CTXSYS", "MDSYS", "OLAPSYS", "EXFSYS",
+	"WMSYS", "DBSNMP", "SYSMAN", "APPQOSSYS", "ORDDATA", "ORDSYS", "ORDPLUGINS",
+	"SI_INFORMTN_SCHEMA", "LBACSYS", "DVSYS", "DVF", "FLOWS_FILES",
+	"APEX_040000", "APEX_040200",
+}
+
+// hasOracleMaintainedColumn reports whether the server's all_users dictionary
+// exposes the oracle_maintained column (Oracle 12.1 and newer).
+func hasOracleMaintainedColumn(db *sql.DB) bool {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM all_tab_columns
+		WHERE owner = 'SYS' AND table_name = 'ALL_USERS' AND column_name = 'ORACLE_MAINTAINED'`).Scan(&n)
+	return err == nil && n > 0
+}
+
+// listSchemasSQL returns the owner-listing query filtered to user schemas.
+func listSchemasSQL(db *sql.DB) string {
+	if hasOracleMaintainedColumn(db) {
+		return `SELECT DISTINCT owner FROM all_objects
+			WHERE object_type IN ('TABLE', 'VIEW')
+			  AND owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y')
+			ORDER BY owner`
+	}
+	return `SELECT DISTINCT owner FROM all_objects
+		WHERE object_type IN ('TABLE', 'VIEW')
+		  AND owner NOT IN ('` + strings.Join(systemSchemas, `', '`) + `')
+		ORDER BY owner`
+}
+
 func (p *oracleProvider) GetDatabases(db *sql.DB) ([]string, error) {
 	results, err := queryStrings(db, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AS CURRENT_SCHEMA FROM DUAL")
 	if err != nil {
@@ -245,10 +277,7 @@ func (p *oracleProvider) GetDatabases(db *sql.DB) ([]string, error) {
 		current = results[0]["CURRENT_SCHEMA"]
 	}
 
-	owners, err := queryStrings(db, `SELECT DISTINCT owner FROM all_objects
-		WHERE object_type IN ('TABLE', 'VIEW')
-		  AND owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y')
-		ORDER BY owner`)
+	owners, err := queryStrings(db, listSchemasSQL(db))
 	if err != nil {
 		return nil, fmt.Errorf("list schemas: %w", err)
 	}
@@ -297,6 +326,82 @@ func (p *oracleProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, erro
 		})
 	}
 	return infos, nil
+}
+
+// GetTablePage returns one sorted page of tables plus the total count. A
+// non-empty query filters by name (LIKE %q%), which the tree uses for both
+// jump-loading to an arbitrary offset and for full-schema search. 11g has no
+// OFFSET..FETCH, so rows are sorted inside the innermost derived table and
+// paginated with a double ROWNUM wrap. Placeholders are owner=:1, optional
+// query=:2, then ROWNUM bounds at the following two positions (go-ora style).
+func (p *oracleProvider) GetTablePage(db *sql.DB, dbName string, query string, offset, limit int) ([]TableInfo, int, error) {
+	owner, err := p.resolveSchema(db, dbName)
+	if err != nil {
+		return nil, 0, err
+	}
+	owner = strings.ToUpper(owner)
+
+	// owner=:1 always; when query is set it becomes a name LIKE bound at :2 so
+	// the ROWNUM placeholders shift to :3/:4 (go-ora positional style).
+	where := `o.owner = :1 AND o.object_type IN ('TABLE', 'VIEW') AND o.object_name NOT LIKE 'BIN$%'`
+	countArgs := []any{owner}
+	pageArgs := []any{owner}
+	queryPh := ""
+	next := 2
+	if query != "" {
+		// Match case-insensitively: Oracle LIKE is case-sensitive by default,
+		// but the tree search should find a name regardless of case.
+		queryPh = fmt.Sprintf(" AND UPPER(o.object_name) LIKE :%d", next)
+		where += queryPh
+		countArgs = append(countArgs, "%"+strings.ToUpper(query)+"%")
+		pageArgs = append(pageArgs, "%"+strings.ToUpper(query)+"%")
+		next++
+	}
+
+	countRows, err := queryStrings(db, `
+		SELECT COUNT(*) AS n
+		FROM all_objects o
+		LEFT JOIN all_tab_comments c
+		  ON c.owner = o.owner AND c.table_name = o.object_name
+		WHERE `+where, countArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count tables: %w", err)
+	}
+	total := 0
+	if len(countRows) > 0 {
+		total, _ = strconv.Atoi(countRows[0]["N"])
+	}
+
+	last := offset + limit
+	pageArgs = append(pageArgs, last, offset)
+	results, err := queryStrings(db, fmt.Sprintf(`
+		SELECT object_name, object_type, comments FROM (
+			SELECT tt.*, ROWNUM rn FROM (
+				SELECT o.object_name AS object_name, o.object_type AS object_type,
+				       NVL(c.comments, '') AS comments
+				FROM all_objects o
+				LEFT JOIN all_tab_comments c
+				  ON c.owner = o.owner AND c.table_name = o.object_name
+				WHERE %s
+				ORDER BY o.object_name
+			) tt WHERE ROWNUM <= :%d
+		) WHERE rn > :%d`, where, next, next+1), pageArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get tables page: %w", err)
+	}
+	infos := make([]TableInfo, 0, len(results))
+	for _, row := range results {
+		tp := "table"
+		if row["OBJECT_TYPE"] == "VIEW" {
+			tp = "view"
+		}
+		infos = append(infos, TableInfo{
+			Name:    row["OBJECT_NAME"],
+			Type:    tp,
+			Comment: row["COMMENTS"],
+		})
+	}
+	return infos, total, nil
 }
 
 func (p *oracleProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {

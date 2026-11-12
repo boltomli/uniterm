@@ -3,7 +3,7 @@
     ref="container"
     class="spice-tab-content"
     :class="{ 'is-fullscreen': isFullscreen }"
-    :data-remote-keyboard="keyboardFocused ? 'true' : undefined"
+    :data-remote-keyboard="keyboardFocused || mobileKbOpen ? 'true' : undefined"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
     @keydown.capture="onKey"
@@ -44,12 +44,6 @@
 
     <!-- Status bar -->
     <div v-show="status === 'connected' && !isFullscreen" class="spice-statusbar">
-      <span class="spice-status-dot" />
-      <span>{{ t('spice.connected') }}</span>
-      <span class="spice-status-sep">|</span>
-      <span>{{ config?.host }}:{{ config?.port || 5900 }}</span>
-      <span class="spice-status-sep">|</span>
-      <span class="spice-status-label">{{ t('remoteDesktop.scale') }}</span>
       <RemoteDesktopZoomSelect v-model="zoom" />
       <span class="spice-status-spacer" />
       <button class="spice-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
@@ -66,6 +60,22 @@
       @minimize="blurDesktop"
       @error="onToolbarError"
     />
+    <!-- Android/iOS: soft keyboard trigger + touch gestures (tap = left
+         click, long-press = right click; spice-html5 has no touch support). -->
+    <RemoteMobileControls
+      v-model:open="mobileKbOpen"
+      :active="status === 'connected'"
+      :target="viewport"
+      @tap="onMobileTap"
+      @right="onMobileRight"
+      @move="onMobileMove"
+      @drag-start="onMobileDragStart"
+      @drag-move="onMobileDragMove"
+      @drag-end="onMobileDragEnd"
+      @wheel="onMobileWheel"
+      @text="onMobileText"
+      @special="onMobileSpecial"
+    />
   </div>
 </template>
 
@@ -74,6 +84,7 @@ import { ref, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nex
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
 import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
+import RemoteMobileControls from './RemoteMobileControls.vue'
 import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { spiceDesktopGeometry } from '../utils/spiceGeometry'
 import { SpiceKeyboard } from '../utils/spiceKeyboard'
@@ -83,6 +94,8 @@ import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { readClipboardText, writeClipboard } from '../composables/useClipboardWrite'
 import { queueRemoteKeyboardChange, REMOTE_KEY_SCANCODES } from '../utils/remoteKeyboard'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
+import { charToScancode } from '../utils/remoteCharInput'
+import { toWebSocketURL } from '../utils/webSocketUrl'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -110,6 +123,7 @@ const { zoom, scaleViewport } = useRemoteDesktopPreferences(() => props.config)
 const isFullscreen = ref(false)
 const resolution = ref('')
 const keyboardFocused = ref(false)
+const mobileKbOpen = ref(false)
 let keyboardCaptureId = ''
 let keyboardGeneration = 0
 let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
@@ -252,7 +266,7 @@ async function initSpice(proxyAddr: string, password: string) {
     const { SpiceMainConn } = await import('../vendor/spice-html5.js')
     if (disposed || generation !== clientGeneration) return
     sc = new SpiceMainConn({
-      uri: proxyAddr,
+      uri: toWebSocketURL(proxyAddr),
       password: password || '',
       screen_id: 'spice-screen-' + props.panelId,
       onerror: (e: any) => {
@@ -385,6 +399,73 @@ function onKey(event: KeyboardEvent) {
   queueKey(scancode, event.type === 'keydown')
   event.preventDefault()
   event.stopPropagation()
+}
+
+// ── Mobile touch / soft keyboard input (issue #1425) ──
+
+// spice-html5 listens on the canvas for mouse events; the touch layer emits
+// logical gestures, so re-dispatch them as regular MouseEvents and let the
+// existing handlers do the work.
+function dispatchSpiceMouse(type: string, button: number, clientX: number, clientY: number) {
+  const primary = sc?.display?.surfaces?.[sc.display.primary_surface]?.canvas as HTMLCanvasElement | undefined
+  const canvas = primary && spiceContainer.value?.contains(primary)
+    ? primary
+    : spiceContainer.value?.querySelector('canvas')
+  if (!canvas) return
+  canvas.dispatchEvent(new MouseEvent(type, { clientX, clientY, button, bubbles: false, cancelable: true }))
+}
+
+function onMobileTap(x: number, y: number) {
+  dispatchSpiceMouse('mousedown', 0, x, y)
+  dispatchSpiceMouse('mouseup', 0, x, y)
+}
+
+function onMobileRight(x: number, y: number, down: boolean) {
+  dispatchSpiceMouse(down ? 'mousedown' : 'mouseup', 2, x, y)
+}
+
+function onMobileMove(x: number, y: number) {
+  dispatchSpiceMouse('mousemove', 0, x, y)
+}
+
+function onMobileDragStart(x: number, y: number, button: number) {
+  dispatchSpiceMouse('mousedown', button, x, y)
+}
+
+function onMobileDragMove(x: number, y: number) {
+  // The button state was sent with dragStart; only the pointer moves.
+  dispatchSpiceMouse('mousemove', 0, x, y)
+}
+
+function onMobileDragEnd(x: number, y: number, button: number) {
+  dispatchSpiceMouse('mouseup', button, x, y)
+}
+
+function onMobileWheel(x: number, y: number, deltaY: number) {
+  const primary = sc?.display?.surfaces?.[sc.display.primary_surface]?.canvas as HTMLCanvasElement | undefined
+  const canvas = primary && spiceContainer.value?.contains(primary)
+    ? primary
+    : spiceContainer.value?.querySelector('canvas')
+  if (!canvas) return
+  canvas.dispatchEvent(new WheelEvent('wheel', {
+    clientX: x, clientY: y, deltaY, bubbles: false, cancelable: true,
+  }))
+}
+
+function onMobileText(chars: string) {
+  for (const ch of chars) {
+    const key = charToScancode(ch)
+    if (!key) continue
+    if (key.shift) keyboard.key(REMOTE_KEY_SCANCODES.ShiftLeft, true)
+    keyboard.key(key.scancode, true)
+    keyboard.key(key.scancode, false)
+    if (key.shift) keyboard.key(REMOTE_KEY_SCANCODES.ShiftLeft, false)
+  }
+}
+
+function onMobileSpecial(code: string, down: boolean) {
+  const scancode = REMOTE_KEY_SCANCODES[code]
+  if (scancode !== undefined) keyboard.key(scancode, down)
 }
 
 function queueKey(scancode: number, down: boolean) {
@@ -646,6 +727,8 @@ watch(status, value => {
   overflow: auto;
   background: #000;
   outline: none;
+  /* Drop the double-tap-zoom / tap-delay behavior on touch devices. */
+  touch-action: manipulation;
 }
 .spice-desktop {
   position: relative;
@@ -704,13 +787,6 @@ watch(status, value => {
   box-sizing: border-box;
   z-index: 5;
 }
-.spice-status-dot {
-  width: 0.5rem; height: 0.5rem;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
-}
-.spice-status-sep { color: var(--text-disabled); }
 .spice-status-label { font-size: 0.6875rem; }
 .spice-status-spacer { flex: 1; }
 .spice-fullscreen-btn {

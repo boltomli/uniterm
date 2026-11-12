@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/ys-ll/uniterm/backend/database"
 	"github.com/ys-ll/uniterm/backend/log"
@@ -13,6 +14,14 @@ import (
 )
 
 // ── Database methods ──
+
+// LogMessage is a diagnostic hook: the frontend calls it at each step of the
+// table-open mount chain so a freeze can be pinpointed in uniterm.log. It is a
+// no-op sink (returns nil) and does not affect application logic.
+func (a *App) LogMessage(msg string) error {
+	log.Writef("[FE] %s", msg)
+	return nil
+}
 
 func (a *App) dbSession(sessionID string) (*session.DatabaseSession, error) {
 	s, ok := a.sessionManager.Get(sessionID)
@@ -68,6 +77,30 @@ func (a *App) GetTables(sessionID string, dbName string) ([]database.TableInfo, 
 	return tables, nil
 }
 
+// GetTablePage returns one ordered page of the tree's table list plus the total
+// number of tables. The frontend tree uses it for immersive "load more"
+// scrolling so a schema with hundreds of thousands of tables is never
+// materialized at once; a non-empty query filters by table name (LIKE) for both
+// arbitrary-offset jump loading and full-schema search.
+func (a *App) GetTablePage(sessionID string, dbName string, query string, offset int, limit int) ([]database.TableInfo, int, error) {
+	ds, p, err := a.dbProvider(sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 20000 {
+		limit = 200
+	}
+	infos, total, err := p.GetTablePage(ds.DB(), dbName, query, offset, limit)
+	if err != nil {
+		log.Writef("[GetTablePage] db=%s query=%q offset=%d limit=%d failed: %v", dbName, query, offset, limit, err)
+		return nil, 0, err
+	}
+	return infos, total, nil
+}
+
 // schemaDDL returns the schema-aware implementation of the provider, if it
 // has one (DB-09/DB-06/DB-07). PostgreSQL and SQL Server qualify
 // schema.table; MySQL selects the database per connection, SQLite has no
@@ -90,7 +123,10 @@ func (a *App) GetTableSchema(sessionID string, dbName string, schema string, tab
 			return sd.GetTableSchemaRef(ds.DB(), database.TableRef{Database: dbName, Schema: schema, Name: tableName})
 		}
 	}
-	return p.GetTableSchema(ds.DB(), dbName, tableName)
+	start := time.Now()
+	res, err := p.GetTableSchema(ds.DB(), dbName, tableName)
+	log.Writef("[GetTableSchema] db=%s table=%s took=%v err=%v", dbName, tableName, time.Since(start), err)
+	return res, err
 }
 
 func (a *App) CreateDatabase(sessionID string, dbName string) error {
@@ -182,8 +218,10 @@ func (a *App) ExecuteStatement(ctx context.Context, sessionID string, dbName str
 }
 
 func (a *App) DBDefaultTableQuery(sessionID string, dbName string, schema string, tableName string, limit int, offset int) (string, error) {
+	log.Writef("[DBDefaultTableQuery] db=%s table=%s entered", dbName, tableName)
 	_, p, err := a.dbProvider(sessionID)
 	if err != nil {
+		log.Writef("[DBDefaultTableQuery] db=%s table=%s provider err=%v", dbName, tableName, err)
 		return "", err
 	}
 	if limit <= 0 {
@@ -197,6 +235,7 @@ func (a *App) DBDefaultTableQuery(sessionID string, dbName string, schema string
 			return sd.DefaultTableQueryRef(database.TableRef{Database: dbName, Schema: schema, Name: tableName}, limit, offset), nil
 		}
 	}
+	log.Writef("[DBDefaultTableQuery] db=%s table=%s done", dbName, tableName)
 	return p.DefaultTableQuery(dbName, tableName, limit, offset), nil
 }
 
@@ -320,11 +359,23 @@ func (a *App) DBDeleteRow(sessionID string, dbName string, schema string, tableN
 }
 
 func (a *App) DBBrowseTable(sessionID, dbName, schema, tableName string, options database.BrowseOptions) (*database.QueryResult, error) {
+	log.Writef("[DBBrowseTable] ENTER db=%s schema=%s table=%s filter=%d sort=%d limit=%d offset=%d", dbName, schema, tableName, len(options.Filters), len(options.Sorts), options.Limit, options.Offset)
 	ds, p, err := a.dbProvider(sessionID)
 	if err != nil {
+		log.Writef("[DBBrowseTable] db=%s table=%s provider err=%v", dbName, tableName, err)
 		return nil, err
 	}
-	return database.BrowseTable(p, ds.DB(), dbName, schema, tableName, options)
+	start := time.Now()
+	res, err := database.BrowseTable(p, ds.DB(), dbName, schema, tableName, options)
+	log.Writef("[DBBrowseTable] EXIT db=%s table=%s rows=%d took=%v err=%v",
+		dbName, tableName,
+		func() int {
+			if res != nil {
+				return len(res.Rows)
+			}
+			return -1
+		}(), time.Since(start), err)
+	return res, err
 }
 
 func (a *App) DBUpdateRowsAtomic(sessionID, dbName, schema, tableName string, updates []database.RowUpdate) error {

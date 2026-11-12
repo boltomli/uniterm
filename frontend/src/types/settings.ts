@@ -132,6 +132,12 @@ export interface TerminalSettings {
   // Display template for the timestamp column. Tokenized: YYYY/YY (year),
   // MM/DD (month/day), HH/mm/ss (hour/minute/second), literals pass through.
   timestampFormat: string
+  // How the command-send panel delivers multi-line content (issue #1341):
+  // 'lines' converts each newline to Enter so every line executes (works on
+  // cmd/PowerShell too), 'bracketed' sends the whole block wrapped in
+  // bracketed-paste markers without executing — targets without bracketed
+  // paste enabled fall back to 'lines' per target. Defaults to 'lines'.
+  commandSendMode?: 'lines' | 'bracketed'
 }
 
 export interface AIModelConfig {
@@ -180,6 +186,20 @@ export interface AISettings {
   // hosts (private LAN gateways). Off = https or loopback http only; the
   // backend enforces this on every request.
   allowInsecureHttp: boolean
+}
+
+// Compaction trigger budget. This is a local "start compacting" line, not a
+// hard request limit: an over-budget request still goes out and the provider
+// is the authority on its own context window.
+export const DEFAULT_CONTEXT_TOKEN_BUDGET = 96_000
+// 32000 was the shipped default before the budget was raised. Treating that
+// exact value as unset lets existing installs pick up the new default
+// instead of staying pinned to the old one.
+const LEGACY_CONTEXT_TOKEN_BUDGET = 32_000
+
+export function normalizeContextTokenBudget(value?: number | null): number {
+  if (!value || value === LEGACY_CONTEXT_TOKEN_BUDGET) return DEFAULT_CONTEXT_TOKEN_BUDGET
+  return value
 }
 
 export type ShortcutAction =
@@ -358,6 +378,9 @@ export interface AppSettings {
   // Whether the per-tab numeric shortcut hint (e.g. Ctrl+1) is drawn on the
   // tab itself; the hover tooltips elsewhere are unaffected.
   showTabShortcutHints: boolean
+  // Whether the system tray icon (macOS menu bar status item) is shown.
+  // Mirrors ShowTrayIcon in backend/store/settings_store.go.
+  showTrayIcon: boolean
   // How the host list opens the connection menu: hover "⋯"/star buttons
   // ("button") or right-click only, with the hover buttons hidden
   // ("rightclick"). The right-click menu works in both modes.
@@ -401,6 +424,7 @@ export const SIDEBAR_TAB_DEFAULTS: Record<string, boolean> = {
   quickCommands: true,
   history: true,
   personalization: true,
+  commandSend: true,
 }
 
 // Canonical sidebar tab order shared by the tab-strip context menu and the
@@ -413,13 +437,14 @@ export const SIDEBAR_TAB_ORDER: { key: string; labelKey: string }[] = [
   { key: 'quickCommands', labelKey: 'quickCommands.quickCommandsTab' },
   { key: 'history', labelKey: 'quickCommands.historyTab' },
   { key: 'personalization', labelKey: 'sidebar.personalization' },
+  { key: 'commandSend', labelKey: 'sidebar.commandSend' },
 ]
 
 // Default dock position per sidebar view: "sidebar" (left) or "bottom"
 // (docked panel under the tab area). Views absent from a saved
 // PanelLocations map fall back to these. Everything ships docked to the
-// left sidebar by default; the bottom panel starts empty and is only used
-// when the user moves views into it.
+// left sidebar by default; the bottom panel only starts non-empty because
+// the command-send panel targets batch sends there (issue #1341).
 export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'bottom'> = {
   connections: 'sidebar',
   files: 'sidebar',
@@ -428,6 +453,7 @@ export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'bottom'> = {
   tunnels: 'sidebar',
   quickCommands: 'sidebar',
   history: 'sidebar',
+  commandSend: 'bottom',
 }
 
 // Monitor sections with their default enabled state. Disabled sections are
@@ -497,12 +523,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     wordSeparator: '\\ :;~`!@#$%^&*()=+|[]{}\'",<>?',
     showLineNumbers: false,
     showTimestamps: false,
-    timestampFormat: 'HH:mm:ss'
+    timestampFormat: 'HH:mm:ss',
+    commandSendMode: 'lines'
   },
   ai: {
     maxTurns: 20,
     autoCompact: true,
-    contextTokenBudget: 32000,
+    contextTokenBudget: DEFAULT_CONTEXT_TOKEN_BUDGET,
     summaryModelId: '',
     models: [
       {
@@ -533,6 +560,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gitBashPath: '',
   tabCloseButton: 'left',
   showTabShortcutHints: true,
+  showTrayIcon: true,
   hostListMenuStyle: 'button',
   connectionsDisplayMode: 'full',
   quickCommandsDisplayMode: 'list',

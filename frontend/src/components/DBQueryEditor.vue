@@ -305,9 +305,10 @@ import SyntaxEditor from './SyntaxEditor.vue'
 import DBResultGrid from './DBResultGrid.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
-import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBBrowseTable, DBUpdateRowsAtomic, DBPreviewCSV, DBImportCSV, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64 } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { ExecuteQuery, ExecuteStatement, GetTables, GetTableSchema, DBDefaultTableQuery, DBBrowseTable, DBUpdateRowsAtomic, DBPreviewCSV, DBImportCSV, DBInsertRow, DBUpdateRow, DBDeleteRow, ExecuteSQLScript, OpenFileDialogFiltered, ReadFileBase64, SaveFileDialogFiltered, WriteFileBase64, LogMessage } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { chat } from '../services/llm'
 import { msg } from '../services/message'
+import { isWebServerMode, pickAndStageLocalFileInBrowser, pickBrowserFiles, readBrowserFileAsText, saveBase64InWebServerMode } from '../services/webSftpBridge'
 import { loadSqlHistory, pushSqlHistory } from '../composables/useDbSqlHistory'
 import type { QueryResult, ExecResult, ColumnInfo, HistoryEntry, ScriptResult } from '../types/database'
 import { tryAndroidSave } from '../utils/androidSave'
@@ -523,7 +524,16 @@ const importingCsv = ref(false)
 async function openCSVImport() {
   if (!props.tableName || !(await confirmDiscardEdits())) return
   try {
-    const path = await OpenFileDialogFiltered(t('db.importCSV'), 'CSV File', '*.csv')
+    // Web mode: stage the CSV into the worker; preview/import read the
+    // container path on the Go side.
+    let path = ''
+    if (await isWebServerMode()) {
+      const staged = await pickAndStageLocalFileInBrowser('.csv')
+      if (!staged) return
+      path = staged.stagedPath
+    } else {
+      path = await OpenFileDialogFiltered(t('db.importCSV'), 'CSV File', '*.csv')
+    }
     if (!path) return
     const [preview, schema] = await Promise.all([
       DBPreviewCSV(path),
@@ -609,6 +619,9 @@ async function onExportResults(format: 'csv' | 'txt' | 'json') {
       if (androidOutcome === 'saved') msg.success(t('db.exportDone', { name: defaultName }))
       return
     }
+    // Web-server mode: no native save dialog — hand the payload to the
+    // browser's download manager instead.
+    if (await saveBase64InWebServerMode(defaultName, mime, b64)) return
     const path = await SaveFileDialogFiltered(t('db.exportResults'), defaultName, label, `*.${ext}`)
     if (!path) return
     await WriteFileBase64(path, b64)
@@ -682,6 +695,7 @@ function normalizeSql(s: string): string {
 }
 
 async function loadBrowseSql(offset = 0) {
+  void LogMessage(`Q1 loadBrowseSql table=${props.tableName} offset=${offset}`)
   if (!props.tableName) return
   browseSql.value = await DBDefaultTableQuery(
     props.sessionId,
@@ -691,6 +705,7 @@ async function loadBrowseSql(offset = 0) {
     pageSize.value,
     offset,
   )
+  void LogMessage(`Q2 browseSql set ${offset}`)
   sql.value = browseSql.value
   browseMode.value = true
 }
@@ -719,10 +734,12 @@ watch(() => props.active, async (active) => {
 })
 
 onMounted(async () => {
+  void LogMessage(`Q0 onMounted table=${props.tableName}`)
   refreshHistory()
   if (!props.tableName) return
   page.value = 0
   await loadBrowseSql(0)
+  void LogMessage(`Q3 onMounted-lb-done table=${props.tableName}`)
   if (props.autoRun && props.active) await onExecute()
 })
 
@@ -923,17 +940,24 @@ const sqlFileEditorLimit = 1 << 20
 
 async function onOpenScriptFile() {
   if (!(await confirmDiscardEdits())) return
-  let path = ''
+  let text = ''
   try {
-    path = await OpenFileDialogFiltered(t('db.runSqlFile'), 'SQL File', '*.sql')
+    // Web mode: read the script content in the browser, no Go-side file IO.
+    if (await isWebServerMode()) {
+      const [file] = await pickBrowserFiles({ accept: '.sql' })
+      if (!file) return
+      text = await readBrowserFileAsText(file)
+    } else {
+      const path = await OpenFileDialogFiltered(t('db.runSqlFile'), 'SQL File', '*.sql')
+      if (!path) return
+      const b64 = await ReadFileBase64(path)
+      text = decodeBase64(b64)
+    }
   } catch (e) {
     if (!isDialogCancel(e)) error.value = (e as any)?.message || String(e)
     return
   }
-  if (!path) return
   try {
-    const b64 = await ReadFileBase64(path)
-    const text = decodeBase64(b64)
     error.value = ''
     queryResult.value = null
     execResult.value = null

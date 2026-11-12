@@ -113,6 +113,11 @@ export interface RecordWriteOptions {
    * the band exceeds it (P-07: one merged multi-MB parse can travel
    * thousands of rows). Omitted (or non-positive) disables the cap. */
   rows?: number
+  /** Fix completion timestamps for lines the cursor moved past (step 2).
+   * Only the timestamp column reads that field, so the caller may skip it
+   * when the feature is off; line-number registration is unaffected.
+   * Defaults to true. */
+  stampCompletion?: boolean
 }
 
 /** Rows above the cursor band also scanned for unregistered content —
@@ -161,22 +166,31 @@ export function recordWrittenLines(state: LineRegistryState, opts: RecordWriteOp
   for (let y = from; y <= to; y += 1) registerRow(y)
 
   // 2. Completion: for rows in the band belonging to lines that now end above
-  //    the cursor, the output has finished — fix their timestamp. Capped at
-  //    rows*4 (P-07): a single oversized parse (merged flush of many chunks)
-  //    would walk a wrapped group per row across thousands of rows. The band
+  //    the cursor, the output has finished — fix their timestamp. Each
+  //    logical line is visited once and its group walked once, never per row:
+  //    a long soft-wrapped output line spans the whole buffer, and per-row
+  //    walks over it cost O(band × group length) inside every write callback
+  //    — enough to freeze the UI. The end-walk stops at the band edge (>= the
+  //    cursor row): a group reaching it is not yet complete by definition.
+  //
+  //    Also capped at rows*4 (P-07): a single oversized parse (merged flush
+  //    of many chunks) would still touch thousands of logical lines. The band
   //    is still registered above — only the timestamp backfill is skipped,
   //    and such lines keep their birth time, which for a flood write is the
   //    same instant as their completion anyway.
   const completionCapped = opts.rows != null && opts.rows > 0 && to - from > opts.rows * 4
-  if (!completionCapped) {
-    for (let y = from; y <= to; y += 1) {
+  if ((opts.stampCompletion ?? true) && !completionCapped) {
+    let y = from
+    while (y <= to) {
       let start = y
       while (start > 0 && source.isWrapped(start)) start -= 1
       let end = start
-      while (source.isWrapped(end + 1)) end += 1
-      if (end >= cursorRow) continue
-      const entry = state.entries.get(lineOffset + start)
-      if (entry && entry.ts !== now) entry.ts = now
+      while (end < to && source.isWrapped(end + 1)) end += 1
+      if (end < cursorRow) {
+        const entry = state.entries.get(lineOffset + start)
+        if (entry && entry.ts !== now) entry.ts = now
+      }
+      y = end + 1
     }
   }
 
@@ -332,6 +346,11 @@ function notifyGutter(sessionId: string) {
   gutterNotifier.request(sessionId)
 }
 
+/** Whether the timestamp column is displayed. */
+function timestampsEnabled(): boolean {
+  return useSettingsStore().settings.terminal.showTimestamps ?? false
+}
+
 /** Whether either gutter column is displayed. The registry keeps recording
  * regardless (so enabling a column mid-session still has data), but the
  * per-write gutter notification — a global CustomEvent that makes every
@@ -379,6 +398,9 @@ export function recordWrite(sessionId: string, beforeAbs: number, ts: number): v
     source: bufferRowSource(buf, y => isLogicalContinuation(t, y)),
     now: ts,
     rows: t.rows,
+    // Completion stamps only feed the timestamp column; skip the pass while
+    // it's hidden (line numbers keep registering unconditionally).
+    stampCompletion: timestampsEnabled(),
   })
   managed.lastParsedAbs = afterAbs
   if (gutterVisible()) notifyGutter(sessionId)

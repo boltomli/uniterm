@@ -107,6 +107,12 @@ func (a *App) setMCPLastEndpoint(ep *mcpEndpoint) {
 // Server.Start itself is a no-op for the port it already listens on, so live
 // client connections survive an unchanged save.
 func (a *App) StartMCP() error {
+	// Server mode: the MCP endpoint binds a worker's loopback port, which is
+	// unreachable from outside the container (and collides across tenants).
+	// The feature is disabled entirely; the settings entry is hidden too.
+	if serverMode {
+		return nil
+	}
 	if a.localStateStore == nil {
 		return fmt.Errorf("local state store not initialized")
 	}
@@ -1085,6 +1091,18 @@ func (p ptyAdapter) Alive() bool { return p.s.Status() == session.StatusConnecte
 func (p ptyAdapter) ForegroundShell() string {
 	if shell, ok := p.s.(interface{ ForegroundShell() string }); ok {
 		return shell.ForegroundShell()
+	}
+	return ""
+}
+
+// ExecFilterEncoding forwards the session's legacy-charset hint (MSYS bash
+// piped native output — see session.LocalSession.ExecFilterEncoding) so the
+// job wrapper can re-encode it. The adapter wraps the session, so without
+// this forwarding the registry's interface probe fails and every job falls
+// back to the unfiltered wrapper.
+func (p ptyAdapter) ExecFilterEncoding() string {
+	if fe, ok := p.s.(interface{ ExecFilterEncoding() string }); ok {
+		return fe.ExecFilterEncoding()
 	}
 	return ""
 }

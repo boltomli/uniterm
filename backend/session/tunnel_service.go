@@ -1,8 +1,8 @@
 package session
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -13,11 +13,11 @@ import (
 	"github.com/ys-ll/uniterm/backend/log"
 )
 
-// tunnelEntry holds the SSH client and listener for a single tunnel.
+// tunnelEntry holds the SSH clients and listener for a single tunnel.
 type tunnelEntry struct {
-	sshClient *ssh.Client
-	listener  net.Listener
-	quit      chan struct{}
+	sshClients []*ssh.Client
+	listener   net.Listener
+	quit       chan struct{}
 }
 
 // TunnelService manages SSH tunnel lifecycles.
@@ -52,6 +52,12 @@ func NewTunnelService() *TunnelService {
 // to targetHost:targetPort through the SSH tunnel.
 // Returns the local port number that was assigned.
 func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, targetHost string, targetPort int, upstream *SocksProxy) (int, error) {
+	return ts.StartChain(sessionID, []ConnectionConfig{sshConfig}, targetHost, targetPort, upstream)
+}
+
+// StartChain forwards a session through SSH hops ordered from entry to exit.
+// Every client belongs to this session and is closed by Stop or Shutdown.
+func (ts *TunnelService) StartChain(sessionID string, chain []ConnectionConfig, targetHost string, targetPort int, upstream *SocksProxy) (int, error) {
 	// 0. Reserve the session slot BEFORE dialing. The auth setup, dial and
 	//    handshake below are network I/O: holding ts.mu across them let a
 	//    single stalled jump host block setState, Stop, TunnelStates and
@@ -61,11 +67,15 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	//    dialing a second chain.
 	quit := make(chan struct{})
 	ts.mu.Lock()
+	if ts.closed {
+		ts.mu.Unlock()
+		return 0, fmt.Errorf("tunnel service is shut down")
+	}
 	if _, exists := ts.tunnels[sessionID]; exists {
 		ts.mu.Unlock()
 		return 0, fmt.Errorf("tunnel already exists for session %s", sessionID)
 	}
-	// Placeholder entry; the finished client/listener replace it on publish.
+	// Placeholder entry; the finished clients/listener replace it on publish.
 	ts.tunnels[sessionID] = &tunnelEntry{quit: quit}
 	ts.mu.Unlock()
 
@@ -79,69 +89,30 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 		ts.mu.Unlock()
 	}
 
-	// 1. Establish SSH connection
-	authMethods, cleanup, err := makeSSHAuthMethodsForAttempt(sshConfig, nil)
-	if err != nil {
+	if len(chain) == 0 {
 		release()
-		return 0, fmt.Errorf("tunnel ssh auth: %w", err)
+		return 0, fmt.Errorf("no SSH jump hosts configured")
 	}
-	defer cleanup()
-	addr := net.JoinHostPort(sshConfig.Host, strconv.Itoa(sshConfig.Port))
-	// Verify and record under the ORIGINAL host:port when a jump-host tunnel
-	// rewrote the dial address to 127.0.0.1:<ephemeral> (hostKeyVerifyTarget).
-	verifyHost, verifyPort := hostKeyVerifyTarget(sshConfig)
-	verifyKey := knownHostsKey(verifyHost, strconv.Itoa(verifyPort))
-	algoSet, _, err := resolveSSHAlgorithms(sshConfig.SSHAlgorithms)
+	// Bound the whole setup, including handshakes over channels that do not
+	// support socket deadlines. Allow 30 seconds per hop.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(len(chain))*30*time.Second)
+	defer cancel()
+	client, clients, err := ts.dialChain(ctx, chain, upstream, sessionID)
 	if err != nil {
 		release()
 		return 0, err
 	}
-	clientConfig := &ssh.ClientConfig{
-		User:              sshConfig.User,
-		Auth:              authMethods,
-		Timeout:           sshHandshakeTimeout,
-		HostKeyCallback:   HostKeyCallback(verifyHost, strconv.Itoa(verifyPort), sessionID),
-		Config:            algoSet.config(),
-		HostKeyAlgorithms: preferPinnedHostKeyAlgorithms(algoSet.HostKeys, verifyKey),
-	}
-
-	conn, err := dialFirstHop(addr, upstream)
-	if err != nil {
-		release()
-		return 0, fmt.Errorf("tunnel ssh dial: %w", err)
-	}
-	// TCP keepalive: same interval as direct SSH sessions, so an idle tunnel
-	// (e.g. forwarding a single long-lived vim/editor session through a jump
-	// host) doesn't get silently dropped by a firewall/NAT idle timeout.
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(sshKeepAliveInterval)
-	}
-
-	// Bound the handshake (see dialSSHWithCipherFallback); cleared below so
-	// the long-lived tunnel connection is unaffected by the deadline.
-	_ = conn.SetDeadline(time.Now().Add(sshHandshakeDeadline(clientConfig)))
-	handshakeStart := time.Now()
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
-	if err != nil {
-		log.Writef("[tunnel] ssh handshake %s failed after %s: %v",
-			addr, time.Since(handshakeStart).Round(time.Millisecond), err)
-		conn.Close()
-		release()
-		return 0, fmt.Errorf("tunnel ssh handshake: %w", err)
-	}
-	_ = conn.SetDeadline(time.Time{})
-	client := ssh.NewClient(sshConn, chans, reqs)
 
 	// 2. Listen on random local port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		client.Close()
+		closeClients(clients)
+		release()
 		return 0, fmt.Errorf("tunnel listen: %w", err)
 	}
 
 	localPort := listener.Addr().(*net.TCPAddr).Port
-	target := fmt.Sprintf("%s:%d", targetHost, targetPort)
+	target := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
 
 	// 3. Accept loop — forward each connection through SSH
 	go func() {
@@ -160,21 +131,7 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 					localConn.Close()
 					return
 				}
-				// Bidirectional copy with WaitGroup — ensures both directions
-				// finish before closing the underlying connections.
-				var wg sync.WaitGroup
-				wg.Add(2)
-				go func() {
-					defer wg.Done()
-					io.Copy(remoteConn, localConn)
-				}()
-				go func() {
-					defer wg.Done()
-					io.Copy(localConn, remoteConn)
-				}()
-				wg.Wait()
-				localConn.Close()
-				remoteConn.Close()
+				pipe(localConn, remoteConn)
 			}()
 		}
 	}()
@@ -187,17 +144,19 @@ func (ts *TunnelService) Start(sessionID string, sshConfig ConnectionConfig, tar
 	if !ok || cur.quit != quit {
 		ts.mu.Unlock()
 		listener.Close()
-		client.Close()
+		closeClients(clients)
 		return 0, fmt.Errorf("tunnel %s stopped while establishing", sessionID)
 	}
 	ts.tunnels[sessionID] = &tunnelEntry{
-		sshClient: client,
-		listener:  listener,
-		quit:      quit,
+		sshClients: clients,
+		listener:   listener,
+		quit:       quit,
 	}
 	ts.mu.Unlock()
 
-	go tunnelKeepAlive(client, quit, "session="+sessionID)
+	for _, hop := range clients {
+		go tunnelKeepAlive(hop, quit, "session="+sessionID)
+	}
 
 	return localPort, nil
 }
@@ -225,7 +184,7 @@ func tunnelKeepAlive(client *ssh.Client, quit chan struct{}, label string) {
 	}
 }
 
-// Stop closes the tunnel and SSH connection for the given session. Safe on a
+// Stop closes the tunnel and SSH connections for the given session. Safe on a
 // reservation entry (a dial still in flight): closing quit cancels it, and the
 // dialing Start tears down whatever it produced when it finds the reservation
 // gone.
@@ -246,9 +205,7 @@ func (ts *TunnelService) Stop(sessionID string) {
 	if entry.listener != nil {
 		entry.listener.Close()
 	}
-	if entry.sshClient != nil {
-		entry.sshClient.Close()
-	}
+	closeClients(entry.sshClients)
 }
 
 // Shutdown closes all tunnels. Call on app shutdown.
@@ -275,8 +232,6 @@ func (ts *TunnelService) Shutdown() {
 		if entry.listener != nil {
 			entry.listener.Close()
 		}
-		if entry.sshClient != nil {
-			entry.sshClient.Close()
-		}
+		closeClients(entry.sshClients)
 	}
 }

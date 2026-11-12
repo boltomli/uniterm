@@ -96,6 +96,7 @@ import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { msg } from '../services/message'
+import { isWebServerMode, pickBrowserFiles, readBrowserFileAsText, saveBase64InWebServerMode } from '../services/webSftpBridge'
 import { Upload, Download } from '@lucide/vue'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
@@ -215,16 +216,28 @@ async function onDelete() {
 }
 
 async function onImport() {
-  let path: string
+  let path = ''
+  let xml = ''
   try {
-    path = await OpenFileDialogFiltered(t('theme.importItermcolors'), 'iTerm2 Color Preset', '*.itermcolors')
+    // Web mode: read the .itermcolors content in the browser.
+    if (await isWebServerMode()) {
+      const [file] = await pickBrowserFiles({ accept: '.itermcolors' })
+      if (!file) return
+      path = file.name
+      xml = await readBrowserFileAsText(file)
+    } else {
+      path = await OpenFileDialogFiltered(t('theme.importItermcolors'), 'iTerm2 Color Preset', '*.itermcolors')
+      if (!path) return
+    }
   } catch {
     return
   }
   if (!path) return
   try {
-    const b64 = await ReadFileBase64(path)
-    const xml = atob(b64)
+    if (!xml) {
+      const b64 = await ReadFileBase64(path)
+      xml = atob(b64)
+    }
     draft.value.colors = parseItermColors(xml, draft.value.colors)
     if (!draft.value.name.trim() || draft.value.name === t('theme.newDefaultName')) {
       const base = path.split(/[\\/]/).pop() || ''
@@ -251,6 +264,9 @@ async function onExport() {
     msg.error(t('theme.exportFailed'))
     return
   }
+  // Web-server mode: no native save dialog — hand the payload to the
+  // browser's download manager instead.
+  if (await saveBase64InWebServerMode(defaultName, 'text/plain', btoa(xml))) return
   let path: string
   try {
     path = await SaveFileDialogFiltered(t('theme.exportItermcolors'), defaultName, 'iTerm2 Color Preset', '*.itermcolors')

@@ -7,12 +7,12 @@
 
 <div align="center">
 
-English &nbsp;|&nbsp; <a href="README_zh-CN.md">简体中文</a>
+<a href="README_zh-CN.md">简体中文</a> &nbsp;|&nbsp; <a href="README_zh-TW.md">繁體中文</a> &nbsp;|&nbsp; English &nbsp;|&nbsp; <a href="README_ja.md">日本語</a> &nbsp;|&nbsp; <a href="README_ko.md">한국어</a> &nbsp;|&nbsp; <a href="README_de.md">Deutsch</a> &nbsp;|&nbsp; <a href="README_es.md">Español</a> &nbsp;|&nbsp; <a href="README_fr.md">Français</a> &nbsp;|&nbsp; <a href="README_ru.md">Русский</a> &nbsp;|&nbsp; <a href="README_pt.md">Português</a> &nbsp;|&nbsp; <a href="README_vi.md">Tiếng Việt</a>
 
 <br>
 
 <a href="https://github.com/ys-ll/uniterm/releases/latest"><img src="https://img.shields.io/github/v/release/ys-ll/uniterm" alt="GitHub release" /></a>
-<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue" alt="Platform" /></a>
+<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Docker-blue" alt="Platform" /></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
 <a href="https://github.com/ys-ll/uniterm/releases"><img src="https://img.shields.io/github/downloads/ys-ll/uniterm/total" alt="GitHub downloads" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/github/stars/ys-ll/uniterm?style=social" alt="GitHub stars" /></a>
@@ -165,6 +165,7 @@ Get the latest pre-built binaries from [GitHub Releases](https://github.com/ys-l
 - **macOS** (Apple Silicon arm64 / Intel amd64): Download `uniterm-darwin-*-*.dmg`
 - **Linux** (amd64 / arm64): Download `uniterm-linux-*-*.tar.gz`, `.deb`, or `.rpm`
 - **Android** (arm64): Download `uniterm-android-arm64-*.apk`
+- **Docker** (amd64 / arm64): web multi-tenant deployment — a browser-accessible server deployment where every user gets an isolated workspace, see the [Docker deployment guide](https://github.com/ys-ll/uniterm/blob/main/deploy/docker/README.md)
 
 > **About Windows antivirus false positives**: As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
 
@@ -192,6 +193,7 @@ sudo rpm -i uniterm.rpm
 - **macOS**: No extra dependencies (uses the system WebKit)
 - **Linux**: `libgtk-3-0` and `libwebkit2gtk-4.1-0` (preinstalled on most desktop distros)
 - **Android**: Android 5.0+ (uses the system WebView, no extra dependencies)
+- **Docker**: only Docker Engine on the host (Docker Compose v2 for compose deployments); the image ships with all runtime dependencies
 
 ## Quick Workflows
 
@@ -227,7 +229,7 @@ sudo rpm -i uniterm.rpm
 
 - [Go](https://go.dev/dl/) 1.26+
 - [Node.js](https://nodejs.org/) 20+
-- [wails3 CLI](https://wails.io/docs/) v3.0.0 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0`)
+- [wails3 CLI](https://wails.io/docs/) v3.1.0 (install with `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`)
 - macOS needs Xcode Command Line Tools
 - Linux needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`
 - Android builds additionally need JDK 21 and the Android SDK/NDK (`sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"`)
@@ -342,6 +344,12 @@ Thanks to the following people for contributing code and improvements, and to ev
     <td align="center"><a href="https://github.com/lijinxiao1982">@lijinxiao1982</a></td>
     <td align="center"><a href="https://github.com/mikemikimike">@mikemikimike</a></td>
     <td align="center"><a href="https://github.com/macoladik">@macoladik</a></td>
+    <td align="center"><a href="https://github.com/NatureLProokie">@NatureLProokie</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
+    <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
+    <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
   </tr>
 </table>
 

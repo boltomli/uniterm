@@ -28,6 +28,12 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	if a.sessionManager == nil {
 		return nil, fmt.Errorf("session manager not initialized")
 	}
+	// Server build: a local shell runs as root inside the multi-tenant
+	// container and can read every tenant's data plus the gateway's own
+	// secrets (users.json, JWT key). Disabled unconditionally.
+	if serverMode && sessionType == "local" {
+		return nil, fmt.Errorf("local terminals are disabled in server mode")
+	}
 	log.Writef("[CreateSession] type=%s, dbType=%s, host=%s, port=%d, user=%s, dbName=%s, name=%s",
 		sessionType, config.DBType, config.Host, config.Port, config.User, config.DBName, config.Name)
 	// 容器文件会话：通道由 container.Manager 解析（App 层拦截，不走
@@ -340,44 +346,9 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	if a.tunnelService == nil || a.connectionStore == nil {
 		return fmt.Errorf("tunnel prerequisites not initialized")
 	}
-	data, err := a.connectionStore.Load()
+	chain, err := a.sessionJumpHostChain(*config)
 	if err != nil {
-		return fmt.Errorf("load connections for tunnel: %w", err)
-	}
-	var tunnelSSHConfig *session.ConnectionConfig
-	for _, c := range data.Connections {
-		if c.ID == config.TunnelSSHConnID {
-			tunnelSSHConfig = &c
-			break
-		}
-	}
-	if tunnelSSHConfig == nil {
-		return fmt.Errorf("tunnel SSH connection not found: %s", config.TunnelSSHConnID)
-	}
-
-	// Resolve an identity reference into a concrete password/key config
-	// before handing the jump host to the tunnel service. Identity is
-	// authoritative from the 密钥库(identity store); inline credentials
-	// never override it.
-	wasIdentity := tunnelSSHConfig.AuthType == "identity"
-	if tunnelSSHConfig.AuthType == "identity" {
-		m, err := a.materializeIdentity(*tunnelSSHConfig)
-		if err != nil {
-			return err
-		}
-		tunnelSSHConfig = &m
-	}
-
-	// Inline tunnel credentials (ephemeral prompt "connect" without saving)
-	// only fill gaps — they never override already-resolved values, and
-	// never touch an identity-resolved config.
-	if !wasIdentity {
-		if config.TunnelSSHUser != "" && tunnelSSHConfig.User == "" {
-			tunnelSSHConfig.User = config.TunnelSSHUser
-		}
-		if config.TunnelSSHPassword != "" && tunnelSSHConfig.Password == "" {
-			tunnelSSHConfig.Password = config.TunnelSSHPassword
-		}
+		return err
 	}
 
 	// VNC/SPICE use libvirt display numbers (port < 100 → 5900+N).
@@ -392,7 +363,7 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 		targetPort = session.DefaultRDPPort
 	}
 	tunnelStart := time.Now()
-	localPort, err := a.tunnelService.Start(sessionID, *tunnelSSHConfig, config.Host, targetPort, config.Proxy)
+	localPort, err := a.tunnelService.StartChain(sessionID, chain, config.Host, targetPort, config.Proxy)
 	if err != nil {
 		log.Writef("[tunnel] start failed for session=%s via ssh=%s after %s: %v",
 			sessionID, config.TunnelSSHConnID, time.Since(tunnelStart).Round(time.Millisecond), err)
@@ -406,6 +377,48 @@ func (a *App) setupJumpHostTunnel(sessionID string, sessionType string, config *
 	config.Port = localPort
 	config.Proxy = nil // proxy was consumed by the jump-host dial; local dial is direct
 	return nil
+}
+
+// sessionJumpHostChain resolves saved jump hosts before any network I/O.
+// Each hop uses its own identity; temporary credentials on the child only
+// fill missing fields on its immediate parent and never override identities.
+func (a *App) sessionJumpHostChain(config session.ConnectionConfig) ([]session.ConnectionConfig, error) {
+	data, err := a.connectionStore.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load connections for tunnel: %w", err)
+	}
+	index := make(map[string]session.ConnectionConfig, len(data.Connections))
+	for _, c := range data.Connections {
+		index[c.ID] = c
+	}
+	chain, err := session.BuildHopChain(config.TunnelSSHConnID, func(id string) (session.ConnectionConfig, bool) {
+		c, ok := index[id]
+		return c, ok
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, hop := range chain {
+		child := config
+		if i+1 < len(chain) {
+			child = chain[i+1]
+		}
+		if hop.AuthType == "identity" {
+			hop, err = a.materializeIdentity(hop)
+			if err != nil {
+				return nil, fmt.Errorf("jump host %s: %w", chain[i].ID, err)
+			}
+		} else {
+			if hop.User == "" {
+				hop.User = child.TunnelSSHUser
+			}
+			if hop.Password == "" {
+				hop.Password = child.TunnelSSHPassword
+			}
+		}
+		chain[i] = hop
+	}
+	return chain, nil
 }
 
 // DuplicateSSHChannel opens a new session channel on an existing connected
@@ -558,6 +571,13 @@ func (a *App) SessionWrite(sessionID string, data string) error {
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
+	// Manual keystrokes break a foreground AI job's coherence: the bytes land
+	// in the running command's stdin and its completion marker may never
+	// arrive, wedging the session busy until the job TTL. Finish the job (the
+	// output stays pollable by id) and free the lock before the user's bytes
+	// reach the terminal; no extra interrupt is sent — the user's own Ctrl+C
+	// is one.
+	a.jobRegistry().UserInput(sessionID)
 	return s.Write([]byte(data))
 }
 
@@ -575,6 +595,25 @@ func (a *App) SessionGetCwd(sessionID string) (string, error) {
 		return terminal.CurrentCwd()
 	}
 	return session.GetSessionCwd(sessionID), nil
+}
+
+// SessionInjectCwdHook types the WSL cwd-reporting prompt hook into a running
+// session on demand. Called when the user enables directory follow for a WSL
+// terminal (with an explicit UI confirmation); sessions are never injected at
+// start, so a plain first login shows no handshake output (issue #1388).
+func (a *App) SessionInjectCwdHook(sessionID string) error {
+	if a.sessionManager == nil {
+		return fmt.Errorf("session manager not initialized")
+	}
+	s, ok := a.sessionManager.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	local, ok := s.(session.CwdHookInjector)
+	if !ok {
+		return fmt.Errorf("session type %s does not support cwd hook injection", s.Type())
+	}
+	return local.InjectCwdHook()
 }
 
 // SessionSetCwdTracking controls read-only cwd polling for an SSH terminal.

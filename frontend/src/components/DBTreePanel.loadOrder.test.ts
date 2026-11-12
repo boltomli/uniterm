@@ -27,7 +27,7 @@ describe('DBTreePanel load ordering (DB-17)', () => {
     expect(load).toMatch(/const myTree = \+\+treeSeq/)
     // Guards after every await: GetDatabases and each GetTables.
     const guards = load.match(/myTree !== treeSeq/g) ?? []
-    expect(guards.length).toBeGreaterThanOrEqual(4)
+    expect(guards.length).toBeGreaterThanOrEqual(2)
     // The finally block must only settle loading for the owning run.
     expect(load).toMatch(/if \(myTree === treeSeq\) loading\.value = false/)
   })

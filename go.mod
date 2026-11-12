@@ -2,6 +2,11 @@ module github.com/ys-ll/uniterm
 
 go 1.26.2
 
+// Some RDP servers (e.g. Windows Server 2008) present self-signed
+// certificates with a negative serial number; restore the pre-Go 1.23
+// parser leniency so the proxy's TLS leg can still terminate on them.
+godebug x509negativeserial=1
+
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74
@@ -31,7 +36,7 @@ require (
 	github.com/smallfz/libnfs-go v0.0.7
 	github.com/studio-b12/gowebdav v0.12.0
 	github.com/unixshells/mosh-go v0.5.2
-	github.com/wailsapp/wails/v3 v3.0.0
+	github.com/wailsapp/wails/v3 v3.1.0
 	github.com/xanzy/ssh-agent v0.3.3
 	github.com/zalando/go-keyring v0.2.8
 	go.bug.st/serial v1.7.1
@@ -53,7 +58,6 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
-	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff // indirect
@@ -91,7 +95,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
@@ -115,6 +118,7 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
@@ -126,3 +130,5 @@ replace github.com/unixshells/mosh-go v0.5.2 => github.com/ys-ll/mosh-go v0.0.0-
 replace github.com/rhnvrm/simples3 => github.com/ys-ll/simples3 v0.0.0-20260930081831-3357c14e91bd
 
 replace golang.org/x/crypto => github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e
+
+replace github.com/wailsapp/wails/v3 => github.com/ys-ll/wails/v3 v3.0.0-20261112023043-1143f7a41423

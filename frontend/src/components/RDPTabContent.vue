@@ -3,7 +3,7 @@
     ref="container"
     class="rdp-tab-content"
     tabindex="0"
-    :data-remote-keyboard="keyboardFocused && status === 'connected' ? 'true' : undefined"
+    :data-remote-keyboard="(keyboardFocused && status === 'connected') || mobileKbOpen ? 'true' : undefined"
     @keydown="onKeyDown"
     @keyup="onKeyUp"
     @paste="onPaste"
@@ -20,6 +20,7 @@
     <div v-else-if="status === 'error'" class="rdp-overlay">
       <p class="rdp-error-text">{{ t('rdp.error') }}</p>
       <p v-if="errorMessage" class="rdp-error-detail">{{ errorMessage }}</p>
+      <p v-if="errorHint" class="rdp-error-hint">{{ t(errorHint) }}</p>
       <el-button type="primary" @click="retryConnection">{{ t('rdp.retry') }}</el-button>
     </div>
 
@@ -56,12 +57,6 @@
       :class="{ 'rdp-statusbar-hidden': status !== 'connected' }"
       :aria-hidden="status !== 'connected'"
     >
-      <span class="rdp-status-dot" />
-      <span>{{ t('rdp.connected') }}</span>
-      <span class="rdp-status-sep">|</span>
-      <span>{{ config?.host }}:{{ config?.port || 3389 }}</span>
-      <span class="rdp-status-sep">|</span>
-      <span class="rdp-status-label">{{ t('remoteDesktop.resolution') }}</span>
       <el-select
         v-model="activeResolution"
         class="rdp-quality-select"
@@ -71,15 +66,11 @@
       >
         <el-option v-for="r in resolutionOptions" :key="r.value" :value="r.value" :label="r.label" />
       </el-select>
-      <span class="rdp-status-sep">|</span>
-      <span class="rdp-status-label">{{ t('remoteDesktop.scale') }}</span>
       <RemoteDesktopZoomSelect
         v-model="zoom"
         :disabled="status === 'connecting'"
         :allow-fit="activeResolution !== 'adaptive'"
       />
-      <span class="rdp-status-sep">|</span>
-      <span class="rdp-status-label">{{ t('conn.rdpQuality') }}</span>
       <el-select
         v-model="activeQuality"
         class="rdp-quality-select"
@@ -118,7 +109,9 @@
         >
           <el-option v-for="r in resolutionOptions" :key="r.value" :value="r.value" :label="r.label" />
         </el-select>
-        <span class="rdp-status-sep">|</span>
+      </template>
+      <!-- Keep the toolbar order identical to the status bar: resolution, zoom, quality. -->
+      <template #after-zoom>
         <el-select
           v-model="activeQuality"
           class="remote-desktop-toolbar-select"
@@ -130,9 +123,25 @@
         >
           <el-option v-for="q in RDP_QUALITY_OPTIONS" :key="q.value" :value="q.value" :label="t(q.label)" />
         </el-select>
-        <span class="rdp-status-sep">|</span>
       </template>
     </RemoteDesktopToolbar>
+
+    <!-- Android/iOS: soft keyboard trigger + touch gestures (tap = left
+         click, long-press = right click). -->
+    <RemoteMobileControls
+      v-model:open="mobileKbOpen"
+      :active="status === 'connected'"
+      :target="viewportEl"
+      @tap="onMobileTap"
+      @right="onMobileRight"
+      @move="onMobileMove"
+      @drag-start="onMobileDragStart"
+      @drag-move="onMobileDragMove"
+      @drag-end="onMobileDragEnd"
+      @wheel="onMobileWheel"
+      @text="onMobileText"
+      @special="onMobileSpecial"
+    />
   </div>
 </template>
 
@@ -140,6 +149,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import RemoteMobileControls from './RemoteMobileControls.vue'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
 import { CreateSession, CloseSession, FrontendLog, ClipboardGetFiles, ClipboardReadFileChunkByID,
@@ -158,11 +168,14 @@ import { DEFAULT_RDP_QUALITY, normalizeRdpQuality, rdpQualityProfile } from '../
 import type { RdpQuality } from '../utils/rdpQuality'
 import { RDP_RESOLUTION_PRESETS, resolutionSentinels, seedResolutionChoice } from '../utils/rdpResolutions'
 import type { RdpResolutionChoice } from '../utils/rdpResolutions'
+import { proxyAuthToken, toWebSocketURL } from '../utils/webSocketUrl'
+import { rdpErrorHintKey } from '../utils/rdpErrorHint'
 import { adaptiveSizeRatio, zoomedCssSize } from '../utils/rdpZoom'
 import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
 import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
 import { queueRemoteKeyboardChange, isRdpPasteKey, REMOTE_KEY_SCANCODES as KEY_SCANCODES } from '../utils/remoteKeyboard'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
+import { charToScancode } from '../utils/remoteCharInput'
 
 const { t } = useI18n()
 const panelStore = usePanelStore()
@@ -189,6 +202,7 @@ const activeResolution = ref<RdpResolutionChoice>(seedResolutionChoice(props.con
 const sessionResolution = ref<RdpResolutionChoice>(activeResolution.value)
 const currentSessionId = ref<string | null>(props.sessionId)
 const errorMessage = ref<string>('')
+const errorHint = computed(() => rdpErrorHintKey(errorMessage.value))
 const container = ref<HTMLDivElement | null>(null)
 // Display zoom from the shared desktop preferences: a number scales the
 // canvas to that factor (default 100%), 'adaptive' CSS-fits the pane — and
@@ -200,6 +214,7 @@ const keyboardFocused = ref(false)
 let keyboardCaptureId = ''
 let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
 const viewportEl = ref<HTMLDivElement | null>(null)
+const mobileKbOpen = ref(false)
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 const displayPixelRatio = ref(window.devicePixelRatio || 1)
 const framebufferSize = ref<RdpDesktopSize | null>(null)
@@ -237,7 +252,9 @@ const RDP_QUALITY_OPTIONS: { value: RdpQuality; label: string }[] = [
 const resolutionOptions = computed(() => [
   { value: 'adaptive' as const, label: t('remoteDesktop.resAdaptive') },
   { value: 'fullscreen' as const, label: t('remoteDesktop.fullscreen') },
-  ...RDP_RESOLUTION_PRESETS.map(r => ({ value: `${r.w}x${r.h}` as RdpResolutionChoice, label: r.label })),
+  // Status-bar selects are narrow: drop the "(XGA)"-style suffix so the
+  // closed select still shows the full resolution.
+  ...RDP_RESOLUTION_PRESETS.map(r => ({ value: `${r.w}x${r.h}` as RdpResolutionChoice, label: r.label.replace(/\s*\(.*\)$/, '') })),
 ])
 
 // Switching the tier needs a new session (connection_type and performance
@@ -412,18 +429,23 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     const { username, domain } = splitDomainUser(props.config)
     const size = desktopSizeOverride ?? resolveDesktopSize()
     lastResizeRequest = desktopSizeOverride ?? null
-    rdpLog(`client start: tier=${activeQuality.value} res=${activeResolution.value} zoom=${zoom.value} size=${size.width}x${size.height} credssp=${activeCredSSP} displayControl=${isAdaptive()} gen=${generation}`)
+    lastScaleRequest = null
+    scaleSyncAttempts = 0
+    displayControlUsable = null
+    clearScaleSync()
+    rdpLog(`client start: tier=${activeQuality.value} res=${activeResolution.value} zoom=${zoom.value} size=${size.width}x${size.height} dpi=${localScalePercent()}% credssp=${activeCredSSP} displayControl=${isAdaptive()} gen=${generation}`)
 
-    // proxyUrl: ws://127.0.0.1:<port>/<token> — the token path doubles as
-    // the gateway auth token the RDCleanPath handshake must echo.
-    const url = new URL(proxyUrl)
-    const authToken = url.pathname.slice(1)
+    // proxyUrl: ws://127.0.0.1:<port>/<token> on desktop, or the same-origin
+    // path /api/web/session-proxy/<token> in server mode — the token doubles
+    // as the gateway auth token the RDCleanPath handshake must echo.
+    const wsUrl = toWebSocketURL(proxyUrl)
+    const authToken = proxyAuthToken(proxyUrl)
 
     const builder = new mod.SessionBuilder()
       .username(username)
       .password(password)
       .destination(props.config.host)
-      .proxyAddress(proxyUrl)
+      .proxyAddress(wsUrl)
       .authToken(authToken)
       .desktopSize(new mod.DesktopSize(size.width, size.height))
       .renderCanvas(canvasEl.value)
@@ -593,6 +615,7 @@ function teardownClient() {
   clearConnectTimer()
   stopClipboardPoll()
   clearResizeProbe()
+  clearScaleSync()
   pressedMouseButtons.clear()
   if (session) {
     try { session.shutdown() } catch (_) {}
@@ -840,11 +863,31 @@ function onFocusOut() {
 
 const pressedMouseButtons = new Set<number>()
 
-function canvasCoords(e: MouseEvent, clampOutside = false): { x: number; y: number } | null {
+function canvasCoordsAt(clientX: number, clientY: number, clampOutside = false): { x: number; y: number } | null {
   const canvas = canvasEl.value
   const size = currentDesktopSize()
   if (!canvas || !session || status.value !== 'connected' || !size) return null
-  return rdpPointerPosition(e.clientX, e.clientY, canvas.getBoundingClientRect(), size, isAdaptive() || !scaleCanvas.value, clampOutside)
+  return rdpPointerPosition(clientX, clientY, canvas.getBoundingClientRect(), size, isAdaptive() || !scaleCanvas.value, clampOutside)
+}
+
+function canvasCoords(e: MouseEvent, clampOutside = false): { x: number; y: number } | null {
+  return canvasCoordsAt(e.clientX, e.clientY, clampOutside)
+}
+
+// Low-level button send used by both the DOM mouse path and the mobile touch
+// path. Does not touch pressedMouseButtons — callers own button tracking.
+function sendMouseButtonAt(button: number, down: boolean, clientX: number, clientY: number) {
+  if (!session || !wasmModule) return
+  const pos = canvasCoordsAt(clientX, clientY, !down)
+  if (!pos) return
+  try {
+    const tx = new wasmModule.InputTransaction()
+    tx.addEvent(wasmModule.DeviceEvent.mouseMove(pos.x, pos.y))
+    tx.addEvent(down ? wasmModule.DeviceEvent.mouseButtonPressed(button) : wasmModule.DeviceEvent.mouseButtonReleased(button))
+    session.applyInputs(tx)
+  } catch (err) {
+    rdpLog(`mouse send failed: ${String(err)}`)
+  }
 }
 
 function sendMouseButton(e: MouseEvent, down: boolean) {
@@ -888,10 +931,96 @@ function onMouseMove(e: MouseEvent) {
   } catch (_) {}
 }
 
-function wheelRotationUnit(deltaMode: number): number {
-  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return wasmModule!.RotationUnit.Line
-  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return wasmModule!.RotationUnit.Page
-  return wasmModule!.RotationUnit.Pixel
+
+// ── Mobile touch / soft keyboard input (issue #1425) ──
+
+function onMobileTap(x: number, y: number) {
+  sendMouseButtonAt(0, true, x, y)
+  sendMouseButtonAt(0, false, x, y)
+}
+
+function onMobileRight(x: number, y: number, down: boolean) {
+  sendMouseButtonAt(2, down, x, y)
+}
+
+function onMobileMove(x: number, y: number, buttonDown: boolean) {
+  if (!session || !wasmModule) return
+  const pos = canvasCoordsAt(x, y, buttonDown)
+  if (!pos) return
+  try {
+    const tx = new wasmModule.InputTransaction()
+    tx.addEvent(wasmModule.DeviceEvent.mouseMove(pos.x, pos.y))
+    session.applyInputs(tx)
+  } catch (_) {}
+}
+
+function onMobileDragStart(x: number, y: number, button: number) {
+  sendMouseButtonAt(button, true, x, y)
+}
+
+function onMobileDragMove(x: number, y: number) {
+  // The button state was sent with dragStart; only the pointer moves.
+  onMobileMove(x, y, true)
+}
+
+function onMobileDragEnd(x: number, y: number, button: number) {
+  sendMouseButtonAt(button, false, x, y)
+}
+
+function onMobileWheel(x: number, y: number, deltaY: number) {
+  if (!session || !wasmModule) return
+  const pos = canvasCoordsAt(x, y, false)
+  if (!pos) return
+  try {
+    const tx = new wasmModule.InputTransaction()
+    tx.addEvent(wasmModule.DeviceEvent.mouseMove(pos.x, pos.y))
+    // Same sign convention as onWheel: touch deltas are positive scrolling
+    // down, the RDP wire format is positive scrolling up.
+    const amount = Math.max(-1000, Math.min(1000, -deltaY))
+    tx.addEvent(wasmModule.DeviceEvent.wheelRotations(true, amount, wasmModule.RotationUnit.Pixel))
+    session.applyInputs(tx)
+  } catch (_) {}
+}
+
+function onMobileText(chars: string) {
+  for (const ch of chars) {
+    const key = charToScancode(ch)
+    if (!key) {
+      // No scancode for this character (CJK etc.) — the WASM engine exposes
+      // a Unicode input channel, so send it there instead of dropping it.
+      inputQueue.enqueue(() => sendUnicodeChar(ch))
+      continue
+    }
+    if (key.shift) queueKey(KEY_SCANCODES.ShiftLeft, true, false, false, false, false)
+    queueKey(key.scancode, true, false, false, false, key.shift)
+    queueKey(key.scancode, false, false, false, false, false)
+    if (key.shift) queueKey(KEY_SCANCODES.ShiftLeft, false, false, false, false, false)
+  }
+}
+
+function sendUnicodeChar(ch: string) {
+  if (!session || !wasmModule) return
+  try {
+    const tx = new wasmModule.InputTransaction()
+    tx.addEvent(wasmModule.DeviceEvent.unicodePressed(ch))
+    tx.addEvent(wasmModule.DeviceEvent.unicodeReleased(ch))
+    session.applyInputs(tx)
+  } catch (err) {
+    rdpLog(`unicode send failed: ${String(err)}`)
+  }
+}
+
+function onMobileSpecial(code: string, down: boolean) {
+  const scancode = KEY_SCANCODES[code]
+  if (scancode !== undefined) queueKey(scancode, down, false, false, false, false)
+}
+
+function rotationUnitFromEvent(e: WheelEvent) {
+  switch (e.deltaMode) {
+    case e.DOM_DELTA_LINE: return wasmModule.RotationUnit.Line
+    case e.DOM_DELTA_PAGE: return wasmModule.RotationUnit.Page
+    default: return wasmModule.RotationUnit.Pixel
+  }
 }
 
 function onWheel(e: WheelEvent) {
@@ -901,16 +1030,18 @@ function onWheel(e: WheelEvent) {
   if (!pos) return
   e.preventDefault()
   try {
-    const unit = wheelRotationUnit(e.deltaMode)
     const clamp = (v: number) => Math.max(-1000, Math.min(1000, Math.round(v)))
     const tx = new wasmModule.InputTransaction()
     tx.addEvent(wasmModule.DeviceEvent.mouseMove(pos.x, pos.y))
+    const rotationUnit = rotationUnitFromEvent(e)
+    // Browser wheel deltas are positive when scrolling down/right, while the
+    // RDP wire format expects positive values for wheel-up (away from user),
+    // so negate to match; same as IronRDP's reference frontend.
     if (e.deltaY !== 0) {
-      // RDP expects the wheel sign inverted relative to the DOM: negate the delta.
-      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(true, clamp(-e.deltaY), unit))
+      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(true, clamp(-e.deltaY), rotationUnit))
     }
     if (e.deltaX !== 0) {
-      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(false, clamp(-e.deltaX), unit))
+      tx.addEvent(wasmModule.DeviceEvent.wheelRotations(false, clamp(-e.deltaX), rotationUnit))
     }
     session.applyInputs(tx)
   } catch (_) {}
@@ -1015,6 +1146,11 @@ let canvasObserver: MutationObserver | null = null
 let pixelRatioQuery: MediaQueryList | null = null
 let reconnecting = false
 let lastResizeRequest: RdpDesktopSize | null = null
+// Desktop scale percent reported over the Display Control channel with the
+// last resize, or null before the first send after (re)connect.
+let lastScaleRequest: number | null = null
+let scaleSyncTimer: ReturnType<typeof setTimeout> | null = null
+let scaleSyncAttempts = 0
 // Infer support from actual framebuffer changes, falling back to reconnect
 // when the server does not handle Display Control resize requests.
 let displayControlUsable: boolean | null = null
@@ -1041,6 +1177,42 @@ function currentDesktopSize(): RdpDesktopSize | null {
 function clearResizeProbe() {
   if (resizeProbeTimer !== null) clearTimeout(resizeProbeTimer)
   resizeProbeTimer = null
+}
+
+function clearScaleSync() {
+  if (scaleSyncTimer !== null) clearTimeout(scaleSyncTimer)
+  scaleSyncTimer = null
+}
+
+// The local scaling (devicePixelRatio mirrors the OS setting) as the RDPEDISP
+// desktop scale factor in percent. Reporting it makes the remote session
+// render its UI at the same physical size as local apps (mstsc DPI sync).
+function localScalePercent(): number {
+  return Math.min(500, Math.max(100, Math.round(displayPixelRatio.value * 100)))
+}
+
+// A scale-only resize has no observable feedback: the canvas keeps its size,
+// and a send racing the Display Control channel's post-connect negotiation is
+// silently dropped. Re-send a few times at the probe interval; redundant
+// sends are no-ops once the server has applied the scale.
+const SCALE_SYNC_RETRIES = 2
+const SCALE_SYNC_RETRY_MS = 2000
+function scheduleScaleSync(scale: number) {
+  clearScaleSync()
+  if (scaleSyncAttempts >= SCALE_SYNC_RETRIES) return
+  scaleSyncAttempts++
+  scaleSyncTimer = setTimeout(() => {
+    scaleSyncTimer = null
+    if (!session || status.value !== 'connected' || reconnecting) return
+    if (!isAdaptive() || lastScaleRequest !== scale) return
+    if (displayControlUsable === false) return
+    const target = adaptiveDesktopSize()
+    if (!target) return
+    try {
+      session.resize(target.width, target.height, scale)
+    } catch (_) {}
+    scheduleScaleSync(scale)
+  }, SCALE_SYNC_RETRY_MS)
 }
 
 function onPixelRatioChange() {
@@ -1089,22 +1261,54 @@ async function reconnectWithSize(width: number, height: number) {
 function requestAdaptiveResize() {
   if (!session || status.value !== 'connected' || reconnecting) return
   if (!isAdaptive()) return
+  // The soft keyboard squeezes the viewport via the IME inset padding; do not
+  // resize (or reconnect) the remote desktop for that transient size. The
+  // ResizeObserver fires again with the restored size once it closes.
+  if (mobileKbOpen.value) return
   // Scrollbars in the unscaled view must not change the negotiated resolution.
   const targetSize = adaptiveDesktopSize()
   if (!targetSize) return
   const { width, height } = targetSize
   const cur = currentDesktopSize()
-  if (cur?.width === width && cur.height === height) return
-  // Do not reconnect repeatedly if a server clamps/refuses this resolution.
-  if (lastResizeRequest?.width === width && lastResizeRequest.height === height) return
-  lastResizeRequest = { width, height }
-  clearResizeProbe()
+  const sizeChanged = cur?.width !== width || cur.height !== height
   if (displayControlUsable === false) {
+    // The server ignores Display Control: reconnecting at the new size is
+    // the only lever, and DPI sync is unavailable on that path. The scale
+    // must NOT bypass the size checks here — it would reconnect forever.
+    if (!sizeChanged) return
+    if (lastResizeRequest?.width === width && lastResizeRequest.height === height) return
+    lastResizeRequest = { width, height }
     reconnectWithSize(width, height)
     return
   }
+  // The scale rides along on every resize, and a scale-only send (geometry
+  // unchanged — e.g. right after connect, which already negotiated the final
+  // size) keeps the DPI in sync without touching the resolution.
+  const scale = localScalePercent()
+  const scaleChanged = lastScaleRequest !== scale
+  if (scaleChanged) {
+    lastScaleRequest = scale
+    scaleSyncAttempts = 0
+  }
+  if (!scaleChanged && !sizeChanged) return
+  // Do not reconnect repeatedly if a server clamps/refuses this resolution.
+  if (!scaleChanged && lastResizeRequest?.width === width && lastResizeRequest.height === height) return
+  lastResizeRequest = { width, height }
+  clearResizeProbe()
+  if (!sizeChanged) {
+    // Scale-only: a failure says nothing about Display Control size support,
+    // so keep the session instead of falling into the reconnect path.
+    try {
+      session.resize(width, height, scale)
+    } catch (e) {
+      rdpLog(`dpi scale update failed: ${String(e)}`)
+      return
+    }
+    scheduleScaleSync(scale)
+    return
+  }
   try {
-    session.resize(width, height)
+    session.resize(width, height, scale)
     const generation = clientGeneration
     resizeProbeTimer = setTimeout(() => {
       resizeProbeTimer = null
@@ -1305,6 +1509,8 @@ watch(activeResolution, (mode) => {
   position: relative;
   overflow: hidden;
   background: #000;
+  /* Drop the double-tap-zoom / tap-delay behavior on touch devices. */
+  touch-action: manipulation;
 }
 .rdp-viewport.is-unscaled {
   display: flex;
@@ -1347,6 +1553,7 @@ watch(activeResolution, (mode) => {
 }
 .rdp-error-text { color: var(--error); }
 .rdp-error-detail { color: var(--text-muted); font-size: 0.8125rem; max-width: 30rem; text-align: center; word-break: break-word; }
+.rdp-error-hint { color: var(--text-secondary); font-size: 0.8125rem; max-width: 36rem; text-align: center; word-break: break-word; }
 .rdp-statusbar {
   height: 1.5rem;
   display: flex;
@@ -1361,17 +1568,9 @@ watch(activeResolution, (mode) => {
   z-index: 5;
 }
 .rdp-statusbar-hidden { visibility: hidden; pointer-events: none; }
-.rdp-status-dot {
-  width: 0.5rem; height: 0.5rem;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
-}
-.rdp-status-sep { color: var(--text-disabled); }
-.rdp-status-label { font-size: 0.6875rem; }
 .rdp-quality-select {
-  width: 8.5rem;
-  --el-select-width: 8.5rem;
+  width: 5.5rem;
+  --el-select-width: 5.5rem;
 }
 .rdp-statusbar .rdp-quality-select :deep(.el-select__wrapper) {
   min-height: 1.125rem;

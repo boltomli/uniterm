@@ -82,6 +82,12 @@ type TerminalSettings struct {
 	// TimestampFormat renders the gutter time column (e.g. "HH:mm:ss").
 	// Empty means the frontend falls back to its built-in default.
 	TimestampFormat string `json:"timestampFormat,omitempty"`
+	// CommandSendMode controls how the command-send panel delivers
+	// multi-line content (issue #1341): "lines" converts each newline to
+	// Enter so every line executes, "bracketed" sends the block wrapped in
+	// bracketed-paste markers without executing. Empty means the frontend
+	// falls back to "lines".
+	CommandSendMode string `json:"commandSendMode,omitempty"`
 }
 
 // TerminalThemeColors mirrors xterm.js's ITheme shape: the 4 base colors
@@ -250,6 +256,10 @@ type AppSettings struct {
 	// written by older builds (which lack this field) still loads; the
 	// frontend defaults to `true` when nil.
 	ShowTabShortcutHints *bool `json:"showTabShortcutHints,omitempty"`
+	// ShowTrayIcon toggles the system tray icon (macOS menu bar status item).
+	// Pointer + omitempty so settings.json written by older builds still
+	// loads; nil means "show" (the frontend default).
+	ShowTrayIcon *bool `json:"showTrayIcon,omitempty"`
 	// HostListMenuStyle selects how the host list opens the connection
 	// menu: "button" (hover buttons) or "rightclick". Empty means the
 	// frontend falls back to `button`.

@@ -7,12 +7,12 @@
 
 <div align="center">
 
-<a href="README.md">English</a> &nbsp;|&nbsp; 简体中文
+简体中文 &nbsp;|&nbsp; <a href="README_zh-TW.md">繁體中文</a> &nbsp;|&nbsp; <a href="README.md">English</a> &nbsp;|&nbsp; <a href="README_ja.md">日本語</a> &nbsp;|&nbsp; <a href="README_ko.md">한국어</a> &nbsp;|&nbsp; <a href="README_de.md">Deutsch</a> &nbsp;|&nbsp; <a href="README_es.md">Español</a> &nbsp;|&nbsp; <a href="README_fr.md">Français</a> &nbsp;|&nbsp; <a href="README_ru.md">Русский</a> &nbsp;|&nbsp; <a href="README_pt.md">Português</a> &nbsp;|&nbsp; <a href="README_vi.md">Tiếng Việt</a>
 
 <br>
 
 <a href="https://github.com/ys-ll/uniterm/releases/latest"><img src="https://img.shields.io/github/v/release/ys-ll/uniterm" alt="GitHub release" /></a>
-<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue" alt="Platform" /></a>
+<a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Docker-blue" alt="Platform" /></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
 <a href="https://github.com/ys-ll/uniterm/releases"><img src="https://img.shields.io/github/downloads/ys-ll/uniterm/total" alt="GitHub downloads" /></a>
 <a href="https://github.com/ys-ll/uniterm"><img src="https://img.shields.io/github/stars/ys-ll/uniterm?style=social" alt="GitHub stars" /></a>
@@ -165,6 +165,7 @@ Oracle Database 支持基于纯 Go 驱动实现。uniTerm 不随安装包分发 
 - **macOS** (Apple Silicon arm64 / Intel amd64): 下载 `uniterm-darwin-*-*.dmg`
 - **Linux** (amd64 / arm64): 下载 `uniterm-linux-*-*.tar.gz`、`.deb` 或 `.rpm`
 - **Android** (arm64): 下载 `uniterm-android-arm64-*.apk`
+- **Docker** (amd64 / arm64): Web 多租户部署模式——浏览器访问的服务端部署，每位用户拥有隔离的工作区，详见 [Docker 部署指南](https://github.com/ys-ll/uniterm/blob/main/deploy/docker/README_zh-CN.md)
 
 > **关于 Windows 杀软误报**：由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中为其添加排除规则以放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
 
@@ -192,6 +193,7 @@ sudo rpm -i uniterm.rpm
 - **macOS**: 无需额外依赖（使用系统自带 WebKit）
 - **Linux**: `libgtk-3-0` 与 `libwebkit2gtk-4.1-0`（多数桌面发行版已自带）
 - **Android**: Android 5.0+（使用系统自带 WebView，无需额外依赖）
+- **Docker**: 宿主机仅需 Docker Engine（compose 部署需 Docker Compose v2），镜像内已内置全部运行时依赖
 
 ## 使用流程
 
@@ -227,7 +229,7 @@ sudo rpm -i uniterm.rpm
 
 - [Go](https://go.dev/dl/) 1.26+
 - [Node.js](https://nodejs.org/) 20+
-- [wails3 CLI](https://wails.io/docs/) v3.0.0（安装：`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0`）
+- [wails3 CLI](https://wails.io/docs/) v3.1.0（安装：`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`）
 - macOS 需 Xcode Command Line Tools
 - Linux 需 `libgtk-3-dev` 与 `libwebkit2gtk-4.1-dev`
 - Android 构建另需 JDK 21 与 Android SDK/NDK（`sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.3.11579264"`）
@@ -342,6 +344,12 @@ uniTerm/
     <td align="center"><a href="https://github.com/lijinxiao1982">@lijinxiao1982</a></td>
     <td align="center"><a href="https://github.com/mikemikimike">@mikemikimike</a></td>
     <td align="center"><a href="https://github.com/macoladik">@macoladik</a></td>
+    <td align="center"><a href="https://github.com/NatureLProokie">@NatureLProokie</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
+    <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
+    <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
   </tr>
 </table>
 

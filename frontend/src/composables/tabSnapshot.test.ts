@@ -3,11 +3,24 @@ import { createPinia, setActivePinia } from 'pinia'
 
 vi.hoisted(() => {
   vi.stubGlobal('window', { matchMedia: () => ({ matches: false, addEventListener: () => {} }) })
-  vi.stubGlobal('document', { createElement: () => ({}), documentElement: { dataset: {}, style: {} } })
+  vi.stubGlobal('document', {
+  createElement: () => ({}),
+  documentElement: { dataset: {}, style: {} },
+  // element-plus' directives register a document-level listener on import
+  // (pulled in via connectionStore → services/message) in this node env.
+  addEventListener: () => {},
+  removeEventListener: () => {},
+})
+  vi.stubGlobal('navigator', { userAgent: 'node' })
   vi.stubGlobal('localStorage', { setItem: () => {} })
 })
 vi.mock('@wailsio/runtime', () => ({ Events: { On: vi.fn(() => () => {}) } }))
 vi.mock('../i18n', () => ({ setLocale: vi.fn() }))
+// connectionStore pulls in element-plus through services/message; the node
+// test env has no DOM for its directives, and this suite never shows toasts.
+vi.mock('../services/message', () => ({
+  msg: { error: vi.fn(), warning: vi.fn(), success: vi.fn(), info: vi.fn() },
+}))
 vi.mock('../../bindings/github.com/ys-ll/uniterm/app', () => ({
   LoadSettings: vi.fn(), SaveSettings: vi.fn(), LoadLocalState: vi.fn(), SaveLocalState: vi.fn(),
   LoadAIModels: vi.fn(), SaveAIModels: vi.fn(), GetAvailableShells: vi.fn(), SetDefaultSessionLogDir: vi.fn(),

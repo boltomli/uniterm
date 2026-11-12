@@ -2,7 +2,6 @@ package session
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -27,12 +26,15 @@ type SPICEProxy struct {
 	listener net.Listener
 	server   *http.Server
 	target   string
-	token    string // per-listen secret carried in the returned URL; rejects anyone who finds the port
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup // pump goroutines + the http.Serve goroutine
-	mu       sync.Mutex
-	conns    map[*websocket.Conn]net.Conn
+	// authToken is the per-listen random secret: it scopes the proxy's path
+	// in server mode, keys the /api/web dispatch registry, and is the only
+	// way to attach in loopback mode (?token=).
+	authToken string
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	wg        sync.WaitGroup // pump goroutines + the http.Serve goroutine
+	mu        sync.Mutex
+	conns     map[*websocket.Conn]net.Conn
 }
 
 func NewSPICEProxy(target string) *SPICEProxy {
@@ -45,20 +47,30 @@ func NewSPICEProxy(target string) *SPICEProxy {
 
 // Start begins listening on a random local port and returns the WebSocket URL.
 func (p *SPICEProxy) Start() (string, error) {
+	p.mu.Lock()
+	if p.listener != nil {
+		p.mu.Unlock()
+		return "", fmt.Errorf("spice proxy already started")
+	}
+	select {
+	case <-p.stopCh:
+		p.mu.Unlock()
+		return "", fmt.Errorf("spice proxy stopped")
+	default:
+	}
+	p.mu.Unlock()
+
+	var tok [16]byte
+	if _, err := rand.Read(tok[:]); err != nil {
+		return "", fmt.Errorf("spice proxy token: %w", err)
+	}
+	p.authToken = hex.EncodeToString(tok[:])
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("spice proxy listen: %w", err)
 	}
 	p.listener = ln
-
-	// Same token gate as VNCProxy: a random per-listen secret in the returned
-	// URL, since CheckOrigin alone cannot authenticate the connector.
-	var tok [16]byte
-	if _, err := rand.Read(tok[:]); err != nil {
-		ln.Close()
-		return "", fmt.Errorf("spice proxy token: %w", err)
-	}
-	p.token = hex.EncodeToString(tok[:])
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin:  func(r *http.Request) bool { return true },
@@ -67,7 +79,7 @@ func (p *SPICEProxy) Start() (string, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(p.token)) != 1 {
+		if !sessionProxyTokenAuthorized(r, p.authToken) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -79,6 +91,11 @@ func (p *SPICEProxy) Start() (string, error) {
 		p.handleWebSocket(ws)
 	})
 	p.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	// Also reachable through the server build's /api/web mount: the gateway
+	// resolves the internal listener via the lookup endpoint and relays the
+	// upgrade here (the asset server itself cannot upgrade).
+	addr := ln.Addr().(*net.TCPAddr)
+	registerSessionProxyHandler(p.authToken, mux, addr.String())
 
 	p.wg.Add(1)
 	go func() {
@@ -86,9 +103,8 @@ func (p *SPICEProxy) Start() (string, error) {
 		_ = p.server.Serve(ln)
 	}()
 
-	addr := ln.Addr().(*net.TCPAddr)
 	log.Writef("[SPICEProxy] Listening on ws://127.0.0.1:%d, target: %s", addr.Port, p.target)
-	return fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.token), nil
+	return sessionProxyAddress(p.authToken, fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.authToken)), nil
 }
 
 func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
@@ -183,6 +199,10 @@ func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
 // safe to call Stop more than once.
 func (p *SPICEProxy) Stop() {
 	p.stopOnce.Do(func() { close(p.stopCh) })
+	// Nothing is registered when Start never ran (Stop after a failed start).
+	if p.authToken != "" {
+		unregisterSessionProxyHandler(p.authToken)
+	}
 	p.mu.Lock()
 	conns := p.conns
 	p.conns = nil

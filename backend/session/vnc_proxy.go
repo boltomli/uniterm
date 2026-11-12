@@ -2,7 +2,6 @@ package session
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -112,11 +111,16 @@ func (r *wsPairRegistry) closeAll() []*wsPair {
 type VNCProxy struct {
 	listener net.Listener
 	target   string
-	token    string // per-listen secret carried in the returned URL; rejects anyone who finds the port
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup // the http.Serve goroutine
-	pairs    wsPairRegistry
+	// authToken is the per-listen random secret: it scopes the proxy's path
+	// in server mode, keys the /api/web dispatch registry, and is the only
+	// way to attach in loopback mode (?token=). Knowing the port is not
+	// enough — CheckOrigin cannot distinguish the app's webview from another
+	// local process or a web page.
+	authToken string
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	wg        sync.WaitGroup // the http.Serve goroutine
+	pairs     wsPairRegistry
 }
 
 func NewVNCProxy(target string) *VNCProxy {
@@ -128,21 +132,17 @@ func NewVNCProxy(target string) *VNCProxy {
 
 // Start begins listening on a random local port and returns the WebSocket URL.
 func (p *VNCProxy) Start() (string, error) {
+	var tok [16]byte
+	if _, err := rand.Read(tok[:]); err != nil {
+		return "", fmt.Errorf("vnc proxy token: %w", err)
+	}
+	p.authToken = hex.EncodeToString(tok[:])
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("vnc proxy listen: %w", err)
 	}
 	p.listener = ln
-
-	// Gate the bridge with a random per-listen token: CheckOrigin cannot
-	// distinguish the app's webview from another local process or a web
-	// page, and the first connector wins the single slot.
-	var tok [16]byte
-	if _, err := rand.Read(tok[:]); err != nil {
-		ln.Close()
-		return "", fmt.Errorf("vnc proxy token: %w", err)
-	}
-	p.token = hex.EncodeToString(tok[:])
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
@@ -150,7 +150,7 @@ func (p *VNCProxy) Start() (string, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(p.token)) != 1 {
+		if !sessionProxyTokenAuthorized(r, p.authToken) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -168,6 +168,11 @@ func (p *VNCProxy) Start() (string, error) {
 		}
 		p.handleWebSocket(ws, pair)
 	})
+	// Also reachable through the server build's /api/web mount: the gateway
+	// resolves the internal listener via the lookup endpoint and relays the
+	// upgrade here (the asset server itself cannot upgrade).
+	addr := ln.Addr().(*net.TCPAddr)
+	registerSessionProxyHandler(p.authToken, mux, addr.String())
 
 	p.wg.Add(1)
 	go func() {
@@ -175,9 +180,8 @@ func (p *VNCProxy) Start() (string, error) {
 		_ = http.Serve(ln, mux)
 	}()
 
-	addr := ln.Addr().(*net.TCPAddr)
 	log.Writef("[VNCProxy] Listening on ws://127.0.0.1:%d, target: %s", addr.Port, p.target)
-	return fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.token), nil
+	return sessionProxyAddress(p.authToken, fmt.Sprintf("ws://127.0.0.1:%d?token=%s", addr.Port, p.authToken)), nil
 }
 
 // handleWebSocket bridges one claimed pair. It returns as soon as the pumps
@@ -266,6 +270,10 @@ func (p *VNCProxy) handleWebSocket(ws *websocket.Conn, pair *wsPair) {
 // pair instead of leaking it.
 func (p *VNCProxy) Stop() {
 	p.stopOnce.Do(func() { close(p.stopCh) })
+	// Nothing is registered when Start never ran (Stop after a failed start).
+	if p.authToken != "" {
+		unregisterSessionProxyHandler(p.authToken)
+	}
 	pairs := p.pairs.closeAll()
 	// Close the listener BEFORE waiting so an in-flight handler cannot claim
 	// a slot that nobody will ever close (SESSION-04).

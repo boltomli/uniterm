@@ -227,7 +227,7 @@ import DBTreePanel from './DBTreePanel.vue'
 import DBTableStructure from './DBTableStructure.vue'
 import DBQueryEditor from './DBQueryEditor.vue'
 import DBObjectList from './DBObjectList.vue'
-import { GetTableSchema } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { GetTableSchema, LogMessage } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { msg } from '../services/message'
 import type { ColumnInfo } from '../types/database'
 
@@ -517,10 +517,12 @@ function findDbDoc(kind: 'db-query' | 'db-objects', dbName: string) {
 }
 
 async function loadSchema(doc: DocTab) {
+  void LogMessage(`T1 loadSchema start table=${doc.tableName}`)
   try {
     const schema = await GetTableSchema(props.sessionId, doc.dbName, doc.schema || '', doc.tableName)
     doc.tableColumns = schema.columns
     doc.primaryKeys = schema.columns.filter((c: ColumnInfo) => c.isPrimary).map((c: ColumnInfo) => c.name)
+    void LogMessage(`T2 loadSchema done table=${doc.tableName} cols=${schema.columns.length}`)
   } catch (e: any) {
     // A silent failure left a read-only grid with no clue why (DB-19);
     // re-selecting the table retries the load (primaryKeys still empty).
@@ -554,7 +556,9 @@ async function onSelectTable(dbName: string, tableName: string, isView = false, 
   // Waiting for the round-trip first made the click feel dead, and a failure
   // used to leave a silently read-only grid.
   docs.value.push(doc)
+  void LogMessage(`T3 after push docs`);
   activateDoc(doc.id)
+  void LogMessage(`T4 after activateDoc`)
   await loadSchema(doc)
 }
 

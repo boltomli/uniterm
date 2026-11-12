@@ -45,6 +45,15 @@ func SplitScript(script string, dialect string) []ScriptStatement {
 		flushed = true
 	}
 
+	// A DELIMITER command can also open the script, before any newline.
+	if d, consumed, ok := matchDelimiterCmd(script, 0); ok {
+		delimiter = d
+		i = consumed
+		for i < n && script[i] != '\n' {
+			i++
+		}
+	}
+
 	for i < n {
 		// DELIMITER command at any line start (including the very first
 		// line, which the old after-'\n' check missed), but only when not

@@ -3,7 +3,7 @@
     ref="container"
     class="vnc-tab-content"
     :class="{ 'is-fullscreen': isFullscreen }"
-    :data-remote-keyboard="keyboardFocused && !viewOnly ? 'true' : undefined"
+    :data-remote-keyboard="(keyboardFocused && !viewOnly) || mobileKbOpen ? 'true' : undefined"
     @focusin="onFocusIn"
     @focusout="onFocusOut"
     @keydown.capture="onLocalKey"
@@ -40,18 +40,11 @@
 
     <!-- Status bar -->
     <div v-show="status === 'connected' && !isFullscreen" class="vnc-statusbar">
-      <span class="vnc-status-dot" />
-      <span>{{ t('vnc.connected') }}</span>
-      <span class="vnc-status-sep">|</span>
-      <span>{{ config?.host }}:{{ config?.port || 5900 }}</span>
-      <span class="vnc-status-sep">|</span>
       <RemoteDisplaySelect
         :displays="displayState.displays" :width="displayState.width" :height="displayState.height"
         :view="displayState.view" allow-custom @select="selectDisplay" @focus-desktop="focusDesktop"
         @create-region="openRegionEditor()" @edit-region="openRegionEditor"
       />
-      <span class="vnc-status-sep">|</span>
-      <span class="vnc-status-label">{{ t('remoteDesktop.scale') }}</span>
       <RemoteDesktopZoomSelect v-model="zoom" />
       <span class="vnc-status-sep">|</span>
       <span class="vnc-status-label">{{ t('vnc.viewOnly') }}</span>
@@ -101,6 +94,16 @@
       :desktop-width="displayState.width" :desktop-height="displayState.height"
       @save="saveRegion" @cancel="closeRegionEditor" @delete="deleteRegion"
     />
+    <!-- Android/iOS soft keyboard trigger (touch gestures are handled by
+         noVNC's built-in gesture handler). -->
+    <RemoteMobileControls
+      v-model:open="mobileKbOpen"
+      :active="status === 'connected' && !viewOnly"
+      :target="null"
+      :touch-enabled="false"
+      @text="onMobileText"
+      @special="onMobileSpecial"
+    />
   </div>
 </template>
 
@@ -111,6 +114,7 @@ import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
 import RemoteDisplaySelect from './RemoteDisplaySelect.vue'
 import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
 import DesktopRegionEditor from './DesktopRegionEditor.vue'
+import RemoteMobileControls from './RemoteMobileControls.vue'
 import { useI18n } from '../i18n'
 import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -127,9 +131,11 @@ import { deleteDesktopRegion, saveDesktopRegion, suggestedDesktopRegion } from '
 import { msg } from '../services/message'
 import { VncNativeKeyboard } from '../utils/vncKeyboard'
 import { queueRemoteKeyboardChange } from '../utils/remoteKeyboard'
+import { charToKeysym, CODE_KEYSYMS } from '../utils/remoteCharInput'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
 import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { readClipboardText, writeClipboard } from '../composables/useClipboardWrite'
+import { toWebSocketURL } from '../utils/webSocketUrl'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
@@ -197,6 +203,7 @@ function selectDisplay(view: DesktopView) {
   }
 }
 const keyboardFocused = ref(false)
+const mobileKbOpen = ref(false)
 let keyboardCaptureId = ''
 let keyboardHeartbeat: ReturnType<typeof setInterval> | null = null
 let clipboardPoll: ReturnType<typeof setInterval> | null = null
@@ -502,6 +509,25 @@ function onNativeKey(data: NativeRdpKey) {
   nativeKeyboard?.key(data)
 }
 
+// ── Mobile soft keyboard input (issue #1425) ──
+
+function onMobileText(chars: string) {
+  if (!rfb) return
+  for (const ch of chars) {
+    const keysym = charToKeysym(ch)
+    if (keysym === null) continue
+    const code = `mobile-${keysym}`
+    queueVncKey(keysym, code, true, () => rfb?.sendKey(keysym, code, true))
+    queueVncKey(keysym, code, false, () => rfb?.sendKey(keysym, code, false))
+  }
+}
+
+function onMobileSpecial(code: string, down: boolean) {
+  const keysym = CODE_KEYSYMS[code]
+  if (keysym === undefined) return
+  queueVncKey(keysym, code, down, () => rfb?.sendKey(keysym, code, down))
+}
+
 function onVisibilityChange() {
   if (document.hidden) onFocusOut()
   else onFocusIn()
@@ -514,7 +540,7 @@ function createRFB(RFB: any, proxyAddr: string, password: string, forceRfb33 = f
   }
 
   try {
-    rfb = new RFB(vncContainer.value, proxyAddr, {
+    rfb = new RFB(vncContainer.value, toWebSocketURL(proxyAddr), {
       credentials: { password: password || '' },
       shared: props.config?.vncShared ?? true,
       repeaterID: props.config?.vncRepeaterID || '',
@@ -855,6 +881,8 @@ onActivated(onFocusIn)
   background: #000;
   outline: none;
   overflow: auto;
+  /* Drop the double-tap-zoom / tap-delay behavior on touch devices. */
+  touch-action: manipulation;
 }
 .vnc-area :deep(canvas) {
   display: block;
@@ -906,12 +934,6 @@ onActivated(onFocusIn)
   overflow-y: hidden;
   scrollbar-width: none;
   z-index: 5;
-}
-.vnc-status-dot {
-  width: 0.5rem; height: 0.5rem;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
 }
 .vnc-statusbar::-webkit-scrollbar { display: none; }
 .vnc-statusbar :deep(.el-switch) { height: 1.25rem; }

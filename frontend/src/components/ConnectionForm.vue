@@ -190,6 +190,15 @@
             <el-form-item v-if="(form.authType === 'key' || form.authType === 'keyText') && (form.type === 'ssh' || form.type === 'scp' || form.type === 'sftp' || form.type === 'mosh' || form.type === 'x11-desktop')" :label="t('conn.keyPassphrase')">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="t('conn.keyPassphrasePlaceholder')" />
             </el-form-item>
+            <template v-if="isSSHAlgoType && form.authType !== 'kerberos'">
+              <el-form-item :label="t('conn.totpEnabled')">
+                <el-switch v-model="form.totpEnabled" />
+              </el-form-item>
+              <el-form-item v-if="form.totpEnabled" :label="t('conn.totpSecret')" required>
+                <el-input v-model="form.totpSecret" type="password" show-password :key="passwordInputKey" autocomplete="new-password" :placeholder="t('conn.totpSecretPlaceholder')" />
+                <div class="field-hint">{{ t('conn.totpHint') }}</div>
+              </el-form-item>
+            </template>
             <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceName') : t('db.databases')" :required="form.dbType === 'postgres' || (form.type === 'database' && form.dbType === 'oracle')">
               <el-input v-model="form.dbName" :placeholder="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceNamePlaceholder') : t('db.databases')" />
             </el-form-item>
@@ -498,9 +507,6 @@
                     <el-switch v-model="form.ftpSkipVerify" />
                     <span class="field-hint hint-after-switch">{{ t('conn.ftpSkipVerifyDesc') }}</span>
                   </el-form-item>
-                  <el-form-item :label="t('conn.ftpPassive')">
-                    <el-switch v-model="form.ftpPassive" />
-                  </el-form-item>
                 </template>
                 <template v-if="form.type === 'vnc'">
                   <el-form-item :label="t('conn.vncShared')">
@@ -688,6 +694,7 @@
                       :value="c.id"
                     />
                   </el-select>
+                  <div class="field-hint">{{ t('conn.tunnelChainHint') }}</div>
                 </el-form-item>
                 <el-form-item v-if="showProxy" :label="t('conn.proxy')">
                   <div class="inline-add-row">
@@ -789,6 +796,12 @@ import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
 import SSHAlgorithmsDialog from './SSHAlgorithmsDialog.vue'
 import { isSqlDbType } from '../utils/quickConnect'
+import {
+  isWebServerMode,
+  pickBrowserFiles,
+  pickAndStageLocalFileInBrowser,
+  readBrowserFileAsText,
+} from '../services/webSftpBridge'
 import { RDP_RESOLUTION_PRESETS } from '../utils/rdpResolutions'
 import { CATEGORY_META, CATEGORY_ORDER, CONNECTION_TYPES, connectionTypeFormLabel, connectionTypeInfo, defaultPortFor } from '../utils/connectionTypes'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -963,7 +976,7 @@ async function scanSerialPorts() {
   }
 }
 
-const baudRatePresets = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 460800, 921600]
+const baudRatePresets = [300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 1500000, 2000000, 3000000, 4000000]
 
 function queryBaudRateSuggestions(queryString: string, cb: (results: { value: string }[]) => void) {
   const suggestions = baudRatePresets
@@ -1127,6 +1140,8 @@ const form = reactive<ConnectionConfig>({
   password: '',
   keyPath: '',
   keyContent: '',
+  totpEnabled: false,
+  totpSecret: '',
   groupId: undefined,
   rdpFixedWidth: -2,
   rdpFixedHeight: -2,
@@ -1153,7 +1168,6 @@ const form = reactive<ConnectionConfig>({
   x11Forwarding: false,
   agentForwarding: false,
   ftpEncryption: 'none',
-  ftpPassive: true,
   ftpSkipVerify: false,
   vncShared: true,
   desktopPreferences: undefined,
@@ -1387,7 +1401,11 @@ watch(() => props.editConfig, (config) => {
       }
     }
     form.x11Forwarding = config.x11Forwarding ?? false
-    form.rdpEnableNLA = config.rdpEnableNLA ?? false
+    // The NLA switch must follow the new-connection default (true) when the
+    // stored config predates the field: otherwise editing an old connection
+    // and switching its type to RDP silently turns NLA off, and NLA-only
+    // servers then reject the SSL-only negotiation.
+    form.rdpEnableNLA = config.rdpEnableNLA ?? true
     form.rdpAdminSession = config.rdpAdminSession ?? false
     // Older connections predate the tier field; they get the default tier.
     form.rdpQuality = config.rdpQuality ?? 'balanced'
@@ -1524,6 +1542,8 @@ function resetForm() {
   form.password = ''
   form.keyPath = ''
   form.keyContent = ''
+  form.totpEnabled = false
+  form.totpSecret = ''
   form.identityId = ''
   form.groupId = undefined
   form.rdpFixedWidth = -2
@@ -1554,7 +1574,6 @@ function resetForm() {
   form.x11Forwarding = false
   form.agentForwarding = false
   form.ftpEncryption = 'none'
-  form.ftpPassive = true
   form.ftpSkipVerify = false
   form.vncShared = true
   form.desktopPreferences = undefined
@@ -1646,6 +1665,13 @@ async function reloadK8sContexts() {
 
 async function selectKeyFile() {
   try {
+    // Web mode: stage the picked key into the worker's keep/ area so the
+    // path stored in the config survives beyond the current session.
+    if (await isWebServerMode()) {
+      const staged = await pickAndStageLocalFileInBrowser('*/*', { keep: true })
+      if (staged) form.keyPath = staged.stagedPath
+      return
+    }
     const selected = await OpenFileDialog('~/.ssh')
     if (selected) form.keyPath = selected
   } catch (e) {
@@ -1657,6 +1683,11 @@ async function selectKeyFile() {
 // stored in the Host field.
 async function selectSqliteFile() {
   try {
+    if (await isWebServerMode()) {
+      const staged = await pickAndStageLocalFileInBrowser('.sqlite,.sqlite3,.db,.db3', { keep: true })
+      if (staged) form.host = staged.stagedPath
+      return
+    }
     const selected = await OpenFileDialogFiltered(t('db.sqlitePickTitle'), 'SQLite Database', '*.sqlite;*.sqlite3;*.db;*.db3')
     if (selected) form.host = selected
   } catch (e) {
@@ -1683,6 +1714,16 @@ async function useDefaultKeyPath() {
 
 async function importKeyText() {
   try {
+    // Web mode: read the key content in the browser instead of the Go-side
+    // dialog (which errors in server mode).
+    if (await isWebServerMode()) {
+      const [file] = await pickBrowserFiles()
+      if (file) {
+        form.keyContent = await readBrowserFileAsText(file)
+        keyContentRevealed.value = true
+      }
+      return
+    }
     const content = await OpenPrivateKeyFile()
     if (content) {
       form.keyContent = content
@@ -1695,6 +1736,14 @@ async function importKeyText() {
 
 async function importKubeconfigText() {
   try {
+    if (await isWebServerMode()) {
+      const [file] = await pickBrowserFiles({ accept: '.yaml,.yml,.conf' })
+      if (file) {
+        form.k8sConfigInline = await readBrowserFileAsText(file)
+        k8sConfigRevealed.value = true
+      }
+      return
+    }
     const content = await OpenKubeconfigFile()
     if (content) {
       form.k8sConfigInline = content
@@ -1707,6 +1756,11 @@ async function importKubeconfigText() {
 
 async function pickKubeconfigFile() {
   try {
+    if (await isWebServerMode()) {
+      const staged = await pickAndStageLocalFileInBrowser('.yaml,.yml,.conf', { keep: true })
+      if (staged) form.k8sConfigPath = staged.stagedPath
+      return
+    }
     const selected = await OpenFileDialog('~/.kube')
     if (selected) form.k8sConfigPath = selected
   } catch (e) {
@@ -1780,6 +1834,15 @@ function normalizeForm(): ConnectionConfig {
     const algo = normalized.sshAlgorithms
     if (!algo.keyExchanges?.length || !algo.ciphers?.length || !algo.macs?.length || !algo.hostKeys?.length) {
       throw new Error(t('conn.sshAlgoEmptyList'))
+    }
+  }
+  if (!isSSHAlgoType.value || normalized.authType === 'kerberos') {
+    normalized.totpEnabled = false
+    normalized.totpSecret = ''
+  } else if (normalized.totpEnabled) {
+    normalized.totpSecret = normalized.totpSecret?.replace(/\s/g, '').toUpperCase().replace(/=+$/, '') || ''
+    if (!/^[A-Z2-7]+$/.test(normalized.totpSecret) || normalized.totpSecret.length < 16) {
+      throw new Error(t('conn.totpSecretInvalid'))
     }
   }
   // Identity (密钥库) 的凭据完全由所引用的 identity 提供，连接时

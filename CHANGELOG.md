@@ -1,5 +1,195 @@
 # Changelog
 
+## v1.12.2
+
+### What's Changed
+
+**Improvements**
+
+- SSH: regular connections on macOS and Windows now support multi-hop jump chains — a jump host's own parent jump is resolved recursively (local → A → B → C), each hop with its own credentials, with loop detection and full-chain cleanup on failure or stop. (@surenwuyuwuqiu)
+- Network scan: IP octet and port inputs accept digits only (a Chinese IME no longer leaks letters into the fields), typing a dot jumps to the next octet, inputs select their content on focus, and the port scan validates that the target is a valid IPv4 before starting. (@etanman)
+- Database tree: schemas with tens of thousands of tables no longer freeze the app — table browsing is backend-paginated with virtual scrolling and server-side search, staying smooth with ~100k tables; table-name search is case-insensitive, truncated names show a full-name tooltip, schemas start collapsed with tables lazy-loaded, and schema / dictionary queries are capped at 60 s so a locked server can no longer freeze the whole app. (@etanman)
+
+**Bug Fixes**
+
+- RDP: the mouse wheel scrolls in the same direction as the local machine (also fixing near-zero scrolling with Firefox's line-mode deltas); server-side negotiation rejections now report the real error instead of an opaque decode failure; in web (Docker) deployments RDP / VNC / SPICE sessions are reachable from remote browsers again.
+- Built-in SSH service: the SSH / SFTP local service can now act as a jump host — `direct-tcpip` forwarding is supported for authenticated clients, so chains like phone → uniTerm built-in SSH → internal machine work. (@surenwuyuwuqiu)
+- MCP: opening a terminal no longer restarts the MCP service and drops active client sessions (requests no longer fail with "session not found") when the listener configuration is unchanged. (@surenwuyuwuqiu)
+- Terminal (Windows): IME commits are deduplicated — picking a candidate with the mouse, or an IME whose commit keyup precedes the input event, no longer inserts the word twice. (@sonnartliao)
+- Credentials: a missing OS keychain entry is now correctly recognized — the app shows the "cannot unlock credentials" explanation (possible causes such as a moved app directory, an OS reinstall, or a cleared keychain) instead of asking to set the credential store up again. (@gezerui888)
+- Database: a `DELIMITER` command on the very first line of a `.sql` script is honored — MySQL routine dumps that start with `DELIMITER $$` execute correctly instead of being cut at every inner `;`. (@kevin9327)
+- WSL: the cwd prompt hook is no longer typed at session start — a plain first login shows no handshake output at all; enabling "Follow terminal path" now asks once per session and types the hook on demand at an idle prompt.
+- Web: RDP / VNC / SPICE sessions connect in browser deployments again — the session-proxy WebSocket is relayed by the gateway past the asset server, which rejects WebSocket upgrades, and remote browsers work too.
+- Web: a gateway restart no longer wedges an active browser into a login loop — a worker spawned without the login password is replaced automatically once the user logs in.
+- UI: the gear (row action) menu in the Skills and Commands settings pages never opened, leaving edit / delete unreachable; the menu also gains a "reveal in file manager" item.
+
+**Notes**
+
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+- Android app: since version 1.11.0, the Android app uses a new application ID based on the uniterm domain (`net.uniterm.app`) — if a version before 1.11.0 is installed, uninstall it first before installing the new version.
+
+Thanks to @surenwuyuwuqiu, @etanman, @sonnartliao, @gezerui888 and @kevin9327 for their contributions to this release.
+
+### 更新内容
+
+**改进**
+
+- SSH：macOS 和 Windows 的普通连接支持多级跳板——跳板自身的上一级跳板会被递归解析（本机 → A → B → C），每一跳使用自己的凭据，带循环引用检测，失败或停止时清理整条链。(@surenwuyuwuqiu)
+- 网络扫描：IP 各段与端口输入只接受数字（中文输入法不再把字母带进输入框），输入点号自动跳到下一段，输入框聚焦时全选已有内容；端口扫描启动前校验目标是合法 IPv4。(@etanman)
+- 数据库树：几万张表的库不再卡死——表浏览改为后端分页 + 虚拟滚动 + 服务端搜索，约 10 万张表依然流畅；表名搜索不区分大小写、截断的表名悬停显示完整名称、库默认折叠按需加载表，schema / 字典查询增加 60 秒超时，锁住的服务器不再拖死整个应用。(@etanman)
+
+**问题修复**
+
+- RDP：鼠标滚轮方向与本地一致（同时修复 Firefox 行模式增量下几乎不滚动的问题）；服务端协商失败现在显示真实原因，而非不可读的解码错误；Web（Docker）部署下远程浏览器可以正常打开 RDP / VNC / SPICE 会话。
+- 内置 SSH 服务：SSH / SFTP 本地服务可以作为跳板机使用——为已认证客户端支持 `direct-tcpip` 转发，手机 → uniTerm 内置 SSH → 内网机器 这类链路可用了。(@surenwuyuwuqiu)
+- MCP：监听配置未变化时，打开终端不再重启 MCP 服务、不再丢失已有客户端会话（后续请求不再报 "session not found"）。(@surenwuyuwuqiu)
+- 终端（Windows）：输入法上屏去重——鼠标点选候选词、或提交时序特殊的输入法，不再把同一个词插入两次。(@sonnartliao)
+- 凭据：系统钥匙串条目丢失时能正确识别——显示「无法解锁凭证」说明及可能原因（如应用目录被移动、重装系统、清除了钥匙串），而不是直接要求重新初始化凭据库。(@gezerui888)
+- 数据库：`.sql` 脚本第一行的 `DELIMITER` 命令现在会被识别——以 `DELIMITER $$` 开头的 MySQL 存储过程导出脚本可以正确执行，不再在每个内部 `;` 处被切开。(@kevin9327)
+- WSL：会话启动时不再键入 cwd 提示钩子——普通首次登录不再出现任何握手输出；开启「跟随终端路径」时每个会话询问一次，并在空闲提示符处按需键入钩子。
+- Web：浏览器部署下 RDP / VNC / SPICE 恢复正常连接——会话代理的 WebSocket 由网关中继，绕过不支持 WebSocket 升级的 asset server，远程浏览器同样可用。
+- Web：网关重启后不再陷入登录死循环——重启瞬间由旧会话拉起的无密码 worker 会在重新登录时被自动替换。
+- 界面：Skills 和 Commands 设置页的行操作菜单无法弹出，编辑 / 删除不可达；菜单新增「在文件管理器中打开」项。
+
+**说明**
+
+- 本软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报。这是 Go/Wails 应用的已知问题（见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行；请务必从官方开源渠道——GitHub 和 Gitee——下载。如仍有顾虑，可自行下载源码本地构建运行。
+- Android：自 1.11.0 起，Android 应用改用基于 uniterm 域名的新 application ID（`net.uniterm.app`）——如果安装过 1.11.0 之前的版本，请先卸载旧版再安装新版。
+
+感谢 @surenwuyuwuqiu, @etanman, @sonnartliao, @gezerui888, @kevin9327 对本版本发布的贡献。
+
+## v1.12.0
+
+### What's Changed
+
+**New Features**
+
+- Docker web multi-tenant deployment: uniTerm can now be deployed as a browser-accessible service (official Docker image, compose file and guide included) where each user gets an isolated workspace with their own connections, sessions and keys. (@NatureLProokie)
+- Local services: seven new local services — HTTP, TFTP, SSH, FTP, Telnet, NFS and a directory-backed S3; all local services gain a unified auto-stop timeout, so a service left running by mistake stops itself after the configured time instead of running indefinitely. (@etanman)
+- Terminal recording: sessions can be recorded and replayed (asciinema cast v2 format) — a REC badge with the live elapsed time sits in the terminal, and a recording list offers replay, delete and open-folder actions. (@laigcss)
+- Batch execution: select multiple SSH connections and run a command on all of them concurrently, with configurable parallelism, timeout and failure strategy, a live per-host result table and CSV / JSON export — the entry lives in the connection context menu when two or more hosts are selected. (@laigcss)
+- Terminal: inline suggestions from the login shell's history — a dimmed hint completes after the cursor and is accepted with the Right arrow, while Tab keeps reaching the shell's own completion; the hint and the suggestion popup each have their own switch in terminal settings. (@dungvv)
+- SSH: host keys are now verified with trust-on-first-use — the server fingerprint is recorded on the first connect, and a changed key is rejected with a dialog showing both fingerprints, offering to save the new key, connect once without recording it, or cancel. (@laigcss)
+- Remote desktop (RDP): quality tiers (high / balanced / low bandwidth) cut server-side graphics features on slow links; resolution and zoom controls move to the status bar and fullscreen toolbar for RDP / VNC / SPICE (adaptive, presets, physical-pixel zoom, fit-window, stretch) and are persisted per connection.
+- UI: a bottom panel is added under the tab area — any sidebar view (quick commands, monitor, …) can dock there and be shown beside the left sidebar at the same time; views move and reorder between the two docks via the context menu, the panel title-bar button or drag & drop.
+- System monitor: the items shown in the monitor sidebar are configurable — disabled items are hidden and no longer polled, reducing the load on the monitored node.
+- Containers: image archives can be loaded and containers committed to images, and container creation gains stdin and TTY options. (@surenwuyuwuqiu)
+- Database: the result grid can filter rows in place, and CSV import / export are written atomically. (@surenwuyuwuqiu)
+
+**Improvements**
+
+- AI: a local risk guard independently classifies every command the AI runs (read / write / dangerous) by pattern matching, so even if a prompt-injected model labels `rm -rf ~` as safe, the confirmation prompt is still enforced. (@laigcss)
+- AI: auto-compaction is configurable — it can be turned off, and a trigger budget and a dedicated summary model can be set per device. (@surenwuyuwuqiu)
+- Terminal: the shell history feeding inline suggestions reads only the tail of the history file (at most 4 MiB) instead of the whole file — a years-old multi-megabyte history no longer stalls the first keystroke. (@boltomli)
+- Terminal: Ctrl+Backspace deletes the previous word. (@surenwuyuwuqiu)
+- MCP: the MCP service gains opt-in remote access. (@surenwuyuwuqiu)
+- Quick commands: a button display style (name-only chips tiled horizontally) joins the existing list style.
+- Connections: a compact display style that hides the host subtitle.
+- Files: F5 refreshes the file panel, and activating the panel restores the terminal's focus. (@surenwuyuwuqiu)
+- macOS: the native window menu follows the system language. (@etanman)
+- Tabs: the active tab can be renamed with F2. (@macoladik)
+- Terminal: a new right-click mode "copy or paste" (Windows Terminal style) — right-clicking a selection copies it and right-clicking with no selection pastes.
+- Local terminals: the connection form gains launch arguments and a working directory for local / WSL terminals — for cmd.exe the arguments are consumed by /k, enabling launching another terminal program with parameters.
+- System tray: the tray icon can now be hidden in Settings → Interaction — the change applies immediately, and on macOS a hidden window stays reachable via the Dock or the global show / hide hotkey. (@surenwuyuwuqiu)
+
+**Bug Fixes**
+
+- Window: geometry is saved on every quit path (tray quit, Cmd+Q, OS close, relaunch) instead of only the in-app close button, and a restored window is kept on an attached screen with its position re-checked when shown — no more opening at the default size or off-screen. (@macoladik)
+- Tabs: titles set via rename survive an app restart — restored tabs no longer revert to the connection name. (@macoladik)
+- AI: tool_use / tool_result pairs stay consistent, so a dropped parallel tool call can no longer deadlock compaction and kill the session with a context-too-large error. (@lijinxiao1982)
+- AI: tool input objects are no longer rendered as empty in a conversation. (@mikemikimike)
+- AI: the foreground execution lock is released after Ctrl+C, and copy actions in a conversation use the platform clipboard so they keep working when the app window is not focused. (@surenwuyuwuqiu)
+- AI: a conversation that outgrows its budget degrades gracefully — compaction runs on what it can, oversized tool outputs are trimmed for the request only (the UI keeps the full output), and the session self-recovers on the next turn instead of dying with a context-too-large error; the default compaction trigger is raised from 32K to 96K tokens.
+- AI: output piped inside Git Bash (MSYS) with a legacy system codepage is re-encoded, so text no longer shows up as mojibake.
+- Menu: opening a dialog no longer closes the menu underneath it, so AI session rename / delete can repeat without reopening the menu. (@wuqiang57)
+- Quick commands: copying a command works on macOS (now routed through the platform clipboard). (@surenwuyuwuqiu)
+- Network scan: closes a race that left the port scan stuck at "scanning" with a frozen progress bar on fast scans. (@etanman)
+- Local: the post-login script never ran on elevated (admin) shells and could be silently dropped when the shell started slowly — it is now sent anyway and buffered until the shell is ready.
+- Terminal: command input verified character-by-character survives hard wraps (long pasted commands are no longer corrupted at line breaks), and the line-number gutter reserves five digits so wide line numbers no longer shift the layout. (@surenwuyuwuqiu)
+- Terminal: fixes a UI freeze caused by very long wrapped output lines — the line-registry scan on each write grew quadratically with the wrapped line length.
+- SSH: credentials are persisted after an auth retry instead of being lost. (@surenwuyuwuqiu)
+- MCP: when shell detection fails (hardened SSH targets), foreground jobs no longer wait out their full deadline and report a timeout after actually finishing, and the busy lock no longer wedges the session until its TTL.
+- Remote desktop (RDP): the last working TLS version is remembered per target, so servers that silently drop the modern handshake no longer pay a 5 s penalty on every connect; a valid tunneled session is no longer rejected as a destination mismatch over a jump host.
+- Remote desktop (RDP): servers whose self-signed certificate carries a negative serial number are reachable again — Go 1.23's stricter x509 parser rejected such certificates even with certificate verification disabled, and some older Windows servers ship exactly these.
+- Remote desktop (VNC): the fullscreen cursor overlay stays visible when the panel is not focused.
+- X11: starting VcXsrv no longer blocks the first SSH connect for up to 5 s. (@sonnartliao)
+- Containers: commit targets are validated against Docker's reference grammar up front, and the SSH stdin pipe is created before registry login starts. (@boltomli)
+- Database: Oracle 11g and other pre-12c servers can list schemas and browse table data again — two dictionary queries used 12c-only syntax, so the schema tree stayed empty and table browsing failed on older releases.
+- macOS: restarting immediately after toggling the system title bar setting works again — the app used to exit without relaunching. (@surenwuyuwuqiu)
+- Startup: the tab-restore prompt is no longer shown when it was disabled in settings. (@surenwuyuwuqiu)
+
+**Notes**
+
+- As this open-source software has not purchased a code-signing certificate, the unsigned executable may trigger false positives in some antivirus engines (e.g. Windows Defender). This is a known issue with Go/Wails applications (see [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)). You can add an exclusion rule in your antivirus to allow it. Please download only from the official open-source channels — GitHub and Gitee. If you are still concerned about malware, you can download the source code and build and run it locally yourself.
+- Android app: since version 1.11.0, the Android app uses a new application ID based on the uniterm domain (`net.uniterm.app`) — if a version before 1.11.0 is installed, uninstall it first before installing the new version.
+
+Thanks to @NatureLProokie, @etanman, @laigcss, @dungvv, @surenwuyuwuqiu, @boltomli, @macoladik, @lijinxiao1982, @mikemikimike, @wuqiang57 and @sonnartliao for their contributions to this release.
+
+### 更新内容
+
+**新功能**
+
+- Docker Web 多租户部署模式：uniTerm 现在可以作为浏览器访问的服务部署（官方提供 Docker 镜像、compose 文件与部署指南），每位用户拥有相互隔离的工作区（各自的连接、会话与密钥）。(@NatureLProokie)
+- 本地服务：新增 HTTP、TFTP、SSH、FTP、Telnet、NFS、S3 七种本地服务；所有本地服务支持统一的自动停止超时，忘记手动停止的服务会在设定时间后自动停止，避免长期占用资源和安全风险。(@etanman)
+- 终端录制：支持录制并回放终端会话（asciinema cast v2 格式）——终端内显示带实时时长的 REC 徽标；录制列表提供回放、删除、打开目录等操作。(@laigcss)
+- 批量执行：选中多个 SSH 连接即可批量执行命令，支持并发数、超时与失败策略配置，提供实时逐主机结果表格和 CSV / JSON 导出——在连接右键菜单中选中两台及以上主机时出现入口。(@laigcss)
+- 终端：基于登录 shell 历史的行内建议——光标后以暗色提示补全，按右方向键接受；Tab 键仍保留给 shell 自己的补全。提示与建议弹窗在终端设置中各有独立开关。(@dungvv)
+- SSH：主机密钥改为 TOFU（首次信任）校验——首次连接记录服务器指纹，密钥变化时拒绝连接并弹出对话框显示新旧指纹，可选择保存新密钥、不记录仅连一次，或取消。(@laigcss)
+- 远程桌面（RDP）：新增画质档位（高 / 均衡 / 低带宽），慢速链路下降低服务端图形特性；RDP / VNC / SPICE 的分辨率与缩放控制移入状态栏和全屏工具栏（自适应、预设、物理像素缩放、适应窗口、拉伸），按连接保存。
+- 界面：标签区下方新增底部面板——任意侧边栏视图（快捷命令、系统监控等）都可停靠至此，与左侧边栏同时显示；视图可通过右键菜单、面板标题栏按钮或拖拽在两个停靠区之间移动和排序。
+- 系统监控：监控边栏显示的监控项内容可配置，禁用的监控项隐藏且不再轮询，降低被监控节点的负载。
+- 容器：支持导入镜像压缩包、将容器提交为镜像，创建容器时新增 stdin 与 TTY 选项。(@surenwuyuwuqiu)
+- 数据库：结果表格支持就地筛选，CSV 导入 / 导出改为原子写入。(@surenwuyuwuqiu)
+
+**改进**
+
+- AI：新增本地风险护栏，独立对 AI 要执行的命令做模式匹配分级（读 / 写 / 危险）——即使被提示注入的模型把 `rm -rf ~` 标为安全，确认提示依然会被强制执行。(@laigcss)
+- AI：自动压缩可配置——可以关闭，也可按设备设置触发预算和独立的摘要模型。(@surenwuyuwuqiu)
+- 终端：供行内建议使用的 shell 历史改为只读历史文件尾部（最多 4 MiB）而非整个文件——积年膨胀到数十 MB 的历史文件不再卡顿首次按键。(@boltomli)
+- 终端：Ctrl+Backspace 删除前一个词。(@surenwuyuwuqiu)
+- MCP：MCP 服务支持可选开启的远程访问。(@surenwuyuwuqiu)
+- 快捷命令：新增按钮显示样式（仅名称的按钮横向平铺），与原有列表样式并存。
+- 连接列表：新增紧凑显示样式，隐藏主机副标题。
+- 文件：F5 刷新文件面板，激活面板时恢复终端的输入焦点。(@surenwuyuwuqiu)
+- macOS：原生窗口菜单跟随系统语言。(@etanman)
+- 标签页：按 F2 即可重命名当前活动标签页。(@macoladik)
+- 终端：新增「复制或粘贴」右键模式（Windows Terminal 风格）——右键选中文本即复制，无选中时右键即粘贴。
+- 本地终端：连接表单为本地 / WSL 终端新增启动参数与工作目录字段——cmd.exe 的参数由 /k 接收，可以带参数启动其他终端程序。
+- 系统托盘：托盘图标可在 设置 → 交互 中隐藏——修改即时生效，macOS 下隐藏的窗口仍可通过 Dock 或全局显示 / 隐藏快捷键找回。(@surenwuyuwuqiu)
+
+**问题修复**
+
+- 窗口：所有退出路径（托盘退出、Cmd+Q、系统关闭、重启）都会保存窗口几何信息，而不再只限于应用内关闭按钮；恢复的窗口会保留在已连接的显示器上并在显示时重新校验位置——不再出现以默认尺寸或屏幕外位置启动。(@macoladik)
+- 标签页：手动重命名的标题在应用重启后保留，恢复的标签页不再回退为连接名。(@macoladik)
+- AI：保持 tool_use / tool_result 配对一致，被丢弃的并行工具调用不再使压缩死锁、导致会话因上下文过大而不可用。(@lijinxiao1982)
+- AI：修复会话中工具调用入参对象显示为空的问题。(@mikemikimike)
+- AI：Ctrl+C 后释放前台执行锁；会话内的复制操作改用平台剪贴板，应用窗口失焦时也能正常复制。(@surenwuyuwuqiu)
+- AI：会话超出上下文预算时优雅降级——尽量压缩，超大工具输出仅在请求中裁剪（界面保留完整输出），下一轮自动恢复，不再因 context-too-large 错误报废；默认压缩触发阈值从 32K 提升到 96K。
+- AI：修复在 Git Bash（MSYS）中管道执行、系统代码页为旧字符集时输出乱码的问题。
+- 菜单：弹出对话框不再连带关闭底下的菜单，AI 会话重命名 / 删除可连续操作而无需重新打开菜单。(@wuqiang57)
+- 快捷命令：修复 macOS 下复制快捷命令无效的问题（改经平台剪贴板）。(@surenwuyuwuqiu)
+- 网络扫描：修复快速扫描时端口扫描卡在「扫描中」、进度条冻结的问题。(@etanman)
+- 本地终端：post-login 脚本在提权（管理员）会话下从不执行，且在 shell 启动缓慢时可能被静默丢弃——现在总会发送并缓冲到 shell 就绪后写入。
+- 终端：逐字符校验过的命令输入在硬换行处不再损坏（长粘贴命令跨行不再出错）；行号栏预留五位数字，宽行号不再挤压布局。(@surenwuyuwuqiu)
+- 终端：修复超长自动换行的输出行导致界面卡死的问题——每次写入时的行注册扫描随换行行长度呈平方级增长。
+- SSH：认证重试后凭据会被持久化，不再丢失。(@surenwuyuwuqiu)
+- MCP：shell 探测失败（加固的 SSH 目标）时，前台任务不再等满超时后才报超时（实际早已完成），会话也不再因 busy 锁被占住直到 TTL 而不可用。
+- 远程桌面（RDP）：按目标记住上次成功的 TLS 版本，静默丢弃现代握手的服务器不再每次连接都付出 5 秒代价；经跳板机隧道时不再因目标不匹配拒绝有效会话。
+- 远程桌面（RDP）：支持连接证书序列号为负的服务器（部分老版本 Windows 服务器的自签名证书属于这种情况）。
+- 远程桌面（VNC）：全屏下面板未聚焦时光标覆盖层保持可见。
+- X11：启动 VcXsrv 不再阻塞首次 SSH 连接最长 5 秒。(@sonnartliao)
+- 容器：提交目标引用提前按 Docker reference 语法校验；SSH stdin 管道在 registry 登录开始前创建。(@boltomli)
+- 数据库：Oracle 11g 及其他 12c 之前的服务器恢复 schema 列表与表数据浏览——两处字典查询使用了 12c 才有的语法，导致旧版本的 schema 树一直为空、表浏览报错。
+- macOS：切换「使用系统标题栏」设置后点「立即重启」能正常重启了，不再只是退出。(@surenwuyuwuqiu)
+- 启动：设置中关闭的标签恢复提示不再弹出。(@surenwuyuwuqiu)
+
+**说明**
+
+- 由于本开源软件未购买代码签名证书，未签名的可执行文件可能被部分杀毒引擎（如 Windows Defender）误报拦截。这是 Go/Wails 应用的已知问题（参见 [wailsapp/wails#3308](https://github.com/wailsapp/wails/issues/3308)）。可在杀毒软件中添加排除规则放行。请务必从 GitHub、Gitee 官方开源渠道下载软件。如仍担心存在病毒，可自行下载源代码在本地构建运行。
+- 安卓 APP 从 1.11.0 版本起更换为基于 uniterm 域名的新应用 ID（`net.uniterm.app`），如果安装了该版本之前的版本，需要先卸载旧版后安装新版。
+
+感谢 @NatureLProokie、@etanman、@laigcss、@dungvv、@surenwuyuwuqiu、@boltomli、@macoladik、@lijinxiao1982、@mikemikimike、@wuqiang57、@sonnartliao 对本次发布的贡献。
+
 ## v1.11.2
 
 ### What's Changed

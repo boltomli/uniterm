@@ -45,11 +45,12 @@ type SecretFile struct {
 //
 // connections.json: password holds the login password for password auth and
 // the private-key passphrase for key/keyText auth; keyContent holds the
-// inline private key for keyText auth. SentinelPassword (Redis Sentinel),
-// TunnelSSHPassword (jump-host credentials), K8sConfigInline (inline
-// kubeconfig with cluster credentials) and PostLoginScript (often carries
-// commands with embedded credentials) are secrets of exactly the same kind,
-// wherever they appear — field-based, not auth-type-based.
+	// inline private key for keyText auth; totpSecret holds the per-host TOTP
+// seed. SentinelPassword (Redis Sentinel), TunnelSSHPassword (jump-host
+// credentials), K8sConfigInline (inline kubeconfig with cluster credentials)
+// and PostLoginScript (often carries commands with embedded credentials)
+// are secrets of exactly the same kind, wherever they appear — field-based,
+// not auth-type-based. All are secrets regardless of auth type.
 //
 // tunnels.json: the upstream proxy pass and the dynamic tunnel's SOCKS
 // password are credentials at rest like every other stored password.
@@ -57,6 +58,7 @@ var SecretFiles = []SecretFile{
 	{File: "connections.json", Paths: []string{
 		"connections.*.password",
 		"connections.*.keyContent",
+		"connections.*.totpSecret",
 		"connections.*.sentinelPassword",
 		"connections.*.tunnelSSHPassword",
 		"connections.*.k8sConfigInline",
@@ -66,6 +68,11 @@ var SecretFiles = []SecretFile{
 	{File: "proxies.json", Paths: []string{"proxies.*.pass"}},
 	{File: "ai.json", Paths: []string{"models.*.apiKey"}},
 	{File: "mcp_clients.json", Paths: []string{"clients.*.headers.*", "clients.*.env.*"}},
+	// Server builds only (server_secrets.go): the sync keychain's encrypted
+	// entries. Registered so credential reset blanks it and the setup guard
+	// counts its ciphertext like any other secret file; never synced (not in
+	// the syncable-file vocabulary).
+	{File: "sync-keychain.json", Paths: []string{"entries.*"}},
 	{File: "settings.json", Paths: []string{"ai.models.*.apiKey"}},
 	{File: "tunnels.json", Paths: []string{"tunnels.*.upstream.pass", "tunnels.*.socksPass"}},
 }

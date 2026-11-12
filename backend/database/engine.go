@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// schemaTimeout caps each schema / dictionary query (object tree, table
+// schema, indexes, primary keys…). These run through queryStrings/queryAny.
+// On a slow or heavily locked server a dictionary scan can hang forever; on
+// such a hang database/sql returns the pooled connection after this deadline
+// (it closes the driver conn to break the stalled read, even for drivers like
+// go-ora that are not context-aware), so a stuck query can no longer starve the
+// connection pool and freeze the whole app.
+var schemaTimeout = 60 * time.Second
+
 // parseParams parses "key1=val1&key2=val2" into a map.
 func parseParams(s string) map[string]string {
 	m := make(map[string]string)

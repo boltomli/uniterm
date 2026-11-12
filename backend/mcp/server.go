@@ -248,6 +248,10 @@ type AuditEntry struct {
 type Server struct {
 	env Env
 
+	// Serialize listener transitions separately from state/token access.
+	lifecycleMu sync.Mutex
+	listenPort  int
+
 	mu      sync.Mutex
 	tokens  map[string]TokenInfo // keyed by sha256(token)
 	handler *mcp.StreamableHTTPHandler
@@ -305,23 +309,19 @@ func (s *Server) SetTokens(tokens map[string]TokenInfo) {
 	s.tokens = tokens
 }
 
-// Start restarts the listener on the requested port. Remote access must be
-// explicitly enabled; otherwise both the listener and SDK restrict it to
-// localhost. Callers decide whether a restart is warranted (the App layer
-// skips Start when the effective endpoint is unchanged, so a UI toggle does
-// not drop live MCP clients and their in-flight tool calls).
+// Start preserves active sessions when the listener configuration is unchanged.
+// Otherwise it restarts the listener on the requested port. Remote access must be
+// explicitly enabled; otherwise both the listener and SDK restrict it to localhost.
 func (s *Server) Start(port int, allowRemote bool) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
-	running, current, currentRemote := s.started, s.port, s.allowRemote
+	unchanged := s.started && s.listenPort == port && s.allowRemote == allowRemote
 	s.mu.Unlock()
-	// Same effective endpoint → no-op: the App layer calls Start from
-	// SaveLocalState (every UI toggle), and a restart would drop every
-	// connected MCP client and its in-flight tool calls. A change of the
-	// remote-access mode must still rebind, so it is part of the comparison.
-	if running && (port == 0 || port == current) && currentRemote == allowRemote {
+	if unchanged {
 		return nil
 	}
-	s.Stop()
+	s.stop()
 
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "uniterm",
@@ -359,6 +359,7 @@ func (s *Server) Start(port int, allowRemote bool) error {
 	s.ln = ln
 	s.httpSrv = httpSrv
 	s.port = ln.Addr().(*net.TCPAddr).Port
+	s.listenPort = port
 	s.allowRemote = allowRemote
 	s.started = true
 	s.mu.Unlock()
@@ -368,12 +369,19 @@ func (s *Server) Start(port int, allowRemote bool) error {
 			log.Writef("mcp: serve: %v", err)
 		}
 	}()
-	log.Writef("mcp: server listening on %s:%d", host, s.port)
+	log.Writef("mcp: server listening on %s", ln.Addr())
 	return nil
 }
 
 // Stop tears the listener down.
 func (s *Server) Stop() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.stop()
+}
+
+// stop requires lifecycleMu to be held.
+func (s *Server) stop() {
 	s.mu.Lock()
 	httpSrv := s.httpSrv
 	s.httpSrv = nil

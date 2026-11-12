@@ -4,14 +4,15 @@
     :class="`platform-${platform}`"
     @dblclick="onDblClick"
   >
-    <!-- macOS: reserve the left gutter for the native traffic lights
-         (close/minimise/zoom). The backend keeps the real AppKit buttons
-         visible on the frameless window (app_darwin.go MacTitleBarHidden), so
-         we no longer render CSS facsimiles — just leave room for them. -->
-    <div
-      v-if="platform === 'darwin' && showMacTrafficLightGutter"
-      class="mac-traffic-light-gutter"
-    ></div>
+    <!-- macOS: custom traffic lights (Wails frameless hides the native ones) -->
+    <WindowControls
+      v-if="showWindowControls && platform === 'darwin'"
+      variant="mac"
+      :is-maximised="isMaximised"
+      @minimise="onMinimise"
+      @maximise="onMaximise"
+      @close="onClose"
+    />
 
     <!-- Connections button (icon only, leftmost) -->
     <button class="header-btn" :class="{ active: sidebarVisible }" @click="emit('toggle-sidebar')" :title="t('sidebar.locSidebar') + shortcutSuffix('toggleSidebar')">
@@ -132,8 +133,10 @@
           {{ t('netscan.title') }}
         </MenuItem>
 
-        <!-- 本地服务（右上角工具入口） -->
-        <MenuItem @click="openLocalServices">
+        <!-- 本地服务（右上角工具入口）。Server deployments hide it: the
+             servers bind inside the container and share its filesystem, so
+             "local" files/fports are not the browser user's machine. -->
+        <MenuItem v-if="!webServerMode" @click="openLocalServices">
           {{ t('localsrv.title') }}
         </MenuItem>
 
@@ -149,13 +152,18 @@
         <MenuItem :shortcut="menuShortcut('openSettings')" @click="openCategory('basic')">{{ t('settings.title') }}</MenuItem>
         <MenuItem @click="openCategory('sync')">{{ t('settings.sync') }}</MenuItem>
         <MenuItem @click="openCategory('about')">{{ t('settings.about') }}</MenuItem>
-        <!-- In-app update download is desktop-only -->
-        <MenuItem v-if="!isMobilePlatform(platform)" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
+        <!-- In-app update download is desktop-only; server deployments update
+             by pulling a new image and the backend refuses the call. -->
+        <MenuItem v-if="!isMobilePlatform(platform) && !webServerMode" @click="checkUpdate">{{ t('settings.checkUpdate') }}</MenuItem>
       </Menu>
 
       <ImportDialog v-model:visible="showImportDialog" />
       <ExportDialog v-model:visible="showExportDialog" />
     </div>
+
+    <!-- Web edition account menu: renders nothing unless /api/web/mode reports
+         server mode, so the desktop header is unchanged. -->
+    <WebAccountMenu />
 
     <!-- Windows/Linux: window controls right -->
     <WindowControls
@@ -165,6 +173,8 @@
       @maximise="onMaximise"
       @close="onClose"
     />
+    <!-- Server mode: the web account widget takes the window-controls spot
+         (those buttons are hidden — there is no OS window to control). -->
   </div>
 </template>
 
@@ -180,6 +190,7 @@ import { usePanelStore } from '../stores/panelStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
+import { isWebServerMode } from '../services/webSftpBridge'
 import { useAIStore } from '../stores/aiStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useUiLayoutStore } from '../stores/uiLayoutStore'
@@ -191,6 +202,7 @@ import WindowControls from './WindowControls.vue'
 import TabsList from './TabsList.vue'
 import ImportDialog from './ImportDialog.vue'
 import ExportDialog from './ExportDialog.vue'
+import WebAccountMenu from './WebAccountMenu.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
@@ -367,22 +379,16 @@ const isMaximised = ref(false)
 // them, and never on mobile (no OS window to minimise/maximise/close). On
 // macOS they render as traffic lights on the left (see template). Before the
 // snapshot lands, fall back to the live store value (the frameless default).
+// In headless server mode the UI runs in a browser tab — there is no OS
+// window to minimise/maximise/close, so the buttons are hidden entirely.
+const webServerMode = ref(false)
+isWebServerMode().then((v) => { webServerMode.value = v })
+
 const showWindowControls = computed(
   () =>
     !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar) &&
-    !isMobilePlatform(platform.value)
-)
-
-// On macOS the real AppKit traffic lights overlay the top-left of the
-// frameless web content (backend MacTitleBarHidden). We hide our own window
-// controls there and just leave a left gutter so the native buttons don't
-// collide with the Connections button. When the user opted into the full
-// system title bar, the traffic lights live in the system frame instead, so
-// no gutter is needed.
-const showMacTrafficLightGutter = computed(
-  () =>
-    platform.value === 'darwin' &&
-    !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar)
+    !isMobilePlatform(platform.value) &&
+    !webServerMode.value
 )
 
 async function updateMaximisedState() {
@@ -586,15 +592,6 @@ onUnmounted(() => {
 
 .header-btn .el-icon {
   font-size: 0.875rem;
-}
-
-/* Left spacer that gives the macOS native traffic lights (close / minimise /
-   zoom) room to display over the frameless window. Width matches the stock
-   macOS titlebar insets; leave it draggable so double-click-to-maximise and
-   window drag keep working over the empty area. */
-.mac-traffic-light-gutter {
-  flex: 0 0 4.75rem;
-  --wails-draggable: drag;
 }
 
 .app-header :deep(.window-controls) {

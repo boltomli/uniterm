@@ -185,18 +185,62 @@ func buildBrowseSQL(p Provider, schema, tableName string, cols map[string]bool, 
 	// Fetch one extra row to determine whether a next page exists.
 	limit := opts.Limit + 1
 	switch p.DriverName() {
-	case "sqlserver", "oracle":
+	case "sqlserver":
 		query += fmt.Sprintf(" OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", opts.Offset, limit)
+	case "oracle":
+		// OFFSET ... FETCH NEXT requires 12c+; ROWNUM wrapping also works on
+		// 11g. The synthetic row-number column is stripped after the scan.
+		query = oraclePagingWrap(query, opts.Offset, limit)
 	default:
 		query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, opts.Offset)
 	}
 	return query, args, nil
 }
 
+// oraclePagingColumn is the synthetic row-number column added for Oracle
+// pagination and stripped from the result before display.
+const oraclePagingColumn = "__RN__"
+
+// oraclePagingWrap paginates a complete SELECT with ROWNUM. OFFSET ... FETCH
+// NEXT requires Oracle 12c+, so 11g needs this wrap instead; it works on
+// modern releases as well. stripOraclePagingColumn removes the synthetic
+// column from the result.
+func oraclePagingWrap(query string, offset, limit int) string {
+	return fmt.Sprintf(
+		`SELECT * FROM (SELECT q_.*, ROWNUM %s FROM (%s) q_ WHERE ROWNUM <= %d) WHERE %s > %d`,
+		`"`+oraclePagingColumn+`"`, query, offset+limit, `"`+oraclePagingColumn+`"`, offset)
+}
+
+// stripOraclePagingColumn removes the synthetic pagination column from a
+// result grid (see buildBrowseSQL's oracle branch).
+func stripOraclePagingColumn(result *QueryResult) {
+	cols := make([]QueryResultColumn, 0, len(result.Columns))
+	for _, c := range result.Columns {
+		if !strings.EqualFold(c.Name, oraclePagingColumn) {
+			cols = append(cols, c)
+		}
+	}
+	result.Columns = cols
+	for _, row := range result.Rows {
+		delete(row, oraclePagingColumn)
+	}
+}
+
 func BrowseTable(p Provider, db *sql.DB, dbName, schema, tableName string, opts BrowseOptions) (*QueryResult, error) {
-	cols, err := browseTableColumns(p, db, dbName, schema, tableName)
-	if err != nil {
-		return nil, err
+	// The column map is only needed to validate filter/sort columns. The default
+	// browse (no filters, no sorts) does not reference it, so skip the expensive
+	// GetTableSchema round-trip entirely — the frontend already loaded the schema
+	// when the table was opened (§loadSchema). This avoids duplicate schema queries
+	// that prolong the slow Oracle 11g load and stress the connection pool.
+	var (
+		cols map[string]bool
+		err  error
+	)
+	if len(opts.Filters) > 0 || len(opts.Sorts) > 0 {
+		cols, err = browseTableColumns(p, db, dbName, schema, tableName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	query, args, err := buildBrowseSQL(p, schema, tableName, cols, opts)
 	if err != nil {
@@ -205,6 +249,9 @@ func BrowseTable(p Provider, db *sql.DB, dbName, schema, tableName string, opts 
 	result, err := executeQueryArgs(context.Background(), p, db, dbName, query, args)
 	if err != nil {
 		return nil, err
+	}
+	if p.DriverName() == "oracle" {
+		stripOraclePagingColumn(result)
 	}
 	result.HasMore = len(result.Rows) > opts.Limit
 	if result.HasMore {

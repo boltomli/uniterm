@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ var (
 	kernel32Dll        = windows.NewLazySystemDLL("kernel32.dll")
 	procAttachConsole  = kernel32Dll.NewProc("AttachConsole")
 	procFreeConsoleWin = kernel32Dll.NewProc("FreeConsole")
+	procGetOEMCP       = kernel32Dll.NewProc("GetOEMCP")
 
 	// AttachConsole/FreeConsole operate on process-wide state (a process can
 	// only be attached to one console at a time), so concurrent calls from
@@ -126,6 +128,10 @@ type LocalSession struct {
 	disconnectOnce       sync.Once
 	mouseTrackingEnabled atomic.Bool
 	foregroundShell      string
+	// msysShell marks MSYS-family bash sessions (Git Bash, MSYS2, Cygwin).
+	// Native Windows programs piped inside them emit OEM code page bytes that
+	// the MSYS runtime relays as if they were UTF-8 — see ExecFilterEncoding.
+	msysShell bool
 
 	// osc7 extracts injected OSC-7 cwd reports from the raw ConPTY/pipe
 	// output stream (see shell_integration.go). Only used from readLoop.
@@ -137,11 +143,15 @@ type LocalSession struct {
 	// marker is seen in the output stream, so the body never renders. fish
 	// skips phase 1 (no stty in its snippet) and accepts the single-line
 	// echo leak. The marker scanners and the arm/body
-	// handoff live in the shared typedCwdHookState.
-	wslDistro      string
-	wslShellBase   string
-	wslCwdHookBody string
-	hook           typedCwdHookState
+	// handoff live in the shared typedCwdHookState. The hook is typed on
+	// demand — when the user enables directory follow for this session —
+	// never at session start, so a plain first login shows no handshake
+	// output at all (issue #1388).
+	wslDistro        string
+	wslShellBase     string
+	wslCwdHookBody   string
+	hook             typedCwdHookState
+	cwdHookRequested atomic.Bool
 
 	mu             sync.RWMutex
 	enc            encoding.Encoding
@@ -174,6 +184,27 @@ func (s *LocalSession) ForegroundShell() string {
 	defer s.mu.RUnlock()
 	shell := strings.ReplaceAll(s.foregroundShell, `\`, "/")
 	return strings.TrimSuffix(strings.ToLower(shellBasename(shell)), ".exe")
+}
+
+// ExecFilterEncoding reports the charset native Windows programs emit when
+// their stdout is a pipe inside an MSYS bash session (Git Bash, MSYS2,
+// Cygwin): they always write the system OEM code page (GBK/936 on zh-CN),
+// which the MSYS tools relaying that output reinterpret as UTF-8 at the
+// console boundary — every non-ASCII character garbles, and the damage is
+// unrecoverable afterwards (invalid sequences already became U+FFFD).
+// ConPTY and the console code page are irrelevant: native programs write
+// Unicode straight to the console and only pipe/redirect output is
+// legacy-encoded. The command executor wraps jobs in a filter that
+// re-encodes such lines; "" means no filter is needed.
+func (s *LocalSession) ExecFilterEncoding() string {
+	s.mu.RLock()
+	msys := s.msysShell
+	s.mu.RUnlock()
+	if !msys {
+		return ""
+	}
+	cp, _, _ := procGetOEMCP.Call()
+	return "cp" + strconv.FormatUint(uint64(cp), 10)
 }
 
 func (s *LocalSession) Connect(config ConnectionConfig) error {
@@ -310,6 +341,10 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	platform.HideConsoleWindow(cmd)
 	cmd.Dir = workDir
 
+	s.mu.Lock()
+	s.msysShell = isMSYSBash
+	s.mu.Unlock()
+
 	// Elevated shell: the ConPTY lives in the elevated broker process and is
 	// relayed to us over the control pipe, so everything below (direct
 	// conpty.Start / pipe fallback) only applies to unelevated shells.
@@ -338,7 +373,6 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 		s.startEmitLoop()
 		go s.readLoop()
 		go s.runPostLoginScript(config.PostLoginScript)
-		s.injectStartupCwdHook()
 		return nil
 	}
 
@@ -370,7 +404,6 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 			s.startEmitLoop()
 			go s.readLoop()
 			go s.runPostLoginScript(config.PostLoginScript)
-			s.injectStartupCwdHook()
 			return nil
 		}
 		// Fall through to pipe mode if ConPTY fails.
@@ -407,7 +440,6 @@ func (s *LocalSession) Connect(config ConnectionConfig) error {
 	s.startEmitLoop()
 	go s.readLoop()
 	go s.runPostLoginScript(config.PostLoginScript)
-	s.injectStartupCwdHook()
 	return nil
 }
 
@@ -462,31 +494,48 @@ func wslDetectShell(distro string) (shell string, ok bool) {
 // restore. Absolute positioning, so it cannot drift with the prompt layout.
 const wslCwdHookRowCleanup = " printf '\\0337\\033[H\\033[2K\\0338';"
 
-// injectStartupCwdHook starts the typed cwd-hook injection right after the
-// PTY starts. ConPTY buffers the bytes, so the shell executes the phases in
-// order: phase 1 arms echo-off (bash/zsh) and the hook body is written only
-// after the echo-armed marker is seen in the output stream (read loop);
-// phase 2's body must never render. fish skips phase 1 (no stty in its
-// snippet) and accepts the single-line echo leak.
-func (s *LocalSession) injectStartupCwdHook() {
+// InjectCwdHook types the WSL cwd-hook on demand — invoked when the user
+// enables directory follow for this session (with an explicit confirmation in
+// the UI). Never called at session start: a plain first login must show no
+// handshake output at all (issue #1388), and cross-distro cleanup differences
+// are the user's informed choice to accept, not a startup constant. The
+// write waits briefly for in-flight output to settle so the typed lines land
+// at a prompt.
+func (s *LocalSession) InjectCwdHook() error {
 	if s.wslDistro == "" || s.wslCwdHookBody == "" {
-		return
+		return fmt.Errorf("session has no WSL cwd hook")
 	}
-	if s.wslShellBase == "bash" || s.wslShellBase == "zsh" {
-		// The body carries the row cleanup with it: the arm line's conhost
-		// echo must be erased by the time the body runs (echo off).
-		s.hook.arm(wslCwdHookRowCleanup + s.wslCwdHookBody)
-		_ = s.Write([]byte(cwdHookArmLine))
-		return
+	if s.hook.isInstalled() || !s.cwdHookRequested.CompareAndSwap(false, true) {
+		return nil
 	}
-	// fish and other supported shells without an echo-off prefix: single
-	// phase, watch for the ready marker.
-	if err := s.Write([]byte(s.wslCwdHookBody)); err != nil {
-		log.Writef("wsl: cwd hook write failed: %v", err)
-		return
-	}
-	log.Writef("wsl: cwd hook injected (shell=%s)", s.wslShellBase)
-	go s.watchCwdHookConfirm()
+	go func() {
+		if !s.waitIdle(3*time.Second, 300*time.Millisecond) {
+			log.Writef("wsl: no idle window for cwd hook, injecting anyway")
+		}
+		if s.Status() != StatusConnected {
+			return
+		}
+		if s.wslShellBase == "bash" || s.wslShellBase == "zsh" {
+			// The body carries the row cleanup with it: the arm line's conhost
+			// echo must be erased by the time the body runs (echo off).
+			s.hook.arm(wslCwdHookRowCleanup + s.wslCwdHookBody)
+			_ = s.Write([]byte(cwdHookArmLine))
+			// Bound the arm phase too: if the echo-armed marker never arrives
+			// (shell died mid-startup, exotic setup), nothing else would restore
+			// the pty echo the arm line just turned off.
+			go s.watchCwdHookConfirm()
+			return
+		}
+		// fish and other supported shells without an echo-off prefix: single
+		// phase, watch for the ready marker.
+		if err := s.Write([]byte(s.wslCwdHookBody)); err != nil {
+			log.Writef("wsl: cwd hook write failed: %v", err)
+			return
+		}
+		log.Writef("wsl: cwd hook injected (shell=%s)", s.wslShellBase)
+		go s.watchCwdHookConfirm()
+	}()
+	return nil
 }
 
 // writeWslCwdHookBody is phase 2: runs once the echo-armed marker confirmed
@@ -508,7 +557,9 @@ func (s *LocalSession) writeWslCwdHookBody(body string) {
 // watchCwdHookConfirm bounds how long the session waits for the injected
 // hook's ready marker. If the hook never confirms (unsupported setup, the
 // user exited the shell instantly), echo is restored blindly so the session
-// is never left with terminal echo off.
+// is never left with terminal echo off. The give-up is recorded exactly once
+// (a watchdog runs for the arm phase and another for the body) so settle()
+// waiters see a stable terminal state.
 func (s *LocalSession) watchCwdHookConfirm() {
 	select {
 	case <-time.After(cwdHookConfirmTimeout):
@@ -516,6 +567,9 @@ func (s *LocalSession) watchCwdHookConfirm() {
 		return
 	}
 	if s.hook.isInstalled() || s.Status() != StatusConnected {
+		return
+	}
+	if !s.hook.giveUp.CompareAndSwap(false, true) {
 		return
 	}
 	log.Writef("wsl: cwd hook not confirmed after %s, restoring echo blindly", cwdHookConfirmTimeout)

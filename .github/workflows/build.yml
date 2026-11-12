@@ -61,10 +61,16 @@ jobs:
         if: matrix.slug == 'windows'
         shell: bash
         run: |
-          choco install nsis -y
           NSIS_BIN="/c/Program Files (x86)/NSIS/Bin"
           export PATH="$NSIS_BIN:$PATH"
-          if [ ! -f "$NSIS_BIN/makensis.exe" ]; then echo "ERROR: makensis.exe not found at $NSIS_BIN"; exit 1; fi
+          # The Chocolatey community feed intermittently fails (HTTP 406 was
+          # seen in CI); retry a few times before giving up.
+          for attempt in 1 2 3 4 5; do
+            choco install nsis -y && [ -f "$NSIS_BIN/makensis.exe" ] && break
+            if [ "$attempt" = 5 ]; then echo "ERROR: makensis.exe not found at $NSIS_BIN after 5 attempts"; exit 1; fi
+            echo "choco install nsis attempt $attempt failed; retrying in 30s..."
+            sleep 30
+          done
           echo "makensis: $NSIS_BIN/makensis.exe"
 
           UPX_VER="5.2.0"
@@ -91,10 +97,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config \
             openjdk-21-jdk-headless
-          # Gradle needs JAVA_HOME; resolve it from the javac we just installed.
-          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which javac)")")")"
+          # Gradle needs JAVA_HOME; pin it to the apt-installed OpenJDK 21.
+          # Runner images ship a newer default JDK whose javac shadows the
+          # apt one (which javac resolves there), and AGP lint cannot run on
+          # it (lintVitalAnalyzeRelease dies with a bare version string).
+          JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          java -version
+          "$JAVA_HOME/bin/java" -version
           # GitHub runners ship the Android SDK with cmdline-tools; accept the
           # licenses and add the components the gradle/NDK build needs.
           ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
@@ -117,7 +126,7 @@ jobs:
           # does not affect the APK.
           TAGS=""
           if [[ "${{ matrix.slug }}" == linux* || "${{ matrix.slug }}" == "android" ]]; then TAGS="-tags gtk3"; fi
-          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
+          go install $TAGS github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
 
       - name: Set version
         shell: bash
@@ -400,11 +409,16 @@ jobs:
             uniterm-*.apk
 
   release:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [build, docker]
+    # Tag pushes and manual preview runs release. A casual manual run (no
+    # preview checkbox) skips the docker job; the desktop release must still
+    # go out in that case.
     if: |
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.preview == true)
+      ${{ !cancelled() && needs.build.result == 'success' &&
+      (needs.docker.result == 'success' || needs.docker.result == 'skipped') &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.preview == true)) }}
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -414,6 +428,10 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
+          # Platform builds only — skips the dockerbuild record artifact
+          # that docker/build-push-action uploads on its own. Docker image
+          # archives are fetched separately below, next to the release files.
+          pattern: uniTerm-*
 
       - name: Collect release files
         run: |
@@ -499,6 +517,12 @@ jobs:
           git tag -f main-snapshot
           git push -f origin main-snapshot
 
+      - name: Download docker image archives
+        if: github.event_name == 'push' || inputs.preview == true
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-archives
+
       - name: Create Release
         uses: softprops/action-gh-release@5113cdc90fd4d541c801c55356214017bf5ae34b # v3
         with:
@@ -518,3 +542,87 @@ jobs:
             checksums.txt.sig
         env:
           GITHUB_TOKEN: ${{ secrets.PAT }}
+  ## ---- Docker image: amd64 + arm64, pushed to Docker Hub ----
+  ## Tag pushes (v*) publish <version>; stable releases additionally move
+  ## latest. Manual runs publish the dev-<sha> tag only when the preview
+  ## checkbox is set — latest always points at a stable official release.
+  docker:
+    if: github.event_name == 'push' || inputs.preview == true
+    runs-on: ubuntu-latest
+    # Map the secrets into env so the steps below can probe them with
+    # env.* (the secrets context itself is not usable in step-level if).
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set version
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "VERSION=dev-${SHORT}" >> $GITHUB_ENV
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute image tags
+        shell: bash
+        run: |
+          # Docker tags conventionally drop the leading v of the git tag.
+          # latest only follows stable releases: a pre-release version
+          # (alpha / beta / rc, signalled by a hyphen) never moves it.
+          IMG=uniterm/uniterm
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            case "$VERSION" in
+              *-*) echo "IMAGE_TAGS=${IMG}:${VERSION#v}" >> $GITHUB_ENV ;;
+              *)   echo "IMAGE_TAGS=${IMG}:${VERSION#v},${IMG}:latest" >> $GITHUB_ENV ;;
+            esac
+          else
+            echo "IMAGE_TAGS=${IMG}:${VERSION}" >> $GITHUB_ENV
+          fi
+
+      - name: Build and push
+        if: github.event_name == 'push' || inputs.preview == true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+          build-args: VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE_TAGS }}
+
+      - name: Save image archives for offline import
+        shell: bash
+        run: |
+          # First published tag (dev-<sha>, or the version tag without v).
+          FIRST_TAG="${IMAGE_TAGS%%,*}"
+          FIRST_TAG="${FIRST_TAG#uniterm/uniterm:}"
+          for arch in amd64 arm64; do
+            docker pull --platform="linux/$arch" "uniterm/uniterm:${FIRST_TAG}"
+            docker save "uniterm/uniterm:${FIRST_TAG}" | gzip > "uniterm-docker-${arch}-${VERSION}.tar.gz"
+          done
+          ls -la uniterm-docker-*.tar.gz
+
+      - name: Upload image archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-archives
+          path: uniterm-docker-*.tar.gz
+          retention-days: 1
+          if-no-files-found: error

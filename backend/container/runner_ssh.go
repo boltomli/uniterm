@@ -39,6 +39,19 @@ func closeSessionOnDone(ctx context.Context, sess *ssh.Session) (stop func()) {
 	return func() { once.Do(func() { close(done) }) }
 }
 
+// sshPATHExtension is appended to $PATH for every remote command. The sshd
+// exec channel (non-interactive, no profile sourced) often has a minimal
+// PATH: Synology DSM installs docker in /usr/local/bin, which only login
+// shells pick up via /etc/profile — so runtime detection and every docker
+// command fail there even though the binary exists. The extra dirs are
+// harmless no-ops on hosts that already carry them in PATH.
+const sshPATHExtension = "/usr/local/bin:/usr/local/sbin:/opt/bin"
+
+// joinSSHCommand prefixes the PATH extension before joining argv.
+func joinSSHCommand(argv []string) string {
+	return "PATH=$PATH:" + sshPATHExtension + " " + JoinShellCommand(argv)
+}
+
 func (r *SSHRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 	return r.run(ctx, argv, nil)
 }
@@ -72,7 +85,7 @@ func (r *SSHRunner) RunStdinStream(ctx context.Context, argv []string, stdin io.
 	if err != nil {
 		return nil, err
 	}
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+	if err := sess.Start(joinSSHCommand(argv)); err != nil {
 		return nil, err
 	}
 	if _, err := io.Copy(w, stdin); err != nil {
@@ -158,7 +171,7 @@ func (r *SSHRunner) RunRaw(ctx context.Context, argv []string) (RawStream, error
 		_, _ = io.Copy(stderrBuf, stderr)
 	}()
 	stopWatch := closeSessionOnDone(ctx, sess)
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+	if err := sess.Start(joinSSHCommand(argv)); err != nil {
 		stopWatch()
 		sess.Close()
 		return nil, err
@@ -186,7 +199,7 @@ func (r *SSHRunner) run(ctx context.Context, argv []string, stdin []byte) (out [
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
 	if stdin == nil {
-		if err := sess.Run(JoinShellCommand(argv)); err != nil {
+		if err := sess.Run(joinSSHCommand(argv)); err != nil {
 			if msg := strings.TrimSpace(stderr.String()); msg != "" {
 				return nil, fmt.Errorf("%s", msg)
 			}
@@ -201,7 +214,7 @@ func (r *SSHRunner) run(ctx context.Context, argv []string, stdin []byte) (out [
 	if err != nil {
 		return nil, err
 	}
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+	if err := sess.Start(joinSSHCommand(argv)); err != nil {
 		_ = sess.Close()
 		return nil, err
 	}
@@ -261,7 +274,7 @@ func (r *SSHRunner) RunStream(ctx context.Context, argv []string) (LineStream, e
 		return nil, err
 	}
 	stopWatch := closeSessionOnDone(ctx, sess)
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+	if err := sess.Start(joinSSHCommand(argv)); err != nil {
 		stopWatch()
 		sess.Close()
 		return nil, err
@@ -312,7 +325,7 @@ func (r *SSHRunner) RunPTY(ctx context.Context, argv []string, cols, rows int) (
 		return nil, err
 	}
 	stopWatch := closeSessionOnDone(ctx, sess)
-	if err := sess.Start(JoinShellCommand(argv)); err != nil {
+	if err := sess.Start(joinSSHCommand(argv)); err != nil {
 		stopWatch()
 		sess.Close()
 		return nil, err

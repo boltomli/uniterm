@@ -290,6 +290,13 @@
       <MonitorOverviewSidebar v-if="uiLayout.isViewActive('monitor')" />
     </DockHost>
 
+    <DockHost :docked="uiLayout.panelLocation('commandSend') === 'bottom'">
+      <template #title>
+        <PanelTitleBar v-if="uiLayout.isViewActive('commandSend')" view="commandSend" />
+      </template>
+      <CommandSendPanel v-if="uiLayout.isViewActive('commandSend')" />
+    </DockHost>
+
     <DockHost :docked="uiLayout.panelLocation('personalization') === 'bottom'">
       <template #title>
         <PanelTitleBar v-if="uiLayout.isViewActive('personalization')" view="personalization" />
@@ -474,7 +481,7 @@
 import { lucideSize } from '../utils/lucideSize'
 import { ref, onMounted, onUnmounted, computed, watch, nextTick, provide } from 'vue'
 import { storeToRefs } from 'pinia'
-import { X, ChevronRight, ChevronDown, Filter, Network, Zap, Clock, Plus, Palette, SquareTerminal, Activity, Pencil, MoreHorizontal, FolderTree, ArrowRightLeft, Star } from '@lucide/vue'
+import { X, ChevronRight, ChevronDown, Filter, Network, Zap, Clock, Plus, Palette, SquareTerminal, Activity, Pencil, MoreHorizontal, FolderTree, ArrowRightLeft, Star, Send } from '@lucide/vue'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFavoriteStore } from '../stores/favoriteStore'
@@ -489,6 +496,7 @@ import ImportDialog from './ImportDialog.vue'
 import QuickCommandsPanel from './QuickCommandsPanel.vue'
 import TunnelsPanel from './TunnelsPanel.vue'
 import HistoryPanel from './HistoryPanel.vue'
+import CommandSendPanel from './CommandSendPanel.vue'
 import FileSidebar from './FileSidebar.vue'
 import MonitorOverviewSidebar from './MonitorOverviewSidebar.vue'
 import { useCompanionStore } from '../stores/companionStore'
@@ -587,8 +595,10 @@ function openQuickCommands() {
 // (re)establish their companion session, the rest just switch the view. Used
 // by the App.vue sidebar shortcuts and the bottom panel's tab strip.
 function openTab(view: SidebarView) {
-  if (view === 'files') companionStore.filesVisible = true
-  if (view === 'monitor') companionStore.monitorVisible = true
+  // files/monitor visibility is derived from the view being active in its
+  // dock (companionStore computeds over uiLayout.isViewActive), so activating
+  // the view is all that's needed here; the ensure* calls (re)establish the
+  // companion SFTP/monitor session.
   setActiveViewForDock(view)
   if (view === 'files') {
     const pid = companionStore.getActiveFilesPanelId()
@@ -610,14 +620,6 @@ function onFilesTabClick() {
 function onMonitorTabClick() {
   openTab('monitor')
 }
-// If the companion panel hides itself (collapse button), fall back to connections view.
-watch(
-  () => [companionStore.filesVisible, companionStore.monitorVisible],
-  ([filesVisible, monitorVisible]) => {
-    if (!filesVisible && activeView.value === 'files') activeView.value = 'connections'
-    if (!monitorVisible && activeView.value === 'monitor') activeView.value = 'connections'
-  },
-)
 
 // ── Sidebar tab visibility ──
 // Single source of truth is AppSettings.sidebarTabs (editable in Settings →
@@ -660,6 +662,7 @@ const SIDEBAR_TAB_ICONS: Record<string, any> = {
   quickCommands: Zap,
   history: Clock,
   personalization: Palette,
+  commandSend: Send,
 }
 
 function sidebarTabTitle(key: string): string {

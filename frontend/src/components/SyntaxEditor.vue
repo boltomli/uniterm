@@ -600,6 +600,10 @@ function buildExtensions(path: string) {
     ]),
     EditorView.updateListener.of((update) => {
       if (!update.docChanged || applyingExternal) return
+      if (update.state.doc.length > LARGE_DOC_EMIT_THRESHOLD) {
+        if (emitTimer === null) emitTimer = setTimeout(flushPendingEmit, EMIT_DEBOUNCE_MS)
+        return
+      }
       emit('update:modelValue', update.state.doc.toString())
     }),
     EditorView.theme({
@@ -650,6 +654,21 @@ function buildExtensions(path: string) {
   ]
 }
 
+// v-model emit pacing. Serializing the whole document on every keystroke is
+// cheap for normal files but dominates typing latency once the doc is large,
+// so docs above the threshold are debounced; parents must call flush()
+// before reading the mirrored value (see FileEditorDialog.onSave).
+const LARGE_DOC_EMIT_THRESHOLD = 1024 * 1024
+const EMIT_DEBOUNCE_MS = 300
+let emitTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushPendingEmit() {
+  if (emitTimer === null) return
+  clearTimeout(emitTimer)
+  emitTimer = null
+  if (view) emit('update:modelValue', view.state.doc.toString())
+}
+
 function requestMeasure() {
   view?.requestMeasure()
 }
@@ -671,6 +690,9 @@ function setDoc(text: string) {
   if (!view) return
   const cur = view.state.doc.toString()
   if (cur === text) return
+  // The doc is about to be replaced externally: a pending debounced emit would
+  // only re-emit the new content, so drop it.
+  if (emitTimer !== null) { clearTimeout(emitTimer); emitTimer = null }
   applyingExternal = true
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: text },
@@ -707,6 +729,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (emitTimer !== null) { clearTimeout(emitTimer); emitTimer = null }
   resizeObserver?.disconnect()
   resizeObserver = null
   view?.destroy()
@@ -716,6 +739,7 @@ onBeforeUnmount(() => {
 defineExpose({
   focus: () => view?.focus(),
   getValue: () => view?.state.doc.toString() ?? props.modelValue,
+  flush: flushPendingEmit,
   undo: () => { if (view) return undo(view) },
   redo: () => { if (view) return redo(view) },
   toggleSearch,

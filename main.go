@@ -144,8 +144,7 @@ func main() {
 	}
 
 	// Single-instance relaunch: RelaunchApp/autotest set relaunchPending and
-	// quit; the successor is spawned after Run() returns, once the lock is
-	// released.
+	// quit; the successor is spawned once shutdown releases the lock.
 
 	// Capture top-level panics
 	defer func() {
@@ -249,7 +248,8 @@ func main() {
 	var window *application.WebviewWindow
 
 	w3app := application.New(application.Options{
-		Name: "uniTerm",
+		Name:   "uniTerm",
+		Server: BuildServerOptions(), // empty unless built with -tags server
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 			// F-09b: production CSP + nosniff on every asset (dev server
@@ -257,13 +257,20 @@ func main() {
 			Middleware: cspMiddleware,
 		},
 		OnShutdown: app.shutdown,
+		// AppKit's terminate: exits the process without returning from Run().
+		// PostShutdown runs after store cleanup and single-instance lock release.
+		PostShutdown: func() {
+			if runtime.GOOS == "darwin" {
+				relaunchIfPending()
+			}
+		},
 		// Single-instance: a second GUI launch acquires the OS lock, notifies
 		// this instance (which shows/focuses the existing window) and exits.
 		// This prevents two GUI processes from racing on the shared stores in
 		// the user's data directory (settings.json, connections, credentials).
 		// The admin-shell broker process never reaches application.New, so it
 		// is exempt. RelaunchApp sets relaunchPending and quits first; the
-		// successor is spawned after Run() returns, with the lock released.
+		// successor is spawned after shutdown releases the lock.
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: singleInstanceID,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
@@ -382,6 +389,34 @@ func main() {
 		})
 	}
 
+	// Native close paths (Alt+F4, taskkill, any external WM_CLOSE) close the
+	// window WITHOUT running the application quit flow: wails v3 on Windows
+	// only runs cleanup()/OnShutdown when App.Quit is called explicitly (the
+	// in-app close button and the tray Quit item do that). The window then
+	// merely unregisters, Run() returns, and main() calls os.Exit(0) with the
+	// WebView2 controller still alive — the DLL-detach teardown inside
+	// ExitProcess blocks on the browser subprocess, leaving a frozen residual
+	// process that still holds the single-instance lock, so relaunching fails.
+	// Cancel the native close and reroute it through the same
+	// full quit path as the in-app close button. The hook must run on Windows
+	// only: on macOS Cmd+Q terminates via AppKit's terminate (cleanup runs),
+	// and on Linux the GTK delete-event handler calls cleanup directly.
+	if runtime.GOOS == "windows" {
+		window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+			// Already quitting (App.shutdown started, or this close comes from
+			// cleanup()'s own window.Close()): let the default close listener
+			// proceed so the window actually closes during teardown.
+			if app.quitting.Load() {
+				return
+			}
+			event.Cancel()
+			go func() {
+				app.saveWindowStateFromRuntime()
+				app.app.Quit()
+			}()
+		})
+	}
+
 	// Wails v3 delivers OS file drops to Go-side window-event listeners rather
 	// than (as v2 did) auto-forwarding them to the frontend. Re-emit the dropped
 	// absolute paths under the original v2 event name so `Events.On(...)` pickers
@@ -413,6 +448,10 @@ func main() {
 	app.window = window
 	w3app.RegisterService(application.NewService(app))
 
+	// Browser streaming SFTP/SCP + file staging routes (/api/web/*) exist only
+	// in the headless server build; a no-op on desktop.
+	registerWebStreamService(w3app, app)
+
 	// System notification service: app_<os>.go notifyMCPApproval posts MCP
 	// approval prompts through it when the window is unfocused. Windows needs
 	// the service's Startup to run so the toast AUMID/registry side is set up;
@@ -425,7 +464,7 @@ func main() {
 	// WebView stuck on a blank wails.localhost error page. notifyMCPApproval
 	// already handles a nil notifier.
 	var mcpNotifier *notifications.NotificationService
-	if runtime.GOOS != "android" {
+	if runtime.GOOS != "android" && !serverMode {
 		mcpNotifier = notifications.New()
 		w3app.RegisterService(application.NewService(mcpNotifier))
 	}
@@ -435,8 +474,12 @@ func main() {
 	// toggle and a menu (show / hide / reset position / settings / about /
 	// quit). Menu labels follow the persisted UI language; English is the
 	// fallback for unknown codes. Tray creation must happen after the window
-	// exists so the click handlers can drive it.
-	setupTray(w3app, app, window, savedSettings.Language)
+	// exists so the click handlers can drive it. Skipped entirely when the
+	// user turned the icon off; created lazily if re-enabled at runtime
+	// (see applyTrayVisibility).
+	if trayIconEnabled(&savedSettings) {
+		setupTray(w3app, app, window, savedSettings.Language)
+	}
 
 	// Global show/hide hotkey (issue #982, Windows + platform backends via
 	// the wails GlobalShortcutManager). Default Ctrl+M when unset; can be
@@ -477,11 +520,7 @@ func main() {
 	// Quit-then-spawn relaunch (RelaunchApp / update autotest): the process
 	// is exiting and the single-instance lock is released, so the successor
 	// starts clean — it would otherwise be rejected as a "second instance".
-	if relaunchPending.Load() {
-		if err := spawnSuccessorProcess(); err != nil {
-			log.Writef("relaunch: spawn successor failed: %v", err)
-		}
-	}
+	relaunchIfPending()
 	// Graceful exit. shutdown() (see app.go) has already released the WebView2
 	// COM controller synchronously on the UI thread. ICoreWebView2Controller::Close()
 	// blocks until the controller and, being the last one on the environment, the
@@ -706,6 +745,31 @@ func buildTrayMenu(app *App, lang string) *application.Menu {
 		app.app.Quit()
 	})
 	return menu
+}
+
+// trayIconEnabled reports whether the tray icon should be shown. Nil (older
+// settings.json without the field) means on.
+func trayIconEnabled(s *store.AppSettings) bool {
+	return s.ShowTrayIcon == nil || *s.ShowTrayIcon
+}
+
+// applyTrayVisibility shows or hides the tray icon when the setting changes
+// at runtime. When the app started with the icon disabled no tray exists yet,
+// so the first enable creates it.
+func (a *App) applyTrayVisibility(show bool, lang string) {
+	if a.app == nil {
+		return
+	}
+	switch {
+	case !show:
+		if a.tray != nil {
+			a.tray.Hide()
+		}
+	case a.tray == nil:
+		setupTray(a.app, a, a.window, lang)
+	default:
+		a.tray.Show()
+	}
 }
 
 // refreshTrayLanguage rebuilds the tray menu when the persisted UI language

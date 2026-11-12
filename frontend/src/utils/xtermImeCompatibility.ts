@@ -43,6 +43,9 @@ interface XtermCompositionHelperInternals {
   _coreService?: {
     triggerDataEvent?: (this: unknown, data: string, wasUserInput?: boolean) => void
   }
+  // Used by the Linux/Chromium commit guard below to re-anchor the IME
+  // candidate window on compositionstart.
+  updateCompositionElements?: (dontRecurse?: boolean) => void
   compositionstart?: (this: XtermCompositionHelperInternals) => void
   compositionupdate?: (
     this: XtermCompositionHelperInternals,
@@ -58,6 +61,13 @@ interface XtermCompositionHelperInternals {
 interface XtermCoreInternals {
   _inputEvent?: (this: XtermCoreInternals, ev: InputEvent) => boolean
   _keyDownSeen?: boolean
+  coreService?: {
+    triggerDataEvent?: (
+      this: unknown,
+      data: string,
+      wasUserInput?: boolean,
+    ) => void
+  }
   _keyDownHandled?: boolean
   _keyPressHandled?: boolean
   _unprocessedDeadKey?: boolean
@@ -164,7 +174,118 @@ export function installImeCompatibilityPatch(terminal: Terminal): Disposable {
   if (/Windows/i.test(navigator.userAgent)) {
     return installWindowsImePatch(terminal)
   }
-  return noopDisposable
+  // Linux/Chromium webviews: xterm's CompositionHelper can deliver one IME
+  // commit through two independent paths (see installCompositionCommitGuard).
+  const core = (terminal as TerminalWithCore)._core
+  const helper = core?._compositionHelper
+  if (!core || !helper) return noopDisposable
+  return installCompositionCommitGuard(core, helper) ?? noopDisposable
+}
+
+const NON_ASCII = /[^\x00-\x7F]/
+// How long after compositionend a payload counts as part of that commit. The
+// two xterm delivery paths land in the same task or in the 0ms timer queued by
+// _finalizeComposition, so anything this late is a different keystroke.
+const COMMIT_DEDUPE_WINDOW_MS = 100
+
+// Escape sequences (arrow keys, mouse reports, device replies) and newlines
+// start with a control character, so this separates real text payloads from
+// protocol traffic without parsing the sequence.
+function isPlainTextPayload(data: string): boolean {
+  if (data.length === 0) return false
+  for (let index = 0; index < data.length; index += 1) {
+    const code = data.charCodeAt(index)
+    if (code < 0x20 || code === 0x7f) return false
+  }
+  return true
+}
+
+// Exactly-once delivery for an IME commit. Returns null when the terminal does
+// not expose the services it needs (older xterm builds, test fakes).
+function installCompositionCommitGuard(
+  core: XtermCoreInternals,
+  helper: XtermCompositionHelperInternals,
+): Disposable | null {
+  const coreService = core.coreService
+  const textarea = core.textarea
+  if (
+    !coreService ||
+    typeof coreService.triggerDataEvent !== 'function' ||
+    !textarea ||
+    typeof textarea.addEventListener !== 'function'
+  ) {
+    return null
+  }
+
+  let commitWindowUntil = 0
+  let windowTimer: ReturnType<typeof setTimeout> | null = null
+  const committedPayloads = new Set<string>()
+
+  const cancelCommitWindow = () => {
+    if (windowTimer !== null) {
+      clearTimeout(windowTimer)
+      windowTimer = null
+    }
+    commitWindowUntil = 0
+    committedPayloads.clear()
+  }
+
+  const closeCommitWindow = () => {
+    windowTimer = null
+    commitWindowUntil = 0
+    committedPayloads.clear()
+  }
+
+  const onCompositionStart = () => {
+    cancelCommitWindow()
+    // xterm repositions the IME anchor on render and on compositionupdate
+    // only. Doing it here keeps a textarea that a right-click parked under the
+    // mouse from anchoring the candidate window at the mouse pointer.
+    helper.updateCompositionElements?.()
+  }
+
+  const onCompositionEnd = () => {
+    commitWindowUntil = Date.now() + COMMIT_DEDUPE_WINDOW_MS
+    if (windowTimer !== null) clearTimeout(windowTimer)
+    windowTimer = setTimeout(closeCommitWindow, COMMIT_DEDUPE_WINDOW_MS)
+  }
+
+  const originalTriggerDataEvent = coreService.triggerDataEvent
+  const patchedTriggerDataEvent = function patchedTriggerDataEvent(
+    this: unknown,
+    data: string,
+    wasUserInput?: boolean,
+  ): void {
+    if (
+      commitWindowUntil > 0 &&
+      Date.now() < commitWindowUntil &&
+      isPlainTextPayload(data) &&
+      // A lone ASCII key is what fast typing and key auto-repeat produce.
+      // IME commits are either multi-character or non-ASCII, so leave plain
+      // single characters alone and only collapse those.
+      (data.length > 1 || NON_ASCII.test(data))
+    ) {
+      // Both xterm commit paths send the same text; keep the first one.
+      if (committedPayloads.has(data)) return
+      committedPayloads.add(data)
+    }
+    originalTriggerDataEvent.call(this, data, wasUserInput)
+  }
+
+  coreService.triggerDataEvent = patchedTriggerDataEvent
+  textarea.addEventListener('compositionstart', onCompositionStart, true)
+  textarea.addEventListener('compositionend', onCompositionEnd, true)
+
+  return {
+    dispose() {
+      cancelCommitWindow()
+      textarea.removeEventListener('compositionstart', onCompositionStart, true)
+      textarea.removeEventListener('compositionend', onCompositionEnd, true)
+      if (coreService.triggerDataEvent === patchedTriggerDataEvent) {
+        coreService.triggerDataEvent = originalTriggerDataEvent
+      }
+    },
+  }
 }
 
 // Windows/WebView2: a native window drag runs a modal loop (WM_ENTERSIZEMOVE)
