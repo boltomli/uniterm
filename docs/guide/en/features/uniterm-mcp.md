@@ -1,4 +1,4 @@
-# MCP Server (External AI Agents)
+# uniTerm MCP (External AI Agents)
 
 uniTerm can run as an MCP (Model Context Protocol) server, letting external AI agents — Claude Code, Codex, ZCode, Kimi, Gemini CLI, Trae, WorkBuddy, DeepSeek — **run commands, read output, and transfer files on the remote hosts uniTerm manages**.
 
@@ -24,16 +24,16 @@ Saved SSH connections (credentials stay in the app)
 
 ### 1. Enable the MCP server
 
-Settings (`⌘,`) → **MCP Server**:
+Settings (`⌘,`) → **uniTerm MCP**:
 
-1. Turn on the "Enable MCP server" switch; the status line shows `Running · 127.0.0.1:61207`
+1. Turn on the "Enable uniTerm MCP" switch; the status line shows `Running · 127.0.0.1:61207`
 2. Adjust as needed:
    - **Listen port** (default 61207; client configs must be regenerated after changing it)
    - **Command approval policy** (see below)
 
 All tools are available by default; side effects are governed entirely by the approval policy.
 
-![MCP Server Settings](/imgs/mcp_server_light.webp)
+![uniTerm MCP Settings](/imgs/mcp_server_light.webp)
 
 ### 2. Generate a token and connect a client
 
@@ -144,7 +144,7 @@ kimi mcp add --transport http uniterm http://127.0.0.1:61207/mcp \
 
 For direct access, use a trusted network: MCP uses plain HTTP, so traffic and tokens are not encrypted by this endpoint.
 
-1. In **Settings → MCP Server**, turn on **Allow Remote Access**. The listener changes to `0.0.0.0:<port>`; existing MCP connections are closed during the restart.
+1. In **Settings → uniTerm MCP**, turn on **Allow Remote Access**. The listener changes to `0.0.0.0:<port>`; existing MCP connections are closed during the restart.
 2. Configure the remote client with `http://<desktop-ip>:61207/mcp` and its Bearer token. Use the desktop’s reachable IPv4 address or hostname, not `0.0.0.0`. Allow the listening port through the desktop firewall if needed.
 3. In the token setup wizard, enter that address before copying the client configuration. If a forwarding rule uses a different port, update the port in the copied configuration too.
 
@@ -204,13 +204,9 @@ The approval dialog shows: the requesting client, the target connection, and **t
 If you don't respond within 110 seconds (switched away, away from the machine), the approval is auto-denied and the agent is told "user did not respond". This is deliberate: better to have the agent retry than to run a command without your knowledge.
 :::
 
-## Local Directory Restriction for Transfers
+## Approval for Transfers
 
-The **local side** of `upload_file` / `download_file` must be inside an allowed directory, taken from the SFTP panel's saved local path bookmarks (Settings → Storage, or paths saved in the file panel sidebar).
-
-- Paths are resolved through symlinks — **escape attempts are rejected** (e.g. a symlink under `/tmp/allowed` pointing to `/etc` fails)
-- An empty bookmark list rejects every transfer — on purpose: add the directory to bookmarks first
-- Remote paths are unrestricted but governed by the approval policy
+Local and remote paths of `upload_file` / `download_file` are unrestricted, but **every transfer raises an approval dialog** — transfers are write operations that overwrite the same-named file on either side. The dialog shows the full source and destination paths; reject it if the transfer looks wrong.
 
 ## Security Model at a Glance
 
@@ -237,8 +233,8 @@ Most likely waiting for the approval dialog — switch back to uniTerm. It auto-
 **exec_command says `session is not connected`?**
 The agent needs to `connect` first; or open a terminal tab to that host yourself and let the agent find it via `list_sessions`.
 
-**Transfers fail with "outside the allowed directories"?**
-The local path is not in the SFTP local bookmarks. Add the directory and retry.
+**Transfers keep waiting for confirmation?**
+Transfers are write operations and always raise an approval dialog — switch back to the uniTerm window to handle it. It auto-denies after 110 seconds.
 
 **Lost the token?**
 It cannot be recovered (by design). Regenerate one and update client configs; the old token dies immediately.

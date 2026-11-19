@@ -69,14 +69,70 @@ func (p *sqlserverProvider) Quote(name string) string {
 	return "[" + strings.ReplaceAll(name, "]", "]]") + "]"
 }
 
+// splitQualifiedName splits a possibly schema-qualified identifier on its
+// LAST dot: "sales.employees" → ("sales", "employees"); "employees" →
+// ("", "employees"). The last-dot rule keeps database names that legally
+// contain a dot intact ("my.db.sales" → ("my.db", "sales")). Identifiers
+// whose base part contains a dot are out of scope for the tree encoding
+// .
+func splitQualifiedName(name string) (qualifier, base string) {
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[:i], name[i+1:]
+	}
+	return "", name
+}
+
+// splitDbNode splits a tree node name into database and optional schema
+// qualifier. Bare database nodes ("shop") yield schema "" — this is the
+// dbName-side counterpart of splitQualifiedName, where a bare name means
+// "database only", not "schema-less table".
+func splitDbNode(dbName string) (db, schema string) {
+	db, schema = splitQualifiedName(dbName)
+	if db == "" {
+		db = schema
+		schema = ""
+	}
+	return db, schema
+}
+
+// QualifyTable quotes a table identifier that may arrive schema-qualified
+// ("sales.employees" from the schema-grouped tree) or bare ("employees" from
+// the degraded flat listing). Dialects whose tables are never qualified keep
+// the Provider-interface default of plain Quote.
+func (p *sqlserverProvider) QualifyTable(name string) string {
+	schema, table := splitQualifiedName(name)
+	if schema == "" {
+		return p.Quote(table)
+	}
+	return p.Quote(schema) + "." + p.Quote(table)
+}
+
+// qualifyWithNodeSchema qualifies a bare table name with the schema carried
+// by a composite "db.schema" node name. CREATE-like operations (CreateTable,
+// CopyTable's target) must land inside the schema node the user opened, not
+// the login's default schema.
+func (p *sqlserverProvider) qualifyWithNodeSchema(dbName, tableName string) string {
+	_, nodeSchema := splitDbNode(dbName)
+	if nodeSchema == "" {
+		return tableName // bare database node: legacy default-schema behavior
+	}
+	if schema, _ := splitQualifiedName(tableName); schema != "" {
+		return tableName // already qualified
+	}
+	return nodeSchema + "." + tableName
+}
+
 func (p *sqlserverProvider) PrepareExec(db execer, dbName string) error {
 	if dbName == "" {
 		return nil
 	}
+	// Composite "db.schema" node names carry a schema qualifier that a USE
+	// statement cannot express; switch the database part only.
+	useDb, _ := splitDbNode(dbName)
 	// Bounded: this runs on every statement path (DB-11).
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
-	_, err := db.ExecContext(ctx, fmt.Sprintf("USE %s", p.Quote(dbName)))
+	_, err := db.ExecContext(ctx, fmt.Sprintf("USE %s", p.Quote(useDb)))
 	return err
 }
 
@@ -92,9 +148,8 @@ func (p *sqlserverProvider) DefaultTableQueryRef(ref TableRef, limit, offset int
 	)
 }
 
-
 func (p *sqlserverProvider) qualifiedTable(tableName string) string {
-	return p.Quote(tableName)
+	return p.QualifyTable(tableName)
 }
 
 // qualifiedTableSchema renders [schema].[table] (DB-07); an empty schema
@@ -239,10 +294,19 @@ func (p *sqlserverProvider) GetCapabilities() DBCapabilities {
 		"autoIncrementForcesNotNull": true,
 		"columnTypes":                sqlserverTypes,
 		"intTypes":                   sqlserverIntTypes,
+		// inner-schema dialect flags consumed by the frontend
+		// (no dbType checks there). undroppableSchemas drives hiding the
+		// schema-delete menu item for schemas the server refuses to drop.
+		"supportsSchemas":    true,
+		"defaultSchema":      "dbo",
+		"undroppableSchemas": []string{"dbo"},
 	}
 }
 
 // ── Schema discovery ──
+
+// GetDatabases returns the bare user-database names; the tree fetches each
+// database's schemas via GetSchemas and renders the second level.
 
 func (p *sqlserverProvider) GetDatabases(db *sql.DB) ([]string, error) {
 	results, err := queryStrings(db, `
@@ -259,25 +323,37 @@ func (p *sqlserverProvider) GetDatabases(db *sql.DB) ([]string, error) {
 	return names, nil
 }
 
+// GetSchemas lists every user schema of a database, including schemas that
+// do not own any table or view yet — a schema the user just created must
+// appear in the tree before it holds a table . Fixed
+// database roles (db_*) and system schemas are filtered out; dbo stays,
+// matching SSMS expectations. dbName is a REAL database name (possibly
+// containing dots) from GetDatabases, so it must not go through withUse —
+// that splits composite NODE names from the tree.
+func (p *sqlserverProvider) GetSchemas(db *sql.DB, dbName string) ([]string, error) {
+	schemaSQL := `
+		SELECT s.name AS schema_name
+		FROM sys.schemas s
+		WHERE s.name NOT IN ('sys', 'guest', 'INFORMATION_SCHEMA')
+		  AND s.name NOT LIKE 'db[_]%'
+		ORDER BY s.name`
+	results, err := p.queryStringsOnDB(db, dbName, schemaSQL)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(results))
+	for _, row := range results {
+		names = append(names, row["schema_name"])
+	}
+	return names, nil
+}
+
 func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {
-	// Schema is included (DB-07): dbo.users and sales.users must be
-	// distinguishable in the tree and resolvable by the structure page.
-	query := `
-		SELECT t.name AS table_name, SCHEMA_NAME(t.schema_id) AS table_schema, 'TABLE' AS type_desc,
-		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
-		FROM sys.tables t
-		LEFT JOIN sys.extended_properties ep
-		  ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
-		WHERE t.is_ms_shipped = 0
-		UNION ALL
-		SELECT v.name AS table_name, SCHEMA_NAME(v.schema_id) AS table_schema, 'VIEW' AS type_desc,
-		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
-		FROM sys.views v
-		LEFT JOIN sys.extended_properties ep
-		  ON ep.major_id = v.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
-		WHERE v.is_ms_shipped = 0
-		ORDER BY table_schema, table_name`
-	results, err := p.queryStringsOnDB(db, dbName, query)
+	// A composite "db.schema" node lists only its own schema's objects;
+	// a bare dbName (degraded node) keeps the legacy flat listing. Both carry
+	// the schema per row (DB-07) so dbo.users and sales.users stay distinct.
+	base, args, _ := p.tableListBase(dbName)
+	results, err := p.queryStringsOnDB(db, dbName, base+"\n\t\tORDER BY table_schema, table_name", args...)
 	if err != nil {
 		return nil, fmt.Errorf("get tables: %w", err)
 	}
@@ -297,26 +373,51 @@ func (p *sqlserverProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, e
 	return infos, nil
 }
 
-func (p *sqlserverProvider) GetTablePage(db *sql.DB, dbName string, query string, offset, limit int) ([]TableInfo, int, error) {
-	base := `
-		SELECT t.name AS table_name, 'TABLE' AS type_desc,
+// tableListBase builds the tables-UNION-views listing body shared by
+// GetTables and GetTablePage. When dbName carries a schema qualifier
+// ("db.schema"), only that schema's objects are listed. table_name is always
+// the bare object name and table_schema carries the namespace separately, so
+// dbo.users and sales.users stay distinguishable without conflating the two
+// into one string (DB-07/DB-09); a bare dbName keeps the legacy flat listing
+// (degraded/permission-fallback nodes).
+func (p *sqlserverProvider) tableListBase(dbName string) (string, []any, int) {
+	_, schema := splitDbNode(dbName)
+	var args []any
+	// Build each UNION half from its own alias so the views half can never
+	// reference the tables alias (regression: t.name leaked into the views
+	// SELECT and broke every schema-filtered listing).
+	half := func(from, alias, kind string) string {
+		join, where := "", "WHERE "+alias+".is_ms_shipped = 0"
+		if schema != "" {
+			join = "\n\t\tJOIN sys.schemas s ON s.schema_id = " + alias + ".schema_id" +
+				"\n\t\t  AND s.name = @p1"
+			where += " AND s.name = @p1"
+		}
+		return `
+		SELECT ` + alias + `.name AS table_name,
+		       SCHEMA_NAME(` + alias + `.schema_id) AS table_schema,
+		       ` + kind + ` AS type_desc,
 		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
-		FROM sys.tables t
+		FROM ` + from + `
 		LEFT JOIN sys.extended_properties ep
-		  ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
-		WHERE t.is_ms_shipped = 0
-		UNION ALL
-		SELECT v.name AS table_name, 'VIEW' AS type_desc,
-		       ISNULL(CONVERT(nvarchar(4000), ep.value), '') AS table_comment
-		FROM sys.views v
-		LEFT JOIN sys.extended_properties ep
-		  ON ep.major_id = v.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
-		WHERE v.is_ms_shipped = 0`
+		  ON ep.major_id = ` + alias + `.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'` + join + `
+		` + where
+	}
+	if schema != "" {
+		args = append(args, schema)
+	}
+	base := half("sys.tables t", "t", "'TABLE'") + `
+		UNION ALL` + half("sys.views v", "v", "'VIEW'")
+	return base, args, len(args) + 1
+}
 
-	var countArgs []any
+func (p *sqlserverProvider) GetTablePage(db *sql.DB, dbName string, query string, offset, limit int) ([]TableInfo, int, error) {
+	base, baseArgs, next := p.tableListBase(dbName)
+
+	countArgs := append([]any{}, baseArgs...)
 	countSQL := "SELECT COUNT(*) AS n FROM (" + base + ") t"
 	if query != "" {
-		countSQL += " WHERE table_name LIKE @p1"
+		countSQL += fmt.Sprintf(" WHERE table_name LIKE @p%d", next)
 		countArgs = append(countArgs, "%"+query+"%")
 	}
 	countRows, err := p.queryStringsOnDB(db, dbName, countSQL, countArgs...)
@@ -328,16 +429,15 @@ func (p *sqlserverProvider) GetTablePage(db *sql.DB, dbName string, query string
 		total, _ = strconv.Atoi(countRows[0]["n"])
 	}
 
-	var pageSQL string
-	var pageArgs []any
+	pageSQL := "SELECT table_name, table_schema, type_desc, table_comment FROM (" + base + ") t"
+	pageArgs := append([]any{}, baseArgs...)
 	if query != "" {
-		pageSQL = "SELECT table_name, type_desc, table_comment FROM (" + base + ") t " +
-			"WHERE table_name LIKE @p1 " +
-			"ORDER BY table_name OFFSET @p2 ROWS FETCH NEXT @p3 ROWS ONLY"
-		pageArgs = append(pageArgs, "%"+query+"%", offset, limit)
+		pageSQL += fmt.Sprintf(" WHERE table_name LIKE @p%d", next)
+		pageArgs = append(pageArgs, "%"+query+"%")
+		pageSQL += fmt.Sprintf(" ORDER BY table_name OFFSET @p%d ROWS FETCH NEXT @p%d ROWS ONLY", next+1, next+2)
+		pageArgs = append(pageArgs, offset, limit)
 	} else {
-		pageSQL = "SELECT table_name, type_desc, table_comment FROM (" + base + ") t " +
-			"ORDER BY table_name OFFSET @p1 ROWS FETCH NEXT @p2 ROWS ONLY"
+		pageSQL += fmt.Sprintf(" ORDER BY table_name OFFSET @p%d ROWS FETCH NEXT @p%d ROWS ONLY", next, next+1)
 		pageArgs = append(pageArgs, offset, limit)
 	}
 	results, err := p.queryStringsOnDB(db, dbName, pageSQL, pageArgs...)
@@ -352,6 +452,7 @@ func (p *sqlserverProvider) GetTablePage(db *sql.DB, dbName string, query string
 		}
 		infos = append(infos, TableInfo{
 			Name:    row["table_name"],
+			Schema:  row["table_schema"],
 			Type:    tp,
 			Comment: row["table_comment"],
 		})
@@ -472,15 +573,68 @@ func (p *sqlserverProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*Schema
 
 // ── DDL: Database ──
 
+// CreateDatabase accepts a composite "db.schema" name from the new-database
+// dialog: the schema part is optional and created inside the
+// new database; empty means "use the login's default schema" (usually dbo),
+// which the tree resolves via SCHEMA_NAME() on the next refresh. The dialog
+// always sends "name.schema" — a trailing dot when the schema is empty — so
+// the last segment is unambiguously the schema and dot-named database names
+// ("my.db") stay legal. A pre-existing database is tolerated when a schema
+// is requested: only the missing schema is created; both already present is
+// reported as a duplicate.
 func (p *sqlserverProvider) CreateDatabase(db *sql.DB, dbName string) error {
-	err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", p.Quote(dbName)))
-	return err
+	useDb, schema := splitDbNode(dbName)
+	var dbCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sys.databases WHERE name = @p1`, useDb).Scan(&dbCount); err != nil {
+		return err
+	}
+	if dbCount == 0 {
+		if err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", p.Quote(useDb))); err != nil {
+			return err
+		}
+	} else if schema == "" {
+		return fmt.Errorf("database %s already exists", useDb)
+	}
+	if schema == "" {
+		return nil
+	}
+	if dbCount > 0 {
+		// Pre-existing database: is the requested schema already there?
+		rows, err := p.queryStringsOnDB(db, useDb, `SELECT COUNT(*) AS n FROM sys.schemas WHERE name = @p1`, schema)
+		if err != nil {
+			return err
+		}
+		schemaCount := 0
+		if len(rows) > 0 {
+			schemaCount, _ = strconv.Atoi(rows[0]["n"])
+		}
+		if schemaCount > 0 {
+			return fmt.Errorf("schema %s already exists in database %s", schema, useDb)
+		}
+	}
+	// CREATE SCHEMA must be the only statement in its batch and must run
+	// inside the database — execPrepared pins USE + CREATE SCHEMA to one
+	// pooled connection so the schema cannot land in master.
+	return execPrepared(p, db, useDb, fmt.Sprintf("CREATE SCHEMA %s", p.Quote(schema)), nil)
+}
+
+// DropSchema drops the schema part of a composite "db.schema" node name.
+// T-SQL refuses to drop a schema that still owns objects; that driver error
+// is surfaced as-is so the user knows to empty the schema first.
+func (p *sqlserverProvider) DropSchema(db *sql.DB, dbName string) error {
+	useDb, schema := splitDbNode(dbName)
+	if schema == "" {
+		return fmt.Errorf("node %q carries no schema qualifier", dbName)
+	}
+	return execPrepared(p, db, useDb, fmt.Sprintf("DROP SCHEMA %s", p.Quote(schema)), nil)
 }
 
 func (p *sqlserverProvider) DropDatabase(db *sql.DB, dbName string) error {
-	_ = execDDL(db, fmt.Sprintf("ALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE", p.Quote(dbName)))
-	err := execDDL(db, fmt.Sprintf("DROP DATABASE %s", p.Quote(dbName)))
-	return err
+	// The tree hands out composite "db.schema" node names; a database can
+	// only be dropped by its bare name.
+	useDb, _ := splitDbNode(dbName)
+	_ = execDDL(db, fmt.Sprintf("ALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE", p.Quote(useDb)))
+	return execDDL(db, fmt.Sprintf("DROP DATABASE %s", p.Quote(useDb)))
 }
 
 // ── DDL: Table ──
@@ -498,6 +652,11 @@ func (p *sqlserverProvider) CreateTableSchema(db *sql.DB, dbName, schema, tableN
 }
 
 func (p *sqlserverProvider) createTable(db *sql.DB, dbName, schema, tableName string) error {
+	// A new table created inside a "db.schema" node must land in that
+	// schema, not the login's default schema.
+	if schema == "" {
+		tableName = p.qualifyWithNodeSchema(dbName, tableName)
+	}
 	return p.execDDLOnDB(db, dbName, fmt.Sprintf("CREATE TABLE %s (id INT IDENTITY(1,1) PRIMARY KEY)", p.qualifiedTableSchema(schema, tableName)))
 }
 
@@ -538,6 +697,7 @@ func (p *sqlserverProvider) truncateTable(db *sql.DB, dbName, schema, tableName 
 }
 
 // CopyTable clones structure and data via SELECT INTO (no indexes/constraints).
+// The clone lands in the same schema node the source lives in.
 func (p *sqlserverProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
 	return p.copyTable(db, dbName, "", tableName, newTableName)
 }
@@ -547,6 +707,9 @@ func (p *sqlserverProvider) CopyTableSchema(db *sql.DB, dbName, schema, tableNam
 }
 
 func (p *sqlserverProvider) copyTable(db *sql.DB, dbName, schema, tableName, newTableName string) error {
+	if schema == "" {
+		newTableName = p.qualifyWithNodeSchema(dbName, newTableName)
+	}
 	return p.execDDLOnDB(db, dbName, fmt.Sprintf("SELECT * INTO %s FROM %s",
 		p.qualifiedTableSchema(schema, newTableName), p.qualifiedTableSchema(schema, tableName)))
 }
@@ -907,15 +1070,18 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 
 	var b strings.Builder
 	// Schema-qualified reference (DB-23/DB-07): resolve the object's schema
-	// so DROP/CREATE/INSERT replay against the same namesake.
-	schema, isView := sqlserverObjectSchema(conn, ctx, dbName, tableName)
-	quotedTable := p.qualifiedTableSchema(schema, tableName)
+	// so DROP/CREATE/INSERT replay against the same namesake. The tree hands
+	// down "sales.orders" for schema nodes; a bare name resolves via the
+	// catalog.
+	dumpSchema, dumpTable := splitQualifiedName(tableName)
+	schema, isView := sqlserverObjectSchema(conn, ctx, dumpSchema, dumpTable)
+	quotedTable := p.qualifiedTableSchema(schema, dumpTable)
 
 	if opts.Structure {
 		if isView {
 			// A view must stay a view (DB-23): export its module body instead
 			// of a synthesized CREATE TABLE.
-			viewDef, derr := sqlserverViewDef(conn, ctx, dbName, tableName)
+			viewDef, derr := sqlserverViewDef(conn, ctx, schema, dumpTable)
 			if derr != nil {
 				return "", derr
 			}
@@ -929,7 +1095,7 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 			b.WriteString(strings.TrimSuffix(strings.TrimSpace(viewDef), ";"))
 			b.WriteString(";\n\n")
 		} else {
-			createSQL, derr := sqlserverCreateTableSQL(conn, ctx, dbName, tableName, quotedTable)
+			createSQL, derr := sqlserverCreateTableSQL(conn, ctx, schema, dumpTable, quotedTable)
 			if derr != nil {
 				return "", derr
 			}
@@ -947,7 +1113,7 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 	}
 
 	if opts.Data {
-		cols, colTypes, derr := sqlserverTableColumns(conn, ctx, dbName, tableName)
+		cols, colTypes, derr := sqlserverTableColumns(conn, ctx, schema, dumpTable)
 		if derr != nil {
 			return "", derr
 		}
@@ -999,38 +1165,55 @@ func (p *sqlserverProvider) DumpTable(db *sql.DB, dbName, tableName string, opts
 // sqlserverCreateTableSQL builds a CREATE TABLE statement from INFORMATION_SCHEMA.
 // sqlserverObjectSchema resolves the schema an object lives in and whether
 // it is a view. Both default to the login's default (dbo / table) on miss.
-func sqlserverObjectSchema(conn *sql.Conn, ctx context.Context, dbName, tableName string) (string, bool) {
+func sqlserverObjectSchema(conn *sql.Conn, ctx context.Context, wanted, tableName string) (string, bool) {
 	var schema, typeDesc string
+	// An explicit schema pins the probe, so two namesakes cannot be confused
+	// (DB-07); without one the first match in schema order wins (legacy).
+	filter, args := "", []any{tableName}
+	if wanted != "" {
+		filter = " AND SCHEMA_NAME(schema_id) = @p2"
+		args = append(args, wanted)
+	}
 	err := conn.QueryRowContext(ctx, `
-		SELECT SCHEMA_NAME(schema_id), 'VIEW' FROM sys.views WHERE name = @p1
+		SELECT SCHEMA_NAME(schema_id), 'VIEW' FROM sys.views WHERE name = @p1`+filter+`
 		UNION ALL
-		SELECT SCHEMA_NAME(schema_id), 'TABLE' FROM sys.tables WHERE name = @p1
-		ORDER BY 2`, tableName).Scan(&schema, &typeDesc)
+		SELECT SCHEMA_NAME(schema_id), 'TABLE' FROM sys.tables WHERE name = @p1`+filter+`
+		ORDER BY 2`, args...).Scan(&schema, &typeDesc)
 	if err != nil || schema == "" {
-		return "", false
+		return wanted, false
 	}
 	return schema, typeDesc == "VIEW"
 }
 
 // sqlserverViewDef returns the CREATE VIEW body (module definition).
-func sqlserverViewDef(conn *sql.Conn, ctx context.Context, dbName, tableName string) (string, error) {
+func sqlserverViewDef(conn *sql.Conn, ctx context.Context, schema, tableName string) (string, error) {
 	var def string
+	filter, args := "", []any{tableName}
+	if schema != "" {
+		filter = " AND SCHEMA_NAME(v.schema_id) = @p2"
+		args = append(args, schema)
+	}
 	err := conn.QueryRowContext(ctx,
 		`SELECT m.definition FROM sys.sql_modules m
-		 JOIN sys.views v ON v.object_id = m.object_id WHERE v.name = @p1`, tableName).Scan(&def)
+		 JOIN sys.views v ON v.object_id = m.object_id WHERE v.name = @p1`+filter, args...).Scan(&def)
 	if err != nil {
 		return "", err
 	}
 	return def, nil
 }
 
-func sqlserverCreateTableSQL(conn *sql.Conn, ctx context.Context, dbName, tableName, quotedTable string) (string, error) {
+func sqlserverCreateTableSQL(conn *sql.Conn, ctx context.Context, schema, tableName, quotedTable string) (string, error) {
+	colWhere, colArgs := "WHERE TABLE_NAME = @p1", []any{tableName}
+	if schema != "" {
+		colWhere += " AND TABLE_SCHEMA = @p2"
+		colArgs = append(colArgs, schema)
+	}
 	rows, err := conn.QueryContext(ctx, `
 		SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
 		       CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE
 		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-		ORDER BY ORDINAL_POSITION`, dbName, tableName)
+		`+colWhere+`
+		ORDER BY ORDINAL_POSITION`, colArgs...)
 	if err != nil {
 		return "", err
 	}
@@ -1074,12 +1257,17 @@ func sqlserverCreateTableSQL(conn *sql.Conn, ctx context.Context, dbName, tableN
 }
 
 // sqlserverTableColumns returns column names and raw type tokens.
-func sqlserverTableColumns(conn *sql.Conn, ctx context.Context, dbName, tableName string) ([]string, []string, error) {
+func sqlserverTableColumns(conn *sql.Conn, ctx context.Context, schema, tableName string) ([]string, []string, error) {
+	colWhere, colArgs := "WHERE TABLE_NAME = @p1", []any{tableName}
+	if schema != "" {
+		colWhere += " AND TABLE_SCHEMA = @p2"
+		colArgs = append(colArgs, schema)
+	}
 	rows, err := conn.QueryContext(ctx, `
 		SELECT COLUMN_NAME, DATA_TYPE
 		FROM INFORMATION_SCHEMA.COLUMNS
-		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-		ORDER BY ORDINAL_POSITION`, dbName, tableName)
+		`+colWhere+`
+		ORDER BY ORDINAL_POSITION`, colArgs...)
 	if err != nil {
 		return nil, nil, err
 	}

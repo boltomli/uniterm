@@ -49,8 +49,7 @@
 
 Remote-Terminal, lokale und serielle Terminals, Dateiübertragung, Remote-Desktop, Datenbanken, Container und Serverüberwachung — deckt sämtliche Anforderungen an den Remote-Zugriff ab.
 
-- **Remote-Terminal** — SSH / Telnet / Mosh / Raw TCP mit Passwort- oder Schlüsselauthentifizierung; inklusive SSH-Tunnel-Portweiterleitung, sodass jede Verbindung über einen SSH-Jump-Host geroutet werden kann.
-- **Lokale und serielle Terminals** — PowerShell / CMD / Git Bash / WSL sowie serielle Verbindungen mit konfigurierbarer Baudrate, Datenbits, Stoppbits, Parität und lokalem Echo.
+- **Terminal** — SSH / Telnet / Mosh / Raw TCP / Seriell, plus lokale Shells (PowerShell / CMD / Git Bash / WSL).
 - **Dateiübertragung** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem mit Zweifenster-Browsing und `rz`/`sz`-Unterstützung in SSH-Terminals.
 - **Remote-Desktop** — RDP (Windows-Remote-Desktop), VNC (Fernsteuerung von Linux), SPICE (KVM/QEMU-VMs), X11 (X-Window-Weiterleitung)
 - **Datenbank-Client** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, mit KI-gestützten Abfragen in natürlicher Sprache und Bearbeitung von Datenzeilen.
@@ -65,17 +64,17 @@ Autonomer KI-Agent, der selbstständig Shell-Befehle über mehrere Runden hinweg
 - **Flexible Ausführungsmodi** — Umgehung, nur gefährliche, gefährliche + schreibende oder alle Befehle bestätigen — Sie bestimmen, wie viel Kontrolle der KI-Agent benötigt.
 - **Terminal-Integration** — KI-Befehle werden direkt im aktiven Terminal-Tab ausgeführt, optional an einen bestimmten Tab angeheftet oder dem aktiven Tab folgend. Zusammenarbeit Seite an Seite in geteilten Bereichen, jeder mit seinem eigenen Terminal-Kontext.
 - **MCP-Server** — Integrierter MCP-Server, mit dem externe KI-Agenten (Claude Code, Codex, Gemini CLI, ...) Befehle ausführen und Dateien auf gespeicherten Verbindungen übertragen können — Zugangsdaten verlassen die App nie.
-- **Skills & Befehle** — Wiederverwendbare Skill-Workflows und Befehle auf Prompt-Vorlagenbasis, angehängt mit `/` in der KI-Eingabe; die KI kann auch selbst neue Skills speichern.
+- **Skills & Befehle** — Wiederverwendbare Skill-Workflows und Befehle auf Prompt-Vorlagenbasis, angehängt mit `/` in der KI-Eingabe; die KI kann auch selbst neue Skills speichern; externe MCP-Server können angebunden werden, um den Werkzeugkasten der KI zu erweitern.
 - **Intelligente Vervollständigung** — Vervollständigung in Echtzeit während der Eingabe, basierend auf dem Befehlsverlauf und KI-Fähigkeiten.
 
 ### Personalisierung
 
 Verbindungsverwaltung, geteilte Bereiche, Cloud-Sync, Themes & Internationalisierung — Ihr Terminal, Ihre Art.
 
-- **Verbindungsmanager** — Serververbindungen gruppieren, schnell durchsuchen, erstellen und im Stapel bearbeiten.
+- **Verbindungsmanager** — Serververbindungen gruppieren, durchsuchen und im Stapel verwalten; verschlüsselter Import/Export sowie Import aus anderen Terminal-Apps (MobaXterm, Xshell usw.).
 - **Workspace** — Terminal-Tabs per Drag & Drop in den Inhaltsbereich ziehen, um sie frei zu teilen und zu einem Workspace zu kombinieren; Panelränder ziehen, um Größe und Anordnung anzupassen.
+- **Netzwerk-Toolbox** — Netzwerkscan, SSH-Port-Weiterleitungs-Tunnel und lokale Dienste zum Betreiben temporärer Server für andere Geräte.
 - **Cloud-Sync** — Verschlüsselte Cloud-Synchronisierung in fünf Modi: Git-Repository, WebDAV, SFTP, S3 und SMB — keine Sorge um Datenverlust oder Datenlecks, und nahtloses Weiterarbeiten über Geräte hinweg.
-- **Eigene Tastenkombinationen** — Tastenkürzel für jede Aktion frei zuweisen für eine vollständig tastaturgesteuerte Bedienung, die Hände bleiben auf der Tastatur.
 - **Themes & Internationalisierung** — 28 Terminal-Themes sowie 3 UI-Themes (Dark / Deep Blue / Light) und ein anpassbares Hintergrundbild; UI in 11 Sprachen: Englisch, Deutsch, Spanisch, Französisch, Russisch, Portugiesisch, Japanisch, Koreanisch, vereinfachtes Chinesisch, traditionelles Chinesisch, Vietnamesisch.
 
 ## Unterstützte Protokolle
@@ -350,6 +349,11 @@ Dank an die folgenden Personen für Code-Beiträge und Verbesserungen sowie an a
     <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
     <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
     <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
+    <td align="center"><a href="https://github.com/dajiaohuang">@dajiaohuang</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
+    <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
   </tr>
 </table>
 

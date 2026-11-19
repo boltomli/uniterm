@@ -61,29 +61,32 @@
     </div>
 
     <div ref="messagesRef" class="ai-messages" @contextmenu="onAIContextMenu">
-      <div
-        v-for="msg in visibleMessages"
-        :key="msg.id"
-        @contextmenu.stop.prevent="onMessageContextMenu($event, msg.id)"
-      >
-        <AIMessage
-          :message="msg"
-          :search-text="searchText"
-          @approve="onApprove"
-          @reject="onReject"
-          @continue="onContinue"
-          @answer="onAnswer"
-          @dismiss="onDismiss"
-        />
-      </div>
-      <div v-if="aiStore.contextNotice" class="ai-context-notice" role="status">{{ aiStore.contextNotice }}</div>
-      <div v-if="aiStore.isRunning || aiStore.pendingCommand || aiStore.pendingQuestion" class="ai-thinking">
-        <div class="thinking-row" :title="t('ai.thinkingToggleHint')" @click="toggleThinking">
-          <div class="thinking-text">{{ statusText }}</div>
-          <ChevronDown v-if="!aiStore.thinkingExpanded" :size="lucideSize('0.75rem')" class="thinking-chevron" />
-          <ChevronUp v-else :size="lucideSize('0.75rem')" class="thinking-chevron" />
+      <template v-for="(msg, msgIndex) in visibleMessages" :key="msg.id">
+        <div @contextmenu.stop.prevent="onMessageContextMenu($event, msg.id)">
+          <AIMessage
+            :message="msg"
+            :search-text="searchText"
+            @approve="onApprove"
+            @reject="onReject"
+            @continue="onContinue"
+            @answer="onAnswer"
+            @dismiss="onDismiss"
+          />
         </div>
-        <div v-if="aiStore.thinkingExpanded" ref="thinkingPanelRef" class="thinking-panel">
+        <div v-if="msgIndex === contextRecordIndex" class="ai-context-notice" :class="{ 'ai-context-record-failed': aiStore.contextRecord?.failed }" role="status">{{ aiStore.contextRecord?.text }}</div>
+      </template>
+      <div v-if="aiStore.contextRecord && contextRecordIndex < 0" class="ai-context-notice" :class="{ 'ai-context-record-failed': aiStore.contextRecord.failed }" role="status">{{ aiStore.contextRecord.text }}</div>
+      <div v-if="aiStore.isRunning || aiStore.pendingCommand || aiStore.pendingQuestion" class="ai-thinking">
+        <div class="thinking-row" :class="{ clickable: thinkingToggleVisible }" :title="thinkingToggleVisible ? t('ai.thinkingToggleHint') : undefined" @click="thinkingToggleVisible && toggleThinking()">
+          <div class="thinking-text">{{ statusText }}</div>
+          <span v-if="liveThinkingElapsed" class="thinking-panel-time">{{ liveThinkingElapsed }}</span>
+          <span v-if="liveCompactionElapsed" class="thinking-panel-time">{{ liveCompactionElapsed }}</span>
+          <template v-if="thinkingToggleVisible">
+            <ChevronDown v-if="!aiStore.thinkingExpanded" :size="'0.75rem'" class="thinking-chevron" />
+            <ChevronUp v-else :size="'0.75rem'" class="thinking-chevron" />
+          </template>
+        </div>
+        <div v-if="thinkingToggleVisible && aiStore.thinkingExpanded" ref="thinkingPanelRef" class="thinking-panel">
           <div class="thinking-panel-header">
             <span class="thinking-dot" :class="aiStore.status === 'thinking' ? 'live' : 'done'">{{ aiStore.status === 'thinking' ? '○' : '●' }}</span>
             <span class="thinking-panel-title">{{ t('ai.thoughtProcess') }}</span>
@@ -241,21 +244,22 @@
         />
         <div class="input-actions">
           <div class="input-actions-left">
+            <!-- Attach / terminal-reference / skill actions collapsed behind a
+                 single "+" button; the items dispatch to the same handlers the
+                 removed standalone buttons used. -->
             <button
-              v-if="!isMobile"
-              class="ghost-btn hash-btn attach-btn"
-              :title="t('ai.attachFile')"
+              class="ghost-btn hash-btn add-btn"
+              :title="t('ai.addMenu')"
               :disabled="lockedPanels.length === 0 && !currentIsTerminal"
-              @click="onAttachClick"
+              @click.stop="addMenuRef?.toggle($event.currentTarget)"
             >
-              <Paperclip :size="14" />
+              <Plus :size="14" />
             </button>
-            <button class="ghost-btn hash-btn" title="引用终端" :disabled="lockedPanels.length === 0 && !currentIsTerminal" @click="onHashButtonClick">
-              <span class="hash-btn-icon">#</span>
-            </button>
-            <button class="ghost-btn hash-btn" title="Skill / 命令" :disabled="lockedPanels.length === 0 && !currentIsTerminal" @click="onSlashButtonClick">
-              <span class="hash-btn-icon">/</span>
-            </button>
+            <Menu ref="addMenuRef" v-model:visible="addMenuVisible">
+              <MenuItem v-if="!isMobile" iconic :icon="Paperclip" @click="runAddAction(onAttachClick)">{{ t('ai.attachFile') }}</MenuItem>
+              <MenuItem iconic :icon="Hash" @click="runAddAction(onHashButtonClick)">{{ t('ai.quoteTerminal') }}</MenuItem>
+              <MenuItem iconic :icon="SquareSlash" @click="runAddAction(onSlashButtonClick)">{{ t('ai.skillCommand') }}</MenuItem>
+            </Menu>
             <template v-if="settingsStore.settings.ai.models.length > 0">
               <button class="ghost-btn model-btn" :title="currentModelName" @click.stop="modelMenuRef?.toggle($event.currentTarget as HTMLElement)">
                 <span>{{ currentModelName }}</span>
@@ -330,7 +334,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from 'vue'
-import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil, Paperclip, FileText } from '@lucide/vue'
+import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil, Paperclip, FileText, Hash, SquareSlash } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAIStore } from '../stores/aiStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -340,7 +344,7 @@ import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useI18n } from '../i18n'
 import { runAgent, approveTool, rejectTool, continueAgent, answerQuestion, dismissQuestion } from '../services/agent'
-import { CancelChatStream, CancelAICompaction, SaveFileDialogFiltered, WriteFileBase64, ReadLocalAttachmentFile } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { CancelChatStream, CancelAICompaction, SaveFileDialogFiltered, WriteFileBase64, ReadLocalAttachmentFile, ClipboardGetFiles, ClipboardReadFileChunkByID } from '../../bindings/github.com/ys-ll/uniterm/app'
 import type { AIAttachment, AIReasoningPreference, AIReasoningEffort } from '../types/ai'
 import { isExecutionMode } from '../types/ai'
 import { REASONING_EFFORTS, normalizeReasoning } from '../services/aiReasoning'
@@ -632,13 +636,57 @@ async function onNativePathsDropped(paths: string[]) {
   }
 }
 
-/**
- * Take an image off the clipboard. Returns true when an image was consumed so
- * the caller can stop the plain-text path.
- */
-function attachClipboardImage(blob: Blob | null | undefined, fallbackMime = ''): boolean {
+/** Max display length for a pasted image's file name (beyond this it is truncated
+ *  with an ellipsis, keeping the extension so the type stays readable). */
+const PASTED_NAME_MAX = 40
+/** Chromium names pasted screenshots with generic names like "image.png"; these
+ *  are treated as unnamed so they fall back to the localized "pasted image" label. */
+const GENERIC_IMAGE_NAME = /^image\.(png|jpe?g|bmp|webp|gif)$/i
+
+/** Strip any directory path and characters that are not valid in a file name. */
+function sanitizeBasename(name: string): string {
+  return name.replace(/^.*[\\/]/, '').replace(/["<>:/\\|?*\u0000-\u001f]/g, '_').trim()
+}
+
+/** Shorten a file name to PASTED_NAME_MAX, keeping the extension and appending an
+ *  ellipsis to the stem when truncation is needed. */
+function truncateFileName(name: string): string {
+  if (name.length <= PASTED_NAME_MAX) return name
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 ? name.slice(dot) : ''
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const maxStem = PASTED_NAME_MAX - ext.length - 1 // "-1" reserves room for the ellipsis
+  if (maxStem <= 0) return name.slice(0, PASTED_NAME_MAX)
+  return `${stem.slice(0, maxStem)}…${ext}`
+}
+
+/** If baseName is already used by a current attachment, append a -2/-3/… suffix
+ *  before the extension so pasted images never share a name. */
+function uniqueAttachmentName(baseName: string): string {
+  const used = new Set(attachments.value.map((a) => a.name))
+  if (!used.has(baseName)) return baseName
+  const dot = baseName.lastIndexOf('.')
+  const stem = dot > 0 ? baseName.slice(0, dot) : baseName
+  const ext = dot > 0 ? baseName.slice(dot) : ''
+  let i = 2
+  while (used.has(`${stem}-${i}${ext}`)) i++
+  return `${stem}-${i}${ext}`
+}
+
+/** Resolve a pasted image's final display name. A real file name (from Explorer)
+ *  is kept and truncated; an unnamed bitmap (screenshot) falls back to the
+ *  localized "pasted image" label. Both are made unique against current atts. */
+function resolvePastedName(rawName: string): string {
+  const clean = sanitizeBasename(rawName)
+  const generic = !clean || GENERIC_IMAGE_NAME.test(clean)
+  const base = generic ? t('ai.attachPastedImage') : truncateFileName(clean)
+  return uniqueAttachmentName(base)
+}
+
+function attachClipboardImage(blob: Blob | null | undefined, fallbackMime = '', sourceName?: string): boolean {
   if (!blob || !blob.size) return false
-  const name = t('ai.attachPastedImage')
+  const rawName = sourceName || (blob instanceof File ? blob.name : '')
+  const name = resolvePastedName(rawName)
   const verdict = validateAttachment({ name, size: blob.size, type: blob.type || fallbackMime }, attachments.value)
   if (!verdict.ok) {
     showAttachmentError(attachmentErrorMessageKey(verdict.error), verdict.error.params)
@@ -694,6 +742,10 @@ async function readClipboardImage(): Promise<Blob | null> {
     const type = item.types.find((tp) => tp.startsWith('image/'))
     if (type) return await item.getType(type)
   }
+  // Screenshots arrive as image/* (handled above). Local files copied from the
+  // OS (e.g. Explorer) are not visible to this API — 'Files' is not a MIME
+  // type, so there is nothing to getType; those are covered by the Go
+  // backend's CF_HDROP reader (ClipboardGetFiles) in aiSidebarPasteFromClipboard.
   return null
 }
 
@@ -723,6 +775,98 @@ function pasteFromClipboard() {
       window.clearTimeout(timer)
       pasteText()
     })
+}
+
+/**
+ * Right-click "Paste" hook consumed by the app-wide input context menu (App.vue).
+ * The global menu only offers paste for editable targets, so a call here always
+ * means the AI input is editable.
+ *
+ * Ctrl+V works for local files copied from Explorer because Chromium surfaces the
+ * clipboard file reference in a genuine DOM paste event as an image/* item, which
+ * onPaste attaches. Right-click has no such event, so we try the async Clipboard
+ * API first (readClipboardImage, covers screenshots/bitmaps), then the Go
+ * backend's CF_HDROP reader (ClipboardGetFiles), which is the only way to see
+ * files copied from the OS file explorer, and finally replay a real paste via
+ * document.execCommand('paste') — a no-op in Chromium, so App.vue then falls
+ * back to inserting plain clipboard text.
+ */
+async function aiSidebarPasteFromClipboard(): Promise<boolean> {
+  const el = editableRef.value
+  if (!el) return false
+  el.focus()
+  // Bitmap (screenshot) content is visible to the async Clipboard API.
+  const blob = await readClipboardImage().catch(() => null)
+  if (attachClipboardImage(blob)) return true
+  // Files copied from Explorer arrive as CF_HDROP in the OS clipboard, which no
+  // browser API can see. Ask the Go backend to enumerate them and read the image
+  // ones back as base64 so they attach like a screenshot.
+  try {
+    const files = await ClipboardGetFiles()
+    let attached = 0
+    for (const f of files) {
+      const name = f.name || ''
+      if (!/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name)) continue
+      if (!f.id || !f.size) continue
+      // Same gate as every other attach path, so size/count rejections show a
+      // visible error instead of the backend read failing silently (the Go
+      // reader also caps chunks at 8MB; images are capped lower anyway).
+      const verdict = validateAttachment({ name, size: f.size, type: mimeFromName(name) }, attachments.value)
+      if (!verdict.ok) {
+        showAttachmentError(attachmentErrorMessageKey(verdict.error), verdict.error.params)
+        continue
+      }
+      try {
+        const dataB64 = await ClipboardReadFileChunkByID(f.id, 0, f.size)
+        const bytes = bytesFromBase64(dataB64)
+        const attName = resolvePastedName(f.name || '')
+        const att = await createImageAttachmentFromDataURL(canvasDataURL(attName, bytes), attName, bytes.byteLength, mimeFromName(attName))
+        attachments.value = [...attachments.value, att]
+        attached++
+      } catch {
+        // Skip a single un-decodable image without aborting the rest.
+      }
+    }
+    if (attached > 0) return true
+  } catch {
+    // No CF_HDROP present or read failed — fall through.
+  }
+  // Last resort: replay a genuine paste via execCommand so onPaste's own text
+  // handling runs. Return false when nothing was pasted so App.vue can fall back
+  // to inserting plain clipboard text.
+  try {
+    return document.execCommand('paste')
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort MIME for a pasted image file, keyed off its extension. */
+function mimeFromName(name: string): string {
+  switch ((name.split('.').pop() || '').toLowerCase()) {
+    case 'png': return 'image/png'
+    case 'jpg': case 'jpeg': return 'image/jpeg'
+    case 'gif': return 'image/gif'
+    case 'webp': return 'image/webp'
+    case 'bmp': return 'image/bmp'
+    case 'avif': return 'image/avif'
+    case 'svg': return 'image/svg+xml'
+    default: return 'image/png'
+  }
+}
+
+/** Encode raw image bytes (from a pasted file) as a data URL for the attachment path. */
+function canvasDataURL(name: string, bytes: Uint8Array): string {
+  return 'data:' + mimeFromName(name) + ';base64,' + base64FromBytes(bytes)
+}
+
+function base64FromBytes(bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
 }
 
 function syncInputText() {
@@ -757,6 +901,28 @@ const visibleMessages = computed(() => {
     const hasPending = aiStore.pendingCommand?.messageId === m.id
     return m.content || m.tool_calls?.length || hasPending || m.needsContinue
   })
+})
+
+// Index in visibleMessages after which the compaction record renders:
+// the message the last summary attempt split the history at, not the
+// bottom of the transcript. If the anchor message itself is hidden (a paired
+// tool result), the record rides with the nearest visible message above it;
+// if the anchor is gone entirely, the record falls back to the bottom
+// (contextRecordIndex < 0).
+const contextRecordIndex = computed(() => {
+  const record = aiStore.contextRecord
+  if (!record?.afterId) return -1
+  const full = aiStore.messages
+  const cutFull = full.findIndex(m => m.id === record.afterId)
+  if (cutFull < 0) return -1
+  const visible = visibleMessages.value
+  const visibleIdx = visible.findIndex(m => m.id === record.afterId)
+  if (visibleIdx >= 0) return visibleIdx
+  for (let i = cutFull - 1; i >= 0; i--) {
+    const idx = visible.findIndex(m => m.id === full[i].id)
+    if (idx >= 0) return idx
+  }
+  return 0
 })
 
 // ── Search ──
@@ -820,6 +986,12 @@ const statusText = computed(() => {
 })
 
 // ── Live thinking box (click the status text to expand/collapse) ──
+// The panel shows the live thinking stream, which only exists while the
+// status is 'thinking'. In every other running state (outputting, executing,
+// compacting) the content would be the previous thinking phase's leftover,
+// so the toggle affordance is hidden there; per-message thinking stays
+// reviewable in the message bubbles.
+const thinkingToggleVisible = computed(() => aiStore.isRunning && aiStore.status === 'thinking')
 const thinkingPanelRef = ref<HTMLDivElement>()
 
 function scrollThinkingToBottom() {
@@ -854,11 +1026,12 @@ onUnmounted(() => {
   if (thinkingRenderTimer !== null) clearTimeout(thinkingRenderTimer)
 })
 
-// 1s tick feeding the live elapsed counter while the model is thinking.
+// 1s tick feeding the live elapsed counters shown in the status row while
+// the model is thinking or the context summary is running.
 const thinkingTick = ref(0)
 let thinkingTickTimer: ReturnType<typeof setInterval> | null = null
 watch(
-  () => aiStore.thinkingExpanded && aiStore.isRunning && aiStore.status === 'thinking',
+  () => aiStore.isRunning && (aiStore.status === 'thinking' || aiStore.status === 'compacting'),
   (on) => {
     if (on && thinkingTickTimer === null) {
       thinkingTick.value = Date.now()
@@ -875,6 +1048,11 @@ onUnmounted(() => { if (thinkingTickTimer !== null) clearInterval(thinkingTickTi
 const liveThinkingElapsed = computed(() => {
   if (aiStore.status !== 'thinking' || !aiStore.thinkingStartedAt) return ''
   return formatDuration(Math.max(0, thinkingTick.value - aiStore.thinkingStartedAt))
+})
+
+const liveCompactionElapsed = computed(() => {
+  if (aiStore.status !== 'compacting' || !aiStore.compactionStartedAt) return ''
+  return formatDuration(Math.max(0, thinkingTick.value - aiStore.compactionStartedAt))
 })
 
 const thinkingStartLabel = computed(() => formatClock(aiStore.thinkingStartedAt))
@@ -929,11 +1107,20 @@ const sessionMenuVisible = ref(false)
 const addTagMenuVisible = ref(false)
 const modelMenuVisible = ref(false)
 const modeMenuVisible = ref(false)
+const addMenuVisible = ref(false)
 
 const sessionMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const addTagMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const modelMenuRef = ref<InstanceType<typeof Menu> | null>(null)
 const modeMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+const addMenuRef = ref<InstanceType<typeof Menu> | null>(null)
+
+// "+" menu items: close the menu first, then dispatch to the same handlers
+// the removed standalone buttons used (they re-focus the editor themselves).
+function runAddAction(action: () => void) {
+  addMenuVisible.value = false
+  action()
+}
 
 // Menu.toggle() anchors below an HTMLElement; template click handlers expose
 // EventTarget | null, so narrow it here (same guard as Panel.vue / TabBar.vue).
@@ -1615,6 +1802,7 @@ function closeMenus() {
   addTagMenuVisible.value = false
   modelMenuVisible.value = false
   modeMenuVisible.value = false
+  addMenuVisible.value = false
 }
 
 function onAIContextMenu(e: MouseEvent) {
@@ -1901,6 +2089,13 @@ async function onContinue() {
 }
 
 function onResizeStart(e: MouseEvent) {
+  // Without this, the browser keeps the mousedown default action alive during
+  // the drag: the handle point starts a text selection that can promote to a
+  // native OLE drag mid-resize — the drag loop stalls the UI, swallows the
+  // mouseup (resize keeps following the cursor after release) and, on
+  // WebView2 131.x, ends with Edge killing the renderer over a bad
+  // proprietary LocalFrameHost message.
+  e.preventDefault()
   isResizing.value = true
   const el = sidebarEl.value
   if (!el) return
@@ -1949,6 +2144,7 @@ function onAskAI(e: Event) {
 
 onMounted(() => {
   window.addEventListener('ai:ask', onAskAI)
+  ;(window as any).__aiSidebarPasteFromClipboard = aiSidebarPasteFromClipboard
   skillStore.load()
   commandStore.load()
   nativeDrop.bind()
@@ -1967,6 +2163,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('ai:ask', onAskAI)
+  delete (window as any).__aiSidebarPasteFromClipboard
   nativeDrop.unbind()
 
   if (messagesRef.value) {
@@ -2013,6 +2210,8 @@ defineExpose({ focusInput })
   bottom: 0;
   width: 0.375rem;
   cursor: col-resize;
+  user-select: none;
+  -webkit-user-drag: none;
   z-index: 10;
   background: transparent;
   transition: background 0.15s ease;
@@ -2167,9 +2366,12 @@ defineExpose({ focusInput })
 }
 .ai-context-notice {
   padding: 0.5rem 0.75rem;
-  color: var(--el-color-warning);
+  color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.5;
+}
+.ai-context-record-failed {
+  color: var(--el-color-warning);
 }
 
 .ai-thinking {
@@ -2182,9 +2384,11 @@ defineExpose({ focusInput })
   align-items: center;
   gap: 0.25rem;
   align-self: flex-start;
+}
+.thinking-row.clickable {
   cursor: pointer;
 }
-.thinking-row:hover .thinking-text {
+.thinking-row.clickable:hover .thinking-text {
   color: var(--text-secondary);
 }
 .thinking-text {
@@ -2451,6 +2655,13 @@ defineExpose({ focusInput })
   cursor: not-allowed;
   opacity: 0.4;
 }
+/* The "+" button holds an SVG icon (baseline-aligned inline element), so it
+   needs flex centering instead of the ghost button's text line-height. */
+.add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .model-btn {
   display: inline-flex;
   align-items: center;
@@ -2644,18 +2855,6 @@ defineExpose({ focusInput })
   border-radius: var(--radius-sm);
   margin-left: 0.25rem;
   flex-shrink: 0;
-}
-.hash-btn-icon {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-
-/* 附件按钮内是 SVG 图标（基线对齐），改用 flex 垂直居中以与 # / 按钮对齐 */
-.attach-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
 }
 
 /* Skill dropdown (紧凑单行，仿 TRAE) */

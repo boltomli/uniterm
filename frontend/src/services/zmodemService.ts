@@ -18,7 +18,8 @@ import { t } from '../i18n'
 import { queuedSessionWrite } from './sessionWriter'
 
 const dialogLocks = new Set<string>()
-const TRANSFER_TIMEOUT_MS = 20_000
+/** Default ZMODEM idle timeout; kept for tests and as the settings fallback. */
+export const DEFAULT_TRANSFER_TIMEOUT_MS = 20_000
 // Rename conflict resolution probes <name>.1, <name>.2, ... up to this cap.
 const MAX_RENAME_ATTEMPTS = 100
 const CANCEL_WRITE_TIMEOUT_MS = 2_000
@@ -59,6 +60,8 @@ export interface ZmodemServiceOptions {
   sessionId: string
   direction?: 'upload' | 'download'
   getDefaultDownloadDir?: () => string
+  /** Idle timeout in milliseconds. Falls back to DEFAULT_TRANSFER_TIMEOUT_MS. */
+  getIdleTimeoutMs?: () => number
   // Resolves what to do when the download target already exists. Defaults to
   // an ElMessageBox prompt offering overwrite / rename / skip.
   confirmOverwrite?: ZmodemOverwriteConfirm
@@ -68,6 +71,13 @@ export interface ZmodemServiceOptions {
   onTerminalRestoreState?: (restoring: boolean) => void
   onRegister?: (abort: () => void) => void
   onUnregister?: () => void
+}
+
+export function resolveIdleTimeoutMs(getIdleTimeoutMs?: () => number): number {
+  const raw = getIdleTimeoutMs?.()
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_TRANSFER_TIMEOUT_MS
+  // Clamp to a practical range so a bad setting cannot hang forever or fire instantly.
+  return Math.min(600_000, Math.max(5_000, Math.round(raw)))
 }
 
 export function startZmodemService(options: ZmodemServiceOptions) {
@@ -90,7 +100,7 @@ export function startZmodemService(options: ZmodemServiceOptions) {
   const lateTrailingOutput: number[] = []
   const { sessionId } = options
   const abortCtl = createTransferControl()
-  const watchdog = createActivityWatchdog(TRANSFER_TIMEOUT_MS)
+  const watchdog = createActivityWatchdog(resolveIdleTimeoutMs(options.getIdleTimeoutMs))
 
   function appendTrailingOutput(bytes: ArrayLike<number>, start = 0, end = bytes.length) {
     const target = captureLateTrailingOutput ? lateTrailingOutput : trailingOutput

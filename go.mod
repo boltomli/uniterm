@@ -30,6 +30,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pkg/sftp v1.13.10
 	github.com/redis/go-redis/v9 v9.21.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/rhnvrm/simples3 v0.11.1
 	github.com/rqlite/gorqlite v0.0.0-20260504155303-50d445fd0ab9
 	github.com/sijms/go-ora/v2 v2.9.0
@@ -58,6 +59,7 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff // indirect
@@ -125,6 +127,10 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
+// ys-ll/ftp is jlaffaye/ftp@v0.2.1 plus the fix for the control-connection
+// deadline leaking past the bounded 226-reply wait (upstream issue pending).
+replace github.com/jlaffaye/ftp => github.com/ys-ll/ftp v0.2.1-uniterm.1
+
 replace github.com/unixshells/mosh-go v0.5.2 => github.com/ys-ll/mosh-go v0.0.0-20260702130124-e17b92cd9dab
 
 replace github.com/rhnvrm/simples3 => github.com/ys-ll/simples3 v0.0.0-20260930081831-3357c14e91bd
@@ -132,3 +138,5 @@ replace github.com/rhnvrm/simples3 => github.com/ys-ll/simples3 v0.0.0-202609300
 replace golang.org/x/crypto => github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e
 
 replace github.com/wailsapp/wails/v3 => github.com/ys-ll/wails/v3 v3.0.0-20261112023043-1143f7a41423
+
+replace github.com/refraction-networking/utls => github.com/ys-ll/utls v1.8.3-0.20261118030304-dc4119e680f1

@@ -25,6 +25,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/ys-ll/uniterm/backend/container"
 	"github.com/ys-ll/uniterm/backend/credentials"
+	"github.com/ys-ll/uniterm/backend/firewall"
 	"github.com/ys-ll/uniterm/backend/importer"
 	"github.com/ys-ll/uniterm/backend/k8s"
 	"github.com/ys-ll/uniterm/backend/localsrv"
@@ -32,6 +33,7 @@ import (
 	"github.com/ys-ll/uniterm/backend/mcp"
 	"github.com/ys-ll/uniterm/backend/mcpclient"
 	"github.com/ys-ll/uniterm/backend/netscan"
+	"github.com/ys-ll/uniterm/backend/packetcap"
 	"github.com/ys-ll/uniterm/backend/platform"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
@@ -51,6 +53,8 @@ type App struct {
 	sessionManager   *session.SessionManager
 	k8sManager       *k8s.Manager
 	netscanManager   *netscan.Manager
+	packetcapManager *packetcap.Manager
+	firewallManager  *firewall.Manager
 	localsrvManager  *localsrv.Manager
 	containerManager *container.Manager
 	// quitting marks that the full shutdown sequence (App.shutdown) has begun.
@@ -65,6 +69,7 @@ type App struct {
 	proxyStore           *store.ProxyStore
 	localStateStore      *store.LocalStateStore
 	quickCommandsStore   *store.QuickCommandsStore
+	notesStore           *store.NotesStore
 	skillsStore          *store.SkillsStore
 	commandsStore        *store.CommandsStore
 	tunnelStore          *store.TunnelStore
@@ -75,19 +80,29 @@ type App struct {
 	// syncSecrets is the server-build encrypted-file backing store for the
 	// sync keychain (server_secrets.go); nil on desktop, which uses the OS
 	// keychain. Kept on the App so a master-password change rekeys it.
-	syncSecrets          secretRekeyer
-	tunnelService        *session.TunnelService
-	tunnelStartsMu       stdsync.Mutex
-	tunnelStarts         map[string]*tunnelStartRequest
-	tunnelsClosed        bool
-	mainHwnd             uintptr
-	mainWindowAttach     stdsync.Once
-	rdpKeyboardMu        stdsync.Mutex
-	rdpKeyboard          *platform.RDPKeyboardCapture
-	originalWndProc      uintptr
-	wndProcCb            uintptr // keep alive to prevent GC
-	inSizeMove           bool
-	webviewDataPath      string
+	syncSecrets      secretRekeyer
+	tunnelService    *session.TunnelService
+	tunnelStartsMu   stdsync.Mutex
+	tunnelStarts     map[string]*tunnelStartRequest
+	tunnelsClosed    bool
+	mainHwnd         uintptr
+	mainWindowAttach stdsync.Once
+	// hwndMu serializes lazy mainHwnd resolution (ensureMainWindowHwnd) and
+	// the one-time WndProc subclass install that follows it.
+	hwndMu stdsync.Mutex
+	// enumMu serializes the shared EnumWindows callback below. syscall
+	// callback slots are a fixed-size runtime table (cb_max = 2000, entries
+	// never freed), so the callback is registered exactly once — registering
+	// per call aborts the process with "too many callback functions" (#1426).
+	enumMu          stdsync.Mutex
+	enumWindowsCb   uintptr
+	enumResult      uintptr
+	rdpKeyboardMu   stdsync.Mutex
+	rdpKeyboard     *platform.RDPKeyboardCapture
+	originalWndProc uintptr
+	wndProcCb       uintptr // keep alive to prevent GC
+	inSizeMove      bool
+	webviewDataPath string
 	// dataDir is the resolved config data directory, passed to store
 	// constructors. Resolved at startup; finalized by bootstrap in a later task.
 	dataDir         string
@@ -238,6 +253,8 @@ func NewApp(webviewDataPath string) *App {
 		mcpTransferWaiters: make(map[string]chan mcpTransferOutcome),
 		k8sManager:         k8s.NewManager(),
 		netscanManager:     netscan.NewManager(),
+		packetcapManager:   packetcap.NewManager(),
+		firewallManager:    firewall.NewManager(),
 		localsrvManager:    localsrv.NewManager(),
 		containerManager:   container.NewManager(),
 		errCh:              make(chan error, 16),
@@ -364,6 +381,31 @@ func (a *App) stopMoveResizePump() {
 	}
 }
 
+// ensureMainWindowHwnd returns the main window HWND, resolving it on first
+// use and caching the result. Resolution must stay lazy: wails starts the
+// services before it runs the pending windows, so the native window does not
+// exist yet when ServiceStartup runs — the original eager lookup at startup
+// always failed, left mainHwnd at zero forever, and silently disabled the
+// WndProc subclass (native window:resize-end, #656), while every
+// remote-desktop keyboard capture fell back to an un-cached EnumWindows
+// sweep that leaked one syscall callback per focus toggle until the process
+// aborted with "too many callback functions" (#1426). A successful
+// resolution installs the subclass as well, reviving the resize-end events.
+func (a *App) ensureMainWindowHwnd() uintptr {
+	a.hwndMu.Lock()
+	defer a.hwndMu.Unlock()
+	if a.mainHwnd != 0 {
+		return a.mainHwnd
+	}
+	hwnd := a.findMainWindow()
+	if hwnd == 0 {
+		return 0
+	}
+	a.mainHwnd = hwnd
+	a.subclassMainWindow()
+	return hwnd
+}
+
 func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	a.ctx = ctx
 
@@ -371,6 +413,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 		a.emit(name, payload)
 	})
 	a.netscanManager.SetEventEmitter(func(name string, payload any) {
+		a.emit(name, payload)
+	})
+	a.packetcapManager.SetEventEmitter(func(name string, payload any) {
+		a.emit(name, payload)
+	})
+	a.firewallManager.SetEventEmitter(func(name string, payload any) {
 		a.emit(name, payload)
 	})
 	a.localsrvManager.SetEventEmitter(func(name string, payload any) {
@@ -415,11 +463,12 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 
 	// Defer EventsEmit from WndProc to avoid blocking the modal resize/move loop.
 	a.startMoveResizePump()
-	
-	// On Windows, main.go calls attachMainWindow once the window is shown
-	// (services start before the window exists); it records the HWND and
-	// installs the WndProc subclass used for native keyboard capture and
-	// window state tracking.
+
+	// The main HWND is NOT resolved here: main.go calls attachMainWindow once
+	// the window is shown (services start before the native window exists), and
+	// ensureMainWindowHwnd resolves it lazily on first need — see there for the
+	// full history (#1426, #656).
+
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
 	// defers all store init until the frontend calls SetDataDir. The headless
@@ -567,6 +616,7 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 
 	a.terminalHistoryStore = store.NewTerminalHistoryStore(dataDir)
 	a.quickCommandsStore = store.NewQuickCommandsStore(dataDir)
+	a.notesStore = store.NewNotesStore(dataDir)
 	a.skillsStore = store.NewSkillsStore(dataDir)
 	a.commandsStore = store.NewCommandsStore(dataDir)
 	a.tunnelStore = store.NewTunnelStore(dataDir)
@@ -1146,6 +1196,9 @@ func (a *App) shutdown() {
 	}
 	if a.netscanManager != nil {
 		a.netscanManager.StopAll()
+	}
+	if a.packetcapManager != nil {
+		a.packetcapManager.StopAll()
 	}
 	// Stop the built-in local file servers (HTTP/TFTP/SSH/FTP). This runs on a
 	// background goroutine so it can never block the main/UI thread that
@@ -2247,6 +2300,9 @@ func (a *App) syncableStores() []sync.SyncableStore {
 	if a.quickCommandsStore != nil {
 		stores = append(stores, a.quickCommandsStore)
 	}
+	if a.notesStore != nil {
+		stores = append(stores, a.notesStore)
+	}
 	if a.tunnelStore != nil {
 		stores = append(stores, a.tunnelStore)
 	}
@@ -2286,6 +2342,11 @@ func (a *App) reloadStoresAfterSync() {
 	if a.quickCommandsStore != nil {
 		if data, err := a.quickCommandsStore.Load(); err == nil {
 			a.emit("store:quickCommands:changed", data)
+		}
+	}
+	if a.notesStore != nil {
+		if data, err := a.notesStore.Load(); err == nil {
+			a.emit("store:notes:changed", data)
 		}
 	}
 	if a.identityStore != nil {
@@ -2672,6 +2733,26 @@ func (a *App) LoadQuickCommands() (store.QuickCommandData, error) {
 		return store.QuickCommandData{}, fmt.Errorf("quick commands store not initialized")
 	}
 	return a.quickCommandsStore.Load()
+}
+
+// NotesStore methods
+
+func (a *App) SaveNotes(data store.NotesData) error {
+	if a.notesStore == nil {
+		return fmt.Errorf("notes store not initialized")
+	}
+	err := a.notesStore.Save(data)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
+}
+
+func (a *App) LoadNotes() (store.NotesData, error) {
+	if a.notesStore == nil {
+		return store.NotesData{}, fmt.Errorf("notes store not initialized")
+	}
+	return a.notesStore.Load()
 }
 
 // CommandsStore methods
@@ -3820,4 +3901,223 @@ func (a *App) StartPortScan(host string, commonOnly bool, startPort, endPort, wo
 // StopPortScan cancels a running port scan. A no-op for unknown/finished ids.
 func (a *App) StopPortScan(scanId string) {
 	a.netscanManager.Stop(scanId)
+}
+
+// ListCaptureInterfaces returns the interfaces that can be captured on,
+// ordered with the most likely-to-work (real, non-loopback, has an IP) first.
+// On Windows this is available without elevation; starting a capture is where
+// an elevated worker may be spawned.
+func (a *App) ListCaptureInterfaces() []packetcap.Interface {
+	return packetcap.ListInterfaces()
+}
+
+// StartCapture begins a live packet capture on the selected interface with the
+// given filter. When uniTerm runs unelevated it transparently spawns an
+// elevated worker (runas) that does the raw-socket capture and streams packets
+// back; an admin-rights prompt may appear unless the system suppresses UAC
+// prompts. Returns the capture id.
+func (a *App) StartCapture(cfg packetcap.CaptureConfig) (string, error) {
+	return a.packetcapManager.Start(cfg)
+}
+
+// StopCapture stops the capture with the given id. A no-op for unknown or
+// already-finished ids.
+func (a *App) StopCapture(captureId string) {
+	log.Writef("pktcap StopCapture called id=%q", captureId)
+	a.packetcapManager.Stop(captureId)
+}
+
+// ListRemoteInterfaces enumerates the network interfaces of a remote Linux /
+// macOS host over SSH (tcpdump host). user/password are inline credentials
+// resolved by the frontend's credential dialog for a connection with nothing
+// saved; they only fill empty fields (same semantics as tunnels).
+func (a *App) ListRemoteInterfaces(connID, user, password string) ([]packetcap.Interface, error) {
+	r, err := a.resolveRemoteSSH(connID, user, password)
+	if err != nil {
+		return nil, err
+	}
+	return packetcap.ListRemoteInterfaces(r)
+}
+
+// StartRemoteCapture begins a remote packet capture: it connects to the SSH
+// host referenced by cfg.RemoteConnID, runs tcpdump there and streams the
+// resulting frames back through the same capture pipeline as local captures.
+// user/password are inline credentials resolved by the frontend for a
+// connection with nothing saved (fill empty fields only). Returns the capture
+// id.
+func (a *App) StartRemoteCapture(cfg packetcap.CaptureConfig, user, password string) (string, error) {
+	// Remote captures must carry the resolved SSH target before the manager
+	// will accept them; resolve from the saved connection now.
+	r, err := a.resolveRemoteSSH(cfg.RemoteConnID, user, password)
+	if err != nil {
+		return "", err
+	}
+	cfg.Remote = true
+	cfg.SSHConfig = r
+	return a.packetcapManager.Start(cfg)
+}
+
+// resolveRemoteSSH resolves a saved connection id into a ResolvedSSH dial
+// target, applying the same "inline credentials only fill empty fields" rule as
+// tunnels (withExitCredOverride) so a connection without saved credentials can
+// still be used with a one-time password from the UI.
+func (a *App) resolveRemoteSSH(connID, user, password string) (*packetcap.ResolvedSSH, error) {
+	resolve, err := a.connResolver()
+	if err != nil {
+		return nil, fmt.Errorf("connections unavailable: %w", err)
+	}
+	// 远程抓包必须优先采用前端本次输入的账密（用户显式重新输入，往往是为了
+	// 纠正连接里已存的旧/错误密码）。若沿用隧道“只填空缺”的 withExitCredOverride，
+	// 连接里已存的密码会一直压过新输入值，导致输对也登录失败。
+	resolve = withRemoteCredOverride(resolve, connID, user, password)
+	cfg, ok := resolve(connID)
+	if !ok {
+		return nil, fmt.Errorf("remote connection %q not found", connID)
+	}
+	if cfg.Host == "" || cfg.User == "" {
+		return nil, fmt.Errorf("remote connection %q has no host/user", connID)
+	}
+	return &packetcap.ResolvedSSH{
+		Host:       cfg.Host,
+		Port:       cfg.Port,
+		User:       cfg.User,
+		Password:   cfg.Password,
+		AuthType:   cfg.AuthType,
+		KeyPath:    cfg.KeyPath,
+		KeyContent: cfg.KeyContent,
+		IdentityID: cfg.IdentityId,
+	}, nil
+}
+
+// withRemoteCredOverride prioritises the user/password supplied inline by the
+// frontend over whatever the connection config already holds. This is the
+// correct semantic for remote packet capture: the user dialogs in fresh
+// credentials precisely to correct a stale/wrong password, so the new values
+// must win. For key-based auth (password is not used) we never overwrite the
+// password, only the user field.
+func withRemoteCredOverride(resolve session.ConnResolver, exitID, user, password string) session.ConnResolver {
+	return func(id string) (session.ConnectionConfig, bool) {
+		cfg, ok := resolve(id)
+		if !ok || id != exitID {
+			return cfg, ok
+		}
+		if user != "" {
+			cfg.User = user
+		}
+		isKey := cfg.AuthType == "key" || cfg.AuthType == "keyText"
+		if password != "" && !isKey {
+			cfg.Password = password
+		}
+		return cfg, true
+	}
+}
+
+// firewallResolve resolves a saved connection id into a firewall.ResolvedSSH
+// dial target, applying the same "inline credentials only fill empty fields"
+// rule as remote captures. Called by every firewall bound method.
+func (a *App) firewallResolve(connID, user, password string) (*firewall.ResolvedSSH, error) {
+	resolve, err := a.connResolver()
+	if err != nil {
+		return nil, fmt.Errorf("connections unavailable: %w", err)
+	}
+	resolve = withRemoteCredOverride(resolve, connID, user, password)
+	cfg, ok := resolve(connID)
+	if !ok {
+		return nil, fmt.Errorf("remote connection %q not found", connID)
+	}
+	if cfg.Host == "" || cfg.User == "" {
+		return nil, fmt.Errorf("remote connection %q has no host/user", connID)
+	}
+	return &firewall.ResolvedSSH{
+		Host:       cfg.Host,
+		Port:       cfg.Port,
+		User:       cfg.User,
+		Password:   cfg.Password,
+		AuthType:   cfg.AuthType,
+		KeyPath:    cfg.KeyPath,
+		KeyContent: cfg.KeyContent,
+		IdentityID: cfg.IdentityId,
+	}, nil
+}
+
+// FirewallProbe detects which firewall backend the remote host has and whether
+// it is active. Returns an error wrapping firewall.ErrNotInstalled when neither
+// firewalld nor ufw is present. user/password are inline credentials resolved
+// by the frontend for a connection with nothing saved.
+func (a *App) FirewallProbe(connID, user, password string) (*firewall.Status, error) {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return nil, err
+	}
+	ev := map[string]any{"host": r.Host}
+	status, err := a.firewallManager.Probe(r)
+	ev["status"] = status
+	if err != nil {
+		if errors.Is(err, firewall.ErrNotInstalled) {
+			a.emit(firewall.EventError, map[string]any{"host": r.Host, "message": err.Error()})
+		}
+		return status, err
+	}
+	a.emit(firewall.EventStatus, ev)
+	return status, nil
+}
+
+// FirewallSetEnabled turns the detected firewall on (enable) or off (disable).
+func (a *App) FirewallSetEnabled(connID, user, password string, enable bool) error {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return err
+	}
+	if err := a.firewallManager.SetEnabled(r, enable); err != nil {
+		return err
+	}
+	// Refresh status so the UI reflects the new active state.
+	_, _ = a.FirewallProbe(connID, user, password)
+	return nil
+}
+
+// FirewallSetAutoStart toggles whether the detected firewall starts on boot
+// (systemctl enable/disable). It does not change the current runtime state or
+// rules, so a lockout check is not needed.
+func (a *App) FirewallSetAutoStart(connID, user, password string, enable bool) error {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return err
+	}
+	if err := a.firewallManager.SetAutoStart(r, enable); err != nil {
+		return err
+	}
+	// Refresh status so the UI reflects the new auto-start state.
+	_, _ = a.FirewallProbe(connID, user, password)
+	return nil
+}
+
+// FirewallSaveConfig writes the desired port rules to the server's persistent
+// configuration. For firewalld this deliberately does not reload the runtime
+// configuration; FirewallApplyConfig performs that separate step.
+func (a *App) FirewallSaveConfig(connID, user, password string, rules []firewall.PortRule) error {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return err
+	}
+	return a.firewallManager.SaveConfig(r, rules)
+}
+
+// FirewallApplyConfig reloads the persistent configuration into the running
+// firewall after verifying that SSH cannot be locked out.
+func (a *App) FirewallApplyConfig(connID, user, password string) error {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return err
+	}
+	return a.firewallManager.ApplyConfig(r)
+}
+
+// FirewallListRules returns the current port rules for display.
+func (a *App) FirewallListRules(connID, user, password string) ([]firewall.PortRule, error) {
+	r, err := a.firewallResolve(connID, user, password)
+	if err != nil {
+		return nil, err
+	}
+	return a.firewallManager.ListRules(r)
 }

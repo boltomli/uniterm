@@ -1,12 +1,6 @@
-# Remote Terminal
+# Terminal
 
-uniTerm supports **SSH**, **Telnet**, **Mosh**, and **Raw TCP** remote terminal protocols.
-
-## Command editing shortcuts
-
-In connected non-Windows SSH, Mosh, Unix local terminals, and WSL, `Ctrl+Backspace` sends `Ctrl+W` to delete the word before the cursor while preserving text after it. Default Unix line editing normally treats whitespace as the word boundary; the shell's key bindings determine the actual behavior.
-
-`Ctrl+U` deletes from the cursor to the beginning of the line in shells that support that binding. Windows local terminals, detected Windows SSH sessions, connection authentication, and alternate-screen applications keep their native key behavior. Plain Backspace still follows the connection's Backspace setting.
+uniTerm supports both remote and local terminals: remote covers **SSH / Telnet / Mosh / Raw TCP**, local covers Windows / macOS / Linux shells, WSL, and serial devices.
 
 ## SSH
 
@@ -19,7 +13,7 @@ SSH (Secure Shell) is the most commonly used protocol for remote server manageme
 | Host | Server IP or domain name |
 | Port | Default 22 |
 | Username | Login username |
-| Auth Type | Identity (keystore) / Password / Key Path / Key Text / Kerberos / SSH Agent. See [Authentication Methods](#authentication-methods) below |
+| Auth Type | Identity / Password / Key Path / Key Text / Kerberos / SSH Agent. See [Authentication Methods](#authentication-methods) below |
 | Password | Required for password authentication |
 | Key Path | Select the private key file for key authentication |
 | Character Encoding | Terminal charset, default UTF-8. Also supports GBK, GB2312, Big5, Shift-JIS, etc. |
@@ -33,7 +27,7 @@ SSH (Secure Shell) is the most commonly used protocol for remote server manageme
 
 ### Authentication Methods
 
-- **Identity (Keystore)** -- The first option in Auth Type. References an identity saved in the [keystore](/en/features/keystore); the username and credentials are provided directly by the identity.
+- **Identity** -- The first option in Auth Type. References an identity saved in the [Identities](/en/features/identities); the username and credentials are provided directly by the identity.
 - **Password Authentication** -- Enter the password to log in. If the password is not saved, a terminal prompt will appear for input upon connection.
 - **Key Authentication** -- Select an SSH private key file (e.g. `~/.ssh/id_rsa`) for passwordless login. Key Path supports a one-click "Use default key" button that fills in a standard OpenSSH key actually present on the machine (`id_ed25519` / `id_rsa` / `id_ecdsa` / `id_dsa`); clicking again cycles among the keys that exist.
 - **Key Text** -- Paste a PEM private key directly, with no dependency on local key files, so it works across machines. The passphrase for an encrypted key goes in "Key passphrase".
@@ -130,23 +124,13 @@ Same as SSH. uniTerm first connects to the server via SSH, then automatically st
 | Host | Server IP or domain name |
 | Port | SSH port, default 22 |
 | Username | Login username |
-| Auth Type | Identity (keystore) / Password / Key Path / Key Text / Kerberos / SSH Agent |
+| Auth Type | Identity / Password / Key Path / Key Text / Kerberos / SSH Agent |
 | Character Encoding | Terminal charset, default UTF-8. Also supports GBK, GB2312, Big5, Shift-JIS, etc. |
 | Backspace Key | Byte sequence sent by the terminal backspace key, default ASCII Delete (0x7F). Also supports ASCII Backspace (0x08) and VT220 Delete (ESC[3~) |
 | Startup Script | Commands automatically executed after the connection is established |
 | Start Recording Log on Connect | Automatically start recording the session log when the connection is established |
 
 > Note: The server must have `mosh-server` installed before using Mosh. Mosh does not support SSH tunnels or the Expect/Send pattern.
-
-## Smart Completion
-
-While typing a command in the terminal, completion suggestions pop up automatically below the input box. Use `↑` / `↓` to select, `Enter` to accept, and `Esc` to dismiss. Sources include:
-
-- **History** -- Prefix and fuzzy matching from command history, with matched characters highlighted
-- **Quick Commands** -- Matches the names and contents of saved Quick Commands
-- **AI Transcription** -- AI suggests command rewrites based on the current input context (must be enabled in Settings with an API key configured)
-
-Smart Completion and AI Transcription can be turned on or off globally in Settings.
 
 ## Raw TCP
 
@@ -162,9 +146,73 @@ After connecting to `host:port`, raw byte streams are sent and received directly
 | Local Echo | When enabled, sent content is displayed locally |
 | Newline Mode | CR (default) or CR+LF |
 
+## Local Shell
+
+### Connection Parameters
+
+| Parameter | Description |
+|------|------|
+| Shell Type | Select which local shell to open |
+| Character Encoding | Terminal charset, default UTF-8. Also supports GBK, GB2312, Big5, Shift-JIS, etc. |
+| Startup Script | Commands or scripts automatically executed after the terminal starts (optional) |
+| Start Recording Log on Connect | Automatically start recording the session log when the connection is established |
+
+Supported shell types (detected automatically depending on the operating system):
+
+**Windows:**
+- PowerShell
+- CMD
+- Command Prompt (Clink)
+- Command Prompt (Admin) / PowerShell (Admin) -- elevated through UAC and embedded as a regular tab
+- Git Bash
+- Cygwin / MSYS2
+- Nushell
+
+**macOS / Linux:**
+- bash
+- zsh
+- Other installed shells
+
+## WSL
+
+Open WSL Linux distributions installed on Windows (such as Ubuntu or Debian). Each distribution is listed as a separate shell.
+
+**WSL file management:** The Files sidebar supports browsing and managing files in WSL distributions directly, without installing anything inside the distribution. See [Sidebar](/en/features/sidebar) for details.
+
+## Serial
+
+Connect to serial devices such as router consoles, embedded development boards, industrial equipment, etc.
+
+### Connection Parameters
+
+| Parameter | Description |
+|------|------|
+| Port | Serial port name (COMx on Windows, /dev/ttyUSBx on Linux) |
+| Baud Rate | Transmission rate, commonly 9600 or 115200 |
+| Data Bits | Data bits per frame, commonly 8 |
+| Stop Bits | Stop bits, commonly 1 |
+| Parity | Error detection, options: None, Even, Odd, Mark, Space |
+| Character Encoding | Terminal charset, default UTF-8. Also supports GBK, GB2312, Big5, Shift-JIS, etc. |
+| Backspace Key | Byte sequence sent by the terminal backspace key, default ASCII Delete (0x7F). Also supports ASCII Backspace (0x08) and VT220 Delete (ESC[3~) |
+| Local Echo | Whether to display input locally; enable as needed |
+| Newline Mode | CR (default) or CR+LF |
+| Start Recording Log on Connect | Automatically start recording the session log when the connection is established |
+
+## Smart Completion
+
+While typing a command in the terminal, completion suggestions pop up automatically below the input box. Use `↑` / `↓` to select, `Enter` to accept, and `Esc` to dismiss. Sources include:
+
+- **History** -- Prefix and fuzzy matching from command history, with matched characters highlighted
+- **Quick Commands** -- Matches the names and contents of saved Quick Commands
+- **AI Transcription** -- AI suggests command rewrites based on the current input context (must be enabled in Settings with an API key configured)
+
+Smart Completion and AI Transcription can be turned on or off globally in Settings.
+
+
+---
 
 ::: tip Related
-- [Server Monitor](/en/connections/server-monitor) -- Real-time SSH server monitoring
-- [Getting Started](/en/getting-started) -- First connection tutorial
-- [Local](/en/connections/local) -- Local Shell and Serial
+- [Server Monitor](/en/connections/server-monitor) — Real-time server monitoring via SSH
+- [Getting Started](/en/getting-started) — First connection tutorial
+- [Sidebar](/en/features/sidebar) — Quick local shell launch
 :::

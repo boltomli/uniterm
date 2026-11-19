@@ -70,6 +70,7 @@ export const useSettingsStore = defineStore('settings', () => {
       autoCompact: aiCfg.autoCompact,
       contextTokenBudget: aiCfg.contextTokenBudget,
       summaryModelId: aiCfg.summaryModelId,
+      userMessageStyle: aiCfg.userMessageStyle,
       models,
       // executionMode is device-local (settings.json only — ai.json carries
       // maxTurns + models), so recomposing the synced slice must not drop it.
@@ -90,6 +91,7 @@ export const useSettingsStore = defineStore('settings', () => {
     aiCfg.autoCompact = settings.value.ai.autoCompact ?? true
     aiCfg.contextTokenBudget = normalizeContextTokenBudget(settings.value.ai.contextTokenBudget)
     aiCfg.summaryModelId = settings.value.ai.summaryModelId || ''
+    aiCfg.userMessageStyle = settings.value.ai.userMessageStyle === 'plain' ? 'plain' : 'bubble'
     aiCfg.models = settings.value.ai.models
     aiCfg.save()
   }
@@ -534,5 +536,7 @@ function mergeStartPage(loaded: AppSettings['startPage']): AppSettings['startPag
   const known = DEFAULT_SETTINGS.startPage.order
   const persisted = (loaded?.order || []).filter(b => known.includes(b))
   const order = [...persisted, ...known.filter(b => !persisted.includes(b))]
-  return { visible, order }
+  // Brand line defaults to visible; only an explicit false hides it.
+  const showLogo = loaded?.showLogo !== false
+  return { visible, order, showLogo }
 }

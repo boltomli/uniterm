@@ -83,10 +83,12 @@ describe('DBTableStructure + DBObjectList schema threading (DB-06/DB-07)', () =>
   })
 
   it('the object list opens and mutates rows schema-aware', () => {
-    expect(objects).toMatch(/emit\('open', props\.dbName, row\.name, row\.type === 'view', row\.schema \|\| ''\)/)
-    expect(objects).toMatch(/await TruncateTable\(props\.sessionId, props\.dbName, row\.schema \|\| '', row\.name\)/)
-    expect(objects).toMatch(/await DropTable\(props\.sessionId, props\.dbName, row\.schema \|\| '', row\.name\)/)
-    expect(objects).toMatch(/await DropView\(props\.sessionId, props\.dbName, row\.schema \|\| '', row\.name\)/)
+    // The list is scoped by effectiveDbName (the composite "db.schema" node
+    // when the schema dropdown narrows it) and passes the row's schema on.
+    expect(objects).toMatch(/emit\('open', effectiveDbName\.value, row\.name, row\.type === 'view', row\.schema \|\| ''\)/)
+    expect(objects).toMatch(/await TruncateTable\(props\.sessionId, effectiveDbName\.value, row\.schema \|\| '', row\.name\)/)
+    expect(objects).toMatch(/await DropTable\(props\.sessionId, effectiveDbName\.value, row\.schema \|\| '', row\.name\)/)
+    expect(objects).toMatch(/await DropView\(props\.sessionId, effectiveDbName\.value, row\.schema \|\| '', row\.name\)/)
   })
 })
 

@@ -68,7 +68,7 @@ func ResolveMcpLocalPath(path string, allowedRoots []string) (string, error) {
 }
 
 // File tools: streaming uploads/downloads and listing between the user's
-// allowed local directories and remote hosts. Transfers ride the session's
+// local filesystem and remote hosts. Transfers ride the session's
 // companion file-transfer backend — SFTP or SCP, selected by the
 // connection's fileTransferProto setting (SCP covers hosts whose SSH server
 // provides no SFTP subsystem, common on embedded devices). File contents
@@ -118,7 +118,7 @@ func (s *Server) registerFileTools(srv *mcp.Server) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "download_file",
-		Description: "Download a remote file to a local directory over the connection's file transfer protocol (SFTP or SCP, per the connection's fileTransferProto setting). Streams disk to disk. The local path must be inside a directory allowed in uniTerm's SFTP bookmarks.",
+		Description: "Download a remote file to a local directory over the connection's file transfer protocol (SFTP or SCP, per the connection's fileTransferProto setting). Streams disk to disk; an existing file at the local destination is overwritten. The local path must be inside a directory allowed in uniTerm's SFTP bookmarks. Requires user approval.",
 	}, scoped(ScopeFiles, s.toolDownloadFile))
 }
 
@@ -176,7 +176,8 @@ func (s *Server) toolDownloadFile(ctx context.Context, req *mcp.CallToolRequest,
 	}
 	// Download writes a local file: an agent must not drop remote content
 	// (e.g. a startup script) into the user's machine without asking, so it
-	// grades at least write — same as upload.
+	// grades at least write — same as upload. The local path is additionally
+	// constrained to uniTerm's SFTP bookmarks.
 	if err := s.gateExec(ctx, req, in.SessionID, "download "+in.RemotePath+" → "+in.LocalPath, RiskWrite); err != nil {
 		return nil, downloadOut{}, err
 	}

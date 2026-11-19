@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/ys-ll/uniterm/backend/commandlimit"
 )
 
 const settingsFileName = "settings.json"
@@ -25,6 +27,11 @@ type TerminalSettings struct {
 	// sequence plant commands into the local clipboard for a later paste.
 	Osc52Clipboard string `json:"osc52Clipboard,omitempty"`
 	MiddleClickAction string `json:"middleClickAction"`
+	// MultilinePaste controls multi-line paste protection (issue #1370):
+	// "confirm" opens an editable preview dialog before multi-line clipboard
+	// content is written to the terminal, "direct" pastes without asking.
+	// Empty means the frontend falls back to "confirm".
+	MultilinePaste string `json:"multilinePaste,omitempty"`
 	MaxHistoryLines   int    `json:"maxHistoryLines"`
 	SmartCompletion   *bool  `json:"smartCompletion"`
 	SuggestionPopup   *bool  `json:"suggestionPopup"`
@@ -48,6 +55,10 @@ type TerminalSettings struct {
 	// ZmodemDownloadDir is the device-local default directory for files
 	// received with sz. Empty preserves the directory picker behavior.
 	ZmodemDownloadDir string `json:"zmodemDownloadDir,omitempty"`
+	// ZmodemIdleTimeoutSec is the rz/sz idle watchdog in seconds (frontend
+	// clamps to 5-600, default 20). Zero means the frontend falls back to
+	// its default — omitempty so older settings.json files still load.
+	ZmodemIdleTimeoutSec int `json:"zmodemIdleTimeoutSec,omitempty"`
 	// SessionLogFilename controls names for new output logs. Supported tokens:
 	// %S session name, %H host, %M month, %D day, %h hour, %m minute.
 	SessionLogFilename string `json:"sessionLogFilename,omitempty"`
@@ -150,7 +161,11 @@ type AISettings struct {
 	AutoCompact        *bool           `json:"autoCompact,omitempty"`
 	ContextTokenBudget int             `json:"contextTokenBudget,omitempty"`
 	SummaryModelID     string          `json:"summaryModelId,omitempty"`
-	Models             []AIModelConfig `json:"models"`
+	// UserMessageStyle controls how user messages render in the AI panel:
+	// "" (plain, default) keeps the shared left-aligned full-width layout,
+	// "bubble" right-aligns a content-sized chat bubble (issue #1478).
+	UserMessageStyle string          `json:"userMessageStyle,omitempty"`
+	Models           []AIModelConfig `json:"models"`
 	// Read only for migration to local_state.json. New clients omit this field.
 	ActiveModelID string `json:"activeModelId,omitempty"`
 	// ExecutionMode is the AI panel's confirmation policy:
@@ -195,14 +210,18 @@ type MCPSettings struct {
 	// (mcpExecMode in app_mcp.go). Takes effect on the next MCP server start
 	// (StartMCP runs after every SaveLocalState).
 	ExecMode string `json:"execMode,omitempty"`
+	// MaxConcurrentCommands applies independently to the global background command
+	// and foreground job budgets. 0 uses the default; valid limits are 1–64.
+	MaxConcurrentCommands int `json:"maxConcurrentCommands,omitempty"`
 }
 
 // DefaultMCPSettings is the off-by-default MCP block for settings.json.
 func DefaultMCPSettings() MCPSettings {
 	return MCPSettings{
-		Enabled:  false,
-		Policy:   "confirm_write",
-		ExecMode: "background",
+		Enabled:               false,
+		Policy:                "confirm_write",
+		ExecMode:              "background",
+		MaxConcurrentCommands: commandlimit.Default,
 	}
 }
 
@@ -318,6 +337,10 @@ type SFTPBookmarks struct {
 type StartPageSettings struct {
 	Visible map[string]bool `json:"visible,omitempty"`
 	Order   []string        `json:"order,omitempty"`
+	// ShowLogo toggles the brand line above the start page's search box.
+	// Pointer + omitempty so settings.json written by older builds (which
+	// lack this field) still loads; nil means "show" (the frontend default).
+	ShowLogo *bool `json:"showLogo,omitempty"`
 }
 
 type SettingsStore struct {

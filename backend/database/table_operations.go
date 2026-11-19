@@ -78,6 +78,12 @@ func browseTableColumns(p Provider, db *sql.DB, dbName, schema, tableName string
 // without schemas (MySQL selects the database per connection, SQLite has
 // none, Oracle keeps owner-in-dbName) — keeps the historical resolution.
 func qualifyTable(p Provider, schema, tableName string) string {
+	// A name that already carries its schema ("sales.orders", what the
+	// schema-grouped tree hands down) wins over an empty schema slot, so the
+	// two call styles can never double-qualify (DB-06/DB-09).
+	if own, base := splitQualifiedName(tableName); own != "" {
+		return p.Quote(own) + "." + p.Quote(base)
+	}
 	if schema != "" {
 		if _, ok := p.(SchemaDDL); ok {
 			return p.Quote(schema) + "." + p.Quote(tableName)

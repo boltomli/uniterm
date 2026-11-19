@@ -83,6 +83,29 @@ func removeStaleStageDirs() {
 	}
 }
 
+// packageStageDir creates a staging directory for a .deb/.rpm payload that the
+// package manager can read. The per-user cache (~/.cache) is commonly 0700,
+// and apt hands local files to its unprivileged _apt sandbox user, so system
+// packages are staged under the system temp dir with world-readable modes
+// instead. The directory stays writable only by the current user.
+func packageStageDir() (string, error) {
+	stage, err := os.MkdirTemp("", "uniterm-update-*")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(stage, 0755); err != nil {
+		_ = os.RemoveAll(stage)
+		return "", err
+	}
+	return stage, nil
+}
+
+// isSystemPackage reports whether an asset kind is installed through the
+// system package manager rather than replaced in place.
+func isSystemPackage(kind string) bool {
+	return kind == "deb" || kind == "rpm"
+}
+
 // parseChecksums parses a GNU `sha256sum`-style checksums.txt into
 // filename → lowercase hex digest.
 func parseChecksums(data []byte) map[string]string {
@@ -126,17 +149,26 @@ func (m *Manager) Download(candidates []UpdateAsset, onProgress func(Progress)) 
 	return nil, lastErr
 }
 
-func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (*PendingUpdate, error) {
+func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (_ *PendingUpdate, err error) {
 	// Fail closed BEFORE fetching: no checksum or a URL outside the known
 	// release sources means the payload could never be trusted anyway.
 	if err := cand.Validate(); err != nil {
 		return nil, err
 	}
-	root, err := updateCacheDir()
-	if err != nil {
-		return nil, err
+	// System packages (.deb/.rpm) are staged world-readable under the system
+	// temp dir for the package manager's sandbox user; everything else stays
+	// in the per-user cache.
+	kind := classifyAsset(cand.Name)
+	var stage string
+	if isSystemPackage(kind) {
+		stage, err = packageStageDir()
+	} else {
+		var root string
+		root, err = updateCacheDir()
+		if err == nil {
+			stage, err = os.MkdirTemp(root, "stage-*")
+		}
 	}
-	stage, err := os.MkdirTemp(root, "stage-*")
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +199,7 @@ func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (*Pen
 
 	pend := &PendingUpdate{
 		Asset:    cand,
-		Kind:     classifyAsset(cand.Name),
+		Kind:     kind,
 		StageDir: stage,
 		FilePath: filePath,
 	}
@@ -180,6 +212,9 @@ func (m *Manager) downloadOne(cand UpdateAsset, onProgress func(Progress)) (*Pen
 		pend.NewBinary, err = extractTarGzBinary(stage, filePath)
 	case "installer":
 		// nothing to extract; the downloaded installer is the payload
+	case "deb", "rpm":
+		// the package itself is the payload; root reads it via pkexec
+		err = os.Chmod(filePath, 0644)
 	}
 	if err != nil {
 		cleanup()

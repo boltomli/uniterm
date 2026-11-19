@@ -49,8 +49,7 @@
 
 Terminal từ xa, terminal cục bộ & cổng serial, truyền tệp, máy tính từ xa, cơ sở dữ liệu, container và giám sát máy chủ — đáp ứng mọi nhu cầu truy cập từ xa.
 
-- **Terminal từ xa** — SSH / Telnet / Mosh / Raw TCP với xác thực bằng mật khẩu hoặc khóa; hỗ trợ chuyển tiếp cổng qua đường hầm SSH để mọi kết nối đều có thể đi qua máy chủ nhảy (jump host) SSH.
-- **Terminal cục bộ & cổng serial** — PowerShell / CMD / Git Bash / WSL cùng với kết nối serial cho phép cấu hình baud rate, data bits, stop bits, parity và local echo.
+- **Terminal** — SSH / Telnet / Mosh / Raw TCP / Serial, cùng các shell cục bộ (PowerShell / CMD / Git Bash / WSL).
 - **Truyền tệp** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem với duyệt tệp hai khung và hỗ trợ `rz`/`sz` trong terminal SSH.
 - **Máy tính từ xa** — RDP (Remote Desktop của Windows), VNC (điều khiển từ xa Linux), SPICE (máy ảo KVM/QEMU), X11 (chuyển tiếp X Window)
 - **Ứng dụng khách cơ sở dữ liệu** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, với truy vấn ngôn ngữ tự nhiên hỗ trợ bởi AI và chỉnh sửa trực tiếp các dòng dữ liệu.
@@ -65,17 +64,17 @@ AI Agent tự động lập kế hoạch và thực thi các chuỗi lệnh shel
 - **Chế độ thực thi linh hoạt** — Bỏ qua xác nhận, chỉ với lệnh nguy hiểm, lệnh nguy hiểm + ghi, hoặc xác nhận tất cả — bạn quyết định mức giám sát mà AI Agent cần.
 - **Tích hợp terminal** — Lệnh của AI được thực thi trực tiếp trong tab terminal đang hoạt động, có thể ghim vào một tab cụ thể hoặc đi theo tab đang hoạt động. Phối hợp song song trong các khung chia đôi, mỗi khung có ngữ cảnh terminal riêng.
 - **Máy chủ MCP** — Máy chủ MCP tích hợp cho phép các AI Agent bên ngoài (Claude Code, Codex, Gemini CLI, ...) chạy lệnh và truyền tệp trên các kết nối đã lưu — thông tin xác thực không bao giờ rời khỏi ứng dụng.
-- **Kỹ năng & Lệnh** — Các quy trình kỹ năng (skill) và lệnh mẫu prompt có thể tái sử dụng, đính kèm bằng `/` trong ô nhập của AI; AI cũng có thể tự lưu kỹ năng mới.
+- **Kỹ năng & Lệnh** — Các quy trình kỹ năng (skill) và lệnh mẫu prompt có thể tái sử dụng, đính kèm bằng `/` trong ô nhập của AI; AI cũng có thể tự lưu kỹ năng mới; cũng có thể kết nối MCP server bên ngoài để mở rộng công cụ cho AI.
 - **Hoàn thành thông minh** — Gợi ý hoàn thành theo thời gian thực khi đang gõ, dựa trên lịch sử lệnh và khả năng của AI.
 
 ### Cá nhân hóa
 
 Quản lý kết nối, chia khung, đồng bộ đám mây, chủ đề & đa ngôn ngữ — terminal của bạn, theo cách của bạn.
 
-- **Trình quản lý kết nối** — Nhóm, tìm kiếm nhanh, tạo và thao tác hàng loạt các kết nối máy chủ.
+- **Trình quản lý kết nối** — Nhóm, tìm kiếm và quản lý hàng loạt các kết nối máy chủ; nhập/xuất mã hóa và nhập từ các ứng dụng terminal khác (MobaXterm, Xshell, v.v.).
 - **Không gian làm việc** — Kéo tab terminal vào vùng nội dung để chia tách tự do và kết hợp chúng thành một không gian làm việc; kéo mép các khung để thay đổi kích thước và sắp xếp lại.
+- **Bộ công cụ mạng** — Quét mạng, đường hầm chuyển tiếp cổng SSH và dịch vụ cục bộ để chạy máy chủ tạm thời cho các thiết bị khác.
 - **Đồng bộ đám mây** — Đồng bộ đám mây mã hóa với năm chế độ: kho lưu trữ Git, WebDAV, SFTP, S3 và SMB — không lo mất dữ liệu hoặc rò rỉ, và tiếp tục công việc liền mạch trên nhiều thiết bị.
-- **Tổ hợp phím tùy chỉnh** — Tự do gán phím tắt cho mọi thao tác để vận hành hoàn toàn bằng bàn phím, tay không bao giờ rời khỏi bàn phím.
 - **Chủ đề & Quốc tế hóa** — 28 chủ đề terminal cùng 3 chủ đề giao diện (Tối / Xanh đậm / Sáng) và hình nền có thể tùy chỉnh; giao diện 11 ngôn ngữ: tiếng Trung giản thể, tiếng Trung phồn thể, tiếng Anh, tiếng Nhật, tiếng Hàn, tiếng Đức, tiếng Tây Ban Nha, tiếng Pháp, tiếng Nga, tiếng Bồ Đào Nha, tiếng Việt.
 
 ## Giao thức được hỗ trợ
@@ -350,6 +349,11 @@ Cảm ơn những người đã đóng góp mã nguồn và cải tiến dưới
     <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
     <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
     <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
+    <td align="center"><a href="https://github.com/dajiaohuang">@dajiaohuang</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
+    <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
   </tr>
 </table>
 

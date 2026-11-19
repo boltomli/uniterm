@@ -82,6 +82,11 @@ export interface TerminalSettings {
   osc52Clipboard: 'ask' | 'allow' | 'deny'
   rightClickAction: 'none' | 'menu' | 'paste' | 'copyOrPaste'
   middleClickAction: 'none' | 'paste' | 'menu'
+  // Multi-line paste protection (issue #1370): 'confirm' opens an editable
+  // preview dialog before anything with multiple lines reaches the terminal,
+  // 'direct' pastes without asking. Defaults to 'confirm' — a multi-line
+  // clipboard pasted unattended runs every line as its own command.
+  multilinePaste: 'confirm' | 'direct'
   // Ctrl/Cmd + mouse wheel zooms the terminal font. Can be turned off (issue
   // #671) for scroll-sensitive mice; defaults to enabled.
   ctrlWheelZoom?: boolean
@@ -114,6 +119,10 @@ export interface TerminalSettings {
   // Default local directory for files received with ZMODEM sz. Empty keeps
   // the existing behavior of asking for a directory on every transfer.
   zmodemDownloadDir: string
+  // Idle timeout for in-terminal ZMODEM (rz/sz) transfers, in seconds.
+  // If no protocol activity is observed for this long, the transfer is aborted.
+  // Defaults to 20 to preserve historical behavior.
+  zmodemIdleTimeoutSec: number
   // Filename template: %S session, %H host, %M month, %D day, %h hour, %m minute.
   sessionLogFilename: string
   // Characters that act as word boundaries for xterm.js's double-click
@@ -177,6 +186,7 @@ export interface AISettings {
   autoCompact?: boolean
   contextTokenBudget?: number
   summaryModelId?: string
+  userMessageStyle?: 'plain' | 'bubble'
   models: AIModelConfig[]
   // F-02: the AI panel's confirmation policy. Defaults to confirm_write —
   // the same policy the MCP server uses — and is persisted so the user's
@@ -220,6 +230,11 @@ export type ShortcutAction =
   | 'zoomFontOut'
   | 'toggleFilePanel'    // 切换文件边栏
   | 'toggleMonitor'      // 切换资源监控边栏
+  | 'toggleNotes'        // 切换笔记面板（no default binding — opt-in）
+  | 'toggleTunnels'      // 切换隧道边栏（no default binding — opt-in）
+  | 'toggleHistory'      // 切换历史命令边栏（no default binding — opt-in）
+  | 'togglePersonalization' // 切换个性化边栏（no default binding — opt-in）
+  | 'toggleCommandSend'  // 切换命令发送面板（no default binding — opt-in）
 
 // User-facing bindings only use ctrl/shift/alt. On macOS the runtime mirrors
 // every ctrl combo to Cmd (per-action shortcuts register both; the digit
@@ -273,6 +288,11 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   zoomFontOut: 'shortcut.zoomFontOut',
   toggleFilePanel: 'shortcut.toggleFilePanel',
   toggleMonitor: 'shortcut.toggleMonitor',
+  toggleNotes: 'shortcut.toggleNotes',
+  toggleTunnels: 'shortcut.toggleTunnels',
+  toggleHistory: 'shortcut.toggleHistory',
+  togglePersonalization: 'shortcut.togglePersonalization',
+  toggleCommandSend: 'shortcut.toggleCommandSend',
 }
 
 export const DEFAULT_KEYBOARD: KeyboardSettings = {
@@ -334,6 +354,8 @@ export interface StartPageSettings {
   visible: Record<StartPageBlock, boolean>
   // Render order of the content sections.
   order: StartPageBlock[]
+  // Brand line above the search box; false hides it.
+  showLogo: boolean
 }
 
 export const START_PAGE_BLOCK_LABEL_KEYS: Record<StartPageBlock, string> = {
@@ -345,6 +367,7 @@ export const START_PAGE_BLOCK_LABEL_KEYS: Record<StartPageBlock, string> = {
 export const START_PAGE_DEFAULTS: StartPageSettings = {
   visible: { favorites: true, recent: true, groups: true },
   order: ['favorites', 'recent', 'groups'],
+  showLogo: true,
 }
 
 export interface AppSettings {
@@ -425,6 +448,7 @@ export const SIDEBAR_TAB_DEFAULTS: Record<string, boolean> = {
   history: true,
   personalization: true,
   commandSend: true,
+  notes: true,
 }
 
 // Canonical sidebar tab order shared by the tab-strip context menu and the
@@ -438,6 +462,7 @@ export const SIDEBAR_TAB_ORDER: { key: string; labelKey: string }[] = [
   { key: 'history', labelKey: 'quickCommands.historyTab' },
   { key: 'personalization', labelKey: 'sidebar.personalization' },
   { key: 'commandSend', labelKey: 'sidebar.commandSend' },
+  { key: 'notes', labelKey: 'notes.notesTab' },
 ]
 
 // Default dock position per sidebar view: "sidebar" (left) or "bottom"
@@ -454,6 +479,7 @@ export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'bottom'> = {
   quickCommands: 'sidebar',
   history: 'sidebar',
   commandSend: 'bottom',
+  notes: 'bottom',
 }
 
 // Monitor sections with their default enabled state. Disabled sections are
@@ -506,6 +532,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     rightClickAction: 'menu',
     osc52Clipboard: 'ask',
     middleClickAction: 'paste',
+    multilinePaste: 'confirm',
     maxHistoryLines: 2500,
     smartCompletion: true,
     suggestionPopup: true,
@@ -519,6 +546,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     renderer: 'auto',
     sessionLogDir: '',
     zmodemDownloadDir: '',
+    zmodemIdleTimeoutSec: 20,
     sessionLogFilename: '%S_%H_%M%D_%h%m.log',
     wordSeparator: '\\ :;~`!@#$%^&*()=+|[]{}\'",<>?',
     showLineNumbers: false,
@@ -531,6 +559,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoCompact: true,
     contextTokenBudget: DEFAULT_CONTEXT_TOKEN_BUDGET,
     summaryModelId: '',
+    userMessageStyle: 'bubble',
     models: [
       {
         id: 'model-default',
@@ -571,7 +600,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   panelOrder: [],
   startPage: {
     visible: { ...START_PAGE_DEFAULTS.visible },
-    order: [...START_PAGE_DEFAULTS.order]
+    order: [...START_PAGE_DEFAULTS.order],
+    showLogo: START_PAGE_DEFAULTS.showLogo
   }
 }
 

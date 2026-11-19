@@ -1,5 +1,8 @@
 <template>
   <Teleport to="body">
+    <!-- .stop keeps the app-wide "close menus" capture handler in main.ts from
+         firing on a right-click inside the menu; .prevent suppresses the
+         native context menu that would otherwise pop over our rows. -->
     <div
       v-show="visible"
       ref="menuEl"
@@ -9,7 +12,7 @@
       @mouseover="onInnerMouseOver"
       @mouseleave="onRootLeave"
       @scroll="submenu.active = ''"
-      @contextmenu.stop
+      @contextmenu.stop.prevent
     >
       <slot :current="current" />
     </div>
@@ -318,6 +321,15 @@ watch(() => props.visible, (v) => {
 .menu-submenu .menu-item.active {
   color: var(--accent);
   font-weight: 500;
+}
+/* Danger rows inside a submenu flyout mirror the main menu's
+   (.conn-context-menu .menu-item.danger) look. */
+.menu-submenu .menu-item.danger {
+  color: var(--error);
+}
+.menu-submenu .menu-item.danger:hover {
+  background: var(--error-subtle);
+  color: var(--error);
 }
 /* Iconic rows inside a submenu flyout need the same flex+gap as the main
    menu's (.conn-context-menu .menu-item.iconic) — without it the leading

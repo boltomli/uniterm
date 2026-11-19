@@ -121,6 +121,16 @@ type ConnectionConfig struct {
 	RdpFixedWidth  int  `json:"rdpFixedWidth,omitempty"`
 	RdpFixedHeight int  `json:"rdpFixedHeight,omitempty"`
 	RdpEnableNLA   bool `json:"rdpEnableNLA"`
+	// RdpSecurityMode selects the security-protocol preference:
+	// "nla-prefer" offers TLS + CredSSP and falls back to TLS when the
+	// server's CredSSP handshake breaks, "nla" offers both without any
+	// fallback, "tls" offers TLS only, and "unencrypted" (displayed as
+	// "Standard RDP Security (legacy)") speaks the legacy standard RDP
+	// security protocol — the encryption level (RC4 40/56/128-bit or none)
+	// is dictated by the server, so it is plaintext against servers that
+	// choose none. Connections saved before the field existed resolve from
+	// RdpEnableNLA instead.
+	RdpSecurityMode string `json:"rdpSecurityMode,omitempty"`
 	// RdpDomain is the Windows domain (or computer name for local accounts)
 	// sent to the RDP ActiveX control's Domain property. When empty, a
 	// "DOMAIN\user" prefix in User is used as a fallback, mirroring the
@@ -320,6 +330,21 @@ type ConnectionConfig struct {
 	// secret is ever duplicated here.
 	WorkspaceMembers []SavedWorkspaceMember    `json:"workspaceMembers,omitempty"`
 	WorkspaceLayout  *SavedWorkspaceLayoutNode `json:"workspaceLayout,omitempty"`
+}
+
+// SecurityOffersCredSSP reports whether the RDP client should offer CredSSP
+// (NLA) during X.224 negotiation. RdpSecurityMode is the current control:
+// "nla-prefer" and "nla" offer it; "tls" and "unencrypted" do not.
+// Connections saved before the field existed fall back to the legacy
+// RdpEnableNLA boolean.
+func (c ConnectionConfig) SecurityOffersCredSSP() bool {
+	switch c.RdpSecurityMode {
+	case "nla-prefer", "nla":
+		return true
+	case "tls", "unencrypted": // unencrypted: the client never offers HYBRID anyway
+		return false
+	}
+	return c.RdpEnableNLA
 }
 
 // DefaultTermType is the terminal type reported to remote hosts when the
@@ -859,6 +884,14 @@ func (s *baseSession) drainEmitQueue() [][]byte {
 	dropped := s.emitDropped
 	s.emitDropped = 0
 	s.emitMu.Unlock()
+	// Wake any producer blocked in queueEmit on a full queue now that space
+	// has freed. Without this the readLoop waits out the full
+	// emitBlockWatchdog (3s) on EVERY queue-full episode — even when the
+	// consumer drains promptly — turning a big burst (e.g. `dir`) into
+	// "front half, then a ~3s freeze, then the rest". Broadcast is a no-op
+	// when no producer is waiting, and drop-oldest (degraded) mode is
+	// unaffected because it no longer blocks on the condition.
+	s.emitCond.Broadcast()
 	if dropped > 0 {
 		log.Writef("session %s: emit queue overflow, dropped %d stale chunk(s)", s.id, dropped)
 	}

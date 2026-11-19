@@ -112,10 +112,10 @@ type Env struct {
 	// executor (created lazily per the connection's file protocol); an
 	// error when the session is gone, not SSH, or the transfer session
 	// cannot be opened — the text reaches the AI caller.
-	FileSession func(sessionID string) (FileExecutor, error)
 	// ResolveLocalPath validates a local path against the user-configured
 	// allowed directories (SFTP bookmarks) and returns the resolved path.
 	ResolveLocalPath func(path string) (resolved string, err error)
+	FileSession      func(sessionID string) (FileExecutor, error)
 	// Foreground runs a command in the live terminal PTY as an async job and
 	// completes on a shell acknowledgement, never terminal silence. When nil the
 	// unified uniterm_exec tool reports foreground mode unsupported; background

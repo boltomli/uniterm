@@ -329,6 +329,9 @@ let resizeStartWidth = 0
 let resizing = false
 
 function onResizeStart(e: MouseEvent) {
+  // Block the mousedown default action so the drag cannot promote into a text
+  // selection / native drag (see AISidebar.onResizeStart for the full story).
+  e.preventDefault()
   resizeStartX = e.clientX
   resizeStartWidth = leftWidth.value
   resizing = true
@@ -928,7 +931,6 @@ watch(() => props.sessionId, () => {
 .db-name {
   font-family: var(--font-ui);
   font-size: 0.8125rem;
-  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;

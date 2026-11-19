@@ -5,9 +5,24 @@ import AIMessage from './AIMessage.vue'
 const { setText, writeText, showError } = vi.hoisted(() => ({
   setText: vi.fn(), writeText: vi.fn(), showError: vi.fn(),
 }))
-vi.mock('@wailsio/runtime', () => ({ Clipboard: { SetText: setText } }))
+// The generated bindings register type converters at import time through the
+// runtime's Create namespace, so the module mock has to expose it (this test
+// only cares that AIMessage's clipboard handlers work).
+vi.mock('@wailsio/runtime', () => {
+  const passthrough = (v: unknown) => (typeof v === 'function' ? v : () => v)
+  return {
+    Clipboard: { SetText: setText },
+    Create: {
+      Array: passthrough, Map: passthrough, Struct: passthrough,
+      Any: passthrough, Nullable: passthrough, ByteSlice: passthrough,
+    },
+  }
+})
 vi.mock('element-plus', () => ({ ElMessage: { error: showError } }))
 vi.mock('../stores/aiStore', () => ({ useAIStore: () => ({ isRunning: false }) }))
+vi.mock('../stores/settingsStore', () => ({
+  useSettingsStore: () => ({ settings: { ai: { userMessageStyle: 'bubble' } } }),
+}))
 vi.mock('../i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 // Run the real SFC setup and clipboard helper without a browser DOM.

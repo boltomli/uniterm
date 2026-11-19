@@ -1,10 +1,10 @@
-# Keystore
+# Identities
 
-The keystore provides centralized management of reusable login identities (username + password / private key). Connections reference an identity directly, so you don't have to fill in credentials for every connection.
+The Identities page provides centralized management of reusable login identities (username + password / private key). Connections reference an identity directly, so you don't have to fill in credentials for every connection.
 
 ## Managing Identities
 
-Entry point: **Settings → Keystore**.
+Entry point: **Settings → Identities**.
 
 ![Identity Management](/imgs/identities_light.webp)
 
@@ -36,10 +36,10 @@ Each identity supports three auth types:
 
 In the connection form (SSH / SCP / SFTP / Mosh / X11 and other types), select **Identity** as the auth type and pick an identity from the dropdown — the connection's username and credentials come entirely from the identity.
 
-Other auth methods such as Kerberos and SSH Agent are unrelated to the keystore. See [Remote Terminal](/en/connections/remote-terminal).
+Other auth methods such as Kerberos and SSH Agent are unrelated to Identities. See [Terminal](/en/connections/terminal).
 
 ---
 
 ::: tip Related
-- [Remote Terminal](/en/connections/remote-terminal) — SSH connection and authentication configuration
+- [Terminal](/en/connections/terminal) — SSH connection and authentication configuration
 :::

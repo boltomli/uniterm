@@ -49,8 +49,7 @@
 
 Terminal remota, terminal local y de serie, transferencia de archivos, escritorio remoto, bases de datos, contenedores y monitorización de servidores: cubre todas las necesidades de acceso remoto.
 
-- **Terminal remota** — SSH / Telnet / Mosh / Raw TCP con autenticación por contraseña o clave; incluye reenvío de puertos por túnel SSH, de modo que cualquier conexión puede pasar por un host de salto (jump host) SSH.
-- **Terminal local y de serie** — PowerShell / CMD / Git Bash / WSL, además de conexiones serie con velocidad en baudios, bits de datos, bits de parada, paridad y eco local configurables.
+- **Terminal** — SSH / Telnet / Mosh / Raw TCP / Serie, además de shells locales (PowerShell / CMD / Git Bash / WSL).
 - **Transferencia de archivos** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem, con exploración de doble panel y compatibilidad con `rz`/`sz` en terminales SSH.
 - **Escritorio remoto** — RDP (escritorio remoto de Windows), VNC (control remoto de Linux), SPICE (máquinas virtuales KVM/QEMU), X11 (reenvío de X Window)
 - **Cliente de bases de datos** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, con consultas en lenguaje natural asistidas por IA y edición de filas de datos.
@@ -65,17 +64,17 @@ Agente de IA autónomo que planifica y ejecuta por sí mismo comandos de shell d
 - **Modos de ejecución flexibles** — Omitir confirmaciones, solo operaciones peligrosas, peligrosas + escritura o confirmar todo: tú decides cuánta supervisión necesita el Agente de IA.
 - **Integración con la terminal** — Los comandos de la IA se ejecutan directamente en la pestaña de terminal activa, con la opción de fijarlos a una pestaña específica o de seguir la pestaña activa. Colabora en paralelo en paneles divididos, cada uno con su propio contexto de terminal.
 - **Servidor MCP** — Servidor MCP integrado que permite a agentes de IA externos (Claude Code, Codex, Gemini CLI, ...) ejecutar comandos y transferir archivos en las conexiones guardadas; las credenciales nunca salen de la aplicación.
-- **Habilidades y comandos** — Flujos de trabajo de habilidades reutilizables y comandos basados en plantillas de prompt, que se adjuntan con `/` en la entrada de la IA; la IA también puede guardar nuevas habilidades por sí misma.
+- **Habilidades y comandos** — Flujos de trabajo de habilidades reutilizables y comandos basados en plantillas de prompt, que se adjuntan con `/` en la entrada de la IA; la IA también puede guardar nuevas habilidades por sí misma; también pueden conectarse servidores MCP externos para ampliar las herramientas de la IA.
 - **Autocompletado inteligente** — Autocompletado en tiempo real mientras escribes, basado en el historial de comandos y en las capacidades de la IA.
 
 ### Personalización
 
 Gestión de conexiones, paneles divididos, sincronización en la nube, temas e internacionalización: tu terminal, a tu manera.
 
-- **Gestor de conexiones** — Agrupa, busca rápidamente, crea y opera en lote conexiones de servidores.
+- **Gestor de conexiones** — Agrupa, busca y gestiona en lote conexiones de servidores; importación/exportación cifrada e importación desde otras apps de terminal (MobaXterm, Xshell, etc.).
 - **Espacio de trabajo** — Arrastra las pestañas de terminal al área de contenido para dividirlas libremente y combinarlas en un espacio de trabajo; arrastra los bordes de los paneles para cambiar su tamaño y reorganizarlos.
+- **Caja de herramientas de red** — Escaneo de red, túneles de reenvío de puertos SSH y servicios locales para ejecutar servidores temporales para otros dispositivos.
 - **Sincronización en la nube** — Sincronización cifrada en la nube en cinco modos: repositorio Git, WebDAV, SFTP, S3 y SMB; sin preocupaciones por pérdida o fugas de datos, y retoma tu trabajo sin problemas en todos tus dispositivos.
-- **Atajos de teclado personalizados** — Asigna libremente atajos de teclado a cada acción para una operación totalmente controlada por teclado, sin que las manos abandonen el teclado.
 - **Temas e internacionalización** — 28 temas de terminal más 3 temas de interfaz (Oscuro / Azul profundo / Claro) y una imagen de fondo personalizable; interfaz en 11 idiomas: chino simplificado, chino tradicional, inglés, japonés, coreano, alemán, español, francés, ruso, portugués, vietnamita.
 
 ## Protocolos compatibles
@@ -350,6 +349,11 @@ Gracias a las siguientes personas por contribuir con código y mejoras, y a todo
     <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
     <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
     <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
+    <td align="center"><a href="https://github.com/dajiaohuang">@dajiaohuang</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
+    <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
   </tr>
 </table>
 

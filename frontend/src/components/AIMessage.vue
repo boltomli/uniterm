@@ -1,5 +1,5 @@
 <template>
-  <div class="ai-message" :class="[message.role, { interrupted: isInterrupted || isTimeout }]">
+  <div class="ai-message" :class="[message.role, { interrupted: isInterrupted || isTimeout, 'bubble-mode': userBubbleStyle }]">
     <!-- Skill card: 仅显示用了哪个 skill，正文已隐藏进 _contextHeader -->
     <div v-if="message.skillName" class="skill-card">
       <BookOpen :size="lucideSize('0.8125rem')" class="skill-card-icon" />
@@ -76,8 +76,8 @@
       </div>
 
       <!-- Tool call pairs: IN + OUT grouped together -->
-      <div v-if="message.tool_calls?.length" class="tool-pairs">
-        <div v-for="tc in message.tool_calls" :key="tc.id" class="tool-pair">
+      <div v-if="displayToolCalls.length" class="tool-pairs">
+        <div v-for="tc in displayToolCalls" :key="tc.id" class="tool-pair">
           <!-- IN box -->
           <div class="tool-box in-box">
             <div class="tool-box-header" @click="inExpanded = !inExpanded">
@@ -172,8 +172,83 @@
         </div>
       </div>
 
-      <!-- Message timestamp (user questions and assistant answers only) -->
-      <div v-if="createdAtLabel && message.role !== 'tool'" class="msg-meta">{{ createdAtLabel }}</div>
+      <!-- Answered ask_user interactions stay in the stream as read-only
+           records: the form is rebuilt from the ask_user tool call arguments
+           plus its structured tool result, with the chosen options marked. -->
+      <div
+        v-for="aq in answeredQuestions"
+        :key="aq.toolCallId"
+        class="question-box locked"
+      >
+        <div v-if="aq.args.header" class="question-header">{{ aq.args.header }}</div>
+        <div class="question-text">{{ aq.args.question }}</div>
+        <div class="question-options">
+          <label
+            v-for="(opt, i) in aq.args.options || []"
+            :key="i"
+            class="question-option"
+            :class="{ selected: aq.answer.selectedLabels.includes(opt.label) }"
+          >
+            <span v-if="aq.args.multiSelect" class="option-check">
+              <el-icon v-if="aq.answer.selectedLabels.includes(opt.label)"><Check :size="14" /></el-icon>
+              <span v-else class="option-check-empty"></span>
+            </span>
+            <span v-else class="option-radio" :class="{ on: aq.answer.selectedLabels.includes(opt.label) }"></span>
+            <span class="option-body">
+              <span class="option-label">{{ opt.label }}</span>
+              <span class="option-desc">{{ opt.description }}</span>
+            </span>
+          </label>
+          <label class="question-option" :class="{ selected: aq.answer.customText !== undefined }">
+            <span v-if="aq.args.multiSelect" class="option-check">
+              <el-icon v-if="aq.answer.customText !== undefined"><Check :size="14" /></el-icon>
+              <span v-else class="option-check-empty"></span>
+            </span>
+            <span v-else class="option-radio" :class="{ on: aq.answer.customText !== undefined }"></span>
+            <span class="option-body">
+              <span class="option-label">{{ t('ai.other') }}</span>
+              <input class="other-input" :value="aq.answer.customText ?? ''" disabled />
+            </span>
+          </label>
+        </div>
+        <div v-if="aq.answer.dismissed" class="question-dismissed">{{ t('ai.questionDismissed') }}</div>
+      </div>
+
+      <!-- Message timestamp (user questions and assistant answers only).
+           The row shows the short clock; hovering reveals the full date and
+           time. -->
+      <!-- Shared meta row below every message (tool results excluded): the
+           timestamp first, then hover-revealed actions to its right — copy the
+           reply for assistant messages, copy/delete the turn for user ones. -->
+      <div v-if="message.role !== 'tool'" class="msg-meta-row">
+        <el-tooltip
+          v-if="messageTimeLabel"
+          :content="createdAtFullLabel"
+          placement="top"
+          :show-after="300"
+        >
+          <div class="msg-meta">{{ messageTimeLabel }}</div>
+        </el-tooltip>
+        <div class="msg-actions">
+          <button
+            v-if="message.role === 'assistant' && message.content?.trim()"
+            class="msg-action-btn"
+            :class="{ active: replyCopied }"
+            @click="onReplyCopy"
+            :title="t('ai.copyMarkdown')"
+          >
+            <el-icon><Check v-if="replyCopied" :size="'0.8125rem'" /><Copy v-else :size="'0.8125rem'" /></el-icon>
+          </button>
+          <template v-if="message.role === 'user'">
+            <button class="msg-action-btn" :class="{ active: userCopied }" @click="onUserCopy" :title="t('ai.copy')">
+              <el-icon><Check v-if="userCopied" :size="'0.8125rem'" /><Copy v-else :size="'0.8125rem'" /></el-icon>
+            </button>
+            <button class="msg-action-btn danger" @click="onUserDelete" :title="t('common.delete')">
+              <el-icon><Trash2 :size="'0.8125rem'" /></el-icon>
+            </button>
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -181,13 +256,14 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { writeClipboard } from '../composables/useClipboardWrite'
-import { Copy, Check, BookOpen, Terminal, FileText } from '@lucide/vue'
+import { Copy, Check, BookOpen, Terminal, FileText, Trash2 } from '@lucide/vue'
 import { useAIStore } from '../stores/aiStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { useI18n } from '../i18n'
-import { sanitizeRenderedHtml, escapeHtml as escapeHtmlBase } from '../utils/markdown'
-import { formatClock, formatDuration } from '../utils/timeFormat'
+import { sanitizeRenderedHtml, escapeHtml as escapeHtmlBase, renderMarkdownHtml, codeCopyTarget, COPY_ICON, CHECK_ICON } from '../utils/markdown'
+import { formatClock, formatMessageTime, formatDuration } from '../utils/timeFormat'
 import { attachmentPreviewUrl, formatBytes } from '../services/attachments'
 import type { AIMessage } from '../types/ai'
 
@@ -212,6 +288,69 @@ const isPendingQ = computed(() =>
   aiStore.pendingQuestion?.messageId === props.message.id
 )
 const pendingQ = computed(() => isPendingQ.value ? aiStore.pendingQuestion! : null)
+
+// Rebuilds answered ask_user forms from data that already exists in the
+// stream: the ask_user tool call arguments (question, options) plus its tool
+// result (the structured answer). Anything missing or unparseable — legacy
+// sessions, deleted results, unexpected shapes — is simply skipped, and the
+// regular IN/OUT tool boxes remain the record. Never throws.
+const answeredQuestions = computed(() => {
+  if (pendingQ.value || props.message.role !== 'assistant' || !props.message.tool_calls?.length) return []
+  const out: Array<{
+    toolCallId: string
+    args: { question: string; header?: string; multiSelect?: boolean; options?: Array<{ label: string; description: string }> }
+    answer: { selectedLabels: string[]; customText?: string; dismissed?: boolean }
+  }> = []
+  for (const tc of props.message.tool_calls) {
+    if (tc.function?.name !== 'ask_user') continue
+    try {
+      const args = JSON.parse(tc.function.arguments || '{}') as {
+        question?: unknown; header?: unknown; multiSelect?: unknown; options?: unknown
+      }
+      if (typeof args.question !== 'string') continue
+      const result = getToolResult(tc.id)?.content || ''
+      let answer: { selectedLabels?: unknown; customText?: unknown; dismissed?: unknown } | null = null
+      if (result.startsWith('User dismissed this question.') || result.includes('question was dismissed')) {
+        answer = { selectedLabels: [], dismissed: true }
+      } else if (result.startsWith('User answered: ')) {
+        answer = JSON.parse(result.slice('User answered: '.length))
+      }
+      if (!answer || !Array.isArray(answer.selectedLabels)) continue
+      const selectedLabels = answer.selectedLabels.every(l => typeof l === 'string') ? answer.selectedLabels as string[] : []
+      const options = Array.isArray(args.options)
+        ? args.options.filter((o): o is { label: string; description: string } =>
+            !!o && typeof (o as any).label === 'string')
+        : undefined
+      out.push({
+        toolCallId: tc.id,
+        args: {
+          question: args.question,
+          header: typeof args.header === 'string' ? args.header : undefined,
+          multiSelect: args.multiSelect === true,
+          options,
+        },
+        answer: {
+          selectedLabels,
+          customText: typeof answer.customText === 'string' ? answer.customText : undefined,
+          dismissed: answer.dismissed === true,
+        },
+      })
+    } catch {
+      // Malformed history: leave this one to the plain IN/OUT boxes.
+    }
+  }
+  return out
+})
+
+// When a question form is shown for an ask_user call — pending or answered —
+// the raw IN/OUT tool boxes for that call are redundant and hidden. Calls
+// whose form could not be rebuilt keep the plain IN/OUT boxes as the record.
+const displayToolCalls = computed(() => {
+  if (!props.message.tool_calls?.length) return []
+  const hidden = new Set(answeredQuestions.value.map(aq => aq.toolCallId))
+  if (pendingQ.value) hidden.add(pendingQ.value.toolId)
+  return props.message.tool_calls.filter(tc => !hidden.has(tc.id))
+})
 
 // Question state
 const selectedOptions = ref<number[]>([])
@@ -251,6 +390,18 @@ function toggleOther() {
 
 function onOtherInput(e: Event) {
   otherText.value = (e.target as HTMLInputElement).value
+  // Typing a custom answer selects the "Other" option automatically — the
+  // user should not have to click the radio separately.
+  if (otherText.value.trim() && !otherSelected.value) {
+    otherSelected.value = true
+    if (!pendingQ.value?.multiSelect) selectedOptions.value = []
+  }
+  // Clearing the text unchecks "Other" again in multi-select mode; in
+  // single-select mode the radio stays on the last chosen option instead of
+  // silently deselecting everything.
+  if (!otherText.value.trim() && pendingQ.value?.multiSelect && otherSelected.value) {
+    otherSelected.value = false
+  }
 }
 
 function handleAnswer() {
@@ -284,13 +435,34 @@ function handleReject() {
 }
 
 const aiStore = useAIStore()
-const { t } = useI18n()
-const inExpanded = ref(true)
+const settingsStore = useSettingsStore()
+const { t, locale } = useI18n()
+// 'bubble' right-aligns user messages as chat bubbles (issue #1478);
+// 'plain' / undefined keeps the shared left-aligned layout.
+const userBubbleStyle = computed(() => settingsStore.settings.ai.userMessageStyle === 'bubble')
+const inExpanded = ref(false)
 const outExpanded = ref(false)
 const thinkingShown = ref(false)
 
 // ── Timestamps & thinking status ──
 const createdAtLabel = computed(() => formatClock(props.message.createdAt))
+// Hover detail for the timestamp row: full local date and time.
+const createdAtFullLabel = computed(() => {
+  if (!props.message.createdAt) return ''
+  try {
+    return new Date(props.message.createdAt).toLocaleString([], {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    })
+  } catch {
+    return ''
+  }
+})
+
+// Message timestamp: today shows only the clock ("14:32"), yesterday shows a
+// relative word + clock ("昨天 14:32"), older messages show date + clock
+// ("11月5日 14:32"). All formatted in the UI language.
+const messageTimeLabel = computed(() => formatMessageTime(props.message.createdAt, locale.value))
 
 // Duration label: prefer the stored measurement; while the current turn is
 // still thinking, tick live off the store start time.
@@ -323,10 +495,57 @@ const thinkingDurationLabel = computed(() => {
 
 watch(thinkingLive, (on) => ensureLiveTimer(on), { immediate: true })
 onUnmounted(() => ensureLiveTimer(false))
-const copyMdLabel = ref(t('ai.copyMarkdown'))
+// COPY_ICON / CHECK_ICON live in utils/markdown.ts (the renderer embeds the
+// copy button itself); they are imported above for the click-feedback swap.
 
-const COPY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="0.75rem" height="0.75rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
-const CHECK_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="0.75rem" height="0.75rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+// Copy the assistant reply (markdown source) from the shared meta row.
+const replyCopied = ref(false)
+
+async function onReplyCopy() {
+  const text = props.message.content || ''
+  if (!text) return
+  if (await writeClipboard(text)) {
+    replyCopied.value = true
+    setTimeout(() => { replyCopied.value = false }, 2000)
+  } else {
+    ElMessage.error(t('ai.copyFailed'))
+  }
+}
+
+// ── User message actions: copy the exact question, or delete it along with
+//    the AI's reply for that turn (fixing a mistyped prompt cleanly). ──
+const userCopied = ref(false)
+
+async function onUserCopy() {
+  const text = props.message.content || ''
+  if (!text) return
+  if (await writeClipboard(text)) {
+    userCopied.value = true
+    setTimeout(() => { userCopied.value = false }, 2000)
+  } else {
+    ElMessage.error(t('ai.copyFailed'))
+  }
+}
+
+async function onUserDelete() {
+  try {
+    await ElMessageBox.confirm(
+      t('ai.confirmDeleteMessage'),
+      t('ai.confirmDeleteTitle'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.delete'),
+        cancelButtonText: t('common.cancel'),
+        confirmButtonClass: 'el-button--danger',
+      }
+    )
+  } catch {
+    return // cancelled
+  }
+  aiStore.deleteMessageWithReply(props.message.id)
+}
+
+const copyMdLabel = ref(t('ai.copyMarkdown'))
 
 async function copyAsMarkdown() {
   const copied = await writeClipboard(props.message.content)
@@ -346,17 +565,14 @@ async function copyToolText(text: string, key: string) {
 }
 
 async function onTextClick(event: MouseEvent) {
+  const code = codeCopyTarget(event)
+  if (!code) return
   const btn = (event.target as HTMLElement).closest('.code-copy-btn') as HTMLElement | null
-  if (!btn) return
-  const wrapper = btn.closest('.code-block-wrapper')
-  const code = wrapper?.querySelector('code')?.textContent
-  if (code) {
-    if (await writeClipboard(code)) {
-      btn.innerHTML = CHECK_ICON
-      setTimeout(() => { btn.innerHTML = COPY_ICON }, 2000)
-    } else {
-      ElMessage.error(t('ai.copyFailed'))
-    }
+  if (btn && await writeClipboard(code)) {
+    btn.innerHTML = CHECK_ICON
+    setTimeout(() => { btn.innerHTML = COPY_ICON }, 2000)
+  } else {
+    ElMessage.error(t('ai.copyFailed'))
   }
 }
 
@@ -429,235 +645,9 @@ function getToolResult(toolCallId: string): AIMessage | undefined {
   )
 }
 
-function renderMarkdown(text: string): string {
-  // escapeHtmlBase escapes & < > and quotes — the quote escape matters here:
-  // without it a markdown link like [x](x"/onerror="alert(1)) breaks out of
-  // href="..." via the slash attribute separator, and sanitizeRenderedHtml
-  // only strips on*= handlers preceded by whitespace (FE-01 follow-up).
-  let html = escapeHtmlBase(text)
-
-  // Protect fenced code blocks and inline code from further markdown processing
-  const protectedBlocks: string[] = []
-  html = html.replace(/```(\w*)[\t ]*[\r\n]*([\s\S]*?)```/g, (_, lang, code) => {
-    const idx = protectedBlocks.length
-    const langTag = lang ? `<span class="code-lang-tag">${lang}</span>` : ''
-    const header = `<div class="code-block-header">${langTag}<button class="tool-copy-btn code-copy-btn" title="${t('ai.copy')}">${COPY_ICON}</button></div>`
-    const codeHtml = code.replace(/^[\r\n]+|\s+$/g, '').replace(/\r?\n/g, '&#10;')
-    protectedBlocks.push(`<div class="code-block-wrapper">${header}<pre><code>${codeHtml}</code></pre></div>`)
-    return `\x00CODEBLOCK${idx}\x00`
-  })
-  html = html.replace(/`([^`]+)`/g, (_, code) => {
-    const idx = protectedBlocks.length
-    protectedBlocks.push(`<code>${code}</code>`)
-    return `\x00CODEBLOCK${idx}\x00`
-  })
-
-  // Headings
-  html = html.replace(/^###### (.*$)/gim, '<h6>$1</h6>')
-  html = html.replace(/^##### (.*$)/gim, '<h5>$1</h5>')
-  html = html.replace(/^#### (.*$)/gim, '<h4>$1</h4>')
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>')
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>')
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>')
-
-  // Horizontal rules
-  html = html.replace(/^(-{3,})$/gm, '<hr>')
-
-  // Footnotes: collect definitions, render inline at their position
-  const footnotes: { id: string; content: string }[] = []
-  const fnIdMap: Record<string, number> = {}
-  // First pass: collect footnote definitions and assign numbers
-  html = html.replace(/^\[\^([^\]]+)\]:\s*(.+)$/gm, (_, id, content) => {
-    footnotes.push({ id, content })
-    fnIdMap[id] = footnotes.length
-    return `\x00FN${footnotes.length - 1}\x00` // Placeholder to be rendered inline later
-  })
-  // Second pass: replace footnote references [^id] with superscript numbers
-  html = html.replace(/\[\^([^\]]+)\]/g, (_, id) => {
-    const num = fnIdMap[id]
-    if (num) {
-      return `<sup class="footnote-ref">[${num}]</sup>`
-    }
-    return `[^${id}]`
-  })
-  // Third pass: render footnote definitions as footnotes section at placeholder positions
-  html = html.replace(/\x00FN(\d+)\x00/g, (_, idx) => {
-    const fn = footnotes[parseInt(idx)]
-    return `<div class="footnote-item"><sup>[${idx + 1}]</sup> ${fn.content}</div>`
-  })
-
-  // Remove the append logic later — footnotes are now inline
-
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*(.*?)\*/g, '<em>$1</em>')
-  html = html.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  // Images (must be before links so ![ doesn't get partially matched)
-  html = html.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1">')
-  // Markdown links
-  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-  // Auto-link raw URLs (after markdown links/images, only in text outside HTML tags)
-  html = autoLinkUrls(html)
-
-  // Blockquotes (with nesting support)
-  html = html.replace(/(?:^(&gt; ?)+.*(?:\n|$))+/gm, (block) => buildNestedBlockquote(block))
-
-  // Nested unordered lists
-  html = html.replace(/(?:^ {0,4}- .*(?:\n|$))+/gm, (block) => buildNestedList(block, false))
-  // Nested ordered lists
-  html = html.replace(/(?:^ {0,4}\d+\. .*(?:\n|$))+/gm, (block) => buildNestedList(block, true))
-
-  // Task list checkboxes (Lucide-style SVGs)
-  const TASK_CHECKED = '<svg xmlns="http://www.w3.org/2000/svg" width="0.875rem" height="0.875rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><path d="m9 12 2 2 4-4"></path></svg>'
-  const TASK_UNCHECKED = '<svg xmlns="http://www.w3.org/2000/svg" width="0.875rem" height="0.875rem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>'
-  html = html.replace(/(<li>)\[x\] /gi, '$1<span class="task-check checked">' + TASK_CHECKED + '</span>')
-  html = html.replace(/(<li>)\[ \] /gi, '$1<span class="task-check">' + TASK_UNCHECKED + '</span>')
-
-  // Tables
-  const tableBlocks = html.match(/(?:^\|.*\|.*\n?)+/gm)
-  if (tableBlocks) {
-    for (const block of tableBlocks) {
-      const lines = block.trim().split('\n').filter(line => line.trim())
-      if (lines.length < 2) continue
-      const dataLines = lines.filter((line, idx) => idx !== 1 || !/^\s*[|:\-|\s]+\|\s*$/.test(line))
-      let tableHtml = '<table>'
-      dataLines.forEach((line, rowIdx) => {
-        const cells = line.split('|').map(c => c.trim()).filter(c => c)
-        const tag = rowIdx === 0 ? 'th' : 'td'
-        tableHtml += '<tr>' + cells.map(c => `<${tag}>${c}</${tag}>`).join('') + '</tr>'
-      })
-      tableHtml += '</table>'
-      html = html.replace(block, tableHtml)
-    }
-  }
-
-  // Restore protected code blocks
-  html = html.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, idx) => protectedBlocks[parseInt(idx)])
-
-  // Ensure blank lines after block-level elements for paragraph separation
-  html = html.replace(/(<\/(table|ul|ol|blockquote|pre|div)>)\s*/gi, '$1\n\n')
-  html = html.replace(/(<hr\s*\/?>)\s*/gi, '$1\n\n')
-
-  // Wrap paragraphs: split by blank lines, wrap each segment in <p>
-  const parts = html.split(/\n{2,}/)
-  html = parts.map(part => {
-    const trimmed = part.trim()
-    if (!trimmed) return ''
-    // Don't wrap if already a block-level element (opening or closing)
-    if (/^<\/?(h[1-6]|pre|table|ul|ol|hr|div|p|blockquote|li|hr\s*\/?>)/i.test(trimmed)) {
-      return trimmed
-    }
-    // Convert single newlines to <br> within paragraph
-    return '<p>' + trimmed.replace(/\n/g, '<br>') + '</p>'
-  }).join('')
-  // Clean up empty <p> tags
-  html = html.replace(/<p>\s*<\/p>/g, '')
-  html = html.replace(/<p>\s*<br>\s*<\/p>/g, '')
-  // Remove <br> after block-level closing tags
-  html = html.replace(/(<\/(h[1-6]|pre|table|ul|ol|hr|li|div|p|blockquote)>|<hr\s*\/?>)(\s*<br>)+/gi, '$1')
-  html = html.replace(/<br>\s*(<(h[1-6]|pre|table|ul|ol|hr|div|p|blockquote)[\s>])/gi, '$1')
-  html = html.replace(/<br>\s*<div class="code-block-wrapper">/gi, '<div class="code-block-wrapper">')
-  html = html.replace(/(<\/blockquote>)\s*<br>/gi, '$1')
-  html = html.replace(/<br>\s*(<blockquote>)/gi, '$1')
-  // Remove leading/trailing <br>
-  html = html.replace(/^(\s*<br>)+/i, '')
-  html = html.replace(/(<br>\s*)+$/i, '')
-
-  return html
-}
-
-function buildNestedList(block: string, isOrdered: boolean): string {
-  const tag = isOrdered ? 'ol' : 'ul'
-  const marker = isOrdered ? /^ *\d+\. / : /^ *- /
-  const lines = block.split('\n').filter(l => l.trim() !== '')
-
-  function process(startIdx: number, baseIndent: number): { html: string; endIdx: number } {
-    let result = ''
-    let i = startIdx
-
-    while (i < lines.length) {
-      const line = lines[i]
-      const indent = (line.match(/^ */) || [''])[0].length
-
-      if (indent < baseIndent) break
-
-      if (indent === baseIndent) {
-        const content = line.replace(marker, '').trim()
-        // Check for child items (more indented lines)
-        let childrenHtml = ''
-        const peek = i + 1
-        if (peek < lines.length) {
-          const peekIndent = (lines[peek].match(/^ */) || [''])[0].length
-          if (peekIndent > baseIndent) {
-            const child = process(peek, peekIndent)
-            childrenHtml = `<${tag}>${child.html}</${tag}>`
-            i = child.endIdx
-          } else {
-            i++
-          }
-        } else {
-          i++
-        }
-        result += `<li>${content}${childrenHtml}</li>`
-      } else {
-        i++
-      }
-    }
-
-    return { html: result, endIdx: i }
-  }
-
-  const { html } = process(0, 0)
-  return `<${tag}>${html}</${tag}>`
-}
-
-function buildNestedBlockquote(block: string): string {
-  const lines = block.split('\n').filter(l => l.trim() !== '')
-
-  function process(startIdx: number, depth: number): { html: string; endIdx: number } {
-    let content = ''
-    let i = startIdx
-
-    while (i < lines.length) {
-      const line = lines[i]
-      const match = line.match(/^(&gt; ?)+/)
-      const lineDepth = match ? match[0].split('&gt;').length - 1 : 0
-
-      if (lineDepth < depth) break
-
-      if (lineDepth === depth) {
-        const text = line.replace(/^(&gt; ?)+/, '')
-        // Check for deeper children
-        let childHtml = ''
-        const peek = i + 1
-        if (peek < lines.length) {
-          const peekMatch = lines[peek].match(/^(&gt; ?)+/)
-          const peekDepth = peekMatch ? peekMatch[0].split('&gt;').length - 1 : 0
-          if (peekDepth > depth) {
-            const child = process(peek, peekDepth)
-            childHtml = child.html
-            i = child.endIdx
-          } else {
-            i++
-          }
-        } else {
-          i++
-        }
-        content += (content ? '\n' : '') + text
-        if (childHtml) content += '\n' + childHtml
-      } else {
-        i++
-      }
-    }
-
-    return { html: `<blockquote>${content.trim()}</blockquote>`, endIdx: i }
-  }
-
-  const firstDepth = lines.length > 0
-    ? (lines[0].match(/^(&gt; ?)+/) || [''])[0].split('&gt;').length - 1
-    : 0
-  const { html } = process(0, firstDepth || 1)
-  return html
-}
+// renderMarkdown and its helpers (nested lists/blockquotes, auto-linking)
+// live in utils/markdown.ts as the shared renderMarkdownHtml — AI messages,
+// the notes panel and the update dialog all render through it.
 
 function highlightText(html: string, query: string): string {
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -677,23 +667,6 @@ function highlightText(html: string, query: string): string {
       const tag = parts[i].slice(0, gt + 1)
       const text = parts[i].slice(gt + 1)
       result += '<' + tag + text.replace(regex, '<mark class="ai-search-highlight">$&</mark>')
-    }
-  }
-  return result
-}
-
-function autoLinkUrls(html: string): string {
-  const regex = /(https?:\/\/[^\s<>\[\]()"']+)/g
-  const parts = html.split('<')
-  let result = parts[0].replace(regex, '<a href="$1" target="_blank">$1</a>')
-  for (let i = 1; i < parts.length; i++) {
-    const gt = parts[i].indexOf('>')
-    if (gt === -1) {
-      result += '<' + parts[i].replace(regex, '<a href="$1" target="_blank">$1</a>')
-    } else {
-      const tag = parts[i].slice(0, gt + 1)
-      const text = parts[i].slice(gt + 1)
-      result += '<' + tag + text.replace(regex, '<a href="$1" target="_blank">$1</a>')
     }
   }
   return result
@@ -744,7 +717,7 @@ const renderedContent = computed(() => {
   } else if (props.message.role === 'user') {
     html = escapeHtml(contentForRender.value)
   } else {
-    html = renderMarkdown(contentForRender.value)
+    html = renderMarkdownHtml(contentForRender.value, { copyButtonTitle: t('ai.copy') })
     // Sanitize the markdown output before assigning to v-html. Model
     // output can include `javascript:` / `data:` URLs in `[link](url)`
     // markdown and `![alt](x" onerror="...)` payloads that escape the
@@ -782,6 +755,37 @@ function escapeHtml(text: string): string {
   display: flex;
   padding: 0.875rem 1.125rem;
 }
+/* Bubble style (settings.ai.userMessageStyle = 'bubble', issue #1478): user
+   messages right-align as content-sized chat bubbles so a question stands
+   out from the answers when scrolling back. Attachments and the meta row
+   follow the right edge; 'plain' keeps the shared left layout. */
+.ai-message.bubble-mode.user {
+  justify-content: flex-end;
+}
+.ai-message.bubble-mode.user .content {
+  align-items: flex-end;
+  flex: 0 1 auto;
+  max-width: 85%;
+}
+.ai-message.bubble-mode.user .text {
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 0.875rem;
+  border-bottom-right-radius: 0;
+}
+.ai-message.bubble-mode.user .msg-attachments {
+  justify-content: flex-end;
+}
+.ai-message.bubble-mode.user .msg-attachment {
+  border-radius: 0.875rem;
+  border-bottom-right-radius: 0;
+}
+/* Bubble mode: the DOM order is time-then-actions (left layout); reversing
+   the main axis puts the actions left of the timestamp, hugging the bubble's
+   right edge. */
+.ai-message.bubble-mode.user .msg-meta-row {
+  flex-direction: row-reverse;
+}
 .ai-message.user .content {
   display: flex;
   flex-direction: column;
@@ -791,6 +795,11 @@ function escapeHtml(text: string): string {
   padding: 0.625rem 1rem;
   border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+/* Lower the scrollbar top edge so it sits just below the bubble's rounded
+   top-right corner instead of meeting it flush. */
+.ai-message.user .text::-webkit-scrollbar-track {
+  margin-top: 0.5rem;
 }
 .ai-message.interrupted .text {
   font-style: italic;
@@ -852,6 +861,13 @@ function escapeHtml(text: string): string {
   font-family: var(--font-ui);
   user-select: text;
   -webkit-user-select: text;
+}
+/* A user message can carry a huge paste; clamp it like tool output so one
+   message cannot dominate the transcript. Assistant answers stream into .text
+   and stay unclamped. */
+.ai-message.user .text {
+  max-height: 8rem;
+  overflow-y: auto;
 }
 .text :deep(.code-block-wrapper) {
   margin: 0.375rem 0;
@@ -1067,14 +1083,17 @@ function escapeHtml(text: string): string {
   color: var(--text-muted);
   opacity: 0.75;
   user-select: none;
+  /* Hug the text instead of stretching: the hover tooltip anchors to this
+     box, and a full-width box would pop the tooltip mid-sidebar. */
+  width: fit-content;
 }
-.ai-message.user .msg-meta {
-  text-align: right;
+.msg-meta-row .msg-meta {
+  margin-top: 0;
 }
 .thinking-content {
   margin: 0.25rem 0 0 0;
   padding: 0.375rem 0.625rem;
-  max-height: 16rem;
+  max-height: 8rem;
   overflow-y: auto;
   border-left: 2px solid var(--border-subtle);
   background: var(--bg-elevated);
@@ -1166,6 +1185,8 @@ function escapeHtml(text: string): string {
   font-size: 0.6875rem;
   white-space: pre-wrap;
   word-break: break-word;
+  max-height: 8rem;
+  overflow-y: auto;
 }
 
 /* OUT box - accent themed */
@@ -1201,7 +1222,7 @@ function escapeHtml(text: string): string {
   font-size: 0.6875rem;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 18.75rem;
+  max-height: 8rem;
   overflow-y: auto;
 }
 
@@ -1264,40 +1285,50 @@ function escapeHtml(text: string): string {
   margin-top: 0.5rem;
 }
 
-.copy-action {
+/* Shared message meta row: timestamp first, hover-revealed icon actions to
+   its right, for both user and assistant messages. */
+.msg-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
   margin-top: 0.25rem;
 }
-.copy-md-btn {
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-height: 1.25rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.ai-message:hover .msg-actions {
+  opacity: 1;
+}
+.msg-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0;
-  padding: 0.125rem 0.25rem;
-  font-size: 0.6875rem;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  font-size: 0.8125rem;
   color: var(--text-muted);
   background: transparent;
-  border: 1px solid var(--border-subtle);
+  border: none;
   border-radius: var(--radius-sm);
-  transition: all 0.2s;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
 }
-.copy-md-label {
-  max-width: 0;
-  overflow: hidden;
-  opacity: 0;
-  white-space: nowrap;
-  padding-left: 0;
-  transition: max-width 0.2s, opacity 0.15s, padding-left 0.2s;
-}
-.copy-md-btn:hover {
-  gap: 0.25rem;
-  padding: 0.125rem 0.5rem;
+.msg-action-btn:hover {
   color: var(--accent);
-  border-color: var(--accent-glow);
   background: var(--accent-subtle);
 }
-.copy-md-btn:hover .copy-md-label {
-  max-width: 9.375rem;
-  opacity: 1;
-  padding-left: 0.125rem;
+.msg-action-btn.active {
+  color: var(--accent);
+}
+.msg-action-btn.danger:hover {
+  color: var(--error);
+  background: var(--error-subtle);
 }
 .continue-box {
   margin-top: 0.5rem;
@@ -1340,13 +1371,32 @@ function escapeHtml(text: string): string {
   transition: border-color 0.15s, background 0.15s;
   user-select: none;
 }
-.question-option:hover {
+.question-box:not(.locked) .question-option:hover {
   border-color: var(--accent-glow);
   background: var(--accent-subtle);
 }
 .question-option.selected {
   border-color: var(--accent);
   background: var(--accent-subtle);
+}
+/* Answered question: options are a read-only record, no hover affordance. */
+.question-box.locked {
+  border-color: var(--border-subtle);
+}
+.question-box.locked .question-option {
+  cursor: default;
+  opacity: 0.75;
+}
+.question-box.locked .question-option.selected {
+  opacity: 1;
+}
+.other-input:disabled {
+  color: var(--text-muted);
+}
+.question-dismissed {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 .option-radio {
   width: 0.875rem;

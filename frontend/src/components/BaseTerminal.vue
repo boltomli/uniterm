@@ -212,6 +212,7 @@ import { applyBackspaceKey } from '../utils/terminalOptions'
 import { handleTerminalWordDelete } from '../utils/terminalWordDelete'
 import { formatFontFamily } from '../utils/formatFontFamily'
 import { normalizePastedText, pasteWithScroll } from '../utils/terminalPaste'
+import { confirmMultilinePaste } from '../composables/multilinePasteDialog'
 import {
   sanitizeTerminalOutput,
   sanitizeLiveTerminalOutput,
@@ -571,6 +572,10 @@ function initZmodemService(sessionId: string) {
     sessionId,
     direction: zmodemDirection,
     getDefaultDownloadDir: () => settingsStore.settings.terminal.zmodemDownloadDir,
+    getIdleTimeoutMs: () => {
+      const sec = settingsStore.settings.terminal.zmodemIdleTimeoutSec
+      return (typeof sec === 'number' && Number.isFinite(sec) ? sec : 20) * 1000
+    },
     onTerminalRestoreState: restoring => {
       zmodemRestoringOutput = restoring
       if (!restoring) {
@@ -884,6 +889,19 @@ async function applySuggestion(item: ReturnType<typeof suggestions.getSelectedIt
   suggestions.close()
 }
 
+// Last applied resize state: lets resize() skip redundant work. After a
+// split-drag ends, several deferred triggers (split:resize-end timer, the
+// gate-clearing trailing resize, the ResizeObserver debounce) all fire within
+// a few hundred ms even though nothing changed — a burst of identical
+// full-viewport refreshes and SessionResize IPCs. Beyond the wasted work,
+// that burst trips a WebView2-runtime bug (Edge 131.0.2903.86 kills the
+// renderer with "Validation failed for blink.mojom.LocalFrameHost.88"), so
+// the dedup below is a crash mitigation, not just a tidy-up.
+let lastResizeRectW = 0
+let lastResizeRectH = 0
+let lastResizeCols = 0
+let lastResizeRows = 0
+
 function resize() {
   if (props.mode === 'ssh' || props.mode === 'local') {
     const sid = props.sessionId
@@ -913,6 +931,20 @@ function resize() {
     const beforeRows = terminal.rows
     fitAddon.fit()
     if (terminal.cols <= 0 || terminal.rows <= 0) return
+
+    // Drop no-op resizes: same container rect and same grid as the last
+    // applied resize means terminal.resize/refresh/SessionResize would all
+    // repeat identical work (see comment above lastResizeRectW).
+    if (Math.round(rect.width) === lastResizeRectW &&
+        Math.round(rect.height) === lastResizeRectH &&
+        terminal.cols === lastResizeCols &&
+        terminal.rows === lastResizeRows) {
+      return
+    }
+    lastResizeRectW = Math.round(rect.width)
+    lastResizeRectH = Math.round(rect.height)
+    lastResizeCols = terminal.cols
+    lastResizeRows = terminal.rows
 
     // Trust fitAddon.fit() — its measure already accounts for the scrollbar
     // gutter; manual recomputation double-subtracts it.
@@ -2640,9 +2672,13 @@ onUnmounted(() => {
 })
 
 // Paste handling
-function pasteToTerminal(text: string) {
+async function pasteToTerminal(text: string) {
   if (props.mode === 'sftp' && terminal) {
-    for (const char of text) {
+    // Multi-line paste protection (issue #1370): ask before writing several
+    // lines at once — the SFTP path drops newlines, silently joining them.
+    const confirmed = await confirmMultilinePaste(text)
+    if (confirmed === null) return
+    for (const char of confirmed) {
       const code = char.charCodeAt(0)
       if (code >= 32 && code <= 126) {
         inputBuffer += char
@@ -2657,6 +2693,13 @@ async function pasteToSession(text: string) {
     // Normalize line endings (CRLF -> LF, drop stray CR) so pasting into
     // editors like vim doesn't double newlines (Windows clipboard has \r\n).
     const normalized = normalizePastedText(text)
+
+    // Multi-line paste protection (issue #1370): ask before writing several
+    // lines at once — each line becomes its own Enter press on the remote
+    // side, and an unattended multi-line paste can run commands unseen.
+    // The dialog shows an editable preview; what it returns is what pastes.
+    const confirmed = await confirmMultilinePaste(normalized)
+    if (confirmed === null) return
 
     // Broadcast mode: write to every target panel instead of only this
     // session (issue #597 — pasted command must sync like keyboard input).
@@ -2677,7 +2720,7 @@ async function pasteToSession(text: string) {
                 write: (payload) => queuedSessionWrite(sid, payload),
                 scrollToBottom: () => managed.terminal.scrollToBottom(),
               },
-              normalized,
+              confirmed,
             )
           }
         }
@@ -2694,7 +2737,7 @@ async function pasteToSession(text: string) {
           write: (payload) => queuedSessionWrite(sid, payload),
           scrollToBottom: () => terminal?.scrollToBottom(),
         },
-        normalized,
+        confirmed,
       )
     }
   }

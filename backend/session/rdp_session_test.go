@@ -245,12 +245,12 @@ func TestRDPProxyReportsHandshakeError(t *testing.T) {
 }
 
 func TestRDPConfigurationRoundTrip(t *testing.T) {
-	const saved = `{"type":"rdp","host":"example","rdpEngine":"microsoft","rdpSmartSizing":true,"rdpDomain":"EXAMPLE","rdpFixedWidth":1600,"rdpFixedHeight":900,"rdpAdminSession":true,"rdpEnableNLA":true}`
+	const saved = `{"type":"rdp","host":"example","rdpEngine":"microsoft","rdpSmartSizing":true,"rdpDomain":"EXAMPLE","rdpFixedWidth":1600,"rdpFixedHeight":900,"rdpAdminSession":true,"rdpEnableNLA":true,"rdpSecurityMode":"nla-prefer"}`
 	var config ConnectionConfig
 	if err := json.Unmarshal([]byte(saved), &config); err != nil {
 		t.Fatal(err)
 	}
-	if !config.RdpAdminSession || !config.RdpEnableNLA || config.RdpDomain != "EXAMPLE" || config.RdpFixedWidth != 1600 {
+	if !config.RdpAdminSession || !config.RdpEnableNLA || config.RdpSecurityMode != "nla-prefer" || config.RdpDomain != "EXAMPLE" || config.RdpFixedWidth != 1600 {
 		t.Fatal("supported RDP settings were lost")
 	}
 	encoded, err := json.Marshal(config)
@@ -259,6 +259,29 @@ func TestRDPConfigurationRoundTrip(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte("rdpEngine")) || bytes.Contains(encoded, []byte("rdpSmartSizing")) {
 		t.Fatal("obsolete engine-specific settings were reserialized")
+	}
+}
+
+func TestSecurityOffersCredSSP(t *testing.T) {
+	cases := []struct {
+		mode string
+		nla  bool
+		want bool
+	}{
+		{mode: "nla-prefer", nla: true, want: true},
+		{mode: "nla-prefer", nla: false, want: true},
+		{mode: "nla", want: true},
+		{mode: "tls", nla: true, want: false},
+		{mode: "unencrypted", nla: true, want: false},
+		// Legacy connections without the mode field follow the old boolean.
+		{mode: "", nla: true, want: true},
+		{mode: "", nla: false, want: false},
+	}
+	for _, tc := range cases {
+		config := ConnectionConfig{RdpSecurityMode: tc.mode, RdpEnableNLA: tc.nla}
+		if got := config.SecurityOffersCredSSP(); got != tc.want {
+			t.Fatalf("mode=%q nla=%v: got %v, want %v", tc.mode, tc.nla, got, tc.want)
+		}
 	}
 }
 
@@ -368,9 +391,11 @@ func TestNegotiationErrorStructure(t *testing.T) {
 				t.Fatalf("error_code = % x, want %d", code, rdcleanErrCodeNegotiation)
 			}
 			seen[1] = true
-		case 6: // x224 NEG_FAILURE without TPKT
-			if !bytes.Equal(derTLVBody(wrapped, 0), tpkt[4:]) {
-				t.Fatalf("x224 = % x, want TPKT-stripped % x", derTLVBody(wrapped, 0), tpkt[4:])
+		case 6: // x224 NEG_FAILURE, TPKT header included: the wasm client's
+			// X224::decode reads the TPKT framing itself, so stripping it
+			// loses the server's failure code.
+			if !bytes.Equal(derTLVBody(wrapped, 0), tpkt) {
+				t.Fatalf("x224 = % x, want TPKT-framed % x", derTLVBody(wrapped, 0), tpkt)
 			}
 			seen[6] = true
 		}
@@ -492,16 +517,13 @@ func TestNegotiationErrStructure(t *testing.T) {
 			}
 			errCode = derTLVBody(derTLVBody(errBody, 0), 0)
 			seen[1] = true
-		case 6: // x224, TPKT stripped
+		case 6: // x224, TPKT header included (the client's X224::decode reads it)
 			if wrapped[0] != 0x04 {
 				t.Fatalf("x224 inner tag %x", wrapped[0])
 			}
 			got := derTLVBody(wrapped, 0)
-			if bytes.Equal(got, x224) {
-				t.Fatal("x224 still carries the TPKT header")
-			}
-			if !bytes.Equal(got, x224[4:]) {
-				t.Fatalf("x224 mismatch: % x", got)
+			if !bytes.Equal(got, x224) {
+				t.Fatalf("x224 mismatch (TPKT must be included verbatim): % x", got)
 			}
 			seen[6] = true
 		}
@@ -518,6 +540,46 @@ func TestNegotiationErrStructure(t *testing.T) {
 
 	if code, ok := parseX224FailureCode(x224); !ok || code != 5 {
 		t.Fatalf("parseX224FailureCode = %d, %v; want 5", code, ok)
+	}
+}
+
+func TestTsRequestStage(t *testing.T) {
+	nego := concatBytes(
+		derExplicit(0, 0x02, derIntegerBytes(6)),
+		derExplicit(1, 0x04, []byte{1, 2, 3}),
+	)
+	auth := concatBytes(
+		derExplicit(0, 0x02, derIntegerBytes(6)),
+		derExplicit(1, 0x04, []byte{1, 2, 3}),
+		derExplicit(3, 0x04, make([]byte, 16)),
+	)
+	authInfo := concatBytes(
+		derExplicit(0, 0x02, derIntegerBytes(6)),
+		derExplicit(2, 0x04, []byte{9, 9}),
+	)
+	errCode := concatBytes(
+		derExplicit(0, 0x02, derIntegerBytes(6)),
+		derExplicit(4, 0x02, derIntegerBytes(23)),
+	)
+	versionOnly := derExplicit(0, 0x02, derIntegerBytes(6))
+	cases := map[string]struct {
+		rec  []byte
+		want string
+	}{
+		"negoTokens only":            {derEncodeTLV(0x30, nego), "NEGOTIATE"},
+		"negoTokens + pubKeyAuth":    {derEncodeTLV(0x30, auth), "AUTHENTICATE"},
+		"authInfo":                   {derEncodeTLV(0x30, authInfo), "AUTH_INFO"},
+		"errorCode":                  {derEncodeTLV(0x30, errCode), "ERROR_CODE"},
+		"version only":               {derEncodeTLV(0x30, versionOnly), "VERSION_ONLY"},
+		"truncated":                  {derEncodeTLV(0x30, nego)[:len(nego)], ""},
+		"not a TSRequest":            {[]byte{0x03, 0x00, 0x00, 0x0b}, ""},
+		"DER without version field":  {derEncodeTLV(0x30, derExplicit(1, 0x04, []byte{1})), ""},
+		"trailing garbage rejected":  {append(derEncodeTLV(0x30, nego), 0x00), ""},
+	}
+	for name, tc := range cases {
+		if got := tsRequestStage(tc.rec); got != tc.want {
+			t.Errorf("%s: tsRequestStage = %q, want %q", name, got, tc.want)
+		}
 	}
 }
 

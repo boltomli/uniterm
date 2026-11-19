@@ -29,6 +29,8 @@ github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74 h1:Kk6a4nehpJ3Uu
 github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74/go.mod h1:cEWa1LVoE5KvSD9ONXsZrj0z6KqySlCCNKHlLzbqAt4=
 github.com/alicebob/miniredis/v2 v2.40.0 h1:6IgTQbvm2JiMYZ8yur/acNJzVjtSOWCelxXbk/LUBXc=
 github.com/alicebob/miniredis/v2 v2.40.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
+github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
+github.com/andybalholm/brotli v1.0.6/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be h1:9AeTilPcZAjCFIImctFaOjnTIavg87rW78vTPkQqLI8=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be/go.mod h1:ySMOLuWl6zY27l47sB3qLNK6tF2fkHG55UZxx8oIVo4=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
@@ -146,8 +148,6 @@ github.com/jcmturner/gokrb5/v8 v8.4.4 h1:x1Sv4HaTpepFkXbt2IkL29DXRf8sOfZXo8eRKh6
 github.com/jcmturner/gokrb5/v8 v8.4.4/go.mod h1:1btQEpgT6k+unzCwX1KdWMEwPPkkgBtP+F6aCACiMrs=
 github.com/jcmturner/rpc/v2 v2.0.3 h1:7FXXj8Ti1IaVFpSAziCZWNzbNuZmnvw/i6CqLNdWfZY=
 github.com/jcmturner/rpc/v2 v2.0.3/go.mod h1:VUJYCIDm3PVOEHw8sgt091/20OJjskO/YJki3ELg/Hc=
-github.com/jlaffaye/ftp v0.2.1 h1:AICcTYPMkaXlmjLMm9I+lB36f6jXCsCvBqVQc6EfC1Y=
-github.com/jlaffaye/ftp v0.2.1/go.mod h1:gXSIr1pA9NhynDNigiFHs4+yL7o7I6bGF9Za9wi9tcE=
 github.com/kevinburke/ssh_config v1.4.0 h1:6xxtP5bZ2E4NF5tuQulISpTO2z8XbtH8cg1PWkxoFkQ=
 github.com/kevinburke/ssh_config v1.4.0/go.mod h1:q2RIzfka+BXARoNexmF9gkxEX7DmvbW9P4hIVx2Kg4M=
 github.com/klauspost/compress v1.18.7 h1:aUyZsS4kH3QTKurYhAOwAHxllVPnOthb3vPfnF1Ehjw=
@@ -256,10 +256,14 @@ github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 h1:ilQV1hzziu+LLM3zU
 github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78/go.mod h1:aL8wCCfTfSfmXjznFBSZNN13rSJjlIOI1fUNAtF7rmI=
 github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e h1:Q3sa/5WcZnIiEcjy+3ex/p+Y+fQpN4DNnm+QwJjdYYQ=
 github.com/ys-ll/crypto v0.57.1-0.20260922023551-18e0be45963e/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
+github.com/ys-ll/ftp v0.2.1-uniterm.1 h1:FT+2PNmY/vWtNpnBFGFgR5D34X0fkmiUH65L586vdPs=
+github.com/ys-ll/ftp v0.2.1-uniterm.1/go.mod h1:gXSIr1pA9NhynDNigiFHs4+yL7o7I6bGF9Za9wi9tcE=
 github.com/ys-ll/mosh-go v0.0.0-20260702130124-e17b92cd9dab h1:Ru8ctnV5xIDpn1oozOXHizeEtwAU/vSCNaND+i7J0ck=
 github.com/ys-ll/mosh-go v0.0.0-20260702130124-e17b92cd9dab/go.mod h1:HZno4DV/XO+yAZ6lC3EmzMk0whPxrfgY5uix7jcUFps=
 github.com/ys-ll/simples3 v0.0.0-20260930081831-3357c14e91bd h1:mQdfvq8qbgcTt6e3cTa/wWZ4sUTHpdYXOeOraV/VtK0=
 github.com/ys-ll/simples3 v0.0.0-20260930081831-3357c14e91bd/go.mod h1:c2xW30bukipkBlWNnXG1wDjq3gykQ6ww2AB/9NHMLMY=
+github.com/ys-ll/utls v1.8.3-0.20261118030304-dc4119e680f1 h1:Q2RZPdf4dxuxKCfx2QltGBadTJ5/Mv13CeiSHsRkp/A=
+github.com/ys-ll/utls v1.8.3-0.20261118030304-dc4119e680f1/go.mod h1:jkSOEkLqn+S/jtpEHPOsVv/4V4EVnelwbMQl4vCWXAM=
 github.com/ys-ll/wails/v3 v3.0.0-20261112023043-1143f7a41423 h1:j9ePe/q6HERNaqCRY+bxoMmbTA4EKS/THNZ4o2ebxgA=
 github.com/ys-ll/wails/v3 v3.0.0-20261112023043-1143f7a41423/go.mod h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=

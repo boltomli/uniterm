@@ -70,6 +70,31 @@ func pgQuoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// QualifyTable quotes a table identifier that may arrive schema-qualified
+// ("sales.orders" from the schema-grouped tree) or bare.
+// Column and index names never pass through here — they stay plain Quote.
+func (p *postgresProvider) QualifyTable(name string) string {
+	schema, table := splitQualifiedName(name)
+	if schema == "" {
+		return p.Quote(table)
+	}
+	return p.Quote(schema) + "." + p.Quote(table)
+}
+
+// qualifyWithNodeSchema qualifies a bare table name with the schema carried
+// by a composite "db.schema" node name so CREATE-like operations land inside
+// the schema node the user opened, not the session search_path default.
+func (p *postgresProvider) qualifyWithNodeSchema(dbName, tableName string) string {
+	_, nodeSchema := splitDbNode(dbName)
+	if nodeSchema == "" {
+		return tableName
+	}
+	if schema, _ := splitQualifiedName(tableName); schema != "" {
+		return tableName
+	}
+	return nodeSchema + "." + tableName
+}
+
 func (p *postgresProvider) PrepareExec(db execer, dbName string) error {
 	return nil
 }
@@ -90,7 +115,6 @@ func (p *postgresProvider) DefaultTableQueryRef(ref TableRef, limit, offset int)
 	}
 	return fmt.Sprintf("SELECT * FROM %s LIMIT %d", from, limit)
 }
-
 
 func (p *postgresProvider) InsertRow(db *sql.DB, dbName, tableName string, values map[string]any) error {
 	return p.insertRow(db, "", tableName, values)
@@ -214,6 +238,10 @@ func (p *postgresProvider) GetCapabilities() DBCapabilities {
 		"autoIncrementForcesNotNull": false,
 		"columnTypes":                postgresTypes,
 		"intTypes":                   postgresIntTypes,
+		// public is droppable in PostgreSQL, so it is NOT in
+		// undroppableSchemas (unlike SQL Server's dbo).
+		"supportsSchemas": true,
+		"defaultSchema":   "public",
 	}
 }
 
@@ -238,17 +266,55 @@ func (p *postgresProvider) GetDatabases(db *sql.DB) ([]string, error) {
 	return names, nil
 }
 
-func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {
+// GetSchemas lists the user namespaces of the connected database
+// ). Non-empty return = the tree renders a second level (db → schema →
+// tables). System namespaces are filtered; public sorts first.
+func (p *postgresProvider) GetSchemas(db *sql.DB, dbName string) ([]string, error) {
 	results, err := queryStrings(db, `
+		SELECT nspname AS schema_name
+		FROM pg_namespace
+		WHERE nspname NOT IN ('pg_catalog', 'information_schema')
+		  AND nspname NOT LIKE 'pg\_%'
+		ORDER BY (nspname = 'public') DESC, nspname`)
+	if err != nil {
+		return nil, fmt.Errorf("list schemas: %w", err)
+	}
+	names := make([]string, 0, len(results))
+	for _, row := range results {
+		names = append(names, row["schema_name"])
+	}
+	return names, nil
+}
+
+// tableListBase builds the table listing body shared by GetTables and
+// GetTablePage (PostgreSQL flavor). When dbName carries a
+// schema qualifier ("db.schema"), only that schema's objects are listed.
+// table_name is always the bare relation name and table_schema rides along
+// separately, so the tree can label `schema.table` without the two being
+// conflated in one string (DB-06/DB-09); a bare dbName keeps the legacy flat
+// listing that excludes system namespaces.
+func (p *postgresProvider) tableListBase(dbName string) (string, []any, int) {
+	_, schema := splitDbNode(dbName)
+	var args []any
+	filter := ` AND n.nspname NOT IN ('pg_catalog', 'information_schema')`
+	if schema != "" {
+		filter = " AND n.nspname = $1"
+		args = append(args, schema)
+	}
+	base := `
 		SELECT c.relname AS table_name,
 		       n.nspname AS table_schema,
 		       CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type,
 		       COALESCE(obj_description(c.oid, 'pg_class'), '') AS table_comment
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind IN ('r', 'p', 'v')
-		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-		ORDER BY n.nspname, c.relname`)
+		WHERE c.relkind IN ('r', 'p', 'v')` + filter
+	return base, args, len(args) + 1
+}
+
+func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, error) {
+	base, args, _ := p.tableListBase(dbName)
+	results, err := queryStrings(db, base+"\n\t\tORDER BY n.nspname, c.relname", args...)
 	if err != nil {
 		return nil, fmt.Errorf("get tables: %w", err)
 	}
@@ -269,15 +335,15 @@ func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, er
 }
 
 func (p *postgresProvider) GetTablePage(db *sql.DB, dbName string, query string, offset, limit int) ([]TableInfo, int, error) {
-	countSQL := `
-		SELECT COUNT(*) AS n
-		FROM pg_class c
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind IN ('r', 'p', 'v')
-		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')`
-	var countArgs []any
+	// Placeholder numbers continue after the schema arg ($1 when the node is
+	// "db.schema"); lib/pq maps $N positionally, so numbering must stay
+	// contiguous and unique per statement.
+	base, baseArgs, next := p.tableListBase(dbName)
+
+	countSQL := "SELECT COUNT(*) AS n FROM (" + base + ") c"
+	countArgs := append([]any{}, baseArgs...)
 	if query != "" {
-		countSQL += " AND c.relname ILIKE $1"
+		countSQL += fmt.Sprintf(" WHERE table_name ILIKE $%d", next)
 		countArgs = append(countArgs, "%"+query+"%")
 	}
 	countRows, err := queryStrings(db, countSQL, countArgs...)
@@ -288,22 +354,16 @@ func (p *postgresProvider) GetTablePage(db *sql.DB, dbName string, query string,
 	if len(countRows) > 0 {
 		total, _ = strconv.Atoi(countRows[0]["n"])
 	}
-	pageSQL := `
-		SELECT c.relname AS table_name,
-		       CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'BASE TABLE' END AS table_type,
-		       COALESCE(obj_description(c.oid, 'pg_class'), '') AS table_comment
-		FROM pg_class c
-		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind IN ('r', 'p', 'v')
-		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')`
-	var pageArgs []any
+
+	pageSQL := "SELECT table_name, table_schema, table_type, table_comment FROM (" + base + ") c"
+	pageArgs := append([]any{}, baseArgs...)
 	if query != "" {
-		pageSQL += " AND c.relname ILIKE $1"
+		pageSQL += fmt.Sprintf(" WHERE table_name ILIKE $%d", next)
 		pageArgs = append(pageArgs, "%"+query+"%")
-		pageSQL += "\n\t\tORDER BY c.relname\n\t\tLIMIT $2 OFFSET $3"
+		pageSQL += fmt.Sprintf(" ORDER BY table_name LIMIT $%d OFFSET $%d", next+1, next+2)
 		pageArgs = append(pageArgs, limit, offset)
 	} else {
-		pageSQL += "\n\t\tORDER BY c.relname\n\t\tLIMIT $1 OFFSET $2"
+		pageSQL += fmt.Sprintf(" ORDER BY table_name LIMIT $%d OFFSET $%d", next, next+1)
 		pageArgs = append(pageArgs, limit, offset)
 	}
 	results, err := queryStrings(db, pageSQL, pageArgs...)
@@ -318,6 +378,7 @@ func (p *postgresProvider) GetTablePage(db *sql.DB, dbName string, query string,
 		}
 		infos = append(infos, TableInfo{
 			Name:    row["table_name"],
+			Schema:  row["table_schema"],
 			Type:    tp,
 			Comment: row["table_comment"],
 		})
@@ -325,8 +386,18 @@ func (p *postgresProvider) GetTablePage(db *sql.DB, dbName string, query string,
 	return infos, total, nil
 }
 
+// pgRef normalises a TableRef so a schema that arrives inside the name
+// ("sales.orders", what the schema-grouped tree hands down) and one that
+// arrives in the Schema slot mean the same thing (DB-06/DB-09).
+func pgRef(ref TableRef) TableRef {
+	if schema, table := splitQualifiedName(ref.Name); schema != "" && ref.Schema == "" {
+		ref.Schema, ref.Name = schema, table
+	}
+	return ref
+}
+
 func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) (*SchemaResult, error) {
-	return p.GetTableSchemaRef(db, TableRef{Database: dbName, Name: tableName})
+	return p.GetTableSchemaRef(db, pgRef(TableRef{Database: dbName, Name: tableName}))
 }
 
 // GetTableSchemaRef resolves columns/PK/indexes for ONE schema (DB-06).
@@ -335,6 +406,7 @@ func (p *postgresProvider) GetTableSchema(db *sql.DB, dbName, tableName string) 
 // one, every probe is pinned to it and can no longer pick up a namesake in
 // another schema.
 func (p *postgresProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*SchemaResult, error) {
+	ref = pgRef(ref)
 	// DB-08: the cache is keyed by (pool, db|schema, table) and expires —
 	// see postgres_schema_cache.go; every DDL method invalidates on success.
 	cacheKey := ref.Schema
@@ -463,23 +535,71 @@ func (p *postgresProvider) GetTableSchemaRef(db *sql.DB, ref TableRef) (*SchemaR
 
 // ── DDL: Database ──
 
+// CreateDatabase accepts a composite "db.schema" name: the
+// schema part is optional and created inside the connected database; empty
+// means "no extra schema" (tables land in the session search_path default,
+// usually public). A pre-existing database is tolerated when a schema is
+// requested; both already present is reported as a duplicate.
 func (p *postgresProvider) CreateDatabase(db *sql.DB, dbName string) error {
+	useDb, schema := splitDbNode(dbName)
 	q := p.Quote
-	err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", q(dbName)))
-	return err
+	ctx, cancel := ddlCtx()
+	defer cancel()
+	var dbCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_database WHERE datname = $1`, useDb).Scan(&dbCount); err != nil {
+		return err
+	}
+	if dbCount == 0 {
+		if err := execDDL(db, fmt.Sprintf("CREATE DATABASE %s", q(useDb))); err != nil {
+			return err
+		}
+	} else if schema == "" {
+		return fmt.Errorf("database %s already exists", useDb)
+	}
+	if schema == "" {
+		return nil
+	}
+	if dbCount > 0 {
+		var schemaCount int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pg_namespace WHERE nspname = $1`, schema).Scan(&schemaCount); err != nil {
+			return err
+		}
+		if schemaCount > 0 {
+			return fmt.Errorf("schema %s already exists", schema)
+		}
+	}
+	return execDDL(db, fmt.Sprintf("CREATE SCHEMA %s", q(schema)))
 }
 
 func (p *postgresProvider) DropDatabase(db *sql.DB, dbName string) error {
+	// The tree hands out composite "db.schema" node names; a database can
+	// only be dropped by its bare name.
+	useDb, _ := splitDbNode(dbName)
 	q := p.Quote
-	err := execDDL(db, fmt.Sprintf("DROP DATABASE %s", q(dbName)))
-	return err
+	return execDDL(db, fmt.Sprintf("DROP DATABASE %s", q(useDb)))
+}
+
+// DropSchema drops the schema part of a composite "db.schema" node name.
+// PostgreSQL refuses to drop a schema that still owns objects; that driver
+// error is surfaced as-is so the user knows to empty the schema first.
+func (p *postgresProvider) DropSchema(db *sql.DB, dbName string) error {
+	_, schema := splitDbNode(dbName)
+	if schema == "" {
+		return fmt.Errorf("node %q carries no schema qualifier", dbName)
+	}
+	return execDDL(db, fmt.Sprintf("DROP SCHEMA %s", p.Quote(schema)))
 }
 
 // pgQual renders a schema-qualified table reference (DB-06/DB-09). An empty
-// schema keeps the historical search_path-relative name.
+// schema keeps the historical search_path-relative name; a name that already
+// carries its own schema ("sales.orders" from the schema-grouped tree) wins
+// over the empty slot so the two call styles cannot double-qualify.
 func (p *postgresProvider) pgQual(schema, tableName string) string {
 	if schema == "" {
-		return p.Quote(tableName)
+		return p.QualifyTable(tableName)
+	}
+	if s, t := splitQualifiedName(tableName); s != "" {
+		return p.Quote(s) + "." + p.Quote(t)
 	}
 	return p.Quote(schema) + "." + p.Quote(tableName)
 }
@@ -492,7 +612,9 @@ func (p *postgresProvider) pgQual(schema, tableName string) string {
 // empty one reproduces the old behaviour exactly.
 
 func (p *postgresProvider) CreateTable(db *sql.DB, dbName, tableName string) error {
-	return p.createTable(db, "", tableName)
+	// A bare table created inside a "db.schema" node must land in that schema
+	// node, not the session search_path default.
+	return p.createTable(db, "", p.qualifyWithNodeSchema(dbName, tableName))
 }
 
 func (p *postgresProvider) CreateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
@@ -541,15 +663,16 @@ func (p *postgresProvider) dropView(db *sql.DB, schema, viewName string) error {
 }
 
 func (p *postgresProvider) TruncateTable(db *sql.DB, dbName, tableName string) error {
-	return execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.pgQual("", tableName)))
+	return execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.pgQual("", p.qualifyWithNodeSchema(dbName, tableName))))
 }
 
 func (p *postgresProvider) TruncateTableSchema(db *sql.DB, dbName, schema, tableName string) error {
 	return execDDL(db, fmt.Sprintf("TRUNCATE TABLE %s", p.pgQual(schema, tableName)))
 }
 
-// CopyTable clones structure and data in one statement. It resolves the
-// current schema because dbName is the database, not a schema (same as DumpTable).
+// CopyTable clones structure and data in one statement. Both sides are
+// schema-qualified: the source arrives qualified from the tree, and the
+// clone lands in the same schema node.
 func (p *postgresProvider) CopyTable(db *sql.DB, dbName, tableName, newTableName string) error {
 	return p.copyTable(db, "", dbName, tableName, newTableName)
 }
@@ -568,20 +691,29 @@ func (p *postgresProvider) copyTable(db *sql.DB, schema, dbName, tableName, newT
 	}
 	defer conn.Close()
 
+	// The source may arrive schema-qualified from the tree; without one the
+	// session search_path decides, so resolve it once and qualify the source
+	// explicitly (the old bare-name form silently copied the wrong table when
+	// two schemas shared a name, DB-06).
 	srcSchema := schema
+	if s, _ := splitQualifiedName(tableName); s != "" {
+		srcSchema = s
+	}
 	if srcSchema == "" {
-		srcSchema = "public"
-		if dbName != "" {
-			srcSchema = dbName
-		}
-		if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
+		if _, nodeSchema := splitDbNode(dbName); nodeSchema != "" {
+			srcSchema = nodeSchema
+		} else if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
 			srcSchema = curSchema
+		} else {
+			srcSchema = "public"
 		}
 	}
+	// The clone lands in the same schema node the user copied from.
+	target := p.pgQual(schema, p.qualifyWithNodeSchema(dbName, newTableName))
 
 	q := p.Quote
 	_, err = conn.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM %s.%s",
-		p.pgQual(schema, newTableName), q(srcSchema), q(tableName)))
+		target, q(srcSchema), q(tableName)))
 	if err != nil {
 		return err
 	}
@@ -793,29 +925,29 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	}
 	defer conn.Close()
 
-	schema := "public"
-	if dbName != "" {
-		schema = dbName
+	// A schema-qualified table name ("sales.orders") carries its
+	// own schema; bare names resolve via the session search_path.
+	dumpSchema, dumpTable := splitQualifiedName(tableName)
+	schema := dumpSchema
+	if schema == "" {
+		schema = "public"
+		if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
+			schema = curSchema
+		}
 	}
 
 	var b strings.Builder
 
-	// PG connections bind a single database; tables resolve via the session
-	// search_path (default public). dbName on this connection is the database
-	// name, not a schema — resolve the actual current schema instead.
-	if curSchema, err := pgCurrentSchema(conn, ctx); err == nil && curSchema != "" {
-		schema = curSchema
-	}
 	// Schema-qualified reference (DB-23): the replay must not depend on the
 	// importing session's search_path.
-	quotedTable := p.pgQual(schema, tableName)
+	quotedTable := p.pgQual(schema, dumpTable)
 
 	if opts.Structure {
 		// A view must be exported AS A VIEW (DB-23): the old fixed
 		// DROP TABLE + CREATE TABLE turned views into tables and made the
 		// DROP fail against a view on replay.
-		if pgIsView(conn, ctx, schema, tableName) {
-			viewDef, derr := pgViewDef(conn, ctx, schema, tableName)
+		if pgIsView(conn, ctx, schema, dumpTable) {
+			viewDef, derr := pgViewDef(conn, ctx, schema, dumpTable)
 			if derr != nil {
 				return "", derr
 			}
@@ -829,7 +961,7 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 			b.WriteString(strings.TrimSuffix(strings.TrimSpace(viewDef), ";"))
 			b.WriteString(";\n\n")
 		} else {
-			createSQL, derr := pgCreateTableSQL(conn, ctx, schema, tableName, quotedTable)
+			createSQL, derr := pgCreateTableSQL(conn, ctx, schema, dumpTable, quotedTable)
 			if derr != nil {
 				return "", derr
 			}
@@ -847,7 +979,7 @@ func (p *postgresProvider) DumpTable(db *sql.DB, dbName, tableName string, opts 
 	}
 
 	if opts.Data {
-		cols, colTypes, derr := pgTableColumns(conn, ctx, schema, tableName)
+		cols, colTypes, derr := pgTableColumns(conn, ctx, schema, dumpTable)
 		if derr != nil {
 			return "", derr
 		}
@@ -932,10 +1064,11 @@ func pgCreateTableSQL(conn *sql.Conn, ctx context.Context, schema, tableName, qu
 		SELECT a.attname,
 		       format_type(a.atttypid, a.atttypmod),
 		       a.attnotnull,
-		       pg_get_expr(a.adbin, a.attrelid) AS default
+		       pg_get_expr(ad.adbin, ad.adrelid) AS default
 		FROM pg_attribute a
 		JOIN pg_class t ON a.attrelid = t.oid
 		JOIN pg_namespace n ON t.relnamespace = n.oid
+		LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
 		WHERE t.relname = $1 AND n.nspname = $2
 		  AND a.attnum > 0 AND NOT a.attisdropped
 		ORDER BY a.attnum`, tableName, schema)

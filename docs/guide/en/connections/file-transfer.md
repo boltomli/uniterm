@@ -13,7 +13,7 @@ A secure file transfer protocol based on SSH, and the default file transfer meth
 | Host | Server IP or domain name |
 | Port | Default 22 |
 | Username | Login username |
-| Auth Type | Same as SSH: Identity (keystore) / Password / Key Path / Key Text / Kerberos / SSH Agent |
+| Auth Type | Same as SSH: Identity / Password / Key Path / Key Text / Kerberos / SSH Agent |
 | SSH Tunnel | Optional, connect to intranet hosts via a jump host |
 | Proxy | Optional, connect through a specified proxy or the system proxy |
 
@@ -28,7 +28,7 @@ A file copy protocol based on SSH, compatible with hosts without an SFTP subsyst
 | Host | Server IP or domain name |
 | Port | Default 22 |
 | Username | Login username |
-| Auth Type | Same as SSH: Identity (keystore) / Password / Key Path / Key Text / Kerberos / SSH Agent |
+| Auth Type | Same as SSH: Identity / Password / Key Path / Key Text / Kerberos / SSH Agent |
 | SSH Tunnel | Optional, connect to intranet hosts via a jump host |
 | Proxy | Optional, connect through a specified proxy or the system proxy |
 | Max Concurrent File Transfers | Maximum number of simultaneous file transfers, 0 for unlimited |
@@ -155,6 +155,6 @@ SFTP / SCP sessions use SSH keepalive, so idle transfer connections are no longe
 ---
 
 ::: tip Related
-- [Remote Terminal](/en/connections/remote-terminal) -- SSH connections (SFTP / SCP are based on SSH)
+- [Terminal](/en/connections/terminal) -- SSH connections (SFTP / SCP are based on SSH)
 - [Sidebar](/en/features/sidebar) -- Files sidebar and "Follow terminal path"
 :::

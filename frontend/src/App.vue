@@ -8,7 +8,10 @@
       @toggle-sidebar="sidebarVisible = !sidebarVisible"
       @open-settings="openSettings"
       @open-netscan="openNetscan"
+      @open-packetcap="openPacketcap"
+      @open-firewall="openFirewall"
       @open-local-services="openLocalServices"
+      @open-new-connection="onNewConnectionFromStart"
       @close-tab="closeTab"
       @close-tab-batch="closeTabBatch"
       @toggle-ai-lock="onToggleAiLock"
@@ -159,11 +162,14 @@
     <SyncConflictDialog />
     <UpdateDialog />
     <WorkspaceSaveDialog />
+    <MultilinePasteDialog />
     <DataDirDialog v-model:visible="dataDirVisible" :first-run="credStore.firstRun || credStore.dataDirInfo.firstRun" @done="onDataDirDone" />
     <EncryptionModeDialog v-model:visible="encryptVisible" :existing-secrets="credStore.status.existingSecrets" @done="onEncryptDone" />
     <CredentialUnlockDialog v-model:visible="unlockVisible" @done="onUnlockDone" @reset="onReset" />
     <MobileKeyBar v-if="keyBarSessionId" :key="keyBarSessionId" :session-id="keyBarSessionId" />
     <NetworkScanTabContent v-model:visible="netscanVisible" @new-connection="onNetscanNewConnection" />
+    <PacketCaptureTabContent v-model:visible="packetcapVisible" />
+    <FirewallTabContent v-model:visible="firewallVisible" />
     <LocalServices v-model:visible="localServicesVisible" />
     <HostKeyChangedDialog />
   </div>
@@ -187,12 +193,15 @@ import { installExternalLinkGuard } from './utils/externalLinks'
 // Overlay views are always visible (not tab bodies), so they stay eager;
 // every tab content below is lazy-loaded via defineAsyncComponent.
 import NetworkScanTabContent from './components/netscan/NetworkScanTabContent.vue'
+import PacketCaptureTabContent from './components/packetcap/PacketCaptureTabContent.vue'
+import FirewallTabContent from './components/firewall/FirewallTabContent.vue'
 import HostKeyChangedDialog from './components/HostKeyChangedDialog.vue'
 import LocalServices from './components/localsrv/LocalServices.vue'
 import AISidebar from './components/AISidebar.vue'
 import BottomPanel from './components/BottomPanel.vue'
 import SyncConflictDialog from './components/SyncConflictDialog.vue'
 import WorkspaceSaveDialog from './components/WorkspaceSaveDialog.vue'
+import MultilinePasteDialog from './components/MultilinePasteDialog.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import DataDirDialog from './components/DataDirDialog.vue'
 import EncryptionModeDialog from './components/EncryptionModeDialog.vue'
@@ -215,6 +224,7 @@ import { useAIStore } from './stores/aiStore'
 import { useCompanionStore } from './stores/companionStore'
 import { useSettingsStore } from './stores/settingsStore'
 import { useQuickCommandStore } from './stores/quickCommandStore'
+import { useNotesStore } from './stores/notesStore'
 import { useSkillStore } from './stores/skillStore'
 import { useCommandStore } from './stores/commandStore'
 import { useTunnelStore } from './stores/tunnelStore'
@@ -226,7 +236,7 @@ import { useSyncStore } from './stores/syncStore'
 import { useCredentialStore } from './stores/credentialStore'
 import { disposeSessionStore } from './stores/sessionStore'
 import { useUpdateCheck } from './composables/useUpdateCheck'
-import { loadKeybindings, installGlobalListener, uninstallGlobalListener, matchDigitShortcut, isRebinding, isTabRenameShortcut } from './composables/useKeyboardShortcuts'
+import { loadKeybindings, installGlobalListener, uninstallGlobalListener, matchDigitShortcut, matchTabCycleShortcut, isRebinding, isTabRenameShortcut } from './composables/useKeyboardShortcuts'
 import { focusPanelTerminal, installTerminalFocusRestore } from './composables/useFocusTerminal'
 import { useDuplicateSession } from './composables/useDuplicateSession'
 import { useTunnelCredentials } from './composables/useTunnelCredentials'
@@ -421,6 +431,7 @@ let uninstallFocusRestore: (() => void) | null = null
 let unsubTrayOpenSettings: (() => void) | null = null
 let unsubTrayOpenAbout: (() => void) | null = null
 let unsubTrayOpenNetscan: (() => void) | null = null
+let unsubTrayOpenPacketcap: (() => void) | null = null
 // Records every terminal's cwd reports app-wide (see companionStore.sessionCwd).
 let unsubTerminalCwd: (() => void) | null = null
 const { t } = useI18n()
@@ -434,6 +445,8 @@ const dataDirVisible = ref(false)
 const encryptVisible = ref(false)
 const unlockVisible = ref(false)
 const netscanVisible = ref(false)
+const packetcapVisible = ref(false)
+const firewallVisible = ref(false)
 const localServicesVisible = ref(false)
 
 // Determine which credential dialog (recovery-unlock / setup) to show based
@@ -476,6 +489,7 @@ function onDataDirDone(restart: boolean) {
   connectionStore.load()
   settingsStore.reload()
   useQuickCommandStore().load()
+  useNotesStore().reload()
   useSkillStore().reload()
   useCommandStore().reload()
   tunnelStore.load()
@@ -718,6 +732,25 @@ function inputMenuPaste() {
   const selection = inputMenuSelection
   closeInputMenu()
   if (!el || !selection) return
+  // AI input (contenteditable .ai-editable): its attachment list lives in
+  // AISidebar, so let it try a clipboard image first — the same
+  // `navigator.clipboard.read()` path Ctrl+V uses — then fall back to plain
+  // text so right-click "Paste" behaves like Ctrl+V without ever dropping input.
+  if (el.isContentEditable && el.classList.contains('ai-editable')) {
+    restoreInputMenuSelection(el, selection)
+    const hook = (window as any).__aiSidebarPasteFromClipboard
+    if (typeof hook === 'function') {
+      void hook().then((handled: boolean) => {
+        if (handled) return
+        Clipboard.Text().then(text => {
+          restoreInputMenuSelection(el, selection)
+          insertTextAtContentEditable(el, text)
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+        }).catch(() => {})
+      })
+      return
+    }
+  }
   Clipboard.Text().then(text => {
     if (el.isContentEditable) {
       restoreInputMenuSelection(el, selection)
@@ -809,10 +842,54 @@ function onWheel(e: WheelEvent) {
 // hide. Panel maximizing moved to the configurable keyboard settings
 // (maximizePanel action).
 let isMac = false
+
+// Toggle the AI sidebar, restoring terminal focus on hide and focusing the
+// chat input on show. Shared by the keyboard-settings action and the
+// double-Ctrl gesture.
+function toggleAISidebar() {
+  if (aiStore.visible) {
+    aiStore.visible = false
+    const pid = tabStore.getActivePanelId()
+    if (pid) nextTick(() => focusPanelTerminal(pid))
+  } else {
+    aiStore.visible = true
+    nextTick(() => aiSidebarRef.value?.focusInput())
+  }
+}
+
+// Double-Ctrl (double-Cmd on macOS, both bound there) opens/closes the AI
+// sidebar: two plain keydowns of the SAME modifier within the window, with no
+// other key pressed in between (a chord like Ctrl+1 breaks the pair) and no
+// auto-repeat (holding the key must not trigger it).
+const DOUBLE_CTRL_WINDOW_MS = 400
+let lastModKey = ''
+let lastModDownAt = 0
+let modPairBroken = false
+
 function onPlatformSystemShortcut(e: KeyboardEvent) {
   // Stand down while the settings page captures a rebind — otherwise
   // recording e.g. Ctrl+1 would switch tabs (and Cmd+Q would quit on mac).
   if (e.defaultPrevented || isRebinding() || remoteDesktopOwnsKey(e)) return
+  if (e.key === 'Control' || e.key === 'Meta') {
+    if (e.repeat) return
+    const now = Date.now()
+    if (!modPairBroken && e.key === lastModKey && now - lastModDownAt <= DOUBLE_CTRL_WINDOW_MS) {
+      lastModKey = ''
+      lastModDownAt = 0
+      modPairBroken = false
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      toggleAISidebar()
+      return
+    }
+    lastModKey = e.key
+    lastModDownAt = now
+    modPairBroken = false
+    return
+  }
+  // Any other key (chords included — their modifier keydown already ran above)
+  // breaks a forming double-modifier pair.
+  modPairBroken = true
   // F2 opens the active tab's rename box (issue #1336 补充说明). Renaming
   // start/settings/netscan tabs is meaningless but harmless, same as dblclick.
   if (isTabRenameShortcut(e)) {
@@ -847,6 +924,18 @@ function onPlatformSystemShortcut(e: KeyboardEvent) {
       return
     }
   }
+  // Platform tab-cycling convention: Cmd+Shift+] / Cmd+Shift+[ on macOS,
+  // Ctrl+PageDown / Ctrl+PageUp on Windows/Linux. Fixed aliases, so a user
+  // binding for the same combo (handled by the window-level listener first)
+  // and the configurable nextTab/prevTab actions are left untouched.
+  const cycle = matchTabCycleShortcut(e, isMac)
+  if (cycle) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (cycle === 'next') tabStore.nextTab()
+    else tabStore.prevTab()
+    return
+  }
   if (!isMac || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
   const key = e.key.toLowerCase()
   if (key === 'q') {
@@ -876,6 +965,8 @@ onMounted(async () => {
     : (localStateStore.state.sidebarVisible ?? false)
   // Pre-load quick commands so suggestions can read them immediately
   useQuickCommandStore().load()
+  // Pre-load notes so the panel opens instantly
+  useNotesStore().load()
   // Pre-load tunnels so auto-start state and the panel are ready
   useTunnelStore().load()
   // Auto-open start tab if no tabs are open
@@ -932,6 +1023,7 @@ onMounted(async () => {
   unsubTrayOpenSettings = Events.On('app:open-settings', () => openSettings())
   unsubTrayOpenAbout = Events.On('app:open-about', () => openSettings('about'))
   unsubTrayOpenNetscan = Events.On('app:open-netscan', () => openNetscan())
+  unsubTrayOpenPacketcap = Events.On('app:open-packetcap', () => openPacketcap())
   // MCP (external AI agents): approval dialogs + session takeover.
   unsubMcpApproval = Events.On('mcp:approval-request', (ev) => {
     // The queue decides what is shown: the new request when the dialog is
@@ -1123,6 +1215,11 @@ const actionHandlers: Record<ShortcutAction, () => void> = {
   toggleFilePanel: () => sidebarViewShortcut('files'),
   toggleMonitor: () => sidebarViewShortcut('monitor'),
   openQuickCommands: () => sidebarViewShortcut('quickCommands', true),
+  toggleNotes: () => sidebarViewShortcut('notes'),
+  toggleTunnels: () => sidebarViewShortcut('tunnels'),
+  toggleHistory: () => sidebarViewShortcut('history'),
+  togglePersonalization: () => sidebarViewShortcut('personalization'),
+  toggleCommandSend: () => sidebarViewShortcut('commandSend'),
   focusTerminal: () => {
     const pid = tabStore.getActivePanelId()
     if (pid) focusPanelTerminal(pid)
@@ -1145,16 +1242,7 @@ const actionHandlers: Record<ShortcutAction, () => void> = {
     }
     if (panelId) onToggleAiLock(panelId)
   },
-  focusAI: () => {
-    if (aiStore.visible) {
-      aiStore.visible = false
-      const pid = tabStore.getActivePanelId()
-      if (pid) nextTick(() => focusPanelTerminal(pid))
-    } else {
-      aiStore.visible = true
-      nextTick(() => aiSidebarRef.value?.focusInput())
-    }
-  },
+  focusAI: () => toggleAISidebar(),
   closePanel: () => {
     const t = tabStore.activeTab
     if (!t) return
@@ -1244,6 +1332,7 @@ onUnmounted(() => {
   unsubTrayOpenSettings?.()
   unsubTrayOpenAbout?.()
   unsubTrayOpenNetscan?.()
+  unsubTrayOpenPacketcap?.()
   unsubMcpApproval?.()
   unsubMcpSessionCreated?.()
   mcpApprovalQueue.clear()
@@ -1277,6 +1366,14 @@ function openSettings(category?: string) {
 
 function openNetscan() {
   netscanVisible.value = true
+}
+
+function openPacketcap() {
+  packetcapVisible.value = true
+}
+
+function openFirewall() {
+  firewallVisible.value = true
 }
 
 // Open the shared connection form prefilled with a network-scan result.

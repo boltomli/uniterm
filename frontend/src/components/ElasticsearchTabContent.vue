@@ -865,7 +865,6 @@ function onResizeStart(e: MouseEvent) {
   white-space: nowrap;
   font-family: var(--font-ui);
   font-size: 0.8125rem;
-  font-weight: 600;
   color: var(--text-primary);
 }
 .child-list {

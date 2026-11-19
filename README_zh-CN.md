@@ -49,8 +49,7 @@
 
 远程终端、本地 & 串口终端、文件传输、远程桌面、数据库、容器、服务器监控 —— 覆盖全部远程访问场景。
 
-- **远程终端** — SSH / Telnet / Mosh / Raw TCP，密码/私钥认证；含 SSH 隧道端口转发（任意连接可经 SSH 跳板访问）
-- **本地 & 串口终端** — PowerShell / CMD / Git Bash / WSL，以及串口连接（波特率等参数、本地回显）
+- **终端** — SSH / Telnet / Mosh / Raw TCP / 串口，外加本地 Shell（PowerShell / CMD / Git Bash / WSL）。
 - **文件传输** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem，双栏浏览、鼠标拖拽上传下载，SSH 内 `rz`/`sz`
 - **远程桌面** — RDP（Windows 远程桌面，暂不支持音频重定向）、VNC（Linux 远程控制）、SPICE（KVM/QEMU 虚拟机）、X11（X Window 图形界面转发）
 - **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch，支持 AI 自然语言生成查询与数据行编辑
@@ -65,17 +64,17 @@
 - **灵活的执行模式** — 提供免确认、仅高危确认、写操作确认、全部确认四种模式，自主权由你掌控。
 - **终端智能协作** — AI 命令直接在当前终端标签页中执行，支持固定到指定标签页或跟随当前激活终端。分屏中人与 AI 各司其职，同屏协作互不干扰。
 - **MCP Server** — 内置 MCP 服务器，Claude Code、Codex、Gemini CLI 等外部 AI Agent 可安全地在已保存的连接上执行命令、传输文件，凭据不出应用。
-- **技能与命令** — 可复用的 Skill 工作流与 Prompt 命令模板，输入 `/` 即可挂载触发，AI 也可自行沉淀新技能。
+- **技能与命令** — 可复用的 Skill 工作流与 Prompt 命令模板，输入 `/` 即可挂载触发，AI 也可自行沉淀新技能；也可接入外部 MCP 服务器，扩展 AI 的工具能力。
 - **智能提示** — 输入时按历史命令与 AI 能力实时补全。
 
 ### 个性化能力
 
 连接管理、自由分屏、云端同步、主题与国际化 —— 你的终端由你掌控。
 
-- **连接管理器** — 分组管理服务器连接，快速搜索、一键新建连接，支持批量操作。
+- **连接管理器** — 分组、搜索和批量管理服务器连接；支持加密导入/导出，以及从其他终端软件导入（MobaXterm、Xshell 等）。
 - **工作区** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
+- **网络工具箱** — 网络扫描、SSH 端口转发隧道，以及为其他设备运行临时服务器的本地服务。
 - **云端同步** — 支持 Git 仓库、WebDAV、SFTP、S3、SMB 五种模式加密云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
-- **自定义快捷键** — 自由绑定各项操作的键盘快捷键，实现全键盘操作，双手不离键盘。
 - **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄、葡、越等 11 种语言界面。
 
 ## 支持的协议
@@ -350,6 +349,11 @@ uniTerm/
     <td align="center"><a href="https://github.com/kevin9327">@kevin9327</a></td>
     <td align="center"><a href="https://github.com/gezerui888">@gezerui888</a></td>
     <td align="center"><a href="https://github.com/eltociear">@eltociear</a></td>
+    <td align="center"><a href="https://github.com/dajiaohuang">@dajiaohuang</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
+    <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
   </tr>
 </table>
 

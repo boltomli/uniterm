@@ -378,17 +378,15 @@ func (fakeFileExecutor) MCPReadRemoteToFile(remote, local string) (int64, error)
 	return 5, nil
 }
 
-// TestFileToolsAndLocalPathScope covers the files group end to end:
-// list/read run without approval, upload/download require it, and local
-// paths outside the allowed directories are rejected before any transfer.
-func TestFileToolsAndLocalPathScope(t *testing.T) {
+// TestFileTools covers the files group end to end: list runs without
+// approval, upload/download go through it, and local paths are gated both by
+// the approval dialog and by the SFTP-bookmark allowlist.
+func TestFileTools(t *testing.T) {
 	dir := t.TempDir()
-	inside := filepath.Join(dir, "allowed")
-	os.MkdirAll(inside, 0755)
-	srcFile := filepath.Join(inside, "f.txt")
+	srcFile := filepath.Join(dir, "f.txt")
 	os.WriteFile(srcFile, []byte("hello"), 0644)
-	outside := filepath.Join(dir, "outside", "f.txt")
-	os.MkdirAll(filepath.Dir(outside), 0755)
+	destFile := filepath.Join(dir, "sub", "dl.txt")
+	os.MkdirAll(filepath.Dir(destFile), 0755)
 
 	env := Env{
 		Sessions: func(id string) (SSHExecutor, bool) { return fakeExecutor{}, id == "s1" },
@@ -400,7 +398,7 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 		Audit:        func(entry AuditEntry) {},
 		Policy:       func() Policy { return PolicyConfirmAll },
 		ResolveLocalPath: func(p string) (string, error) {
-			return ResolveMcpLocalPath(p, []string{inside})
+			return ResolveMcpLocalPath(p, []string{dir})
 		},
 	}
 	srv := NewServer(env)
@@ -441,8 +439,8 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 		t.Fatalf("entries = %+v", ld.Entries)
 	}
 
-	// upload inside the allowed dir: policy confirm_all → approval called
-	// (auto-approved here), transfer succeeds.
+	// upload: policy confirm_all → approval called (auto-approved here),
+	// transfer succeeds from any local path.
 	res, err = cs.CallTool(ctx, &mcp.CallToolParams{
 		Name: "upload_file",
 		Arguments: map[string]any{
@@ -453,32 +451,16 @@ func TestFileToolsAndLocalPathScope(t *testing.T) {
 		t.Fatalf("upload_file: err=%v isError=%v", err, res.IsError)
 	}
 
-	// upload OUTSIDE the allowed dir: rejected before the executor runs.
-	res, err = cs.CallTool(ctx, &mcp.CallToolParams{
-		Name: "upload_file",
-		Arguments: map[string]any{
-			"sessionId": "s1", "localPath": outside, "remotePath": "/tmp/evil",
-		},
-	})
-	if err != nil {
-		t.Fatalf("upload_file call: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("upload outside allowed dir must be a tool error")
-	}
-
-	// download outside: rejected too.
+	// download: also goes through approval now (write risk — the local
+	// destination is unconstrained), succeeds with a fresh destination.
 	res, err = cs.CallTool(ctx, &mcp.CallToolParams{
 		Name: "download_file",
 		Arguments: map[string]any{
-			"sessionId": "s1", "remotePath": "/etc/passwd", "localPath": outside,
+			"sessionId": "s1", "remotePath": "/etc/passwd", "localPath": destFile,
 		},
 	})
-	if err != nil {
-		t.Fatalf("download_file call: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("download outside allowed dir must be a tool error")
+	if err != nil || res.IsError {
+		t.Fatalf("download_file: err=%v isError=%v", err, res.IsError)
 	}
 }
 

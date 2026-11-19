@@ -61,7 +61,12 @@ type TelnetSession struct {
 	decodeScratch  []byte            // reusable src buffer for decodeOutput
 
 	// Telnet option state (configured in Connect, consumed by Write)
-	localEcho      bool
+	localEcho bool
+	// serverEchoes is true once the server has told us it will echo (received
+	// IAC WILL ECHO). In that case the server is responsible for echoing, so we
+	// must NOT echo locally — otherwise each keystroke is shown twice (server +
+	// local), e.g. "exit" renders as "exexiexit".
+	serverEchoes   bool
 	telnetSendMode string // "character" | "line"
 	newlineMode    string // "cr" | "crlf"
 	termType       string // terminal name replied to the server's TTYPE SEND
@@ -76,6 +81,14 @@ type TelnetSession struct {
 	iacPending   []byte
 	lastWasCR    bool
 	serverBinary bool
+	// nawsAgreed gates every NAWS sub-negotiation we send: window size is
+	// only transmitted after the server answered IAC WILL NAWS with
+	// only transmitted after the server answered IAC WILL NAWS with
+	// IAC DO NAWS (RFC 1073). Servers that never agreed — IRIS/Caché
+	// ctelnetd, legacy consoles — would otherwise take the four payload
+	// bytes of the sub-negotiation as user keystrokes ("s)" garbage in the
+	// login line) and eventually drop the connection.
+	nawsAgreed bool
 
 	// Login-phase state for auto-login and the post-login script (issue
 	// #527): loginOutput keeps recent decoded output so credentials are sent
@@ -125,6 +138,7 @@ func (s *TelnetSession) Connect(config ConnectionConfig) error {
 	s.iacPending = nil
 	s.lastWasCR = false
 	s.serverBinary = false
+	s.nawsAgreed = false
 	s.loginOutput = newPostLoginOutputBuffer()
 	s.setStatus(StatusConnected)
 
@@ -134,18 +148,10 @@ func (s *TelnetSession) Connect(config ConnectionConfig) error {
 	s.newlineMode = config.NewlineMode
 	s.termType = EffectiveTermType(config.TermType)
 
-	// Proactively negotiate binary transmission, character-at-a-time mode,
-	// and terminal type — unless the user opted for passive negotiation.
+	// Proactively negotiate character-at-a-time mode and terminal type —
+	// unless the user opted for passive negotiation.
 	if config.TelnetNegotiationMode != "passive" {
-		s.conn.Write([]byte{telnetIAC, telnetWILL, telnetOptBinary})
-		s.conn.Write([]byte{telnetIAC, telnetDO, telnetOptSuppressGoAhead})
-		s.conn.Write([]byte{telnetIAC, telnetWILL, telnetOptTerminalType})
-
-		if cols, rows := s.GetPendingSize(); cols > 0 && rows > 0 {
-			s.sendNAWS(cols, rows)
-		} else {
-			s.sendNAWS(80, 24)
-		}
+		s.sendActiveNegotiation()
 	}
 
 	s.startEmitLoop()
@@ -338,6 +344,7 @@ func (s *TelnetSession) handleNegotiation(cmd byte, opt byte) {
 			}
 		case telnetOptEcho:
 			s.reply(telnetDO, opt) // Accept server echoing
+			s.serverEchoes = true // server owns echoing → do not echo locally
 		case telnetOptTerminalType:
 			s.reply(telnetDO, opt) // Accept server knows terminal type
 		default:
@@ -347,15 +354,37 @@ func (s *TelnetSession) handleNegotiation(cmd byte, opt byte) {
 		if opt == telnetOptBinary {
 			s.serverBinary = false
 		}
+		if opt == telnetOptNAWS {
+			// Server refused our WILL NAWS offer: never send window size.
+			s.nawsAgreed = false
+		}
 	case telnetDO:
 		// Server asks us to do something.
 		switch opt {
-		case telnetOptBinary, telnetOptSuppressGoAhead, telnetOptNAWS, telnetOptTerminalType:
+		case telnetOptBinary, telnetOptSuppressGoAhead, telnetOptTerminalType:
 			s.reply(telnetWILL, opt) // Accept
+		case telnetOptNAWS:
+			// RFC 1073: the DO NAWS handshake is what authorizes us to send
+			// window-size sub-negotiations; do it right away with the current
+			// size so late-agreeing servers (passive mode, slow shells) still
+			// learn the real dimensions.
+			s.nawsAgreed = true
+			s.reply(telnetWILL, opt)
+			if cols, rows := s.GetPendingSize(); cols > 0 && rows > 0 {
+				s.sendNAWS(cols, rows)
+			} else {
+				s.sendNAWS(80, 24)
+			}
 		case telnetOptEcho:
 			s.reply(telnetWONT, opt) // We don't echo locally
 		default:
 			s.reply(telnetWONT, opt)
+		}
+	case telnetDONT:
+		if opt == telnetOptNAWS {
+			// Server withdrew its agreement: stop sending window size until
+			// a fresh DO NAWS arrives.
+			s.nawsAgreed = false
 		}
 	}
 }
@@ -367,16 +396,37 @@ func (s *TelnetSession) reply(cmd byte, opt byte) {
 	s.conn.Write([]byte{telnetIAC, cmd, opt})
 }
 
+// sendActiveNegotiation proactively offers the options the client drives in
+// active mode: character-at-a-time (suppress Go Ahead) and terminal type, and
+// offers NAWS (window size) without sending the sub-negotiation itself — that
+// is only sent once the server answers DO NAWS. BINARY is deliberately not
+// offered: Cisco's telnet server switches to its binary path,
+// where the login code skips the echo-off before the password prompt, so
+// passwords come back echoed in cleartext. Servers that need binary negotiate
+// it themselves — handleNegotiation answers DO BINARY with WILL BINARY as
+// before.
+func (s *TelnetSession) sendActiveNegotiation() {
+	s.conn.Write([]byte{telnetIAC, telnetDO, telnetOptSuppressGoAhead})
+	s.conn.Write([]byte{telnetIAC, telnetWILL, telnetOptTerminalType})
+	s.conn.Write([]byte{telnetIAC, telnetWILL, telnetOptNAWS})
+}
+
 func (s *TelnetSession) sendNAWS(cols, rows int) {
-	if s.conn == nil {
+	if s.conn == nil || !s.nawsAgreed {
 		return
 	}
-	data := []byte{
-		telnetIAC, telnetSB, telnetOptNAWS,
-		byte(cols >> 8), byte(cols & 0xff),
-		byte(rows >> 8), byte(rows & 0xff),
-		telnetIAC, telnetSE,
+	// RFC 1073: any 0xFF byte inside the sub-negotiation must be doubled
+	// (IAC IAC) or the server parses it as a command and the whole
+	// negotiation desynchronizes (e.g. cols=255 leaking a bare IAC).
+	data := []byte{telnetIAC, telnetSB, telnetOptNAWS}
+	for _, v := range []int{cols >> 8, cols & 0xff, rows >> 8, rows & 0xff} {
+		if b := byte(v); b == telnetIAC {
+			data = append(data, telnetIAC, telnetIAC)
+		} else {
+			data = append(data, b)
+		}
 	}
+	data = append(data, telnetIAC, telnetSE)
 	s.conn.Write(data)
 }
 
@@ -631,11 +681,12 @@ func (s *TelnetSession) Write(data []byte) error {
 				return err
 			}
 		}
-		// Echo only what remains buffered (the trailing partial line this
-		// call contributed), and only when local echo is on — a flushed line
-		// was never echoed by the old code either, and servers that don't
-		// echo don't care what we display.
-		if s.localEcho && len(s.lineBuf) > remStart {
+		// Echo only what remains buffered (the trailing partial line this call
+		// contributed), and only when local echo is on and the server is not
+		// echoing for us — a flushed line was never echoed by the old code
+		// either, and a server that told us WILL ECHO renders the keystroke
+		// itself, so echoing here would show it twice.
+		if s.localEcho && !s.serverEchoes && len(s.lineBuf) > remStart {
 			s.emitData(append([]byte(nil), s.lineBuf[remStart:]...))
 		}
 		return nil
@@ -656,8 +707,10 @@ func (s *TelnetSession) Write(data []byte) error {
 
 	_, err := s.conn.Write(encoded)
 
-	// Local echo: show typed characters in terminal (for servers that don't echo)
-	if err == nil && s.localEcho {
+	// Local echo: show typed characters in terminal (for servers that don't echo).
+	// Skip when the server owns echoing (received WILL ECHO) — otherwise each key
+	// is rendered twice (server/conpty echo + our local echo), e.g. "exit" → "exexiexit".
+	if err == nil && s.localEcho && !s.serverEchoes {
 		s.emitData(data)
 	}
 

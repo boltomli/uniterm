@@ -136,16 +136,27 @@ import type { NativeRdpKey } from '../utils/remoteKeyboard'
 import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { readClipboardText, writeClipboard } from '../composables/useClipboardWrite'
 import { toWebSocketURL } from '../utils/webSocketUrl'
+import { resolveIdentityCredentials } from '../utils/identityCredentials'
+import { useIdentityStore } from '../stores/identityStore'
 const { t } = useI18n()
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
 const connectionStore = useConnectionStore()
+const identityStore = useIdentityStore()
 
 const props = defineProps<{
   panelId: string
   config: ConnectionConfig | null
   sessionId: string | null
 }>()
+
+// The VNC protocol runs in the webview's noVNC client, which reads the
+// password straight off the panel config — the backend's identity
+// materialization never reaches it. resolvePassword() therefore resolves an
+// identity reference here (password-type identities only; VNC has no username
+// concept) and falls back to the guarded backend lookup.
+// The store may not be loaded yet on a fresh window; refresh it lazily.
+identityStore.load()
 
 const status = ref<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected')
 const lastError = ref<string>('')
@@ -256,6 +267,10 @@ function onPixelRatioChange() {
 // 按连接 ID 向后端解析（config.password 仍覆盖凭据弹窗内联输入的场景）。
 async function resolvePassword(): Promise<string> {
   if (!props.config) return ''
+  // An identity reference wins (it is what the connection form shows), then
+  // an inline password from the credential dialog.
+  const identityPassword = resolveIdentityCredentials(props.config, identityStore.identities)?.password
+  if (identityPassword) return identityPassword
   if (props.config.password) return props.config.password
   try {
     const secret = await ResolveConnectionSecret(props.config.id) as { password?: string }

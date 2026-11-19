@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"github.com/gorilla/websocket"
+	utls "github.com/refraction-networking/utls"
 	"github.com/ys-ll/uniterm/backend/log"
 	"io"
 	"net"
@@ -75,7 +77,7 @@ func (s *RDPSession) Connect(config ConnectionConfig) error {
 	}
 
 	proxy := NewRDPProxy(target, config.Proxy, hex.EncodeToString(token), RDPOptions{
-		EnableCredSSP: config.RdpEnableNLA,
+		EnableCredSSP: config.SecurityOffersCredSSP(),
 		AdminSession:  config.RdpAdminSession,
 		Destination:   destination,
 	})
@@ -399,11 +401,12 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 	var relayWG sync.WaitGroup
 	relayWG.Add(2)
 
+	handshake := &rdpClientHandshake{adminSession: p.options.AdminSession}
+
 	go func() {
 		defer relayWG.Done()
 		defer upstreamConn.Close()
 		defer cancel()
-		handshake := rdpClientHandshake{adminSession: p.options.AdminSession}
 		for {
 			select {
 			case <-p.stopCh:
@@ -453,7 +456,6 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 			}
 		}()
 		buf := make([]byte, 32768)
-		credsspSeen := false // stop inspecting for TSRequests after RDP PDUs start
 		for {
 			select {
 			case <-p.stopCh:
@@ -463,12 +465,12 @@ func (p *RDPProxy) handleWebSocket(ws *websocket.Conn) {
 			n, err := upstreamConn.Read(buf)
 			if n > 0 {
 				// CredSSP TSRequest records (DER SEQUENCE) precede any
-				// TPKT-framed RDP PDU; log their summary so NTSTATUS
-				// auth failures are visible in the app log.
-				if !credsspSeen && buf[0] == 0x30 {
-					log.Writef("[RDPProxy] server %s", summarizeTsRequest(buf[:n]))
-				} else if buf[0] == 0x03 {
-					credsspSeen = true
+				// TPKT-framed RDP PDU; naming the stage plus a hex dump is
+				// what makes an NTSTATUS auth failure diagnosable from the
+				// app log. tsRequestStage returns "" for wire data that is
+				// not a TSRequest (once RDP PDUs start flowing).
+				if stage := tsRequestStage(buf[:n]); stage != "" {
+					log.Writef("[RDPProxy] CredSSP server -> client: %s (%dB) hex=%s", stage, n, credSSPHexDump(buf[:n]))
 				}
 				if writeErr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
 					log.Writef("[RDPProxy] WebSocket write error: %v", writeErr)
@@ -570,65 +572,79 @@ func rewriteX224SslOnly(pdu []byte) {
 	binary.LittleEndian.PutUint32(pdu[off+4:], proto)
 }
 
-// tlsVersionCache remembers, per real RDP target (host:port before any
-// tunnel rewrite), the max TLS version that last completed a handshake.
-// Servers that silently drop a modern ClientHello would otherwise be
-// re-probed (and re-stall) on every reconnect; with the cache the working
-// version is tried first. Self-healing: a cached version that fails is
-// dropped and probing resumes.
-var (
-	tlsVersionCacheMu sync.Mutex
-	tlsVersionCache   = map[string]uint16{}
+// TLS leg strategies, tried in order on a fresh connection each. The utls
+// strategies mimic mstsc's ClientHello — see mstscClientHelloSpec — because
+// Windows Server 2008-era Schannel both (a) requires TLS 1.2 for CredSSP and
+// (b) RSTs Go's standard TLS 1.2 ClientHello (its signature_algorithms carry
+// ed25519 and it offers encrypt-then-MAC, neither of which mstsc sends). The
+// TLS 1.0-only variant is for middleboxes that RST a TLS 1.2 hello outright
+// but accept a 1.0-only one; TLS 1.0-only servers need no separate strategy
+// here, they simply pick TLS 1.0 from the full hello. The Go strategy stays
+// as a last-ditch fallback for stacks that reject even the mstsc-shaped
+// hello; a stack that did would also refuse real mstsc, so it is expected to
+// stay unused.
+const (
+	tlsStrategyUtls12 = "utls-mstsc-tls12"
+	tlsStrategyUtls10 = "utls-mstsc-tls10"
+	tlsStrategyGo10   = "go-tls10"
 )
 
-func cachedTLSVersion(key string) (uint16, bool) {
+var tlsStrategyOrder = []string{tlsStrategyUtls12, tlsStrategyUtls10, tlsStrategyGo10}
+
+// tlsStrategyCache remembers, per real RDP target (host:port before any
+// tunnel rewrite), the TLS strategy that last completed a handshake.
+// Servers that reject a strategy would otherwise be re-probed (and re-stall)
+// on every reconnect; with the cache the working strategy is tried first.
+// Self-healing: a cached strategy that fails is dropped and probing resumes.
+var (
+	tlsStrategyCacheMu sync.Mutex
+	tlsStrategyCache   = map[string]string{}
+)
+
+func cachedTLSStrategy(key string) (string, bool) {
 	if key == "" {
-		return 0, false
+		return "", false
 	}
-	tlsVersionCacheMu.Lock()
-	defer tlsVersionCacheMu.Unlock()
-	v, ok := tlsVersionCache[key]
+	tlsStrategyCacheMu.Lock()
+	defer tlsStrategyCacheMu.Unlock()
+	v, ok := tlsStrategyCache[key]
 	return v, ok
 }
 
-func rememberTLSVersion(key string, v uint16) {
+func rememberTLSStrategy(key, strategy string) {
 	if key == "" {
 		return
 	}
-	tlsVersionCacheMu.Lock()
-	defer tlsVersionCacheMu.Unlock()
-	tlsVersionCache[key] = v
+	tlsStrategyCacheMu.Lock()
+	defer tlsStrategyCacheMu.Unlock()
+	tlsStrategyCache[key] = strategy
 }
 
-func forgetTLSVersion(key string, v uint16) {
+func forgetTLSStrategy(key, strategy string) {
 	if key == "" {
 		return
 	}
-	tlsVersionCacheMu.Lock()
-	defer tlsVersionCacheMu.Unlock()
-	if tlsVersionCache[key] == v {
-		delete(tlsVersionCache, key)
+	tlsStrategyCacheMu.Lock()
+	defer tlsStrategyCacheMu.Unlock()
+	if tlsStrategyCache[key] == strategy {
+		delete(tlsStrategyCache, key)
 	}
 }
 
 // establishUpstream dials the RDP server, replays the client's X.224
 // request (TPKT included), reads the Connection Confirm, and — when TLS was
-// selected — terminates TLS to the server, retrying on a fresh connection
-// with TLS 1.0 only when the modern handshake gets RST (old servers).
-// cacheKey is the pre-tunnel target used for the TLS version cache.
+// selected — terminates TLS to the server with the first strategy in
+// tlsStrategyOrder that completes a handshake (mstsc-shaped TLS 1.2 first —
+// see the strategy consts — then Go TLS 1.2, then Go TLS 1.0).
+// cacheKey is the pre-tunnel target used for the strategy cache.
 // Returns the plaintext-side stream to relay, the selected protocol, the
 // server cert chain (nil for standard RDP security) and the x.224 confirm.
 func establishUpstream(ctx context.Context, target, cacheKey string, upstream *SocksProxy, x224Req []byte) (net.Conn, uint32, [][]byte, []byte, error) {
-	maxVersions := []uint16{tls.VersionTLS12, tls.VersionTLS10}
-	if known, ok := cachedTLSVersion(cacheKey); ok {
-		maxVersions = []uint16{known}
-		for _, cand := range []uint16{tls.VersionTLS12, tls.VersionTLS10} {
-			if cand != known {
-				maxVersions = append(maxVersions, cand)
-			}
-		}
+	strategies := tlsStrategyOrder
+	if known, ok := cachedTLSStrategy(cacheKey); ok {
+		strategies = append([]string{known}, others(tlsStrategyOrder, known)...)
 	}
-	for i, maxVersion := range maxVersions {
+	for i, strategy := range strategies {
 		dialStart := time.Now()
 		conn, err := dialFirstHopContext(ctx, target, upstream)
 		dialDur := time.Since(dialStart).Round(time.Millisecond)
@@ -658,35 +674,175 @@ func establishUpstream(ctx context.Context, target, cacheKey string, upstream *S
 
 		_ = conn.SetDeadline(time.Now().Add(tlsProbeTimeout))
 		tlsStart := time.Now()
+		tlsConn, chain, err := handshakeTLSLeg(strategy, conn, targetHostOf(target))
+		if err != nil {
+			forgetTLSStrategy(cacheKey, strategy)
+			log.Writef("[RDPProxy] TLS handshake to %s failed after %s (strategy=%s): %v",
+				target, time.Since(tlsStart).Round(time.Millisecond), strategy, err)
+			conn.Close()
+			if i == len(strategies)-1 {
+				return nil, 0, nil, nil, fmt.Errorf("TLS to RDP server failed: %w", err)
+			}
+			continue
+		}
+		rememberTLSStrategy(cacheKey, strategy)
+		_ = conn.SetDeadline(time.Time{})
+		if len(chain) == 0 {
+			conn.Close()
+			tlsConn.Close()
+			return nil, 0, nil, nil, fmt.Errorf("no server certificate presented")
+		}
+		return tlsConn, selected, chain, resp, nil
+	}
+	return nil, 0, nil, nil, fmt.Errorf("TLS to RDP server failed: exhausted retry attempts")
+}
+
+// others returns every element of order except except, preserving order.
+func others(order []string, except string) []string {
+	out := make([]string, 0, len(order))
+	for _, s := range order {
+		if s != except {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// targetHostOf strips the port from a host:port target for SNI purposes,
+// falling back to the raw target when it carries no port.
+func targetHostOf(target string) string {
+	if h, _, err := net.SplitHostPort(target); err == nil && h != "" {
+		return h
+	}
+	return target
+}
+
+// handshakeTLSLeg runs one TLS strategy against conn and returns the ready
+// connection plus the server certificate chain as raw DER. Successes are
+// logged with the negotiated version and cipher — the version is the server's
+// choice, and a CredSSP leg landing on TLS 1.0/1.1 is the first thing to
+// check when a hardened server tears the session down mid-authentication.
+func handshakeTLSLeg(strategy string, conn net.Conn, host string) (net.Conn, [][]byte, error) {
+	switch strategy {
+	case tlsStrategyUtls12, tlsStrategyUtls10:
+		maxVersion := uint16(tls.VersionTLS12)
+		if strategy == tlsStrategyUtls10 {
+			maxVersion = uint16(tls.VersionTLS10)
+		}
+		u := utls.UClient(conn, &utls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // the proxy is local-only; the WASM client validates nothing here, CredSSP binds to the delivered public key
+			ServerName:         host,
+		}, utls.HelloCustom)
+		if err := u.ApplyPreset(mstscClientHelloSpec(host, maxVersion)); err != nil {
+			return nil, nil, err
+		}
+		if err := u.Handshake(); err != nil {
+			return nil, nil, err
+		}
+		state := u.ConnectionState()
+		chain := make([][]byte, 0, len(state.PeerCertificates))
+		for _, c := range state.PeerCertificates {
+			chain = append(chain, c.Raw)
+		}
+		logTLSLegOK(strategy, state.Version, state.CipherSuite, chain)
+		return u, chain, nil
+	case tlsStrategyGo10:
+		maxVersion := uint16(tls.VersionTLS12)
+		if strategy == tlsStrategyGo10 {
+			maxVersion = uint16(tls.VersionTLS10)
+		}
 		tlsConn := tls.Client(conn, &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // the proxy is local-only; the WASM client validates nothing here, CredSSP binds to the delivered public key
 			MinVersion:         tls.VersionTLS10,
 			MaxVersion:         maxVersion,
 		})
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			forgetTLSVersion(cacheKey, maxVersion)
-			log.Writef("[RDPProxy] TLS handshake to %s failed after %s (maxVersion=0x%x): %v",
-				target, time.Since(tlsStart).Round(time.Millisecond), maxVersion, err)
-			conn.Close()
-			if i == len(maxVersions)-1 {
-				return nil, 0, nil, nil, fmt.Errorf("TLS to RDP server failed: %w", err)
-			}
-			continue
+		if err := tlsConn.Handshake(); err != nil {
+			return nil, nil, err
 		}
-		rememberTLSVersion(cacheKey, maxVersion)
-		_ = conn.SetDeadline(time.Time{})
-		certs := tlsConn.ConnectionState().PeerCertificates
-		if len(certs) == 0 {
-			conn.Close()
-			return nil, 0, nil, nil, fmt.Errorf("no server certificate presented")
-		}
-		chain := make([][]byte, 0, len(certs))
-		for _, c := range certs {
+		state := tlsConn.ConnectionState()
+		chain := make([][]byte, 0, len(state.PeerCertificates))
+		for _, c := range state.PeerCertificates {
 			chain = append(chain, c.Raw)
 		}
-		return tlsConn, selected, chain, resp, nil
+		logTLSLegOK(strategy, state.Version, state.CipherSuite, chain)
+		return tlsConn, chain, nil
 	}
-	return nil, 0, nil, nil, fmt.Errorf("TLS to RDP server failed: exhausted retry attempts")
+	return nil, nil, fmt.Errorf("unknown TLS strategy %q", strategy)
+}
+
+// logTLSLegOK logs a completed server-side TLS leg with the negotiated
+// version, cipher and the DER sizes of the delivered certificate chain — the
+// version is the server's choice, and a CredSSP leg landing on TLS 1.0/1.1 is
+// the first thing to check when a hardened server tears the session down
+// mid-authentication. Chain sizes help distinguish which certificate the peer
+// actually presented without shipping its bytes into the log.
+func logTLSLegOK(strategy string, version uint16, cipher uint16, chain [][]byte) {
+	sizes := make([]int, 0, len(chain))
+	for _, c := range chain {
+		sizes = append(sizes, len(c))
+	}
+	log.Writef("[RDPProxy] TLS leg OK: strategy=%s version=%s cipher=0x%04x certs=%d chainSizes=%v",
+		strategy, tlsVersionName(version), cipher, len(chain), sizes)
+}
+
+// tlsVersionName renders a TLS version constant as a compact name.
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionSSL30:
+		return "SSL3.0"
+	case tls.VersionTLS10:
+		return "TLS1.0"
+	case tls.VersionTLS11:
+		return "TLS1.1"
+	case tls.VersionTLS12:
+		return "TLS1.2"
+	case tls.VersionTLS13:
+		return "TLS1.3"
+	}
+	return fmt.Sprintf("0x%04x", v)
+}
+
+// mstscClientHelloSpec builds a ClientHello that mirrors what mstsc sends:
+// Schannel's TLS 1.2 cipher list (minus the SHA-384 suites, which utls
+// cannot negotiate), supported_versions capped at maxVersion (1.2 normally,
+// 1.0 for the TLS 1.0-only middlebox strategy), and no ed25519 or
+// encrypt-then-MAC — the two things old Schannel servers RST on.
+func mstscClientHelloSpec(host string, maxVersion uint16) *utls.ClientHelloSpec {
+	var versions []uint16
+	for _, v := range []uint16{utls.VersionTLS12, utls.VersionTLS11, utls.VersionTLS10} {
+		if v <= maxVersion {
+			versions = append(versions, v)
+		}
+	}
+	suites := []uint16{
+		0xC02C, 0xC02B, 0xC030, 0xC02F, 0xC023,
+		0xC027, 0xC00A, 0xC009, 0xC014, 0xC013,
+		0x009C, 0x003C, 0x0035, 0x002F,
+	}
+	// server_name_list: [u16 list length][name_type=0][u16 name length][name].
+	// Built raw because mstsc sends the dialed address (even a literal IP) as
+	// SNI, which utls' SNIExtension filters out.
+	name := []byte(host)
+	entry := append([]byte{0x00, byte(len(name) >> 8), byte(len(name))}, name...)
+	sniRaw := append([]byte{byte(len(entry) >> 8), byte(len(entry))}, entry...)
+	return &utls.ClientHelloSpec{
+		CipherSuites: suites,
+		Extensions: []utls.TLSExtension{
+			&utls.GenericExtension{Id: 0x0000, Data: sniRaw},
+			&utls.StatusRequestExtension{},
+			&utls.SupportedVersionsExtension{Versions: versions},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0201,
+				0x0403, 0x0503, 0x0203, 0x0202, 0x0601, 0x0603,
+			}},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
+				utls.CurveX25519, utls.CurveP256, utls.CurveP384,
+			}},
+			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
+		},
+	}
 }
 
 // --- X.224 helpers -----------------------------------------------------------
@@ -894,6 +1050,63 @@ func derIntegerBytes(v uint64) []byte {
 	return b
 }
 
+// tsRequestStage names the CredSSP stage a TSRequest record represents, from
+// the optional fields it carries: negoTokens [1] (NEGOTIATE / server
+// CHALLENGE), pubKeyAuth [3] (AUTHENTICATE), authInfo [2] (credentials) or
+// errorCode [4] (in-band error). Non-TSRequest or truncated input returns "".
+func tsRequestStage(rec []byte) string {
+	if len(rec) < 2 || rec[0] != 0x30 {
+		return ""
+	}
+	if _, n, err := derTLV(rec, 0); err != nil || n != len(rec) {
+		return ""
+	}
+	body := derTLVBody(rec, 0)
+	if len(body) == 0 || body[0] != 0xA0 {
+		// version [0] is mandatory; without it this is not a TSRequest
+		return ""
+	}
+	var nego, authInfo, pubKey, errCode bool
+	for off := 0; off < len(body); {
+		tag, n, err := derTLV(body, off)
+		if err != nil {
+			return ""
+		}
+		switch tag {
+		case 0xA1:
+			nego = true
+		case 0xA2:
+			authInfo = true
+		case 0xA3:
+			pubKey = true
+		case 0xA4:
+			errCode = true
+		}
+		off += n
+	}
+	switch {
+	case errCode:
+		return "ERROR_CODE"
+	case authInfo:
+		return "AUTH_INFO"
+	case pubKey:
+		return "AUTHENTICATE"
+	case nego:
+		return "NEGOTIATE"
+	}
+	// A TSRequest carrying only the mandatory version [0] is the initial
+	// handshake message; the server's reply to it is the first thing to
+	// compare between a working and a failing CredSSP session.
+	return "VERSION_ONLY"
+}
+
+// credSSPHexDump renders a CredSSP record as full lowercase hex so failing
+// and working sessions can be compared byte for byte from the log alone.
+// No truncation: the diagnostic snapshot must not hide any bytes.
+func credSSPHexDump(rec []byte) string {
+	return hex.EncodeToString(rec)
+}
+
 // decodeRDCleanPathRequest parses a DER RDCleanPathPdu and returns the
 // Request fields the proxy consumes.
 func decodeRDCleanPathRequest(der []byte) (destination, proxyAuth string, x224 []byte, err error) {
@@ -967,16 +1180,15 @@ func encodeRDCleanPathErr(code uint16) []byte {
 	return pdu
 }
 
-// encodeRDCleanPathNegotiationErr mirrors the client's NegotiationErr branch:
-// a negotiation-error PDU carrying the raw X.224 confirm (a NEG_FAILURE)
-// without the TPKT header. The error field is mandatory — the client's
-// decode falls into the Error branch (no destination/server_addr present)
-// and fails with "RDCleanPath is missing error field" when it is absent,
-// hiding the server's actual failure code.
+// encodeRDCleanPathNegotiationErr builds a negotiation-error PDU carrying the
+// server's raw X.224 confirm (a NEG_FAILURE), TPKT header included. The wasm
+// client decodes it with X224::decode, which reads the TPKT framing first, so
+// stripping it makes the client fail into the generic "RDCleanPath
+// negotiation error" branch and lose the server's failure code (code=2 then
+// no longer matches the frontend's standard-RDP-security fallback). The
+// mandatory error field keeps the client in the NegotiationErr branch instead
+// of "RDCleanPath is missing error field".
 func encodeRDCleanPathNegotiationErr(x224Resp []byte) []byte {
-	if len(x224Resp) > 4 {
-		x224Resp = x224Resp[4:]
-	}
 	errSeq := derExplicit(0, 0x02, derIntegerBytes(uint64(rdcleanErrCodeNegotiation)))
 	pdu := derEncodeTLV(0x30, append(append(
 		derExplicit(0, 0x02, derIntegerBytes(rdcleanPathVersion)),
@@ -1317,7 +1529,11 @@ func (h *rdpClientHandshake) rewrite(data []byte) ([]byte, error) {
 		if len(h.pending) < header+length {
 			return output, nil
 		}
-		output = append(output, h.pending[:header+length]...)
+		record := h.pending[:header+length]
+		if stage := tsRequestStage(record); stage != "" {
+			log.Writef("[RDPProxy] CredSSP client -> server: %s (%dB) hex=%s", stage, header+length, credSSPHexDump(record))
+		}
+		output = append(output, record...)
 		h.pending = h.pending[header+length:]
 	}
 	if len(h.pending) == 0 {

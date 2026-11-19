@@ -12,6 +12,7 @@ export const useAIConfigStore = defineStore('aiConfig', () => {
   const autoCompact = ref(true)
   const contextTokenBudget = ref(DEFAULT_SETTINGS.ai.contextTokenBudget)
   const summaryModelId = ref('')
+  const userMessageStyle = ref<'plain' | 'bubble'>('bubble')
   // structuredClone, not [...models]: the array copy still shared the model
   // OBJECTS with DEFAULT_SETTINGS, so editing the default model edited the
   // default itself ("reset" stopped resetting).
@@ -26,6 +27,7 @@ export const useAIConfigStore = defineStore('aiConfig', () => {
         autoCompact.value = cfg.autoCompact ?? true
         contextTokenBudget.value = normalizeContextTokenBudget(cfg.contextTokenBudget)
         summaryModelId.value = cfg.summaryModelId || ''
+        userMessageStyle.value = cfg.userMessageStyle === 'plain' ? 'plain' : 'bubble'
         models.value = cfg.models?.length ? cfg.models : structuredClone(DEFAULT_SETTINGS.ai.models)
       }
     } catch {
@@ -39,11 +41,11 @@ export const useAIConfigStore = defineStore('aiConfig', () => {
     try {
       await SaveAIModels({ maxTurns: maxTurns.value, models: models.value,
         autoCompact: autoCompact.value, contextTokenBudget: contextTokenBudget.value,
-        summaryModelId: summaryModelId.value })
+        summaryModelId: summaryModelId.value, userMessageStyle: userMessageStyle.value })
     } catch {
       // ignore save errors
     }
   }
 
-  return { maxTurns, autoCompact, contextTokenBudget, summaryModelId, models, loaded, load, save }
+  return { maxTurns, autoCompact, contextTokenBudget, summaryModelId, userMessageStyle, models, loaded, load, save }
 })

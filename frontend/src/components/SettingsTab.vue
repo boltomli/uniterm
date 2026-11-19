@@ -195,46 +195,6 @@
             </div>
           </div>
 
-          <!-- Touch has no hover: 'rightclick' style would leave host rows
-               with no visible menu affordance (long-press still works) -->
-          <div v-if="!isMobile" class="setting-card">
-            <div class="setting-info">
-              <div class="setting-title">{{ t('settings.hostListMenuStyle') }}</div>
-              <div class="setting-desc">{{ t('settings.hostListMenuStyleDesc') }}</div>
-            </div>
-            <div class="setting-control">
-              <el-select v-model="settingsStore.settings.hostListMenuStyle" @change="settingsStore.save()">
-                <el-option :label="t('settings.hostListMenuStyleButton')" value="button" />
-                <el-option :label="t('settings.hostListMenuStyleRightClick')" value="rightclick" />
-              </el-select>
-            </div>
-          </div>
-
-          <div class="setting-card">
-            <div class="setting-info">
-              <div class="setting-title">{{ t('settings.sidebarTabs') }}</div>
-              <div class="setting-desc">{{ t('settings.sidebarTabsDesc') }}</div>
-            </div>
-            <div class="setting-control">
-              <el-select
-                v-model="visibleSidebarTabs"
-                multiple
-                collapse-tags
-                :collapse-tags-limit="3"
-                @change="onSidebarTabsChange"
-              >
-                <!-- "connections" is fixed and never rendered as an option;
-                     the computed keeps it force-selected. -->
-                <el-option
-                  v-for="tab in SIDEBAR_TAB_ORDER.filter(tab => tab.key !== 'connections')"
-                  :key="tab.key"
-                  :label="t(tab.labelKey)"
-                  :value="tab.key"
-                />
-              </el-select>
-            </div>
-          </div>
-
           <!-- Tab bar "+" default action (issue #1043): start page or local
                terminal. Also applies to the new-tab keyboard shortcut. -->
           <div class="setting-card">
@@ -669,6 +629,19 @@
 
           <div class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.multilinePaste') }}</div>
+              <div class="setting-desc">{{ t('settings.multilinePasteDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-select v-model="settingsStore.settings.terminal.multilinePaste" @change="settingsStore.save()">
+                <el-option :label="t('settings.multilinePasteConfirm')" value="confirm" />
+                <el-option :label="t('settings.multilinePasteDirect')" value="direct" />
+              </el-select>
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.commandSendMode') }}</div>
               <div class="setting-desc">{{ t('settings.commandSendModeDesc') }}</div>
             </div>
@@ -781,6 +754,23 @@
                 :min="100"
                 :max="50000"
                 :step="100"
+                controls-position="right"
+                @change="settingsStore.save()"
+              />
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.zmodemIdleTimeoutSec') }}</div>
+              <div class="setting-desc">{{ t('settings.zmodemIdleTimeoutSecDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-input-number
+                v-model="settingsStore.settings.terminal.zmodemIdleTimeoutSec"
+                :min="5"
+                :max="600"
+                :step="5"
                 controls-position="right"
                 @change="settingsStore.save()"
               />
@@ -1336,6 +1326,21 @@
               />
             </div>
           </div>
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.userMessageStyle') }}</div>
+              <div class="setting-desc">{{ t('settings.userMessageStyleDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-radio-group
+                v-model="settingsStore.settings.ai.userMessageStyle"
+                @change="settingsStore.save()"
+              >
+                <el-radio-button value="plain">{{ t('settings.userMessageStylePlain') }}</el-radio-button>
+                <el-radio-button value="bubble">{{ t('settings.userMessageStyleBubble') }}</el-radio-button>
+              </el-radio-group>
+            </div>
+          </div>
 
           <!-- F-07: endpoint transport policy — https (or loopback http) is
                enforced in Go; this switch is the explicit opt-in for plain
@@ -1451,6 +1456,17 @@
                   </div>
                 </el-option>
               </el-select>
+            </div>
+          </div>
+
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.mcpMaxConcurrentCommands') }}</div>
+              <div class="setting-desc">{{ t('settings.mcpMaxConcurrentCommandsDesc') }}</div>
+              <div v-if="(mcp.maxConcurrentCommands || 8) > 8" class="setting-desc mcp-concurrency-warning" role="status">{{ t('settings.mcpMaxConcurrentCommandsWarning') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-input-number v-model="mcp.maxConcurrentCommands" :disabled="mcpSaving" :min="1" :max="64" :precision="0" :value-on-clear="8" controls-position="right" @change="saveMcp()" />
             </div>
           </div>
 
@@ -1833,7 +1849,7 @@ import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { useI18n, locale } from '../i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS, SIDEBAR_TAB_ORDER, SIDEBAR_TAB_DEFAULTS } from '../types/settings'
+import { FONT_OPTIONS, FONT_WEIGHT_OPTIONS, LANGUAGE_OPTIONS, DEFAULT_KEYBOARD, SHORTCUT_LABELS, USER_AGENT_PRESETS, FOLLOW_APP_THEME, CURSOR_STYLES, TIMESTAMP_FORMATS } from '../types/settings'
 import { formatFontFamily, normalizeFontFamilyValue } from '../utils/formatFontFamily'
 import { backendErrorText } from '../utils/backendError'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
@@ -2201,6 +2217,7 @@ const mcpSetupVisible = ref(false)
 watch(() => localStateStore.state.mcp, (v) => {
   if (v) {
     Object.assign(mcp, DEFAULT_MCP_SETTINGS, v)
+    mcp.maxConcurrentCommands = normalizeMcpConcurrency(v.maxConcurrentCommands)
     mcpPort.value = v.port || 61207
   }
 }, { immediate: true })
@@ -2210,7 +2227,13 @@ async function refreshMcpState() {
   try { mcpTokens.value = (await ListMCPTokens()) || [] } catch { mcpTokens.value = [] }
 }
 
+function normalizeMcpConcurrency(value: number | undefined): number {
+  if (!Number.isFinite(value) || !value || value < 1) return 8
+  return Math.min(64, Math.floor(value))
+}
+
 async function saveMcp() {
+  mcp.maxConcurrentCommands = normalizeMcpConcurrency(mcp.maxConcurrentCommands)
   mcpSaving.value = true
   try {
     await localStateStore.update({
@@ -2220,6 +2243,7 @@ async function saveMcp() {
         port: mcpPort.value,
         policy: mcp.policy,
         execMode: mcp.execMode || 'background',
+        maxConcurrentCommands: mcp.maxConcurrentCommands,
       },
     })
     await refreshMcpState()
@@ -2578,7 +2602,7 @@ const shortcutCategories: { key: string; label: string; actions: ShortcutAction[
   {
     key: 'sidebar',
     label: 'shortcut.catSidebar',
-    actions: ['toggleSidebar', 'openQuickCommands', 'focusAI', 'toggleFilePanel', 'toggleMonitor', 'openSettings'],
+    actions: ['toggleSidebar', 'openQuickCommands', 'toggleNotes', 'focusAI', 'toggleFilePanel', 'toggleMonitor', 'toggleTunnels', 'toggleHistory', 'togglePersonalization', 'toggleCommandSend', 'openSettings'],
   },
   {
     key: 'terminal',
@@ -3042,24 +3066,8 @@ const tunnelStore = useTunnelStore()
 const tunnelDialogVisible = ref(false)
 const editingTunnelId = ref<string | undefined>(undefined)
 
-// ── Sidebar tab visibility ──
-// Writable computed over AppSettings.sidebarTabs. "connections" never appears
-// in the select (no option, no tag) — it is forced on at the data level.
-const visibleSidebarTabs = computed<string[]>({
-  get: () => SIDEBAR_TAB_ORDER
-    .map(tab => tab.key)
-    .filter(key => key !== 'connections')
-    .filter(key => settingsStore.settings.sidebarTabs?.[key] ?? SIDEBAR_TAB_DEFAULTS[key] ?? true),
-  set: (keys: string[]) => {
-    const tabs = settingsStore.settings.sidebarTabs
-    for (const tab of SIDEBAR_TAB_ORDER) {
-      tabs[tab.key] = tab.key === 'connections' || keys.includes(tab.key)
-    }
-  },
-})
-function onSidebarTabsChange() {
-  settingsStore.save()
-}
+// Sidebar tab visibility is configured from the tab-strip right-click menu
+// (PanelStripMenu) — no settings-page card for it anymore.
 function openTunnelDialog(t?: Tunnel) {
   if (t && tunnelStore.isActive(t.id)) return
   editingTunnelId.value = t?.id
@@ -3701,6 +3709,11 @@ async function onToggleSystemTitleBar(v: boolean) {
   font-family: var(--font-ui);
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+.mcp-concurrency-warning {
+  color: var(--el-color-warning);
+  margin-top: 0.375rem;
 }
 
 .mcp-client-field {

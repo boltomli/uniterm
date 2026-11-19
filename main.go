@@ -14,6 +14,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/ys-ll/uniterm/backend/log"
+	"github.com/ys-ll/uniterm/backend/packetcap"
 	"github.com/ys-ll/uniterm/backend/session"
 	"github.com/ys-ll/uniterm/backend/store"
 )
@@ -133,6 +134,12 @@ func windowsDisabledFeatures() []string {
 }
 
 func main() {
+	// Redirect fd 2 to panic-stderr.log when there is no stderr handle
+	// (windowsgui release builds). Must run first so it also covers the
+	// elevated broker process and any goroutine panic the recover below
+	// cannot see. No-op under a console (dev) or explicit redirection.
+	log.CaptureStderr()
+
 	// Administrator-shell broker mode: an elevated copy of uniTerm launched
 	// via the "runas" verb relays ConPTY I/O for admin local terminals (see
 	// backend/session/local_admin_windows.go). Must run before anything else
@@ -140,6 +147,16 @@ func main() {
 	// runs before the single-instance lock, which keeps the broker process
 	// exempt — only GUI instances compete for the lock.
 	if session.RunLocalPtyBroker(os.Args) {
+		return
+	}
+
+	// Elevated packet-capture worker mode: when a capture starts from a normal
+	// (unelevated) uniTerm, the app re-launches itself via "runas" with the
+	// --packetcap-worker flag and this worker streams raw packets back over a
+	// user-only named pipe. Like the broker it must run before anything else so
+	// it never builds a window/webview, and before the single-instance lock so
+	// it does not compete with GUI instances.
+	if packetcap.ServeWorker(os.Args) {
 		return
 	}
 

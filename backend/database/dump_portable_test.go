@@ -34,7 +34,9 @@ func TestDumpStructureIsPortable(t *testing.T) {
 	if !strings.Contains(pg, "pg_get_viewdef") {
 		t.Error("postgres dump must export a view's definition, not a table shell (DB-23)")
 	}
-	if !strings.Contains(pg, "quotedTable := p.pgQual(schema, tableName)") {
+	// The bare table name is split off first when the tree hands down a
+	// schema-qualified "schema.table"; the reference must still be qualified.
+	if !strings.Contains(pg, "quotedTable := p.pgQual(schema, dumpTable)") {
 		t.Error("postgres dump must schema-qualify its object references (DB-23)")
 	}
 
@@ -45,7 +47,7 @@ func TestDumpStructureIsPortable(t *testing.T) {
 	if !strings.Contains(ss, "sys.sql_modules") {
 		t.Error("sqlserver dump must export a view's module body (DB-23)")
 	}
-	if !strings.Contains(ss, "quotedTable := p.qualifiedTableSchema(schema, tableName)") {
+	if !strings.Contains(ss, "quotedTable := p.qualifiedTableSchema(schema, dumpTable)") {
 		t.Error("sqlserver dump must schema-qualify its object references (DB-23)")
 	}
 

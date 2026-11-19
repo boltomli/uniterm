@@ -103,8 +103,14 @@ app.mount('#app')
   }, true)
 }
 
-// Global context menu closer: broadcast to all menu components via window event
-document.addEventListener('contextmenu', () => {
+// Global context menu closer: broadcast to all menu components via window event.
+// A right-click landing on one of our own menus must NOT close it — the menu
+// stays put and nothing happens (same as native menus), so skip the broadcast
+// for events targeting our menu surfaces (.stop on the menu root can't do this
+// because this listener runs in the capture phase, before the event gets there).
+document.addEventListener('contextmenu', (e) => {
+  const t = e.target as HTMLElement | null
+  if (t?.closest('.conn-context-menu') || t?.closest('.menu-submenu')) return
   window.dispatchEvent(new CustomEvent('global:close-context-menus'))
 }, true)
 
@@ -180,8 +186,9 @@ document.addEventListener('select', (e) => {
 
 document.addEventListener('contextmenu', (e) => {
   const target = e.target as HTMLElement
-  // Read-only log-path toast: offer copy/select-all on its plain text.
-  const copyable = target.closest('.msg-copyable') as HTMLElement | null
+  // Read-only log-path toast and selectable plain-text hints (.copyable-text,
+  // e.g. the delete-confirm name): offer the in-app copy/select-all menu.
+  const copyable = target.closest('.msg-copyable, .copyable-text') as HTMLElement | null
   if (copyable) {
     e.preventDefault()
     const content = (copyable.querySelector('.el-message__content') as HTMLElement) || copyable

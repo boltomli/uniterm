@@ -398,7 +398,8 @@ func fetchReleaseAsset(ctx context.Context, assetURL, label string) ([]byte, err
 
 // classifyAsset buckets an asset name by its update payload kind. Any .zip is
 // treated as portable (Windows portable zip and the macOS bare-binary zip);
-// .dmg/.deb/.rpm are manual-install artifacts and land in "other".
+// .deb/.rpm are installed through the system package manager; .dmg is a
+// manual-install artifact and lands in "other".
 func classifyAsset(name string) string {
 	switch {
 	case strings.Contains(name, "-installer-") && strings.HasSuffix(name, ".exe"):
@@ -407,6 +408,10 @@ func classifyAsset(name string) string {
 		return "portable"
 	case strings.HasSuffix(name, ".tar.gz"):
 		return "binary-tar.gz"
+	case strings.HasSuffix(name, ".deb"):
+		return "deb"
+	case strings.HasSuffix(name, ".rpm"):
+		return "rpm"
 	}
 	return "other"
 }
@@ -429,6 +434,10 @@ func kindPreference(ch Channel) []string {
 		return []string{"installer", "portable"}
 	case ChannelPortable:
 		return []string{"portable", "binary-tar.gz"}
+	case ChannelDeb:
+		return []string{"deb"}
+	case ChannelRPM:
+		return []string{"rpm"}
 	default:
 		return nil
 	}

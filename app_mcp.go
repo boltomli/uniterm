@@ -54,23 +54,22 @@ func (a *App) mcpTokensPath() string {
 func (a *App) ensureMCPServer() *mcp.Server {
 	a.mcpOnce.Do(func() {
 		env := mcp.Env{
-			Sessions:         a.mcpSessionExec,
-			Commands:         a.mcpCommandOwner,
-			ListSessions:     a.mcpListSessions,
-			ListConnections:  a.mcpListConnections,
-			Connect:          a.mcpConnect,
-			OpenTerminal:     a.mcpOpenTerminal,
-			Approve:          a.mcpApprove,
-			Audit:            a.mcpAudit,
-			Policy:           a.mcpPolicy,
-			ResolveToken:     a.mcpResolveToken,
-			FileSession:      a.mcpFileSession,
-			ResolveLocalPath: a.mcpResolveLocalPath,
-			Foreground:       a,
-			ExecMode:         a.mcpExecMode,
-			Capture:          a.CaptureScreen,
-			SendKey:          a.SendKey,
-			Collect:          a.StartForegroundCapture,
+			Sessions:        a.mcpSessionExec,
+			Commands:        a.mcpCommandOwner,
+			ListSessions:    a.mcpListSessions,
+			ListConnections: a.mcpListConnections,
+			Connect:         a.mcpConnect,
+			OpenTerminal:    a.mcpOpenTerminal,
+			Approve:         a.mcpApprove,
+			Audit:           a.mcpAudit,
+			Policy:          a.mcpPolicy,
+			ResolveToken:    a.mcpResolveToken,
+			FileSession:     a.mcpFileSession,
+			Foreground:      a,
+			ExecMode:        a.mcpExecMode,
+			Capture:         a.CaptureScreen,
+			SendKey:         a.SendKey,
+			Collect:         a.StartForegroundCapture,
 		}
 		a.mcpServer = mcp.NewServer(env)
 	})
@@ -122,6 +121,12 @@ func (a *App) StartMCP() error {
 		return err
 	}
 	cfg := state.MCP
+	limit := 0
+	if cfg != nil {
+		limit = cfg.MaxConcurrentCommands
+	}
+	session.SetMCPMaxConcurrentCommands(limit)
+	a.jobRegistry().SetMaxConcurrent(limit)
 	if cfg == nil || !cfg.Enabled {
 		a.setMCPLastEndpoint(nil)
 		srv.Stop()
@@ -366,14 +371,14 @@ func (a *App) mcpListSessions() []mcp.SessionSummary {
 
 // ── MCP file tools: companion file-transfer session ─────────────────────
 //
-// Instead of a bespoke SFTP client pool riding the terminal's SSH client,
-// the MCP layer opens the same companion file-transfer session the frontend
-// file sidebar opens — an SFTPSession or SCPSession per the connection's
-// FileTransferProto, lazily created on the first MCP file call and cached
+// The MCP layer opens a companion SFTPSession or SCPSession per the
+// connection's FileTransferProto, created on the first MCP file call and cached
 // per SSH session. All transfer/list/read behavior (progress events into
 // the task center, pause/cancel/retry, uid/gid resolution) is the sidebar's
-// own, and hosts whose SSH server provides no SFTP subsystem (common on
-// embedded devices) work by setting the connection's file protocol to SCP.
+// own. Its channels share the terminal's authenticated SSH transport, so
+// interactive logins require no second authentication. Hosts whose SSH
+// server provides no SFTP subsystem (common on embedded devices) work by
+// setting the connection's file protocol to SCP.
 
 // mcpTransferOutcome is what a completed transfer tells its MCP waiter.
 type mcpTransferOutcome struct {
@@ -495,8 +500,7 @@ func (a *App) mcpEnsureFileSession(ssh *session.SSHSession) (session.Session, er
 	if ssh.Status() != session.StatusConnected {
 		return nil, fmt.Errorf("ssh session %s is not connected", sshSID)
 	}
-	config := ssh.ConnectionConfig()
-	fs, err := a.mcpCreateFileSession(sshSID, config)
+	fs, err := a.mcpCreateFileSession(ssh)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +510,7 @@ func (a *App) mcpEnsureFileSession(ssh *session.SSHSession) (session.Session, er
 	a.mcpFileMu.Unlock()
 	// Follow the SSH session down so the companion never outlives its
 	// terminal. Only the registered generation cleans up.
-	ssh.AddStatusListener(func(st session.SessionStatus) {
+	closeCompanion := func(st session.SessionStatus) {
 		if st != session.StatusDisconnected && st != session.StatusError {
 			return
 		}
@@ -522,15 +526,23 @@ func (a *App) mcpEnsureFileSession(ssh *session.SSHSession) (session.Session, er
 			log.Writef("[mcp-file] ssh session %s gone; closing transfer session %s", sshSID, createdSID)
 			_ = a.sessionManager.Close(createdSID)
 		}
-	})
+	}
+	ssh.AddStatusListener(closeCompanion)
+	// The source may have disconnected while the file channel was opening,
+	// before its listener was registered.
+	if st := ssh.Status(); st != session.StatusConnected {
+		closeCompanion(st)
+		return nil, fmt.Errorf("ssh session %s disconnected while opening file transfer", sshSID)
+	}
 	return fs, nil
 }
 
 // mcpCreateFileSession creates and connects the companion file-transfer
-// session (SFTP or SCP per config.FileTransferProto) with the same
-// credential resolution chain the terminal connect path uses. Connect runs
+// session (SFTP or SCP per config.FileTransferProto) on the terminal's
+// authenticated transport, including any jump hosts. Connect runs
 // synchronously so MCP callers get the real failure reason.
-func (a *App) mcpCreateFileSession(sshSID string, config session.ConnectionConfig) (session.Session, error) {
+func (a *App) mcpCreateFileSession(source *session.SSHSession) (session.Session, error) {
+	config := source.ConnectionConfig()
 	proto := "sftp"
 	if config.FileTransferProto == "scp" {
 		proto = "scp"
@@ -559,7 +571,7 @@ func (a *App) mcpCreateFileSession(sshSID string, config session.ConnectionConfi
 	}
 	fail := func(err error) (session.Session, error) {
 		_ = a.sessionManager.Close(s.ID())
-		return nil, fmt.Errorf("%s transfer session connect failed: %w (hosts with interactive logon need the password saved or key auth configured — same as the file sidebar)", proto, err)
+		return nil, fmt.Errorf("%s transfer session connect failed: %w", proto, err)
 	}
 	if setter, ok := s.(interface{ SetLogIdentity(string, string) }); ok {
 		setter.SetLogIdentity(config.Name, config.Host)
@@ -583,16 +595,12 @@ func (a *App) mcpCreateFileSession(sshSID string, config session.ConnectionConfi
 			"status": st,
 		})
 	})
-	// Jump-host tunnel first (launchConnectGoroutine's ordering), then the
-	// dial — for tunneled terminals the stored config still carries
-	// TunnelSSHConnID, and each companion gets its own fresh forward.
-	if err := a.setupJumpHostTunnel(s.ID(), proto, &config); err != nil {
+	if err := s.(interface {
+		ConnectSSH(*session.SSHSession) error
+	}).ConnectSSH(source); err != nil {
 		return fail(err)
 	}
-	if err := s.Connect(config); err != nil {
-		return fail(err)
-	}
-	log.Writef("[mcp-file] opened %s transfer session %s for ssh session %s", proto, s.ID(), sshSID)
+	log.Writef("[mcp-file] opened %s transfer session %s for ssh session %s", proto, s.ID(), source.ID())
 	return s, nil
 }
 
@@ -669,17 +677,6 @@ func localFileSize(path string) (int64, error) {
 		return 0, err
 	}
 	return fi.Size(), nil
-}
-
-// mcpResolveLocalPath validates an agent-supplied local path against the
-// user's SFTP local bookmarks (settings.sftpBookmarks.localPaths): resolved
-// paths must sit inside one of them; an empty list rejects everything.
-func (a *App) mcpResolveLocalPath(path string) (string, error) {
-	settings, err := a.settingsStore.Load()
-	if err != nil {
-		return "", err
-	}
-	return mcp.ResolveMcpLocalPath(path, settings.SFTPBookmarks.LocalPaths)
 }
 
 func (a *App) mcpListConnections() []mcp.ConnectionSummary {
