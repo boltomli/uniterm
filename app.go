@@ -94,11 +94,15 @@ type App struct {
 	// callback slots are a fixed-size runtime table (cb_max = 2000, entries
 	// never freed), so the callback is registered exactly once — registering
 	// per call aborts the process with "too many callback functions" (#1426).
-	enumMu          stdsync.Mutex
-	enumWindowsCb   uintptr
-	enumResult      uintptr
-	rdpKeyboardMu   stdsync.Mutex
-	rdpKeyboard     *platform.RDPKeyboardCapture
+	enumMu        stdsync.Mutex
+	enumWindowsCb uintptr
+	enumResult    uintptr
+	rdpKeyboardMu stdsync.Mutex
+	rdpKeyboard   *platform.RDPKeyboardCapture
+	// wndProcOnce installs the Windows WndProc subclass a single time; both
+	// attachMainWindow and ensureMainWindowHwnd reach it, and a second install
+	// recurses through the callback until the stack overflows.
+	wndProcOnce     stdsync.Once
 	originalWndProc uintptr
 	wndProcCb       uintptr // keep alive to prevent GC
 	inSizeMove      bool
@@ -312,8 +316,15 @@ func (a *App) attachMainWindow(hwnd uintptr) {
 		return
 	}
 	a.mainWindowAttach.Do(func() {
-		a.mainHwnd = hwnd
-		a.subclassMainWindow()
+		// ensureMainWindowHwnd may have already resolved and cached the
+		// handle (bringMainWindowToFront runs while the stores boot, well
+		// before WindowShow); never overwrite it here.
+		a.hwndMu.Lock()
+		if a.mainHwnd == 0 {
+			a.mainHwnd = hwnd
+		}
+		a.hwndMu.Unlock()
+		a.installWndProcSubclass()
 	})
 }
 
@@ -402,7 +413,7 @@ func (a *App) ensureMainWindowHwnd() uintptr {
 		return 0
 	}
 	a.mainHwnd = hwnd
-	a.subclassMainWindow()
+	a.installWndProcSubclass()
 	return hwnd
 }
 
@@ -468,7 +479,6 @@ func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOpt
 	// the window is shown (services start before the native window exists), and
 	// ensureMainWindowHwnd resolves it lazily on first need — see there for the
 	// full history (#1426, #656).
-
 
 	// Resolve data directory. First run (no bootstrap, no existing config)
 	// defers all store init until the frontend calls SetDataDir. The headless

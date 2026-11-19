@@ -235,6 +235,53 @@ func TestEnsureMainWindowHwndResolvesAndSubclasses(t *testing.T) {
 	}
 }
 
+// Regression test for the double-subclass startup crash. Two paths install the
+// WndProc subclass: ensureMainWindowHwnd (first lazy resolution, reached from
+// bringMainWindowToFront while the stores boot) and attachMainWindow (on
+// WindowShow). Both fire during a normal startup; before the fix the second
+// SetWindowLongPtrW returned our own trampoline as the "previous" proc, so the
+// very next window message recursed through the hook until the stack overflowed
+// (Exception 0xc00000fd) and the app died before the UI was usable. Installing
+// twice must therefore be a no-op, leaving a single callback and a foreign
+// "previous" proc behind.
+func TestSubclassMainWindowInstallsOnlyOnce(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	hwnd, err := createTestMainWindow()
+	if err != nil {
+		t.Fatalf("create test window: %v", err)
+	}
+	defer destroyTestMainWindow(hwnd)
+
+	a := &App{}
+	if got := a.ensureMainWindowHwnd(); got == 0 {
+		t.Fatal("ensureMainWindowHwnd = 0, want the test window HWND")
+	}
+	origProc, origCb := a.originalWndProc, a.wndProcCb
+	if origProc == 0 || origCb == 0 {
+		t.Fatal("WndProc subclass not installed after successful resolution")
+	}
+
+	// The second install path (WindowShow) must not re-subclass.
+	a.attachMainWindow(hwnd)
+	if a.originalWndProc != origProc {
+		t.Fatalf("originalWndProc changed to %#x (want %#x): subclass re-installed", a.originalWndProc, origProc)
+	}
+	if a.wndProcCb != origCb {
+		t.Fatalf("wndProcCb changed to %#x (want %#x): subclass re-installed", a.wndProcCb, origCb)
+	}
+	if a.originalWndProc == a.wndProcCb {
+		t.Fatal("originalWndProc points at our own trampoline: every message would recurse")
+	}
+
+	// The helper stays idempotent when called again.
+	a.installWndProcSubclass()
+	if a.originalWndProc != origProc || a.wndProcCb != origCb {
+		t.Fatal("installWndProcSubclass re-installed the hook")
+	}
+}
+
 // createTestMainWindow registers a window class and creates a real top-level
 // window titled "uniTerm" so findMainWindow's EnumWindows sweep can discover
 // it. Hidden windows are enumerated too, so it never needs to be shown.

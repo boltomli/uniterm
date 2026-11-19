@@ -65,6 +65,26 @@ wails build                 # Production build
 - Link related issues if applicable
 - Ensure the code compiles and passes local testing
 
+### Startup Safety Is Non-Negotiable
+
+The app must **always** start. A change that can prevent startup, corrupt memory, or leave a dangling
+native callback is rejected regardless of the feature it enables.
+
+- Touch anything on the startup path (`main.go`, `ServiceStartup` / `bootstrapStores` / `attachMainWindow`,
+  native window-proc / delegate / callback registration)? Then actually launch the app — `go build ./...`
+  passing does **not** prove it boots. Never verify with a stale `bin/uniTerm.exe`.
+- Native hooks (Win32 `WndProc` subclassing, macOS delegates, JNI, GTK signals) are installed **exactly once**,
+  through a single `sync.Once`-guarded helper. Never store your own trampoline as the "previous" handler —
+  that turns every message into unbounded recursion and kills the process at startup.
+- No `panic` / `log.Fatal` / `os.Exit(1)` on the startup path; optional dependencies (DLL exports, system
+  services, WebView2, clipboard) must degrade, not abort.
+- Every startup-related fix ships with a regression test (idempotency: "calling it twice leaves one hook").
+
+Merging `main` into a hardening branch is the highest-risk moment. Read
+[`docs/dev/2026-11-19-startup-safety-invariants.md`](docs/dev/2026-11-19-startup-safety-invariants.md)
+before resolving conflicts: invariants come first, then features, then performance — and a conflict must
+never be resolved by dropping a hardening guard.
+
 ## Project Structure
 
 ```
@@ -169,6 +189,24 @@ wails build                 # 生产构建
 - PR 描述建议使用 **英文 + 中文双语**：先写英文，后写中文，中间用 `---` 分隔
 - 如有相关 issue 请注明链接
 - 确保代码可编译通过并经过本地测试
+
+### 启动安全是不可让步的底线
+
+应用**必须**能启动。任何可能让程序启动不了、损坏内存、或留下悬垂 native 回调的改动，功能再好也不接受。
+
+- 改到启动路径（`main.go`、`ServiceStartup` / `bootstrapStores` / `attachMainWindow`、native 窗口过程 /
+  delegate / 回调注册）就必须**真的把应用跑起来**：`go build ./...` 通过 ≠ 能启动，也不要用旧的
+  `bin/uniTerm.exe` 验证。
+- native hook（Win32 `WndProc` 子类化、macOS delegate、JNI、GTK signal）**只能安装一次**，统一收口到一个
+  `sync.Once` 保护的 helper；绝不能把自身的 trampoline 存成"上一个过程"——那会让每条消息无限递归，
+  启动即爆栈。
+- 启动路径上禁止 `panic` / `log.Fatal` / `os.Exit(1)`；可选依赖（DLL 导出、系统服务、WebView2、剪贴板）
+  必须降级，不能直接终止进程。
+- 每个启动相关的修复都要带回归测试（幂等性："调用两次仍然只有一个 hook"）。
+
+把 `main` 合并进加固分支是最危险的时刻。解冲突前先读
+[`docs/dev/2026-11-19-startup-safety-invariants.md`](docs/dev/2026-11-19-startup-safety-invariants.md)：
+不变量优先，其次功能，最后性能；**不允许**靠删掉加固代码来"解决冲突"。
 
 ## 项目结构
 

@@ -510,6 +510,22 @@ var (
 	procWTSUnRegisterSessionNotification = wtsapi32.NewProc("WTSUnRegisterSessionNotification")
 )
 
+// installWndProcSubclass installs the native WndProc subclass exactly once.
+// Two independent paths reach it — attachMainWindow (on WindowShow) and
+// ensureMainWindowHwnd (the first lazy HWND resolution, e.g. from
+// bringMainWindowToFront while the stores boot) — and both can fire in the
+// same startup. Installing twice is fatal, not merely wasteful: the second
+// SetWindowLongPtrW hands our own trampoline back as the "previous" proc, so
+// every message bounces between the two hooks until the stack overflows
+// (Exception 0xc00000fd) and the process dies before the UI is usable.
+// See docs/dev/2026-11-19-startup-safety-invariants.md (invariants I-1/I-2).
+func (a *App) installWndProcSubclass() {
+	if a.mainHwnd == 0 {
+		return
+	}
+	a.wndProcOnce.Do(a.subclassMainWindow)
+}
+
 func (a *App) subclassMainWindow() {
 	if a.mainHwnd == 0 {
 		return
@@ -648,9 +664,16 @@ func (a *App) subclassMainWindow() {
 		}
 		return ret
 	})
-	a.wndProcCb = cb
 
 	orig, _, _ := procSetWindowLongPtrW.Call(a.mainHwnd, GWLP_WNDPROC, cb)
+	if orig == cb {
+		// Already ours: adopting our own trampoline as the "previous" proc
+		// makes the hook call itself for every message until the stack blows
+		// (the double-install crash). installWndProcSubclass rules this out;
+		// bail out instead of arming the recursion if anything else re-enters.
+		return
+	}
+	a.wndProcCb = cb
 	a.originalWndProc = orig
 
 	// Lock/unlock notifications: WM_WTSSESSION_CHANGE is only delivered to a
