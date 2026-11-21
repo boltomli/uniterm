@@ -692,6 +692,13 @@ func establishUpstream(ctx context.Context, target, cacheKey string, upstream *S
 			tlsConn.Close()
 			return nil, 0, nil, nil, fmt.Errorf("no server certificate presented")
 		}
+		// The proxy terminates TLS, so nothing downstream validates the server
+		// certificate. Enforce a TOFU pin here (see rdp_pins.go).
+		if err := checkRDPCertPin(target, chain[0]); err != nil {
+			conn.Close()
+			tlsConn.Close()
+			return nil, 0, nil, nil, err
+		}
 		return tlsConn, selected, chain, resp, nil
 	}
 	return nil, 0, nil, nil, fmt.Errorf("TLS to RDP server failed: exhausted retry attempts")
