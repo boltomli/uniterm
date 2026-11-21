@@ -29,14 +29,19 @@ func s3Time(t time.Time) string {
 // Buckets map to sub-directories of RootDir and objects map to files (the
 // object key is the path relative to the bucket directory). Only a practical
 // subset of S3 is implemented — enough for standard S3 clients (e.g.
-// `mc --no-sign-request`, `aws s3 --no-sign-request`) to create buckets and
-// upload / download / list / delete objects. Returns the server id.
+// `mc --signature-v4`, `aws s3`) to create buckets and upload / download /
+// list / delete objects. Returns the server id.
 //
-// The access/secret keys are accepted for compatibility with clients that send
-// them, but signatures are not cryptographically verified (experimental).
+// When both AccessKey and SecretKey are set, every request must carry a valid
+// SigV4 Authorization header (see s3auth.go); with both empty the server runs
+// in the documented anonymous mode accepted by `--no-sign-request` clients.
+// A half-configured pair is rejected instead of silently running open.
 func (m *Manager) StartS3Server(cfg S3Config) (string, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return "", fmt.Errorf("invalid port: %d", cfg.Port)
+	}
+	if (cfg.AccessKey == "") != (cfg.SecretKey == "") {
+		return "", fmt.Errorf("access key and secret key must both be set, or both left empty for anonymous access")
 	}
 	absRoot, err := filepath.Abs(cfg.RootDir)
 	if err != nil {
@@ -51,6 +56,11 @@ func (m *Manager) StartS3Server(cfg S3Config) (string, error) {
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.log(ServiceS3, id, fmt.Sprintf("%s %s %s", r.RemoteAddr, r.Method, r.URL.RequestURI()))
+		if err := verifyS3RequestAuth(r, cfg); err != nil {
+			m.log(ServiceS3, id, fmt.Sprintf("auth rejected for %s: %v", r.RemoteAddr, err))
+			writeXMLError(w, http.StatusForbidden, "AccessDenied", "access denied: "+err.Error())
+			return
+		}
 		m.handleS3(w, r, id, absRoot, cfg)
 	})
 
@@ -76,7 +86,12 @@ func (m *Manager) StartS3Server(cfg S3Config) (string, error) {
 		m.state(ServiceS3, id, true)
 		m.log(ServiceS3, id, "S3-compatible server started (experimental)")
 		m.log(ServiceS3, id, fmt.Sprintf("Object store root: %s", absRoot))
-		m.log(ServiceS3, id, "Client hint: mc --no-sign-request alias set local http://<host>:/ ; mc ls local")
+		if cfg.s3AuthEnabled() {
+			m.log(ServiceS3, id, "Request signing: SigV4 required (access key configured)")
+		} else {
+			m.log(ServiceS3, id, "WARNING: no access key configured — every request is unauthenticated")
+			m.log(ServiceS3, id, "Client hint: mc --no-sign-request alias set local http://<host>:/ ; mc ls local")
+		}
 		err := srv.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			m.log(ServiceS3, id, fmt.Sprintf("S3 server error: %v", err))
@@ -100,18 +115,22 @@ func bucketDir(root, bucket string) (string, error) {
 }
 
 // objectPath returns the on-disk path bd/<key>, i.e. one object file inside
-// the bucket directory bd. The key is validated to stay inside bd.
+// the bucket directory bd. The key is validated to stay inside bd, lexically
+// and after resolving symlinks.
 func objectPath(bd, key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("empty object key")
 	}
 	clean := filepath.Clean(filepath.FromSlash(key))
 	obj := filepath.Join(bd, clean)
-	rel, err := filepath.Rel(bd, obj)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !lexicallyWithinRoot(bd, obj) {
 		return "", fmt.Errorf("invalid object key")
 	}
-	return obj, nil
+	resolved, ok := resolveWithinRoot(bd, obj)
+	if !ok {
+		return "", fmt.Errorf("invalid object key")
+	}
+	return resolved, nil
 }
 
 func writeXMLError(w http.ResponseWriter, status int, code, message string) {
@@ -143,6 +162,12 @@ func (m *Manager) handleS3(w http.ResponseWriter, r *http.Request, id string, ro
 
 	bd, berr := bucketDir(root, bucket)
 	if berr != nil {
+		writeXMLError(w, http.StatusBadRequest, "InvalidBucketName", "invalid bucket name")
+		return
+	}
+	// A bucket whose directory is a symlink to somewhere else would hand the
+	// rest of the disk to the client; require it to resolve inside the root.
+	if _, ok := resolveWithinRoot(root, bd); !ok {
 		writeXMLError(w, http.StatusBadRequest, "InvalidBucketName", "invalid bucket name")
 		return
 	}
@@ -258,11 +283,12 @@ func (m *Manager) handleListObjects(w http.ResponseWriter, r *http.Request, bd, 
 
 	searchDir := filepath.Join(bd, filepath.FromSlash(prefix))
 	searchDir = filepath.Clean(searchDir)
-	rel, rerr := filepath.Rel(bd, searchDir)
-	if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	resolvedSearch, ok := resolveWithinRoot(bd, searchDir)
+	if !ok {
 		writeXMLError(w, http.StatusBadRequest, "InvalidPrefix", "invalid prefix")
 		return
 	}
+	searchDir = resolvedSearch
 
 	type content struct {
 		Key          string `xml:"Key"`
@@ -283,6 +309,12 @@ func (m *Manager) handleListObjects(w http.ResponseWriter, r *http.Request, bd, 
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, e := range entries {
+			// Skip symlinks: a link inside the bucket must not expose the size
+			// or existence of a file outside it (reads go through objectPath,
+			// which rejects them anyway).
+			if e.Type()&os.ModeSymlink != 0 {
+				continue
+			}
 			relPath, _ := filepath.Rel(bd, filepath.Join(dir, e.Name()))
 			s3Key := filepath.ToSlash(relPath)
 			if e.IsDir() {
