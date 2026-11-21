@@ -52,12 +52,16 @@
           <!-- Root directory (file-sharing services only) -->
           <div v-if="['http','tftp','ssh','ftp','s3'].includes(selected)" class="form-row">
             <label class="form-label">{{ t('localsrv.rootDir') }}</label>
+            <!-- The local services publish this directory on every interface.
+                 It must come from the native picker so the Go side can verify
+                 it was a user-chosen path (same grant model as every other
+                 file binding); a typed-in path is intentionally not accepted. -->
             <el-input
               :model-value="rootDirOf(selected)"
               :placeholder="t('localsrv.rootDir')"
               :disabled="isRunning(selected)"
+              readonly
               class="path-input"
-              @update:model-value="(v: string) => setRootDir(selected, v)"
             />
             <button class="browse-btn" :disabled="isRunning(selected)" @click="browseDir(selected)">
               <el-icon><FolderOpen /></el-icon>
