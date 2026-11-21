@@ -766,12 +766,13 @@ describe('windows duplicate-commit guard', () => {
     expect(core._inputEvent).toBe(originalInputEvent)
   })
 
-  it('is a no-op on platforms without a dedicated patch', () => {
+  it('does not install the Windows structural patch on Linux', () => {
     vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
     const { core, originalCalls } = makeWindowsCore()
     const originalInputEvent = core._inputEvent
     const disposable = installImeCompatibilityPatch(term(core))
 
+    // Linux gets the commit guard, never the Windows state/input patch.
     expect(core._inputEvent).toBe(originalInputEvent)
     core._inputEvent.call(core, insertText('a'))
     expect(originalCalls).toHaveLength(1)
@@ -780,15 +781,18 @@ describe('windows duplicate-commit guard', () => {
   })
 })
 
-// Windows/WebView2: the CompositionHelper deferred send and the insertText
-// input event can both deliver one IME commit. Verified against the event
-// traces in xtermjs/xterm.js#5734 and the WeChat IME report in
+// Windows/WebView2 + Linux/Chromium: the CompositionHelper deferred send and
+// the insertText input event can both deliver one IME commit. Verified against
+// the event traces in xtermjs/xterm.js#5734 and the WeChat IME report in
 // binaricat/Netcatty#3421 (voice transcribe: interim + final + tail).
+//
+// On Windows the guard must be installed on top of the structural patch. The
+// merge that retargeted main's guard to Linux only (053b4ce7) is the
+// regression this suite pins down: the Windows UA cases below used to be
+// skipped, and duplicate commits came back.
 describe('installImeCompatibilityPatch composition commit guard', () => {
   beforeEach(() => {
-    // The commit guard is the non-macOS, non-Windows (Linux/Chromium) path —
-    // Windows is handled by installWindowsImePatch.
-    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
+    vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0' })
   })
 
   const compositionEnd = (core: FakeCore) => {
@@ -800,6 +804,33 @@ describe('installImeCompatibilityPatch composition commit guard', () => {
   }
 
   it('delivers one copy when both commit paths send the same text', () => {
+    const { core, sent, send } = makeFakeCore()
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    compositionEnd(core)
+    send('你好')
+    send('你好')
+
+    expect(sent).toEqual(['你好'])
+  })
+
+  it('keeps the Windows structural patch installed alongside the guard', () => {
+    const { core, sent, send } = makeFakeCore()
+    const originalInputEvent = core._inputEvent
+    installImeCompatibilityPatch(fakeTerminal(core))
+
+    // The structural patch still owns xterm's input/composition state...
+    expect(core._inputEvent).not.toBe(originalInputEvent)
+    expect(core._compositionHelper._resetWindowsIme).toBeTypeOf('function')
+    // ...and the guard still collapses a payload both paths deliver.
+    compositionEnd(core)
+    send('世界')
+    send('世界')
+    expect(sent).toEqual(['世界'])
+  })
+
+  it('also guards Linux/Chromium webviews', () => {
+    vi.stubGlobal('navigator', { userAgent: 'X11; Linux x86_64' })
     const { core, sent, send } = makeFakeCore()
     installImeCompatibilityPatch(fakeTerminal(core))
 
@@ -886,12 +917,15 @@ describe('installImeCompatibilityPatch composition commit guard', () => {
     const { core, sent, send } = makeFakeCore()
     const service = core.coreService as { triggerDataEvent: unknown }
     const original = service.triggerDataEvent
+    const originalInputEvent = core._inputEvent
     const disposable = installImeCompatibilityPatch(fakeTerminal(core))
 
     expect(service.triggerDataEvent).not.toBe(original)
+    expect(core._inputEvent).not.toBe(originalInputEvent)
     disposable.dispose()
 
     expect(service.triggerDataEvent).toBe(original)
+    expect(core._inputEvent).toBe(originalInputEvent)
     expect(core.textarea.listeners.size).toBe(0)
     send('你好')
     send('你好')

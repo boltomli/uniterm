@@ -235,3 +235,4 @@ task run:server
 | 日期 | 问题 | 分支/来源 | 处理 |
 | --- | --- | --- | --- |
 | 2026-11-19 | Windows 启动即 `0xc00000fd`（double subclass → 自递归 → 爆栈） | `8573ff56`（本分支的 IME 钩子）+ `e83e0d88`（`main` 的懒解析钩子）在 `sec/high-fixes` 里叠加 | 已修复：`installWndProcSubclass` 单次安装 + 自递归保险 + `TestSubclassMainWindowInstallsOnlyOnce`；`main` 单独不受影响，但建议同步守卫 |
+| 2026-11-21 | Windows IME 一次提交打两遍（“双打”回归） | `4a56e25b`（`main` 的 IME commit guard）在 `053b4ce7` 合并冲突里被改成只在 Linux 安装；Windows 只剩结构化 patch | 已修复：Windows 同时安装结构化 patch + guard（`combineDisposables`），并恢复 Windows UA 测试；详见 `2026-11-21-ime-double-commit.md` |

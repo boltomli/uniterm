@@ -24,7 +24,14 @@ import type { Terminal } from '@xterm/xterm'
 // `keydown.key`. That needs intercepting before keypress — see
 // deliverKeyTextRewrite below.
 //
-// Windows (WebView2) is covered by installWindowsImePatch — see its comment.
+// Windows (WebView2) runs installWindowsImePatch (structural state repair)
+// together with the CompositionHelper commit guard (exactly-once delivery).
+// The two layers are independent: the patch owns xterm's transient state and
+// the deferred composition reads, the guard sits on the single send funnel
+// (coreService.triggerDataEvent) and collapses a payload that two paths
+// deliver in one commit. Keep both — see §5 of
+// docs/dev/2026-11-21-ime-double-commit.md for why dropping the guard on
+// Windows (merge 053b4ce7) brought the double commit back.
 
 export interface Disposable {
   dispose(): void
@@ -109,6 +116,15 @@ const PRINTABLE_TEXT = /^[^\p{C}]+$/u
 const LATE_EVENT_WINDOW_MS = 250
 const noopDisposable: Disposable = { dispose() {} }
 
+// One disposable for a stack of independent patches.
+function combineDisposables(...disposables: Disposable[]): Disposable {
+  return {
+    dispose() {
+      for (const disposable of disposables) disposable.dispose()
+    },
+  }
+}
+
 function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad/.test(navigator.userAgent)
 }
@@ -171,15 +187,23 @@ export function installImeCompatibilityPatch(terminal: Terminal): Disposable {
   if (isMacPlatform()) {
     return installMacImePatch(terminal)
   }
-  if (/Windows/i.test(navigator.userAgent)) {
-    return installWindowsImePatch(terminal)
-  }
-  // Linux/Chromium webviews: xterm's CompositionHelper can deliver one IME
-  // commit through two independent paths (see installCompositionCommitGuard).
   const core = (terminal as TerminalWithCore)._core
   const helper = core?._compositionHelper
-  if (!core || !helper) return noopDisposable
-  return installCompositionCommitGuard(core, helper) ?? noopDisposable
+  // Chromium (Windows/WebView2 and Linux webviews) can deliver one IME commit
+  // through xterm's deferred composition read and its insertText input path.
+  // The guard is the final, ordering-independent safety net: whichever path
+  // wins, the second copy of the same payload is dropped. On Windows it must
+  // run alongside the structural patch, not instead of it — the merge that
+  // replaced it on Windows is what brought the double commit back.
+  const commitGuard =
+    core && helper ? installCompositionCommitGuard(core, helper) : null
+  if (/Windows/i.test(navigator.userAgent)) {
+    const windowsPatch = installWindowsImePatch(terminal)
+    return commitGuard
+      ? combineDisposables(windowsPatch, commitGuard)
+      : windowsPatch
+  }
+  return commitGuard ?? noopDisposable
 }
 
 const NON_ASCII = /[^\x00-\x7F]/

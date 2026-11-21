@@ -37,6 +37,7 @@
 - FTP: a deadline leaked onto the control connection made every command fail with i/o timeout ~30 s after the first data operation; the deadline is now cleared.
 - Windows: Alt+F4, taskbar close and taskkill now run the full shutdown path — window state is saved and sessions / tunnels are torn down; the process no longer lingers and blocks relaunching.
 - Windows: the IME candidate window keeps caret anchoring after switching between apps — it no longer jumps to a corner of the screen, in text fields as well as inside the terminal.
+- Windows: an IME commit no longer reaches the terminal twice — the merge that retargeted the Chromium commit guard to Linux only is fixed, so the Windows structural patch and the commit guard now run together.
 - Windows: when the app is launched by double-click (no stderr handle), panic and fatal-error output is captured to `panic-stderr.log` next to the main log instead of being lost, so crash reports carry the stack trace.
 - Windows: heavy focus toggling on remote-desktop sessions no longer aborts with "fatal error: too many callback functions" (syscall callback leak in the main-window HWND lookup).
 - RDP: connections no longer intermittently fail with "unexpected server message" while the remote is mid-logon.
