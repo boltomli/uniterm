@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -51,11 +52,18 @@ func (m *Manager) StartSSHServer(cfg SSHConfig) (string, error) {
 	}
 
 	sshCfg := &ssh.ServerConfig{
+		// Bound the attempts per connection (the ssh package default is 6) and
+		// rate-limit failures so one connection cannot replay a password list.
+		MaxAuthTries: 3,
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			// Require an exact credential match.
-			if c.User() == cfg.Username && string(pass) == cfg.Password {
+			// Constant-time comparison: a byte-by-byte early return leaks a
+			// password prefix through handshake timing.
+			userOK := subtle.ConstantTimeCompare([]byte(c.User()), []byte(cfg.Username)) == 1
+			passOK := subtle.ConstantTimeCompare(pass, []byte(cfg.Password)) == 1
+			if userOK && passOK {
 				return nil, nil
 			}
+			time.Sleep(300 * time.Millisecond)
 			return nil, fmt.Errorf("authentication failed")
 		},
 	}
@@ -413,7 +421,9 @@ func (h sftpFileCmd) Filecmd(r *sftp.Request) error {
 	case "Mkdir":
 		return os.MkdirAll(p, 0o755)
 	case "Rmdir", "Remove":
-		return os.RemoveAll(p)
+		// os.Remove, not os.RemoveAll: an SFTP "rmdir" must not silently wipe
+		// a non-empty directory tree inside the shared root.
+		return os.Remove(p)
 	case "Rename":
 		tp, err := sftpResolve(h.root, r.Target)
 		if err != nil {
@@ -464,21 +474,19 @@ func (h sftpFileList) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 
 // sftpResolve resolves a client-supplied path against rootDir and rejects any
 // path that escapes the root directory. Accessing the root itself (rel == ".")
-// is allowed; anything escaping above root ("..") is denied.
+// is allowed; anything escaping above root ("..") is denied, both lexically
+// and after symlink resolution.
 func sftpResolve(rootDir, clientPath string) (string, error) {
 	cleanPath := filepath.Clean("/" + strings.TrimPrefix(clientPath, "/"))
 	full := filepath.Join(rootDir, cleanPath)
-	rel, err := filepath.Rel(rootDir, full)
-	if err != nil {
+	if !lexicallyWithinRoot(rootDir, full) {
 		return "", fmt.Errorf("access denied: path outside root")
 	}
-	if rel == "." {
-		return full, nil
-	}
-	if strings.HasPrefix(rel, "..") {
+	resolved, ok := resolveWithinRoot(rootDir, full)
+	if !ok {
 		return "", fmt.Errorf("access denied: path outside root")
 	}
-	return full, nil
+	return resolved, nil
 }
 
 // fileListerAt adapts a single FileInfo or a slice of FileInfos to the

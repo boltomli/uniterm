@@ -3,12 +3,22 @@ package localsrv
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
+
+// telnetMaxPasswordAttempts bounds how many times one connection may retry the
+// password before it is closed.
+const telnetMaxPasswordAttempts = 3
+
+// telnetAuthFailureDelay slows a rejected password so a dictionary replay over
+// one connection is cheap to stop and expensive to run.
+const telnetAuthFailureDelay = 500 * time.Millisecond
 
 // StartTelnetServer starts a Telnet server listening on the given TCP port.
 // Each incoming connection is authenticated with cfg.Password, then bridged
@@ -110,15 +120,27 @@ func (m *Manager) handleTelnetConn(ctx context.Context, id string, conn net.Conn
 		// the password back. (Clients that keep a local echo anyway would
 		// otherwise double-display each keystroke AND leak it as cleartext.)
 		_, _ = conn.Write([]byte{0xFF, 0xFB, 0x01}) // IAC WILL ECHO
-		fmt.Fprint(conn, "Password: ")
-		line, err := readTelnetLine(conn, nil, &wantServerEcho, &sgaAccepted)
-		if err != nil {
-			m.log(ServiceTelnet, id, fmt.Sprintf("auth failed from %s: %v", addr, err))
-			return
-		}
-		if strings.TrimSpace(line) != cfg.Password {
+		authenticated := false
+		for attempt := 1; attempt <= telnetMaxPasswordAttempts; attempt++ {
+			fmt.Fprint(conn, "Password: ")
+			line, err := readTelnetLine(conn, nil, &wantServerEcho, &sgaAccepted)
+			if err != nil {
+				m.log(ServiceTelnet, id, fmt.Sprintf("auth failed from %s: %v", addr, err))
+				return
+			}
+			// Constant-time compare: a short-circuit comparison leaks a
+			// password prefix through response timing.
+			if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(line)), []byte(cfg.Password)) == 1 {
+				authenticated = true
+				break
+			}
 			fmt.Fprint(conn, "\r\nAccess denied.\r\n")
-			m.log(ServiceTelnet, id, fmt.Sprintf("auth denied for %s", addr))
+			m.log(ServiceTelnet, id, fmt.Sprintf("auth denied for %s (attempt %d)", addr, attempt))
+			if attempt < telnetMaxPasswordAttempts {
+				time.Sleep(telnetAuthFailureDelay)
+			}
+		}
+		if !authenticated {
 			return
 		}
 		fmt.Fprint(conn, "\r\n")
