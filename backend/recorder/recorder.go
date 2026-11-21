@@ -95,7 +95,10 @@ func (r *Recorder) recordsDir() (string, error) {
 		} else {
 			r.baseDir = filepath.Join(home, "Documents", "uniTerm", "records")
 		}
-		r.dirErr = os.MkdirAll(r.baseDir, 0755)
+		r.dirErr = os.MkdirAll(r.baseDir, 0o700)
+		// Recordings can contain secrets typed or printed on screen; keep the
+		// directory private even if an older build created it 0755.
+		_ = os.Chmod(r.baseDir, 0o700)
 	})
 	return r.baseDir, r.dirErr
 }
@@ -134,10 +137,15 @@ func (r *Recorder) StartRecording(sessionID string, width, height int, title str
 	fileName := fmt.Sprintf("%s_%d.cast", sanitizeFileName(sessionID), ts)
 	path := filepath.Join(dir, fileName)
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 0o600: a recording replays everything the terminal displayed, which
+	// routinely includes credentials and tokens. Other local users must not be
+	// able to read it (the session output logs use the same mode).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("recorder: create file: %w", err)
 	}
+	// Tighten files created by older builds (0644) when they are reused.
+	_ = f.Chmod(0o600)
 
 	header := castHeader{
 		Version:   2,
