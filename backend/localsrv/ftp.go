@@ -3,6 +3,7 @@ package localsrv
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
@@ -14,12 +15,28 @@ import (
 	"time"
 )
 
+// ftpMaxLoginAttempts bounds the failed USER/PASS attempts one control
+// connection may make before the server drops it. Together with the small
+// delay on every failure this keeps an unauthenticated peer from replaying a
+// password dictionary over one connection.
+const ftpMaxLoginAttempts = 5
+
+// ftpLoginFailureDelay slows down each rejected credential. It blocks only
+// this connection's goroutine, so it never affects other clients.
+const ftpLoginFailureDelay = 300 * time.Millisecond
+
 // StartFTPServer starts an FTP server serving rootDir on the given port.
 // Authentication is by username/password; when anonymous is true, any login
-// is accepted. Returns the server id.
+// is accepted. When anonymous access is off, a username and password are
+// required — an unauthenticated FTP server on a LAN-reachable port would let
+// anyone read, overwrite and delete the whole root directory. Returns the
+// server id.
 func (m *Manager) StartFTPServer(cfg FTPConfig) (string, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return "", fmt.Errorf("invalid port: %d", cfg.Port)
+	}
+	if !cfg.Anonymous && (strings.TrimSpace(cfg.Username) == "" || cfg.Password == "") {
+		return "", fmt.Errorf("username and password are required unless anonymous access is enabled")
 	}
 	absRoot, err := filepath.Abs(cfg.RootDir)
 	if err != nil {
@@ -69,15 +86,17 @@ func (m *Manager) StartFTPServer(cfg FTPConfig) (string, error) {
 
 // ftpSession holds the per-connection state.
 type ftpSession struct {
-	rootDir    string
-	cwd        string
-	authed     bool
-	username   string
-	dataConn   net.Conn
-	pasvLn     net.Listener
-	pasvAddr   string
+	rootDir      string
+	cwd          string
+	authed       bool
+	username     string
+	peerIP       string // control-connection peer; PORT/EPRT must match it
+	failedAuth   int    // consecutive rejected USER/PASS attempts
+	dataConn     net.Conn
+	pasvLn       net.Listener
+	pasvAddr     string
 	transferType string // "A" (ASCII) or "I" (binary)
-	renameFrom string
+	renameFrom   string
 }
 
 // handleFTPConn serves one FTP control connection.
@@ -85,9 +104,14 @@ func (m *Manager) handleFTPConn(ctx context.Context, id string, conn net.Conn, r
 	remote := conn.RemoteAddr().String()
 	m.log(ServiceFTP, id, fmt.Sprintf("FTP connection from %s", remote))
 
+	peerIP := ""
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		peerIP = host
+	}
 	sess := &ftpSession{
 		rootDir:      rootDir,
 		cwd:          "/",
+		peerIP:       peerIP,
 		transferType: "I",
 	}
 	defer sess.closeData()
@@ -144,7 +168,24 @@ func (m *Manager) handleFTPConn(ctx context.Context, id string, conn net.Conn, r
 			arg = parts[1]
 		}
 
-		m.log(ServiceFTP, id, fmt.Sprintf("%s -> %s %s", remote, cmd, arg))
+		// Never write the password into the event feed / UI log.
+		loggedArg := arg
+		if cmd == "PASS" {
+			loggedArg = "***"
+		}
+		m.log(ServiceFTP, id, fmt.Sprintf("%s -> %s %s", remote, cmd, loggedArg))
+
+		// Authentication gate: until USER/PASS succeeded, only the login and
+		// capability-negotiation commands may run. Without this, CWD/RETR/
+		// STOR/DELE/… served the root directory to any unauthenticated peer.
+		if !sess.authed {
+			switch cmd {
+			case "USER", "PASS", "QUIT", "SYST", "FEAT", "OPTS", "NOOP", "TYPE":
+			default:
+				writeFTP("530 Please login with USER and PASS")
+				continue
+			}
+		}
 
 		switch cmd {
 		case "USER":
@@ -159,13 +200,21 @@ func (m *Manager) handleFTPConn(ctx context.Context, id string, conn net.Conn, r
 		case "PASS":
 			if sess.authed {
 				writeFTP("230 Already logged in")
-			} else if cfg.Username == "" && cfg.Password == "" {
+			} else if cfg.Anonymous {
 				sess.authed = true
 				writeFTP("230 Login successful")
-			} else if sess.username == cfg.Username && arg == cfg.Password {
+			} else if ftpSecretEqual(sess.username, cfg.Username) && ftpSecretEqual(arg, cfg.Password) {
 				sess.authed = true
+				sess.failedAuth = 0
 				writeFTP("230 Login successful")
 			} else {
+				sess.failedAuth++
+				if sess.failedAuth >= ftpMaxLoginAttempts {
+					writeFTP("421 Too many failed login attempts")
+					m.log(ServiceFTP, id, fmt.Sprintf("too many failed logins from %s, closing", remote))
+					return
+				}
+				time.Sleep(ftpLoginFailureDelay)
 				writeFTP("530 Login incorrect")
 			}
 
@@ -223,7 +272,15 @@ func (m *Manager) handleFTPConn(ctx context.Context, id string, conn net.Conn, r
 			m.ftpDele(sess, arg, writeFTP)
 
 		case "RNFR":
-			sess.renameFrom = m.ftpPath(sess, arg)
+			// The source must be validated here as well: RNTO only checks the
+			// destination, so an unchecked RNFR would let a client rename (and
+			// therefore exfiltrate) any file on the disk into the shared root.
+			from := m.ftpPath(sess, arg)
+			if !ftpSafe(sess.rootDir, from) {
+				writeFTP("550 Access denied")
+				break
+			}
+			sess.renameFrom = from
 			writeFTP("350 Ready for RNTO")
 
 		case "RNTO":
@@ -241,8 +298,11 @@ func (m *Manager) handleFTPConn(ctx context.Context, id string, conn net.Conn, r
 		case "EPSV":
 			m.ftpEpsv(ctx, sess, writeFTP)
 
-		case "PORT", "EPRT":
-			m.ftpPort(sess, arg, writeFTP)
+		case "PORT":
+			m.ftpPort(sess, arg, false, writeFTP)
+
+		case "EPRT":
+			m.ftpPort(sess, arg, true, writeFTP)
 
 		case "LIST", "NLST":
 			m.ftpList(ctx, id, sess, arg, cmd == "NLST", writeFTP)
@@ -271,16 +331,14 @@ func (m *Manager) ftpPath(sess *ftpSession, p string) string {
 
 // ftpSafe checks that a resolved path stays within rootDir. Accessing the
 // root itself (rel == ".") is allowed; anything escaping above root ("..")
-// is denied.
+// is denied. The check is repeated after resolving symlinks so a link inside
+// the shared directory cannot point at the rest of the disk.
 func ftpSafe(rootDir, full string) bool {
-	rel, err := filepath.Rel(rootDir, full)
-	if err != nil {
+	if !lexicallyWithinRoot(rootDir, full) {
 		return false
 	}
-	if rel == "." {
-		return true
-	}
-	return !strings.HasPrefix(rel, "..")
+	_, ok := resolveWithinRoot(rootDir, full)
+	return ok
 }
 
 func (m *Manager) ftpCwd(sess *ftpSession, arg string, writeFTP func(string, ...any)) {
@@ -362,6 +420,10 @@ func (m *Manager) ftpRnto(sess *ftpSession, arg string, writeFTP func(string, ..
 
 func (m *Manager) ftpSize(sess *ftpSession, arg string, writeFTP func(string, ...any)) {
 	full := m.ftpPath(sess, arg)
+	if !ftpSafe(sess.rootDir, full) {
+		writeFTP("550 Access denied")
+		return
+	}
 	fi, err := os.Stat(full)
 	if err != nil {
 		writeFTP("550 File not found")
@@ -372,6 +434,10 @@ func (m *Manager) ftpSize(sess *ftpSession, arg string, writeFTP func(string, ..
 
 func (m *Manager) ftpMdtm(sess *ftpSession, arg string, writeFTP func(string, ...any)) {
 	full := m.ftpPath(sess, arg)
+	if !ftpSafe(sess.rootDir, full) {
+		writeFTP("550 Access denied")
+		return
+	}
 	fi, err := os.Stat(full)
 	if err != nil {
 		writeFTP("550 File not found")
@@ -409,25 +475,82 @@ func (m *Manager) ftpEpsv(ctx context.Context, sess *ftpSession, writeFTP func(s
 	writeFTP("229 Entering Extended Passive Mode (|||%d|)", addr.Port)
 }
 
-// ftpPort handles active-mode PORT command (client opens data port).
-func (m *Manager) ftpPort(sess *ftpSession, arg string, writeFTP func(string, ...any)) {
+// ftpPort handles active-mode PORT/EPRT (the client asks the server to dial
+// back to an address of its choosing). The address MUST be the control
+// connection's peer: without that check the server becomes a bounce/proxy
+// primitive that can scan and reach any host on the LAN as well as ship local
+// files to an arbitrary destination.
+func (m *Manager) ftpPort(sess *ftpSession, arg string, eprt bool, writeFTP func(string, ...any)) {
 	sess.closeData()
-	parts := strings.Split(arg, ",")
-	if len(parts) != 6 {
-		writeFTP("501 Invalid PORT argument")
+
+	var ip, portStr string
+	if eprt {
+		// RFC 2428: |<af>|<addr>|<port>|
+		fields := strings.Split(arg, "|")
+		if len(fields) < 4 {
+			writeFTP("501 Invalid EPRT argument")
+			return
+		}
+		switch fields[1] {
+		case "1", "2":
+		default:
+			writeFTP("522 Network protocol not supported, use (1,2)")
+			return
+		}
+		ip, portStr = fields[2], fields[3]
+	} else {
+		// RFC 959: h1,h2,h3,h4,p1,p2
+		parts := strings.Split(arg, ",")
+		if len(parts) != 6 {
+			writeFTP("501 Invalid PORT argument")
+			return
+		}
+		ip = strings.Join(parts[:4], ".")
+		p1, err1 := strconv.Atoi(parts[4])
+		p2, err2 := strconv.Atoi(parts[5])
+		if err1 != nil || err2 != nil || p1 < 0 || p1 > 255 || p2 < 0 || p2 > 255 {
+			writeFTP("501 Invalid PORT argument")
+			return
+		}
+		portStr = strconv.Itoa(p1*256 + p2)
+	}
+
+	port, perr := strconv.Atoi(portStr)
+	if perr != nil || port <= 0 || port > 65535 {
+		writeFTP("501 Invalid data port")
 		return
 	}
-	ip := strings.Join(parts[:4], ".")
-	p1, _ := strconv.Atoi(parts[4])
-	p2, _ := strconv.Atoi(parts[5])
-	port := p1*256 + p2
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), 5*time.Second)
+	if !ftpSameHost(ip, sess.peerIP) {
+		m.log(ServiceFTP, "", fmt.Sprintf("rejected PORT/EPRT to %s (control peer %s)", ip, sess.peerIP))
+		writeFTP("501 PORT address does not match the control connection")
+		return
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, portStr), 5*time.Second)
 	if err != nil {
 		writeFTP("425 Can't open data connection")
 		return
 	}
 	sess.dataConn = conn
 	writeFTP("200 PORT command successful")
+}
+
+// ftpSecretEqual compares two credentials in constant time (the length is
+// still observable, which is inherent to FTP's wire format).
+func ftpSecretEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// ftpSameHost reports whether the data-connection address equals the control
+// connection's peer address.
+func ftpSameHost(ip, peerIP string) bool {
+	if ip == "" || peerIP == "" {
+		return false
+	}
+	a, b := net.ParseIP(ip), net.ParseIP(peerIP)
+	if a != nil && b != nil {
+		return a.Equal(b)
+	}
+	return strings.EqualFold(ip, peerIP)
 }
 
 // openData establishes the data connection (passive accept or active).
