@@ -458,8 +458,9 @@ const hasServerHost = computed(() => !!serverHost.value)
 // exactly the tabs where the submenu disappears (broadcast stays top-level
 // and is not counted here).
 const hasTabMenu = computed(() => {
-  if (props.tab.type !== 'start' && props.tab.type !== 'settings' && props.tab.type !== 'netscan') return true
-  return props.tab.type === 'terminal' || hasLocatableConnection.value || hasServerHost.value
+  // The fixed start/settings/netscan pages have no rename/lock/copy-host
+  // siblings, so the submenu is hidden for exactly those types.
+  return props.tab.type !== 'start' && props.tab.type !== 'settings' && props.tab.type !== 'netscan'
 })
 
 function onDragStart(e: DragEvent) {

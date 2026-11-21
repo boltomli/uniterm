@@ -147,8 +147,8 @@
           <MenuItem @click="openCategory('commands')">{{ t('settings.commands') }}</MenuItem>
           <!-- MCP features have no mobile backend; the built-in MCP server is
                also hidden in server deployments (binds a worker loopback port). -->
-          <MenuItem v-if="!isMobilePlatform(platform.value)" @click="openCategory('mcp-client')">{{ t('settings.mcpClient') }}</MenuItem>
-          <MenuItem v-if="!isMobilePlatform(platform.value) && !webServerMode" @click="openCategory('mcp')">{{ t('settings.mcp') }}</MenuItem>
+          <MenuItem v-if="!isMobilePlatform(platform)" @click="openCategory('mcp-client')">{{ t('settings.mcpClient') }}</MenuItem>
+          <MenuItem v-if="!isMobilePlatform(platform) && !webServerMode" @click="openCategory('mcp')">{{ t('settings.mcp') }}</MenuItem>
         </MenuSubmenu>
 
         <MenuDivider />

@@ -49,9 +49,9 @@
           @contextmenu.prevent="onSchemaContextMenu($event, row.unitName)"
         >
           <span class="db-arrow" @click.stop="onToggleSchema(row.unitName)">
-            <component :is="expandedSchemas.has(row.unitName) ? ChevronDown : ChevronRight" :size="'0.75rem'" />
+            <component :is="expandedSchemas.has(row.unitName) ? ChevronDown : ChevronRight" :size="lucideSize('0.75rem')" />
           </span>
-          <FolderOpen class="table-icon" :size="'0.875rem'" />
+          <FolderOpen class="table-icon" :size="lucideSize('0.875rem')" />
           <span class="db-name">{{ row.schema }}</span>
         </div>
         <div

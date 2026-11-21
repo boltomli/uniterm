@@ -237,14 +237,14 @@
             @click="onReplyCopy"
             :title="t('ai.copyMarkdown')"
           >
-            <el-icon><Check v-if="replyCopied" :size="'0.8125rem'" /><Copy v-else :size="'0.8125rem'" /></el-icon>
+            <el-icon><Check v-if="replyCopied" :size="lucideSize('0.8125rem')" /><Copy v-else :size="lucideSize('0.8125rem')" /></el-icon>
           </button>
           <template v-if="message.role === 'user'">
             <button class="msg-action-btn" :class="{ active: userCopied }" @click="onUserCopy" :title="t('ai.copy')">
-              <el-icon><Check v-if="userCopied" :size="'0.8125rem'" /><Copy v-else :size="'0.8125rem'" /></el-icon>
+              <el-icon><Check v-if="userCopied" :size="lucideSize('0.8125rem')" /><Copy v-else :size="lucideSize('0.8125rem')" /></el-icon>
             </button>
             <button class="msg-action-btn danger" @click="onUserDelete" :title="t('common.delete')">
-              <el-icon><Trash2 :size="'0.8125rem'" /></el-icon>
+              <el-icon><Trash2 :size="lucideSize('0.8125rem')" /></el-icon>
             </button>
           </template>
         </div>

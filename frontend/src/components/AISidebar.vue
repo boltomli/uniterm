@@ -82,8 +82,8 @@
           <span v-if="liveThinkingElapsed" class="thinking-panel-time">{{ liveThinkingElapsed }}</span>
           <span v-if="liveCompactionElapsed" class="thinking-panel-time">{{ liveCompactionElapsed }}</span>
           <template v-if="thinkingToggleVisible">
-            <ChevronDown v-if="!aiStore.thinkingExpanded" :size="'0.75rem'" class="thinking-chevron" />
-            <ChevronUp v-else :size="'0.75rem'" class="thinking-chevron" />
+            <ChevronDown v-if="!aiStore.thinkingExpanded" :size="lucideSize('0.75rem')" class="thinking-chevron" />
+            <ChevronUp v-else :size="lucideSize('0.75rem')" class="thinking-chevron" />
           </template>
         </div>
         <div v-if="thinkingToggleVisible && aiStore.thinkingExpanded" ref="thinkingPanelRef" class="thinking-panel">
@@ -251,7 +251,7 @@
               class="ghost-btn hash-btn add-btn"
               :title="t('ai.addMenu')"
               :disabled="lockedPanels.length === 0 && !currentIsTerminal"
-              @click.stop="addMenuRef?.toggle($event.currentTarget)"
+              @click.stop="addMenuRef?.toggle($event.currentTarget as HTMLElement)"
             >
               <Plus :size="14" />
             </button>

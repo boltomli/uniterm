@@ -8,7 +8,7 @@
       <div class="notes-toolbar">
         <el-input v-model="search" class="notes-search" :placeholder="t('notes.searchPlaceholder')" clearable />
         <button class="sb-icon-btn" :title="t('notes.newNote')" @click="onNew">
-          <Plus :size="'0.9375rem'" />
+          <Plus :size="lucideSize('0.9375rem')" />
         </button>
       </div>
       <div v-if="categories.length > 0" class="notes-filter">
@@ -30,7 +30,7 @@
           :title="catRowCollapsed ? t('notes.expandCategories') : t('notes.collapseCategories')"
           @click="setCatRowCollapsed(!catRowCollapsed)"
         >
-          <el-icon><component :is="catRowCollapsed ? ChevronRight : ChevronDown" :size="'0.75rem'" /></el-icon>
+          <el-icon><component :is="catRowCollapsed ? ChevronRight : ChevronDown" :size="lucideSize('0.75rem')" /></el-icon>
         </button>
         <!-- Category chip context menu: rename / delete (delete keeps the
              notes, they become uncategorized) -->
@@ -96,14 +96,14 @@
           <el-input v-model="editTitle" class="title-input" :placeholder="t('notes.titlePlaceholder')" />
           <div class="view-toggle">
             <button class="toggle-btn" :class="{ active: !previewing }" :title="t('notes.edit')" @click="setPreviewMode(false)">
-              <Pencil :size="'0.75rem'" />
+              <Pencil :size="lucideSize('0.75rem')" />
             </button>
             <button class="toggle-btn" :class="{ active: previewing }" :title="t('notes.preview')" @click="setPreviewMode(true)">
-              <Eye :size="'0.75rem'" />
+              <Eye :size="lucideSize('0.75rem')" />
             </button>
           </div>
           <button class="sb-icon-btn danger" :title="t('notes.delete')" @click="onDelete(current)">
-            <Trash2 :size="'0.875rem'" />
+            <Trash2 :size="lucideSize('0.875rem')" />
           </button>
         </div>
         <SyntaxEditor v-show="!previewing" v-model="editContent" class="notes-editor" lang="md" compact />
@@ -119,19 +119,19 @@
     <div v-else-if="viewMode === 'editor' && current" class="notes-editor-col">
       <div class="editor-header narrow-header">
         <button class="sb-icon-btn" :title="t('sidebar.collapse')" @click="backToList">
-          <ArrowLeft :size="'0.9375rem'" />
+          <ArrowLeft :size="lucideSize('0.9375rem')" />
         </button>
         <el-input v-model="editTitle" class="title-input" :placeholder="t('notes.titlePlaceholder')" />
         <div class="view-toggle">
           <button class="toggle-btn" :class="{ active: !previewing }" :title="t('notes.edit')" @click="setPreviewMode(false)">
-            <Pencil :size="'0.75rem'" />
+            <Pencil :size="lucideSize('0.75rem')" />
           </button>
           <button class="toggle-btn" :class="{ active: previewing }" :title="t('notes.preview')" @click="setPreviewMode(true)">
-            <Eye :size="'0.75rem'" />
+            <Eye :size="lucideSize('0.75rem')" />
           </button>
         </div>
         <button class="sb-icon-btn danger" :title="t('notes.delete')" @click="onDelete(current)">
-          <Trash2 :size="'0.875rem'" />
+          <Trash2 :size="lucideSize('0.875rem')" />
         </button>
       </div>
       <SyntaxEditor v-show="!previewing" v-model="editContent" class="notes-editor" lang="md" compact />
@@ -168,6 +168,7 @@ import { useUiLayoutStore } from '../stores/uiLayoutStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { sanitizeRenderedHtml, renderMarkdownHtml, codeCopyTarget, COPY_ICON, CHECK_ICON } from '../utils/markdown'
 import { writeClipboard } from '../composables/useClipboardWrite'
+import { lucideSize } from '../utils/lucideSize'
 import SyntaxEditor from './SyntaxEditor.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'

@@ -337,7 +337,7 @@ async function listRemoteInterfaces() {
   if (!connId) return
   loadingRemoteInterfaces.value = true
   try {
-    const list = await withSshAuthRetry(connId, (cred) => ListRemoteInterfaces(connId, cred.user, cred.password))
+    const list = await withSshAuthRetry<CaptureInterface[]>(connId, (cred) => ListRemoteInterfaces(connId, cred.user, cred.password))
     // 合成一个 “any（所有网卡）” 选项放最前，供 tcpdump -i any 使用。
     remoteInterfaces.value = [{ name: 'any', ip: '', hardwareAddr: '', flags: '' }, ...(list || [])]
     if (selectedRemoteIface.value && !remoteInterfaces.value.some(ri => ri.name === selectedRemoteIface.value)) {
