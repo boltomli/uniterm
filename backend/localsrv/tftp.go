@@ -35,6 +35,12 @@ const (
 
 const tftpDefaultBlockSize = 512
 
+// tftpMaxBlockSize is the RFC 2348 ceiling for the blksize option. The value
+// is attacker-supplied in the RRQ/WRQ packet and is used to size the transfer
+// buffer, so it must never be trusted — an unclamped value is a remote
+// crash/OOM primitive (makeslice on a huge or overflowing length).
+const tftpMaxBlockSize = 65464
+
 // StartTFTPServer starts a TFTP server serving rootDir on the given UDP port.
 // blockSize overrides the default 512-byte block size when the client requests
 // option negotiation. Returns the server id.
@@ -45,6 +51,9 @@ func (m *Manager) StartTFTPServer(cfg TFTPConfig) (string, error) {
 	blockSize := cfg.BlockSize
 	if blockSize <= 0 {
 		blockSize = tftpDefaultBlockSize
+	}
+	if blockSize > tftpMaxBlockSize {
+		blockSize = tftpMaxBlockSize
 	}
 	absRoot, err := filepath.Abs(cfg.RootDir)
 	if err != nil {
@@ -94,7 +103,19 @@ func (m *Manager) StartTFTPServer(cfg TFTPConfig) (string, error) {
 			op := binary.BigEndian.Uint16(buf[:2])
 			switch op {
 			case tftpOpRRQ, tftpOpWRQ:
-				go m.handleTFTPRequest(ctx, id, addr, buf[:n], absRoot, blockSize)
+				// Copy: buf is reused by the read loop, and the handler now owns
+				// the packet for the whole transfer.
+				pkt := append([]byte(nil), buf[:n]...)
+				go func() {
+					// A malformed request must never take the whole app down:
+					// panics in a bare goroutine are not recovered by net/http.
+					defer func() {
+						if rec := recover(); rec != nil {
+							m.log(ServiceTFTP, id, fmt.Sprintf("TFTP request handler panic: %v", rec))
+						}
+					}()
+					m.handleTFTPRequest(ctx, id, addr, pkt, absRoot, blockSize)
+				}()
 			default:
 				// Ignore unexpected packets on the main socket.
 			}
@@ -136,11 +157,12 @@ func (m *Manager) handleTFTPRequest(ctx context.Context, id string, clientAddr n
 	}
 
 	// Sanitize: prevent path traversal. Only paths that escape above the root
-	// ("..") are denied; dotfiles inside the root are allowed.
+	// ("..") are denied; dotfiles inside the root are allowed. The check is
+	// repeated after symlink resolution so a link inside the root cannot point
+	// at the rest of the disk.
 	cleanName := filepath.Clean("/" + filename)
-	fullPath := filepath.Join(rootDir, cleanName)
-	rel, err := filepath.Rel(rootDir, fullPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	fullPath, ok := resolveWithinRoot(rootDir, filepath.Join(rootDir, cleanName))
+	if !ok {
 		m.sendTFTPError(clientAddr, tftpErrAccess, "access denied")
 		return
 	}
@@ -154,12 +176,19 @@ func (m *Manager) handleTFTPRequest(ctx context.Context, id string, clientAddr n
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	// Negotiate block size via OACK if the client sent "blksize".
+	// Negotiate block size via OACK if the client sent "blksize". The value is
+	// attacker-controlled: clamp it to the RFC 2348 range before it is ever
+	// used as an allocation size.
 	negotiatedBlock := blockSize
 	if bs, ok := options["blksize"]; ok {
 		var requested int
-		fmt.Sscanf(bs, "%d", &requested)
-		if requested > 0 {
+		if n, err := fmt.Sscanf(bs, "%d", &requested); n == 1 && err == nil && requested > 0 {
+			if requested > tftpMaxBlockSize {
+				requested = tftpMaxBlockSize
+			}
+			if requested < 8 {
+				requested = 8
+			}
 			negotiatedBlock = requested
 		}
 		// Send OACK with the negotiated block size.
