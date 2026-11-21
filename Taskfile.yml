@@ -27,6 +27,17 @@ includes:
   android: ./build/android/Taskfile.yml
 
 tasks:
+  setup:hooks:
+    summary: Install the versioned git hooks (frontend typecheck on commit)
+    cmds:
+      - sh scripts/install-git-hooks.sh
+
+  check:frontend:types:
+    summary: Type-check the frontend (strict vue-tsc, zero errors)
+    dir: frontend
+    cmds:
+      - npm run typecheck
+
   build:
     summary: Builds the application
     cmds:

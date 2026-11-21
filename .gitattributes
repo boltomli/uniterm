@@ -5,3 +5,8 @@ go.sum text eol=lf
 
 # Vendored npm tarballs must never get line-ending or diff treatment
 *.tgz binary
+
+# Versioned git hooks and installer scripts are executed directly by sh;
+# CRLF would turn the shebang into a bad interpreter on Windows/Unix.
+.githooks/* text eol=lf
+*.sh text eol=lf

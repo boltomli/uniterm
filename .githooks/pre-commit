@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+# Refuse a commit that would add TypeScript errors to the frontend.
+#
+# The frontend is strict TypeScript (`strict`, `noUnusedLocals`,
+# `noUnusedParameters`) and merges are a known source of type regressions:
+# Wails-generated bindings are gitignored, so a clean merge can leave imports
+# resolving to `any` (see src/types/bindings.d.ts) or an icon `size` prop
+# typed as `number` while the template passes a CSS length string. Vite's
+# `npm run build` does NOT type-check, so without this hook those errors only
+# show up later in someone's editor.
+#
+# Install with:  sh scripts/install-git-hooks.sh
+# Bypass once:   git commit --no-verify   (use only for unrelated emergencies)
+set -eu
+
+# Only pay the vue-tsc cost when the commit touches the frontend. Backend-only
+# commits cannot introduce frontend type errors.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^frontend/'; then
+  exit 0
+fi
+
+if [ ! -d frontend/node_modules ]; then
+  echo "pre-commit: frontend/node_modules is missing; run 'cd frontend && npm install' first." >&2
+  exit 1
+fi
+
+echo "pre-commit: type-checking frontend (npm run typecheck)..."
+(
+  cd frontend
+  npm run typecheck
+) || {
+  echo "pre-commit: frontend type errors found; fix them or pass --no-verify only for an unrelated emergency." >&2
+  exit 1
+}

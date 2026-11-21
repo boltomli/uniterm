@@ -35,6 +35,7 @@ Feature suggestions are also welcome via [GitHub Issues](https://github.com/ys-l
 git clone https://github.com/ys-ll/uniterm.git
 cd uniTerm
 cd frontend && npm install && cd ..
+sh scripts/install-git-hooks.sh   # pre-commit typecheck (one-time per clone)
 wails dev                   # Development mode
 wails build                 # Production build
 ```
@@ -58,6 +59,7 @@ wails build                 # Production build
 - Write commit messages in **English**
 - Keep commits focused and atomic
 - Use the present tense ("Add feature", not "Added feature")
+- **Frontend type errors must be zero.** `npm run build` (Vite) does not type-check, so every commit touching `frontend/` is gated by the hook installed with `sh scripts/install-git-hooks.sh`; CI re-runs the same check. Run it manually any time with `cd frontend && npm run typecheck` (or `wails3 task check:frontend:types`). Do not weaken `strict`, `noUnusedLocals`/`noUnusedParameters`, or the generated-binding type shims to make an error disappear.
 
 ## Pull Request Guidelines
 
@@ -160,6 +162,7 @@ Thanks again for contributing! ❤️
 git clone https://github.com/ys-ll/uniterm.git
 cd uniTerm
 cd frontend && npm install && cd ..
+sh scripts/install-git-hooks.sh   # 安装 pre-commit 类型检查（每个 clone 一次）
 wails dev                   # 开发模式
 wails build                 # 生产构建
 ```
@@ -183,6 +186,7 @@ wails build                 # 生产构建
 - 提交信息使用 **英文**
 - 保持每次提交聚焦且原子化
 - 使用现在时态（"Add feature" 而非 "Added feature"）
+- **前端类型错误必须为零。** `npm run build`（Vite）不做类型检查，因此凡是改动 `frontend/` 的提交，都会由 `sh scripts/install-git-hooks.sh` 安装的 pre-commit 钩子执行 `npm run typecheck` 拦截；CI 会再跑一遍同一检查。也可以随时手动执行 `cd frontend && npm run typecheck`（或 `wails3 task check:frontend:types`）。不允许通过放宽 `strict`、`noUnusedLocals`/`noUnusedParameters` 或生成绑定的类型声明来“消除”错误。
 
 ## PR 规范
 

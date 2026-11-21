@@ -1,0 +1,66 @@
+name: Frontend typecheck
+
+# Required check: strict TypeScript must stay at zero errors. `npm run build`
+# is Vite only and does not type-check, so without this job a merge can ship
+# type regressions (the 2026-11-19 merge did exactly that: icon `size` props,
+# a ref used as `platform.value` in a template, a stale tab-type comparison,
+# and an untyped spread). See docs/dev/2026-11-21-ime-double-commit.md and the
+# pre-commit hook in .githooks/pre-commit.
+
+on:
+  push:
+    branches: [main, 'sec/**', 'fix/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux dependencies
+        run: |
+          # wails3's CLI (and the gtk3-tagged platform layer) links against
+          # WebKit2GTK 4.1 and GTK3 during `go install`.
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Install Wails CLI (wails3)
+        shell: bash
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          # Bindings are gitignored and must be generated before typecheck.
+          # ubuntu-24.04 ships WebKitGTK 4.1, not 6.0, so use the gtk3 tag the
+          # build workflow also uses on Linux.
+          go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+
+      - name: Generate bindings
+        shell: bash
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          wails3 generate bindings -clean=true
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --prefer-offline
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
