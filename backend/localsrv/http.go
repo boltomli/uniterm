@@ -50,13 +50,8 @@ func (m *Manager) StartHTTPServer(cfg HTTPConfig) (string, error) {
 		m.log(ServiceHTTP, id, fmt.Sprintf("%s %s %s", r.RemoteAddr, r.Method, r.URL.Path))
 
 		cleanPath := filepath.Clean(r.URL.Path)
-		fullPath := filepath.Join(absRoot, cleanPath)
-
-		// Prevent path traversal outside the root directory. The root itself
-		// (rel == ".") and dotfiles inside the root are allowed; only paths
-		// escaping above the root ("..") are denied.
-		rel, err := filepath.Rel(absRoot, fullPath)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		fullPath, ok := resolveWithinRoot(absRoot, filepath.Join(absRoot, cleanPath))
+		if !ok {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -73,7 +68,8 @@ func (m *Manager) StartHTTPServer(cfg HTTPConfig) (string, error) {
 			// Directory browsing disabled: serve index.html when present
 			// so a static site still works, otherwise 404.
 			indexPath := filepath.Join(fullPath, "index.html")
-			if indexFi, indexErr := os.Stat(indexPath); indexErr == nil && !indexFi.IsDir() {
+			indexPath, indexOK := resolveWithinRoot(absRoot, indexPath)
+			if indexFi, indexErr := os.Stat(indexPath); indexOK && indexErr == nil && !indexFi.IsDir() {
 				// Redirect directory URLs to the trailing-slash form so
 				// relative links inside index.html resolve correctly.
 				if !strings.HasSuffix(r.URL.Path, "/") {
