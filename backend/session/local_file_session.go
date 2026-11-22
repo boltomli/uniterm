@@ -16,6 +16,7 @@ package session
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -273,7 +274,7 @@ func (s *LocalFileSession) Chmod(p string, mode os.FileMode) error {
 // --- content read/write ---------------------------------------------------------
 
 func (s *LocalFileSession) GetContent(remotePath string) ([]byte, error) {
-	return os.ReadFile(s.remoteOSPath(s.resolveRemote(remotePath)))
+	return readFileCapped(s.remoteOSPath(s.resolveRemote(remotePath)), maxEditorFileBytes)
 }
 
 func (s *LocalFileSession) PutContent(remotePath string, content []byte) error {
@@ -319,6 +320,42 @@ func (s *LocalFileSession) Get(remotePath, localPath string, recursive bool) (st
 // Put copies from the local pane to the remote pane's filesystem.
 func (s *LocalFileSession) Put(localPath, remotePath string, recursive bool) (string, error) {
 	return s.startLocalTransfer("upload", s.resolveLocal(localPath), s.resolveRemote(remotePath))
+}
+
+// maxEditorFileBytes bounds a file the in-app editor will load. The file
+// panel also serves as a download manager, so opening a multi-GB disk image
+// must fail fast instead of materializing it (and its base64 IPC copy) in
+// memory. Remote sessions have the same exposure; this cap covers the local
+// filesystem sessions, where the size is known before reading.
+const maxEditorFileBytes int64 = 16 << 20
+
+// readFileCapped reads a regular file, refusing anything larger than limit.
+// The pre-read Stat gives the friendly size error; the LimitReader keeps the
+// cap even if the file grows between the two calls.
+func readFileCapped(p string, limit int64) ([]byte, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if fi.IsDir() {
+		return nil, fmt.Errorf("is a directory: %s", p)
+	}
+	if fi.Size() > limit {
+		return nil, fmt.Errorf("file is too large to open (%d bytes; limit %d) — use download instead", fi.Size(), limit)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("file grew past the %d-byte editor limit while opening; use download instead", limit)
+	}
+	return data, nil
 }
 
 // startLocalTransfer copies a file or tree between the two local views. A

@@ -232,3 +232,25 @@ func TestLocalFileSessionFilesystemRootGuard(t *testing.T) {
 		t.Fatalf("dir still exists: %v", err)
 	}
 }
+
+// readFileCapped keeps the editor from materializing an arbitrarily large
+// local file (and its base64 IPC copy) in memory.
+func TestLocalFileReadFileCapped(t *testing.T) {
+	dir := t.TempDir()
+	small := filepath.Join(dir, "small.txt")
+	if err := os.WriteFile(small, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readFileCapped(small, 16); err != nil || string(got) != "hello" {
+		t.Fatalf("readFileCapped(small) = %q, %v", got, err)
+	}
+	if _, err := readFileCapped(small, 4); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("readFileCapped over limit = %v, want too-large error", err)
+	}
+	if _, err := readFileCapped(dir, 16); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("readFileCapped(dir) = %v, want directory error", err)
+	}
+	if _, err := readFileCapped(filepath.Join(dir, "missing"), 16); err == nil {
+		t.Fatal("readFileCapped(missing) succeeded")
+	}
+}

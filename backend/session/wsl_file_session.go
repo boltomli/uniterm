@@ -606,9 +606,9 @@ func (s *WSLFileSession) uncPathResolved(remotePath string) string {
 func (s *WSLFileSession) GetContent(remotePath string) ([]byte, error) {
 	p := s.resolveRemote(remotePath)
 	if local, ok := wslMountLocalPath(p); ok {
-		return os.ReadFile(local)
+		return readFileCapped(local, maxEditorFileBytes)
 	}
-	b, err := os.ReadFile(s.uncPathResolved(p))
+	b, err := readFileCapped(s.uncPathResolved(p), maxEditorFileBytes)
 	if isShareTraverseErr(err) {
 		return nil, fmt.Errorf("cannot open %s: symbolic links cannot be traversed through the WSL file share", remotePath)
 	}
