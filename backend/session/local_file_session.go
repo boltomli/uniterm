@@ -541,36 +541,53 @@ func joinEntry(dir, name string) string {
 }
 
 // dirSize sums the bytes of a file or all files under a directory tree.
+//
+// Symlinks follow copyTree's semantics: copyLocalSymlink recreates a link
+// when the OS allows it and otherwise materialises the target, so the size
+// must include the target's content. Lstat (not ReadDir's Info, which reports
+// a directory link as a non-directory and silently counted only the link)
+// decides the kind, and EvalSymlinks keys the cycle check so a link loop is
+// visited once per branch instead of walking forever.
 func dirSize(p string) (int64, error) {
-	fi, err := os.Stat(p)
+	return dirSizeWalk(p, nil)
+}
+
+func dirSizeWalk(p string, seen []string) (int64, error) {
+	fi, err := os.Lstat(p)
 	if err != nil {
 		return 0, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		resolved, rerr := filepath.EvalSymlinks(p)
+		if rerr != nil {
+			return 0, nil // broken link: nothing to copy
+		}
+		key := comparableLocalCopyPath(resolved)
+		for _, s := range seen {
+			if s == key {
+				return 0, nil // link loop: copyLocalSymlink rejects it too
+			}
+		}
+		return dirSizeWalk(resolved, append(seen, key))
 	}
 	if !fi.IsDir() {
 		return fi.Size(), nil
 	}
-	var total int64
-	var walk func(string) error
-	walk = func(dir string) error {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if ei, err := e.Info(); err == nil && !ei.IsDir() {
-				total += ei.Size()
-				continue
-			}
-			full := joinEntry(dir, e.Name())
-			if fi2, err := os.Stat(full); err == nil && fi2.IsDir() {
-				if err := walk(full); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+	entries, err := os.ReadDir(p)
+	if err != nil {
+		return 0, err
 	}
-	return total, walk(p)
+	var total int64
+	for _, e := range entries {
+		size, err := dirSizeWalk(joinEntry(p, e.Name()), seen)
+		if err != nil {
+			// Unreadable child: skip it rather than fail the estimate; the
+			// copy reports the real error when it reaches the same entry.
+			continue
+		}
+		total += size
+	}
+	return total, nil
 }
 
 // copyPath copies a file or directory tree. task, if non-nil, receives byte

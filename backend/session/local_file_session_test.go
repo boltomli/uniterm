@@ -254,3 +254,42 @@ func TestLocalFileReadFileCapped(t *testing.T) {
 		t.Fatal("readFileCapped(missing) succeeded")
 	}
 }
+
+// dirSize must count a symlinked directory's content (copyTree materialises
+// it) and must terminate on a link loop.
+func TestLocalFileDirSizeSymlinks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "b.txt"), []byte("1234567"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err := dirSize(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 5+7+7 {
+		t.Fatalf("dirSize = %d, want 19 (file + subtree + symlinked subtree)", got)
+	}
+
+	// Loop: sub/loop -> root. The walk must stop at the resolved root instead
+	// of growing the path until ENAMETOOLONG.
+	if err := os.Symlink(root, filepath.Join(sub, "loop")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err = dirSize(root)
+	if err != nil {
+		t.Fatalf("dirSize with loop: %v", err)
+	}
+	if got <= 0 {
+		t.Fatalf("dirSize with loop = %d, want a bounded positive size", got)
+	}
+}
