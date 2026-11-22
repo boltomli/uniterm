@@ -1,5 +1,8 @@
 # 数据库功能回归复盘与修复指引（供后续排期）
 
+> **历史文档**：本文冻结于 2026-10-25 基线；其中 SQL Server 的 OFFSET/FETCH 结论已被
+> `ROW_NUMBER()` 分页取代，PostgreSQL 驱动已改为 pgx。阅读前先看 `docs/dev/README.md`。
+>
 > 日期：2026-10-25
 > 审查基线：`9f61eb7a`（分支 `sec/high-fixes`）
 > 范围：`backend/database/*`、`backend/session/database_session.go`、`app_database.go`、

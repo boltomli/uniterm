@@ -1,6 +1,11 @@
 # Store 持久层统一改造记录
 
 > 日期：2026-10-12　范围：`backend/store/*`　关联：issue #1115 前置工作（F-103/F-105、STORE-02/03/05/06/09/10/12/19/21）
+>
+> **状态更新（2026-11-22）：已全部实施。** 文中“未实施/遗留”的条目已由后续提交解决：
+> `credentials.decryptFailed` + `Status.DecryptFailed` 已接入启动重新解锁流程；
+> `clearEncryptedFields` 已改走 `store.ClearAllSecretFields`，`storeHasSecrets` 的
+> 文件列表由 `store.SecretFiles` manifest 经 `SetSecretFiles` 注入，一致性测试见 `app_test.go`。
 
 ## 一、起点：#1115 审计出的 4 个问题及修复方案
 
@@ -8,13 +13,13 @@
 
 - **原因**：主密码派生出的钥匙会缓存一份在电脑系统里。程序启动时看到缓存里有钥匙就直接用，不检查它能不能打开数据。新电脑上如果残留着一把旧钥匙（跟迁移来的数据不匹配），程序就"假装解锁成功"——不弹输入密码的框，但每条密码都解不开，界面就空白了，还什么都不提示。
 - **修法**：解密失败时，程序记一个"钥匙不对"的状态。启动时看到这个状态，重新弹出输入主密码的窗口。用户输入正确的主密码 → 用数据文件里自带的盐重新算出正确钥匙 → 数据正常显示，旧缓存也被覆盖。输错了就再弹一次，直到输对。
-- **状态**：方案已定，未实施。详细计划见 `~/.claude/plans/linear-wobbling-wall.md`（`credentials.ErrAuthFailed` 哨兵 + `decryptFailed` 状态 + 前端重新弹解锁框 + 迁移提示文案）。
+- **状态**：已实施。`credentials.Store` 在解密失败时置 `decryptFailed`（`Status.DecryptFailed` 返回给前端），启动时重新弹主密码框；实现位于 `backend/credentials/store.go`，前端解锁流程见 `App.vue`/`credentialStore`。
 
 ### 问题 2：点"重置"后，无法重新设置主密码
 
 - **原因**："加密字段清单"在代码里被手抄了三份：真正加密用一份、重置时清空用一份、设置前检测用一份。重置用的是那份抄漏了的——只清了密码字段，漏了私钥字段（keyContent）和 ai.json，导致重置后目录里还残留密文。检测一看"还有密文"就拒绝设置新主密码，卡死。
 - **修法**：把清单只写一份，重置清空和设置前检测都读这一份；再加一个测试，专门检查"加密逻辑写的字段"和"清单写的字段"完全一致，以后谁改了加密字段但忘改清单，测试直接报错。
-- **状态**：清单已落地（`filestore.go` 的 `SecretFiles` manifest，加密/解密/清空/检测已从它派生）；**遗留**：app.go 的 `clearEncryptedFields` 与 `credentials.storeHasSecrets` 尚未改接 manifest，一致性测试未加。
+- **状态**：已落地（`filestore.go` 的 `SecretFiles` manifest）。`app.go` 的 `clearEncryptedFields` 现调用 `store.ClearAllSecretFields`，`credentials.storeHasSecrets` 读取 `SetSecretFiles` 注入的 manifest 文件名；`app_test.go` 的一致性测试遍历 `store.SecretFiles`，覆盖 reset 后无残留密文与全量可解密。
 
 ### 问题 3：导出的文件在别的电脑导入时提示"解密失败"
 
@@ -122,6 +127,7 @@
 
 ## 六、遗留/后续
 
-- credential reset（app.go `clearEncryptedFields`）与 `credentials.storeHasSecrets` 尚未改接 manifest（reset 时 keyContent 清不掉的 bug 属于 #1115 后续项）。
-- 解密失败→重新弹解锁窗口的方案见 `~/.claude/plans/linear-wobbling-wall.md`。
-- `lastSavedHash` 只在进程内有效；跨进程的 skip 依赖 Load 播种（本改造已完成）。
+- `keyPath` 型外部私钥文件仍以路径引用导出，换机依赖本机文件（内嵌涉及把私钥写进导出文件的安全权衡，单独做）。
+- identities 本身不进入 `.utm` 导出（导出时已物化到连接）。
+- 本文其余“遗留”条目均已在 2026-10-12 之后解决，见文首状态更新。
+

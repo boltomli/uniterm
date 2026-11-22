@@ -1,5 +1,8 @@
 # 终端输出性能 / 正确性审查清单与修复指引（供后续修复使用）
 
+> **历史文档**：本文冻结于 2026-10-24 基线，行号与状态不再更新；阅读前先看 `docs/dev/README.md`
+> 的“2026-11-22 合并后的已知变更”。
+>
 > 日期：2026-10-24
 > 审查基线：`ab5227e3`（分支 `sec/high-fixes`，含 `41489267 perf(terminal): cut the per-chunk cost of high-volume output`）
 > 范围：终端输出全链路 —— 后端 readLoop → `emitLoop` → Wails 事件传输 → 前端 `session:data` 订阅者 → xterm 解析 / 渲染 / 高亮 / gutter；附带少量安全低危项。
