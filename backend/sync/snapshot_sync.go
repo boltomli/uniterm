@@ -173,23 +173,20 @@ func (s *SyncService) pushSnapshot(b SnapshotBackend, files []string, encKey []b
 	}
 	// The manifest describes the whole snapshot, not just this device's
 	// scope: keep every remote entry this push does not cover (the blob
-	// itself is untouched on the remote). The recorded anchor covers the
-	// carried-over entries too, so the next sync's remoteHash comparison
-	// stays consistent with this manifest's shape.
+	// itself is untouched on the remote). Only `hashes` (the uploaded
+	// manifest) grows; `agg` stays the aggregate over this device's scope,
+	// matching the scoped comparison syncSnapshot performs next time —
+	// recording the carried entries in the anchor made an idle sync report a
+	// conflict forever (and "use local" could never converge).
 	if refHashes != nil {
 		scoped := make(map[string]bool, len(files))
 		for _, name := range files {
 			scoped[name] = true
 		}
-		carried := false
 		for name, h := range refHashes {
 			if !scoped[name] && hashes[name] == "" {
 				hashes[name] = h
-				carried = true
 			}
-		}
-		if carried {
-			agg = aggregateHash(hashes)
 		}
 	}
 

@@ -929,3 +929,66 @@ func TestSnapshotNeverPersistedScopedFileStillConflicts(t *testing.T) {
 		t.Fatalf("local edit overwritten by conflict round: %q", data)
 	}
 }
+
+// TestSnapshotNarrowPushStaysIdle: when a narrow-scope device pushes, the
+// manifest carries the other devices' out-of-scope entries over, but the
+// recorded anchor must stay the aggregate over this device's scope —
+// syncSnapshot compares with scopedAggregateHash. Recording the carried
+// entries in the anchor made every later idle sync report a conflict (and
+// "use local" at that conflict could never converge).
+func TestSnapshotNarrowPushStaysIdle(t *testing.T) {
+	s, dataDir, key := newSnapshotTestService(t, []string{"connections.json"})
+	writeConfig(t, dataDir, "connections.json", `{"v":1}`)
+	b := newFakeSnapshotBackend()
+
+	// Bootstrap: narrow-scope push records a scoped anchor.
+	if _, err := s.syncSnapshot(b); err != nil {
+		t.Fatal(err)
+	}
+
+	// A wide-scope device publishes skills.json on top.
+	staging := b.staging(t)
+	srcDir := t.TempDir()
+	writeConfig(t, srcDir, "connections.json", `{"v":1}`)
+	writeConfig(t, srcDir, "skills.json", `{"skills":[{"name":"demo"}]}`)
+	wide := []string{"connections.json", "skills.json"}
+	if err := EncryptConfigFilesScoped(wide, srcDir, staging, key); err != nil {
+		t.Fatal(err)
+	}
+	hashes, _, err := canonicalDirHashes(wide, srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.StoreAll(staging, []byte("0123456789abcdef"), SnapshotInfo{
+		Version: "v2", UpdatedAt: time.Now().UTC(), FileHashes: hashes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Over the shared scope nothing moved: the wide-scope entry is invisible.
+	if res, err := s.syncSnapshot(b); err != nil || res.Direction != SyncNone {
+		t.Fatalf("no-op sync = %v, %v; want none", res, err)
+	}
+
+	// Narrow device edits its file and pushes (carries skills.json over).
+	writeConfig(t, dataDir, "connections.json", `{"v":2}`)
+	res, err := s.syncSnapshot(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Direction != SyncPush {
+		t.Fatalf("direction = %v, want push", res.Direction)
+	}
+	if _, ok := b.manifest.FileHashes["skills.json"]; !ok {
+		t.Fatal("push dropped the out-of-scope remote entry")
+	}
+
+	// Nothing changed since the push: the next sync must be a no-op.
+	res, err = s.syncSnapshot(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Direction != SyncNone {
+		t.Fatalf("idle sync after narrow push = %v, want none (anchor must stay scoped)", res.Direction)
+	}
+}
