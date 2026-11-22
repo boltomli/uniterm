@@ -318,3 +318,17 @@ func TestLocalFileSessionDirectoryTransfer(t *testing.T) {
 		t.Fatalf("copied file = %q, %v", got, err)
 	}
 }
+
+func TestLocalFileHiddenAttributeProbeScope(t *testing.T) {
+	for _, dir := range []string{`C:\Users\x`, "/home/x"} {
+		if !hiddenAttributeProbeable(dir) {
+			t.Errorf("hiddenAttributeProbeable(%q) = false, want true", dir)
+		}
+	}
+	// UNC shares (WSL's 9P mount) must not pay one network probe per entry.
+	for _, dir := range []string{`\\wsl.localhost\Ubuntu\home`, "//wsl.localhost/Ubuntu/home", `\\server\share`} {
+		if hiddenAttributeProbeable(dir) {
+			t.Errorf("hiddenAttributeProbeable(%q) = true, want false", dir)
+		}
+	}
+}

@@ -156,7 +156,11 @@ func fileItemsFromDir(dir string, entries []os.DirEntry) []FileItem {
 			}
 		}
 		isHidden := e.Name() != "" && e.Name()[0] == '.'
-		if !isHidden {
+		// The Windows hidden attribute costs a GetFileAttributes syscall per
+		// entry; over a UNC share (wsl.localhost) that is a network round trip
+		// per file, and the Linux side has no Windows hidden attribute anyway.
+		// Dot-prefixed names stay the hidden convention there.
+		if !isHidden && hiddenAttributeProbeable(dir) {
 			isHidden = isPathHidden(full)
 		}
 		files = append(files, FileItem{
@@ -170,6 +174,13 @@ func fileItemsFromDir(dir string, entries []os.DirEntry) []FileItem {
 		})
 	}
 	return files
+}
+
+// hiddenAttributeProbeable reports whether isPathHidden is cheap enough to
+// call per entry for dir. UNC paths (WSL's //wsl.localhost, mapped shares)
+// turn every probe into a network round trip.
+func hiddenAttributeProbeable(dir string) bool {
+	return !strings.HasPrefix(dir, "//") && !strings.HasPrefix(dir, `\\`)
 }
 
 // --- listing -------------------------------------------------------------------
