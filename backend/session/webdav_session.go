@@ -73,11 +73,15 @@ func (s *WebDAVSession) Connect(config ConnectionConfig) error {
 	s.title = fmt.Sprintf("%s@%s", config.User, url)
 
 	client := gowebdav.NewClient(url, config.User, config.Password)
-	// Route through the configured proxy (SOCKS5/HTTP CONNECT); nil keeps the
-	// default transport.
+	// Clone the default transport so proxy routing keeps its dial/TLS/idle
+	// timeouts; a bare &http.Transport{} left none, and a proxy that accepts
+	// TCP but never forwards would hold a panel operation open forever.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
 	if config.Proxy != nil {
-		client.SetTransport(&http.Transport{Proxy: ProxyHTTPTransportProxy(config.Proxy)})
+		transport.Proxy = ProxyHTTPTransportProxy(config.Proxy)
 	}
+	client.SetTransport(transport)
 	if err := client.Connect(); err != nil {
 		s.setStatus(StatusError)
 		return fmt.Errorf("webdav connect: %w", err)
