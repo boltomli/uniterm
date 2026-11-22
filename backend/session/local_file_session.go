@@ -13,6 +13,14 @@ package session
 // on "/" -- work unchanged. Windows os calls accept forward slashes. The
 // remote root "/" lists the drives (Windows) as directory entries named
 // "C:" / "D:" / ... so navigation switches drives through ordinary entries.
+//
+// Trust boundary: this type is desktop mode's equivalent of the local
+// terminal -- the renderer can already start a local shell with the same
+// reach. Unlike the SFTP local pane (Sftp*Local bindings, gated by fileGrants
+// directory grants as fixed in F-04), local-file operations are deliberately
+// not grant-gated; the type is the user-opened "browse my machine" surface.
+// Server mode refuses it in App.CreateSession, and any future renderer source
+// that is not the local desktop must keep that refusal.
 
 import (
 	"fmt"

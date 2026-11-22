@@ -24,6 +24,16 @@ import (
 
 // SessionManager methods
 
+// isLocalSessionType reports the connection types that reach the host
+// filesystem or shell and must therefore never be creatable in server mode.
+func isLocalSessionType(sessionType string) bool {
+	switch sessionType {
+	case "local", "local-file", "wsl-file":
+		return true
+	}
+	return false
+}
+
 func (a *App) CreateSession(sessionType string, config session.ConnectionConfig) (*session.SessionInfo, error) {
 	if a.sessionManager == nil {
 		return nil, fmt.Errorf("session manager not initialized")
@@ -31,9 +41,10 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 	// Server build: a local shell runs as root inside the multi-tenant
 	// container and can read every tenant's data plus the gateway's own
 	// secrets (users.json, JWT key). Disabled unconditionally. local-file
-	// browses the same filesystem, so it is disabled for the same reason.
-	if serverMode && (sessionType == "local" || sessionType == "local-file") {
-		return nil, fmt.Errorf("local terminals are disabled in server mode")
+	// browses the same filesystem, and wsl-file reaches the host's distro
+	// through wsl.exe, so both are disabled for the same reason.
+	if serverMode && isLocalSessionType(sessionType) {
+		return nil, fmt.Errorf("local sessions are disabled in server mode")
 	}
 	log.Writef("[CreateSession] type=%s, dbType=%s, host=%s, port=%d, user=%s, dbName=%s, name=%s",
 		sessionType, config.DBType, config.Host, config.Port, config.User, config.DBName, config.Name)
