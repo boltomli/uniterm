@@ -97,6 +97,9 @@ func TestTOTPChallengeSelectionPrompt(t *testing.T) {
 	// code must go to manual input instead of being sent as the choice.
 	for _, question := range []string{
 		"1. OTP\n2. SMS\nOption> ",
+		"1) OTP\n2) SMS\n",
+		"1> ",
+		"Enter the number of your choice: ",
 		"Please select MFA method: ",
 		"Send code via sms or email: ",
 		"请选择MFA验证方式: ",

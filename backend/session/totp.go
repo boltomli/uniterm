@@ -23,7 +23,7 @@ var passwordPrompt = regexp.MustCompile(`(?i)\bpassword[0-9]*\b`)
 // send "1. OTP\n2. SMS\nOption> " (echo=true) before "[OTP Code]: ", so the
 // question merely mentions OTP as a menu entry — the generated code must never
 // be sent as its answer.
-var otpSelectionPrompt = regexp.MustCompile(`(?i)(\b(?:select|choose|choice|option|method|delivery|push)\b|send[ -]+(?:to|via)|\b(?:sms|email)[ -/]+(?:or[ -/]+)?(?:sms|email)\b|选择|请选择|选项|方式|方法|发送到|发送至)`)
+var otpSelectionPrompt = regexp.MustCompile(`(?im)(\b(?:select|choose|choice|option|method|delivery|push)\b|send[ -]+(?:to|via)|\b(?:sms|email)[ -/]+(?:or[ -/]+)?(?:sms|email)\b|\b(?:enter|type)[ -]+(?:the[ -]+)?(?:number|choice|option)\b|^[ \t]*(?:\[?\d+\]?[.):>])[ \t]|^[ \t]*[1-9][.)>][ \t]|选择|请选择|选项|方式|方法|发送到|发送至)`)
 
 func isPasswordPrompt(question string) bool {
 	return passwordPrompt.MatchString(question) && !otpPrompt.MatchString(question)
@@ -100,7 +100,13 @@ func automaticTOTPChallenge(config ConnectionConfig, fallback ssh.KeyboardIntera
 			// "[OTP Code]: " with echo=true, and a one-time code is
 			// short-lived enough that echoing it is harmless. Selection
 			// questions are excluded instead — they also echo and mention
-			// OTP, but expect a method choice, not the code.
+			// OTP, but expect a method choice, not the code. Note the
+			// echoed code lands in the scrollback and, when session
+			// logging is enabled, in the log file (0600): a 30 s TOTP is
+			// not a standing secret, but the log is not a place for it.
+			// The selection detector deliberately also matches bare
+			// numeric menus ("1. ", "1) ", "1> ") so an unrecognized
+			// menu never receives the code as its answer.
 			case otpPrompt.MatchString(question) && !isOTPSelectionPrompt(question) && !usedOTP:
 				code, err := totpCode(config.TOTPSecret, time.Now())
 				if err != nil {
