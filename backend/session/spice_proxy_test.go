@@ -8,8 +8,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func newSPICEProxyUnderTest(target string) proxyUnderTest { return NewSPICEProxy(target, nil) }
-
 // SPICE serves one WebSocket per channel (main/display/inputs/cursor), so the
 // VNC single-client-slot helper does not apply. These tests pin the SPICE
 // contract instead: token gate, per-channel relay, Stop closes everything.

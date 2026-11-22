@@ -14,7 +14,7 @@ const { mockSessionWrite, mockStartForeground, mockPollForeground, mockInterrupt
   return { mockSessionWrite, mockStartForeground, mockPollForeground, mockInterruptForeground, mockCaptureScreen, mockSendKey, mockStartForegroundCapture }
 })
 
-// ---- mock wailsjs modules ----
+// ---- mock the Wails runtime and generated bindings ----
 import { Events } from '@wailsio/runtime'
 vi.mock('@wailsio/runtime', () => ({
   Events: { On: vi.fn(() => () => {}), Off: vi.fn() },
