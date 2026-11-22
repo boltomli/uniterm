@@ -293,3 +293,28 @@ func TestLocalFileDirSizeSymlinks(t *testing.T) {
 		t.Fatalf("dirSize with loop = %d, want a bounded positive size", got)
 	}
 }
+
+// Directory transfers compute their total inside the worker (the binding
+// returns before the tree walk), so the completion path must still work.
+func TestLocalFileSessionDirectoryTransfer(t *testing.T) {
+	s, root := newTestLocalFileSession(t)
+	src := filepath.Join(root, "tree")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("bbbbb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.Put(src, "tree-copy", true)
+	if err != nil {
+		t.Fatalf("put dir: %v", err)
+	}
+	waitTaskDone(t, s, id)
+	got, err := os.ReadFile(filepath.Join(root, "tree-copy", "sub", "b.txt"))
+	if err != nil || string(got) != "bbbbb" {
+		t.Fatalf("copied file = %q, %v", got, err)
+	}
+}

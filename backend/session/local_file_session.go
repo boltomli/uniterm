@@ -358,6 +358,15 @@ func readFileCapped(p string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+// initialTransferTotal returns the known size of a transfer source without
+// walking a directory tree; see startLocalTransfer.
+func initialTransferTotal(src string) int64 {
+	if fi, err := os.Stat(src); err == nil && !fi.IsDir() {
+		return fi.Size()
+	}
+	return 0
+}
+
 // startLocalTransfer copies a file or tree between the two local views. A
 // Task is reported through the usual transfer events so the frontend
 // TransferPanel shows progress, pause, cancel and conflicts.
@@ -368,10 +377,12 @@ func (s *LocalFileSession) startLocalTransfer(tfType, local, remote string) (str
 		src = local
 		dst = s.remoteOSPath(remote)
 	}
-	total, err := dirSize(src)
-	if err != nil {
-		return "", err
-	}
+	// Size the source off the call path: dirSize walks the whole tree, and a
+	// big (or network-backed) tree would otherwise hold the Get/Put binding
+	// for seconds before the transfer even starts. A regular file answers
+	// with one Stat; a directory reports 0 and gets its total once the scan
+	// inside the worker finishes.
+	total := initialTransferTotal(src)
 	prefix := "ul"
 	if tfType == "download" {
 		prefix = "dl"
@@ -401,6 +412,13 @@ func (s *LocalFileSession) startLocalTransfer(tfType, local, remote string) (str
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
 		}()
+		// Directory totals are filled in here, not on the binding path.
+		if task.loadTotal() == 0 {
+			if size, serr := dirSize(src); serr == nil {
+				task.setTotal(size)
+				s.emitTransferProgressForced(task)
+			}
+		}
 		if err := copyPath(src, dst, task); err != nil {
 			if task.ctx.Err() != nil {
 				// cancelled mid-transfer: not a transfer error

@@ -676,10 +676,9 @@ func (s *WSLFileSession) startLocalTransfer(tfType, local, remote string) (strin
 		src = local
 		dst = remoteOS
 	}
-	total, err := dirSize(src)
-	if err != nil {
-		return "", err
-	}
+	// Same off-call-path sizing as LocalFileSession: a WSL UNC tree can be
+	// large and every entry is a network round trip.
+	total := initialTransferTotal(src)
 	prefix := "ul"
 	if tfType == "download" {
 		prefix = "dl"
@@ -709,6 +708,12 @@ func (s *WSLFileSession) startLocalTransfer(tfType, local, remote string) (strin
 			delete(s.transfers, task.ID)
 			s.mu.Unlock()
 		}()
+		if task.loadTotal() == 0 {
+			if size, serr := dirSize(src); serr == nil {
+				task.setTotal(size)
+				s.emitTransferProgressForced(task)
+			}
+		}
 		if err := copyPath(src, dst, task); err != nil {
 			if task.ctx.Err() != nil {
 				// cancelled mid-transfer: not a transfer error
