@@ -238,7 +238,7 @@ func (s *LocalFileSession) Symlink(target, linkPath string) error {
 
 func (s *LocalFileSession) Remove(p string, recursive bool) error {
 	target := s.remoteOSPath(s.resolveRemote(p))
-	if target == "" || target == "/" || filepath.VolumeName(target) == target {
+	if isFilesystemRoot(target) {
 		return fmt.Errorf("refusing to delete path: %s", p)
 	}
 	if recursive {
@@ -291,6 +291,11 @@ func (s *LocalFileSession) Copy(oldPath, newPath string) error {
 func (s *LocalFileSession) Move(oldPath, newPath string) error {
 	old := s.remoteOSPath(s.resolveRemote(oldPath))
 	new := s.remoteOSPath(s.resolveRemote(newPath))
+	// The copy+delete fallback below removes the source; never let it reach a
+	// volume/share root (the rename itself is allowed to fail harmlessly).
+	if isFilesystemRoot(old) {
+		return fmt.Errorf("refusing to move filesystem root: %s", oldPath)
+	}
 	if err := os.Rename(old, new); err == nil {
 		return nil
 	}
@@ -460,6 +465,30 @@ func (s *LocalFileSession) Disconnect() error {
 	return nil
 }
 
+// isFilesystemRoot reports whether target names a filesystem root: the bare
+// platform separator, a drive root ("C:", "C:/", "C:") or a UNC share root.
+// The earlier guard compared against "/" and compared VolumeName to the whole
+// path; on Windows the separator is "\" and VolumeName("C:\\") is "C:", so
+// both conditions let the root through and a recursive delete could wipe a
+// whole drive (os.RemoveAll("C:\\")).
+func isFilesystemRoot(target string) bool {
+	clean := filepath.Clean(target)
+	if clean == "" || clean == string(filepath.Separator) {
+		return true
+	}
+	vol := filepath.VolumeName(clean)
+	if vol == "" {
+		return false
+	}
+	sep := string(filepath.Separator)
+	if strings.EqualFold(clean, vol) || strings.EqualFold(clean, vol+sep) {
+		return true
+	}
+	// filepath.Clean("C:") is "C:." (the drive-relative current dir);
+	// deleting it would wipe that drive's working directory.
+	return strings.EqualFold(clean, vol+".")
+}
+
 // --- shared local copy helpers ---------------------------------------------------
 //
 // These back LocalFileSession's cross-pane transfers AND WSLFileSession's
@@ -564,4 +593,3 @@ func copyTree(src, dst string, task *TransferTask, seen []string) error {
 	}
 	return copyFile(src, dst, task)
 }
-

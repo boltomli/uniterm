@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,5 +192,43 @@ func TestLocalFileSessionTransferControls(t *testing.T) {
 	}
 	if err := s.DismissTransfer("nope"); err != nil {
 		t.Errorf("dismiss of unknown task should be a no-op: %v", err)
+	}
+}
+
+// A recursive Remove must never reach a filesystem root. The previous guard
+// compared against "/" and VolumeName(target)==target, which both miss the
+// Windows forms ("\\" and "C:\\"), so deleting the drive-picker row could run
+// os.RemoveAll on an entire volume.
+func TestLocalFileSessionFilesystemRootGuard(t *testing.T) {
+	roots := []string{string(filepath.Separator), "/", `\`, "//"}
+	if runtime.GOOS == "windows" {
+		// resolveRemote normalizes drive-relative inputs to "C:/", and the
+		// drive-picker row joins to "/C:"; all three forms end up as C:\.
+		roots = append(roots, `C:`, `C:\`, "C:/")
+	}
+	for _, p := range roots {
+		target := filepath.FromSlash(p)
+		if !isFilesystemRoot(target) {
+			t.Errorf("isFilesystemRoot(%q) = false, want true", target)
+		}
+	}
+
+	s, root := newTestLocalFileSession(t)
+	normal := []string{root, root + "/sub", filepath.Join(root, "sub", "file.txt")}
+	for _, p := range normal {
+		if isFilesystemRoot(p) {
+			t.Errorf("isFilesystemRoot(%q) = true, want false", p)
+		}
+	}
+	// Non-recursive removal of a real directory still works.
+	dir := filepath.Join(root, "gone")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("gone", false); err != nil {
+		t.Fatalf("Remove(normal dir): %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("dir still exists: %v", err)
 	}
 }
