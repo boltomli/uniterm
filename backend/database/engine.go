@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	mssql "github.com/microsoft/go-mssqldb"
-	"github.com/microsoft/go-mssqldb/msdsn"
 	"github.com/go-sql-driver/mysql"
 	pgx "github.com/jackc/pgx/v5"
 	pgxstdlib "github.com/jackc/pgx/v5/stdlib"
+	mssql "github.com/microsoft/go-mssqldb"
+	"github.com/microsoft/go-mssqldb/msdsn"
 	go_ora "github.com/sijms/go-ora/v2"
 )
 
@@ -75,6 +75,11 @@ func (f DialContextFunc) DialContext(ctx context.Context, network, addr string) 
 var (
 	dialSeqMu   sync.Mutex
 	dialSeqNext int
+	// mysqlDialNames maps a proxy identity key to the net name already
+	// registered with go-sql-driver. RegisterDialContext writes to a global
+	// map with no unregister, so registering one name per connect leaked an
+	// entry forever; one name per distinct proxy bounds the registry.
+	mysqlDialNames = map[string]string{}
 )
 
 // NewDBWithDial is NewDB with an optional outbound dial override. When set,
@@ -82,6 +87,13 @@ var (
 // drivers without an injection point (rqlite, sqlite — local or no hook)
 // ignore it and dial as usual.
 func NewDBWithDial(dbType, dsn string, dialFunc DialContextFunc) (*sql.DB, error) {
+	return NewDBWithDialKey(dbType, dsn, dialFunc, dsn)
+}
+
+// NewDBWithDialKey is NewDBWithDial with an explicit registry key for drivers
+// that resolve their dialer through a global registry (MySQL). Callers that
+// share a proxy should pass the same key so the registry stays bounded.
+func NewDBWithDialKey(dbType, dsn string, dialFunc DialContextFunc, registryKey string) (*sql.DB, error) {
 	if dialFunc == nil {
 		return openDB(dbType, dsn)
 	}
@@ -93,7 +105,7 @@ func NewDBWithDial(dbType, dsn string, dialFunc DialContextFunc) (*sql.DB, error
 	case "postgres":
 		db, err = openPostgresWithDial(dsn, dialFunc)
 	case "mysql":
-		db, err = openMySQLWithDial(dsn, dialFunc)
+		db, err = openMySQLWithDial(dsn, dialFunc, registryKey)
 	case "sqlserver":
 		db, err = openSQLServerWithDial(dsn, dialFunc)
 	case "oracle":
@@ -137,21 +149,25 @@ func openPostgresWithDial(dsn string, dialFunc DialContextFunc) (*sql.DB, error)
 	return pgxstdlib.OpenDB(*cfg), nil
 }
 
-func openMySQLWithDial(dsn string, dialFunc DialContextFunc) (*sql.DB, error) {
+func openMySQLWithDial(dsn string, dialFunc DialContextFunc, registryKey string) (*sql.DB, error) {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
-	// The driver resolves cfg.Net through a global registry; register a fresh
-	// unique name per connection so two sessions through different proxies
-	// never race on the same entry.
+	// The driver resolves cfg.Net through a global registry with no removal
+	// API, so register one name per proxy identity instead of one per
+	// connect: repeated connects through the same proxy reuse the entry.
 	dialSeqMu.Lock()
-	dialSeqNext++
-	netName := fmt.Sprintf("uniterm-proxy-%d", dialSeqNext)
+	netName, ok := mysqlDialNames[registryKey]
+	if !ok {
+		dialSeqNext++
+		netName = fmt.Sprintf("uniterm-proxy-%d", dialSeqNext)
+		mysqlDialNames[registryKey] = netName
+		mysql.RegisterDialContext(netName, func(ctx context.Context, addr string) (net.Conn, error) {
+			return dialFunc(ctx, "tcp", addr)
+		})
+	}
 	dialSeqMu.Unlock()
-	mysql.RegisterDialContext(netName, func(ctx context.Context, addr string) (net.Conn, error) {
-		return dialFunc(ctx, "tcp", addr)
-	})
 	cfg.Net = netName
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {

@@ -454,7 +454,7 @@ func probeDatabase(config ConnectionConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	db, err := database.NewDBWithDial(config.DBType, dsn, dbProxyDial(config))
+	db, err := database.NewDBWithDialKey(config.DBType, dsn, dbProxyDial(config), dbProxyDialKey(config))
 	if err != nil {
 		return "", err
 	}

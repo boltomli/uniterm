@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -60,7 +62,9 @@ func ProxyDialFunc(upstream *SocksProxy) func(ctx context.Context, network, addr
 
 // proxyContextDialer wraps ProxyDialFunc's closure into the named-method
 // interface shape (ContextDialer) that mongo-driver's SetDialer requires.
-type proxyContextDialer struct{ fn func(ctx context.Context, network, addr string) (net.Conn, error) }
+type proxyContextDialer struct {
+	fn func(ctx context.Context, network, addr string) (net.Conn, error)
+}
 
 func dialerAdapter(upstream *SocksProxy) proxyContextDialer {
 	return proxyContextDialer{fn: ProxyDialFunc(upstream)}
@@ -77,6 +81,18 @@ func dbProxyDial(config ConnectionConfig) database.DialContextFunc {
 		return nil
 	}
 	return database.DialContextFunc(ProxyDialFunc(config.Proxy))
+}
+
+// dbProxyDialKey identifies the proxy for driver registries that have no
+// unregister API (go-sql-driver's global dialer map), so every connect through
+// the same proxy reuses one registered entry.
+func dbProxyDialKey(config ConnectionConfig) string {
+	if config.Proxy == nil {
+		return ""
+	}
+	p := config.Proxy
+	return fmt.Sprintf("%s|%s|%d|%s|%x", p.Kind, p.Host, p.Port, p.User,
+		sha256.Sum256([]byte(p.Pass)))
 }
 
 // ProxyHTTPTransportProxy returns an http.Transport Proxy hook routing all
