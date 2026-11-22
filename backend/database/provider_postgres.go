@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	// pgx (stdlib adapter) replaces lib/pq: same database/sql surface and
+	// lib/pq-compatible DSN keywords, actively maintained, and — unlike
+	// lib/pq — it exposes a custom dial function needed for proxy support.
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -45,7 +48,7 @@ func (p *postgresProvider) DSN(host string, port int, user, password, dbName str
 }
 
 func (p *postgresProvider) DriverName() string {
-	return "postgres"
+	return "pgx"
 }
 
 func (p *postgresProvider) DBType() string {
@@ -336,7 +339,7 @@ func (p *postgresProvider) GetTables(db *sql.DB, dbName string) ([]TableInfo, er
 
 func (p *postgresProvider) GetTablePage(db *sql.DB, dbName string, query string, offset, limit int) ([]TableInfo, int, error) {
 	// Placeholder numbers continue after the schema arg ($1 when the node is
-	// "db.schema"); lib/pq maps $N positionally, so numbering must stay
+	// "db.schema"); the driver maps $N positionally, so numbering must stay
 	// contiguous and unique per statement.
 	base, baseArgs, next := p.tableListBase(dbName)
 

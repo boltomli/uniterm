@@ -330,6 +330,10 @@ func ftpPlainServer(opts ftpPlainOpts) func(*fakeFTPConn) {
 		if err := f.send("220 fake FTP server ready"); err != nil {
 			return
 		}
+		// The session lists via CWD <dir> + MLSD/LIST "" (legacy servers
+		// reject a path argument on the data command), so the fake tracks
+		// the control connection's working directory.
+		cwd := "/"
 		for {
 			line, err := f.read()
 			if err != nil {
@@ -347,6 +351,16 @@ func ftpPlainServer(opts ftpPlainOpts) func(*fakeFTPConn) {
 					f.send(" " + feature)
 				}
 				f.send("211 End")
+			case "CWD":
+				if _, isFile := opts.files[arg]; isFile {
+					f.send("550 Not a directory")
+					continue
+				}
+				cwd = arg
+				if cwd == "" {
+					cwd = "/"
+				}
+				f.send("250 Directory changed")
 			case "TYPE":
 				f.send("200 " + arg + " okay")
 			case "OPTS":
@@ -366,7 +380,11 @@ func ftpPlainServer(opts ftpPlainOpts) func(*fakeFTPConn) {
 				}
 				f.send(fmt.Sprintf("227 Entering Passive Mode (127,0,0,1,%d,%d)", port/256, port%256))
 			case "MLSD":
-				payload, ok := opts.listing[arg]
+				dir := arg
+				if dir == "" {
+					dir = cwd
+				}
+				payload, ok := opts.listing[dir]
 				if !ok {
 					f.send("550 No such directory")
 					continue
@@ -549,7 +567,7 @@ func TestFTPRemoteRecursionSkipsDotEntries(t *testing.T) {
 	assertNoParent := func(t *testing.T, fs *fakeFTP) {
 		t.Helper()
 		for _, cmd := range fs.transcript() {
-			if cmd == "MLSD /" || cmd == "RMD /" || cmd == "DELE /x" {
+			if cmd == "CWD /" || cmd == "MLSD /" || cmd == "RMD /" || cmd == "DELE /x" {
 				t.Errorf("recursed into parent directory: %q", cmd)
 			}
 		}

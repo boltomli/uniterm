@@ -29,7 +29,6 @@ import (
 
 	"github.com/cloudsoda/go-smb2"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/ys-ll/uniterm/backend/database"
 )
@@ -222,7 +221,7 @@ func probeTelnet(config ConnectionConfig) (string, error) {
 // probeTCP checks that a plain TCP socket to host:port can be established.
 func probeTCP(config ConnectionConfig) (string, error) {
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	conn, err := dialFirstHop(addr, config.Proxy)
 	if err != nil {
 		return "", fmt.Errorf("tcp: %w", err)
 	}
@@ -241,8 +240,13 @@ func probeFTP(config ConnectionConfig) (string, error) {
 	}
 	// Same guarded dial as FTPSession.Connect: ServerName on the TLS config
 	// and no plaintext downgrade except the FEAT-verified rejection case.
-	conn, downgraded, err := dialFTPGuarded(addr, encryption, ftpTLSConfig(config),
-		[]ftp.DialOption{ftp.DialWithTimeout(30 * time.Second)})
+	dialOpts := []ftp.DialOption{ftp.DialWithTimeout(30 * time.Second)}
+	if config.Proxy != nil {
+		dialOpts = append(dialOpts, ftp.DialWithDialFunc(func(network, address string) (net.Conn, error) {
+			return dialFirstHop(address, config.Proxy)
+		}))
+	}
+	conn, downgraded, err := dialFTPGuarded(addr, encryption, ftpTLSConfig(config), dialOpts)
 	if err != nil {
 		return "", fmt.Errorf("ftp: %w", err)
 	}
@@ -262,6 +266,9 @@ func probeS3(config ConnectionConfig) (string, error) {
 	if config.S3URLStyle != "path" {
 		c.SetVirtualHostedStyle(true)
 	}
+	if config.Proxy != nil {
+		c.SetClient(&http.Client{Transport: &http.Transport{Proxy: ProxyHTTPTransportProxy(config.Proxy)}})
+	}
 	// ListBuckets is the lightest probe that validates endpoint reachability AND
 	// access-key validity.
 	if _, err := c.ListBuckets(simples3.ListBucketsInput{}); err != nil {
@@ -273,6 +280,9 @@ func probeS3(config ConnectionConfig) (string, error) {
 func probeWebDAV(config ConnectionConfig) (string, error) {
 	url := strings.TrimSuffix(config.Host, "/")
 	client := gowebdav.NewClient(url, config.User, config.Password)
+	if config.Proxy != nil {
+		client.SetTransport(&http.Transport{Proxy: ProxyHTTPTransportProxy(config.Proxy)})
+	}
 	if err := client.Connect(); err != nil {
 		return "", fmt.Errorf("webdav: %w", err)
 	}
@@ -285,7 +295,7 @@ func probeSMB(config ConnectionConfig) (string, error) {
 		port = 445
 	}
 	addr := net.JoinHostPort(config.Host, strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	conn, err := dialFirstHop(addr, config.Proxy)
 	if err != nil {
 		return "", fmt.Errorf("smb dial: %w", err)
 	}
@@ -338,6 +348,8 @@ func probeRedis(config ConnectionConfig) (string, error) {
 			Username: config.User,
 			Password: config.Password,
 			DB:       0,
+			// Standalone only: FailoverOptions has no Dialer field.
+			Dialer: ProxyDialFunc(config.Proxy),
 		})
 	}
 	defer client.Close()
@@ -364,7 +376,7 @@ func probeMongo(config ConnectionConfig) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	client, err := mongo.Connect(ctx, mongoOptionsWithProxy(config, uri))
 	if err != nil {
 		return "", fmt.Errorf("mongodb connect: %w", err)
 	}
@@ -403,6 +415,10 @@ func probeElasticsearch(config ConnectionConfig) (string, error) {
 		}).DialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
+	// An explicit proxy takes precedence over the environment fallback.
+	if config.Proxy != nil {
+		transport.Proxy = ProxyHTTPTransportProxy(config.Proxy)
+	}
 	if config.EsUseSSL {
 		transport.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: config.EsSkipVerify, //nolint:gosec // intentional user opt-in
@@ -438,7 +454,7 @@ func probeDatabase(config ConnectionConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	db, err := database.NewDB(config.DBType, dsn)
+	db, err := database.NewDBWithDial(config.DBType, dsn, dbProxyDial(config))
 	if err != nil {
 		return "", err
 	}

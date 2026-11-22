@@ -106,7 +106,7 @@ func TestKubeconfigPathRequiresGrantOrStoredConnection(t *testing.T) {
 	if _, err := a.K8sListContexts(other, true); err == nil || !strings.Contains(err.Error(), "not granted") {
 		t.Fatalf("K8sListContexts(ungranted path) = %v; want not-granted error", err)
 	}
-	if _, err := a.K8sConnect(other, true, "", "", "", ""); err == nil {
+	if _, err := a.K8sConnect(other, true, "", "", "", "", ""); err == nil {
 		t.Fatal("K8sConnect accepted an ungranted kubeconfig path")
 	}
 	// The path persisted on a saved k8s connection is trusted (same model as

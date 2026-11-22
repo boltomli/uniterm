@@ -50,7 +50,7 @@
 远程终端、本地 & 串口终端、文件传输、远程桌面、数据库、容器、服务器监控 —— 覆盖全部远程访问场景。
 
 - **终端** — SSH / Telnet / Mosh / Raw TCP / 串口，外加本地 Shell（PowerShell / CMD / Git Bash / WSL）。
-- **文件传输** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem，双栏浏览、鼠标拖拽上传下载，SSH 内 `rz`/`sz`
+- **文件传输** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / 本地文件 / WSL 文件 / Zmodem，双栏浏览、鼠标拖拽上传下载，SSH 内 `rz`/`sz`
 - **远程桌面** — RDP（Windows 远程桌面，暂不支持音频重定向）、VNC（Linux 远程控制）、SPICE（KVM/QEMU 虚拟机）、X11（X Window 图形界面转发）
 - **数据库客户端** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch，支持 AI 自然语言生成查询与数据行编辑
 - **Kubernetes & 容器** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC，集群资源与容器镜像管理、Pod 日志与 exec 终端、CPU/内存指标
@@ -73,7 +73,7 @@
 
 - **连接管理器** — 分组、搜索和批量管理服务器连接；支持加密导入/导出，以及从其他终端软件导入（MobaXterm、Xshell 等）。
 - **工作区** — 将终端标签拖动到内容区即可自由分屏，任意组合成工作区，并可拖拽面板边缘调整大小与布局。
-- **网络工具箱** — 网络扫描、SSH 端口转发隧道，以及为其他设备运行临时服务器的本地服务。
+- **网络工具箱** — 网络扫描、SSH 端口转发隧道、流量捕获、防火墙管理，以及为其他设备运行临时服务器的本地服务。
 - **云端同步** — 支持 Git 仓库、WebDAV、SFTP、S3、SMB 五种模式加密云同步，无需担心数据丢失泄露，多设备无缝衔接、随处接续工作。
 - **主题与国际化** — 28 款终端主题、3 款界面主题（深色 / 深蓝 / 浅色）、自定义背景图片；支持简中、繁中、英、日、韩、德、西、法、俄、葡、越等 11 种语言界面。
 
@@ -94,6 +94,8 @@
 | 文件传输 | SMB | Windows 共享文件夹、NAS 文件访问 |
 | 文件传输 | WebDAV | WebDAV 服务器文件管理 |
 | 文件传输 | S3 | 兼容 Amazon S3 的对象存储 |
+| 文件传输 | 本地文件 | 本地文件系统的双栏浏览器 |
+| 文件传输 | WSL 文件 | WSL 发行版文件浏览器（仅 Windows） |
 | 文件传输 | Zmodem | SSH 终端内 rz/sz 命令传输文件 |
 | 远程桌面 | RDP | Windows 服务器远程桌面管理 |
 | 远程桌面 | VNC | Linux 服务器远程控制 |
@@ -354,6 +356,7 @@ uniTerm/
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

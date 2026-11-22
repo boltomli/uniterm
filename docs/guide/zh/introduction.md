@@ -2,7 +2,7 @@
 
 uniTerm 是一款轻量级全能终端模拟器，支持 **30+** 种连接协议，覆盖远程终端、远程桌面、文件传输、数据库管理、容器和服务器监控。内置**自主 AI Agent**，可独立规划并执行多轮 Shell 命令。
 
-支持的平台：**Windows / macOS / Linux / Android**。
+支持的平台：**Windows / macOS / Linux / Android / Docker Web**。
 
 
 ## 核心特性
@@ -19,7 +19,7 @@ SSH / Telnet / Mosh / Raw TCP / 串口，外加本地 Shell（PowerShell / CMD /
 
 #### 文件传输
 
-内置 **SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3** 双栏文件浏览器与文件边栏，支持 **WSL 文件管理**、**Zmodem**（`rz`/`sz`）与统一传输任务（失败重试、逐文件明细）。
+内置 **SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / 本地文件 / WSL 文件** 双栏文件浏览器与文件边栏，支持 **Zmodem**（`rz`/`sz`）与统一传输任务（失败重试、逐文件明细）。
 
 ![SFTP](/imgs/sftp_light.webp)
 
@@ -84,7 +84,7 @@ uniTerm 内置自主 AI Agent，可在终端中独立规划并执行多轮 Shell
 
 #### 网络工具箱
 
-内置**网络扫描**（发现子网内存活主机与开放端口）、**SSH 隧道**（本地 / 远程 / 动态端口转发）与**本地网络服务**（TFTP / FTP / HTTP / SSH/SFTP / Telnet / NFS / S3），一站式网络工具入口。
+内置**网络扫描**（发现子网内存活主机与开放端口）、**SSH 隧道**（本地 / 远程 / 动态端口转发）、**流量捕获**（本地网卡或远程主机实时抓包）、**防火墙管理**（基于 SSH 管理 firewalld / ufw）与**本地网络服务**（TFTP / FTP / HTTP / SSH/SFTP / Telnet / NFS / S3），一站式网络工具入口。
 
 ![SSH 隧道](/imgs/ssh_tunnel_light.webp)
 

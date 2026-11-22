@@ -252,7 +252,7 @@ import { Application, Clipboard, Events } from '@wailsio/runtime'
 import { parseQuickConnect } from './utils/quickConnect'
 import { getShellLabel as getShellLabelBase, parseWslFromShell } from './utils/shellLabel'
 import { reconnectFileTransferPanel } from './composables/usePanelReconnect'
-import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, launchContainerFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
+import { launchConnection, launchFileBrowser, launchMonitor, launchWslFileBrowser, launchLocalFileBrowser, launchContainerFileBrowser, persistConnection, configureLauncher } from './composables/connectionLauncher'
 import { isWebServerMode, logoutWebUser } from './services/webSftpBridge'
 
 // Headless server deployments hide OS-bound chrome; resolve once at startup.
@@ -1080,6 +1080,9 @@ onMounted(async () => {
   window.addEventListener('app:connect-wsl-file', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchWslFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
+  window.addEventListener('app:connect-local-file', ((e: CustomEvent) => {
+    const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchLocalFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
+  }) as EventListener)
   window.addEventListener('app:connect-container-file', ((e: CustomEvent) => {
     const d = e.detail; const c = d?.config || d; if (c) { const prev = tabStore.activeTab; launchContainerFileBrowser(c, { prevStart: prev?.type === 'start' ? prev : undefined, afterTabId: d?.sourceTabId, initialPath: d?.initialPath }) }
   }) as EventListener)
@@ -1288,6 +1291,14 @@ const actionHandlers: Record<ShortcutAction, () => void> = {
   paste: () => {
     const pid = tabStore.getActivePanelId()
     if (pid) window.dispatchEvent(new CustomEvent('terminal:paste', { detail: { panelId: pid } }))
+  },
+  resetOutput: () => {
+    const pid = tabStore.getActivePanelId()
+    if (pid) window.dispatchEvent(new CustomEvent('terminal:reset-output', { detail: { panelId: pid } }))
+  },
+  clearScrollback: () => {
+    const pid = tabStore.getActivePanelId()
+    if (pid) window.dispatchEvent(new CustomEvent('terminal:clear-scrollback', { detail: { panelId: pid } }))
   },
   navigatePrev: () => navigatePanel(-1),
   navigateNext: () => navigatePanel(1),

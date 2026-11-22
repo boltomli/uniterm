@@ -8,14 +8,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func newSPICEProxyUnderTest(target string) proxyUnderTest { return NewSPICEProxy(target) }
+func newSPICEProxyUnderTest(target string) proxyUnderTest { return NewSPICEProxy(target, nil) }
 
 // SPICE serves one WebSocket per channel (main/display/inputs/cursor), so the
 // VNC single-client-slot helper does not apply. These tests pin the SPICE
 // contract instead: token gate, per-channel relay, Stop closes everything.
 
 func TestSPICEProxyRequiresToken(t *testing.T) {
-	p := NewSPICEProxy(startProxyTarget(t))
+	p := NewSPICEProxy(startProxyTarget(t), nil)
 	wsURL := startTestProxy(t, p)
 	t.Cleanup(p.Stop)
 
@@ -38,7 +38,7 @@ func TestSPICEProxyRequiresToken(t *testing.T) {
 }
 
 func TestSPICEProxyServesConcurrentChannels(t *testing.T) {
-	p := NewSPICEProxy(startProxyTarget(t))
+	p := NewSPICEProxy(startProxyTarget(t), nil)
 	wsURL := startTestProxy(t, p)
 	t.Cleanup(p.Stop)
 
@@ -68,7 +68,7 @@ func TestSPICEProxyServesConcurrentChannels(t *testing.T) {
 }
 
 func TestSPICEProxyStopClosesActiveConns(t *testing.T) {
-	p := NewSPICEProxy(startProxyTarget(t))
+	p := NewSPICEProxy(startProxyTarget(t), nil)
 	wsURL := startTestProxy(t, p)
 
 	c1, _, err := websocket.DefaultDialer.Dial(wsURL, nil)

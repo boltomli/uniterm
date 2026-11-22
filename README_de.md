@@ -50,7 +50,7 @@
 Remote-Terminal, lokale und serielle Terminals, Dateiübertragung, Remote-Desktop, Datenbanken, Container und Serverüberwachung — deckt sämtliche Anforderungen an den Remote-Zugriff ab.
 
 - **Terminal** — SSH / Telnet / Mosh / Raw TCP / Seriell, plus lokale Shells (PowerShell / CMD / Git Bash / WSL).
-- **Dateiübertragung** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem mit Zweifenster-Browsing und `rz`/`sz`-Unterstützung in SSH-Terminals.
+- **Dateiübertragung** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Lokale Dateien / WSL-Dateien / Zmodem mit Zweifenster-Browsing und `rz`/`sz`-Unterstützung in SSH-Terminals.
 - **Remote-Desktop** — RDP (Windows-Remote-Desktop), VNC (Fernsteuerung von Linux), SPICE (KVM/QEMU-VMs), X11 (X-Window-Weiterleitung)
 - **Datenbank-Client** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, mit KI-gestützten Abfragen in natürlicher Sprache und Bearbeitung von Datenzeilen.
 - **Kubernetes & Container** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, mit Verwaltung von Cluster-Ressourcen und Images, Pod-Protokollen und Exec-Terminals sowie CPU-/Speicher-Metriken.
@@ -73,7 +73,7 @@ Verbindungsverwaltung, geteilte Bereiche, Cloud-Sync, Themes & Internationalisie
 
 - **Verbindungsmanager** — Serververbindungen gruppieren, durchsuchen und im Stapel verwalten; verschlüsselter Import/Export sowie Import aus anderen Terminal-Apps (MobaXterm, Xshell usw.).
 - **Workspace** — Terminal-Tabs per Drag & Drop in den Inhaltsbereich ziehen, um sie frei zu teilen und zu einem Workspace zu kombinieren; Panelränder ziehen, um Größe und Anordnung anzupassen.
-- **Netzwerk-Toolbox** — Netzwerkscan, SSH-Port-Weiterleitungs-Tunnel und lokale Dienste zum Betreiben temporärer Server für andere Geräte.
+- **Netzwerk-Toolbox** — Netzwerkscan, SSH-Port-Weiterleitungs-Tunnel, Traffic-Capture, Firewall-Verwaltung und lokale Dienste zum Betreiben temporärer Server für andere Geräte.
 - **Cloud-Sync** — Verschlüsselte Cloud-Synchronisierung in fünf Modi: Git-Repository, WebDAV, SFTP, S3 und SMB — keine Sorge um Datenverlust oder Datenlecks, und nahtloses Weiterarbeiten über Geräte hinweg.
 - **Themes & Internationalisierung** — 28 Terminal-Themes sowie 3 UI-Themes (Dark / Deep Blue / Light) und ein anpassbares Hintergrundbild; UI in 11 Sprachen: Englisch, Deutsch, Spanisch, Französisch, Russisch, Portugiesisch, Japanisch, Koreanisch, vereinfachtes Chinesisch, traditionelles Chinesisch, Vietnamesisch.
 
@@ -94,6 +94,8 @@ Verbindungsverwaltung, geteilte Bereiche, Cloud-Sync, Themes & Internationalisie
 | Dateiübertragung | SMB | Windows-Freigaben, Dateizugriff auf NAS |
 | Dateiübertragung | WebDAV | Dateiverwaltung auf WebDAV-Servern |
 | Dateiübertragung | S3 | Amazon-S3-kompatibler Objektspeicher |
+| Dateiübertragung | Lokale Dateien | Zweifenster-Browser für das lokale Dateisystem |
+| Dateiübertragung | WSL-Dateien | Dateibrowser für WSL-Distributionen (nur Windows) |
 | Dateiübertragung | Zmodem | Dateiübertragung im Terminal über rz/sz-Befehle |
 | Remote-Desktop | RDP | Remote-Desktop-Verwaltung von Windows-Servern |
 | Remote-Desktop | VNC | Fernsteuerung von Linux-Servern |
@@ -354,6 +356,7 @@ Dank an die folgenden Personen für Code-Beiträge und Verbesserungen sowie an a
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

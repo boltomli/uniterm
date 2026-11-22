@@ -170,7 +170,7 @@ func checkProxyFreesSlotOnDisconnect(t *testing.T, newProxy newProxyUnderTest) {
 	}
 }
 
-func newVNCProxyUnderTest(target string) proxyUnderTest { return NewVNCProxy(target) }
+func newVNCProxyUnderTest(target string) proxyUnderTest { return NewVNCProxy(target, nil) }
 
 func TestVNCProxyRejectsSecondClient(t *testing.T) {
 	checkProxyRejectsSecondClient(t, newVNCProxyUnderTest)

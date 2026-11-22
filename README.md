@@ -50,7 +50,7 @@
 Remote terminal, local & serial terminal, file transfer, remote desktop, database, containers, and server monitor — covering all remote access needs.
 
 - **Terminal** — SSH / Telnet / Mosh / Raw TCP / Serial, plus local shells (PowerShell / CMD / Git Bash / WSL).
-- **File Transfer** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem with dual-pane browsing and `rz`/`sz` support in SSH terminals.
+- **File Transfer** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Local File / WSL File / Zmodem with dual-pane browsing and `rz`/`sz` support in SSH terminals.
 - **Remote Desktop** — RDP (Windows Remote Desktop, audio redirection not yet supported), VNC (Linux remote control), SPICE (KVM/QEMU VMs), X11 (X Window forwarding)
 - **Database Client** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, with AI-powered natural-language queries and data-row editing.
 - **Kubernetes & Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, with cluster resource & image management, Pod logs and exec terminals, and CPU/memory metrics.
@@ -73,7 +73,7 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 
 - **Connection Manager** — Group, search, and batch-manage server connections; encrypted import/export, and import from other terminal apps (MobaXterm, Xshell, etc.).
 - **Workspace** — Drag terminal tabs into the content area to split freely and combine them into a workspace; drag panel edges to resize and rearrange.
-- **Network Toolbox** — Network scanning, SSH port forwarding tunnels, and local services to run temporary servers for other devices.
+- **Network Toolbox** — Network scanning, SSH port forwarding tunnels, traffic capture, firewall management, and local services to run temporary servers for other devices.
 - **Cloud Sync** — Encrypted cloud sync in five modes: Git repository, WebDAV, SFTP, S3 and SMB — no worry about data loss or leaks, and pick up your work seamlessly across devices.
 - **Themes & Internationalization** — 28 terminal themes plus 3 UI themes (Dark / Deep Blue / Light) and a customizable background image; 11-language UI: Simplified Chinese, Traditional Chinese, English, Japanese, Korean, German, Spanish, French, Russian, Portuguese, Vietnamese.
 
@@ -94,6 +94,8 @@ Connection management, split panes, cloud sync, themes & i18n — your terminal,
 | File Transfer | SMB | Windows shared folders, NAS file access |
 | File Transfer | WebDAV | WebDAV server file management |
 | File Transfer | S3 | Amazon S3 compatible object storage |
+| File Transfer | Local File | Dual-pane browser over the local filesystem |
+| File Transfer | WSL File | File browser for WSL distributions (Windows only) |
 | File Transfer | Zmodem | In-terminal file transfer via rz/sz commands |
 | Remote Desktop | RDP | Windows server remote desktop management |
 | Remote Desktop | VNC | Linux server remote control |
@@ -354,6 +356,7 @@ Thanks to the following people for contributing code and improvements, and to ev
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

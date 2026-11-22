@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -75,6 +76,21 @@ func sweepLegacyWebview2Dirs() {
 		}
 		_ = os.RemoveAll(filepath.Join(os.TempDir(), name))
 	}
+}
+
+// indexNoCache serves the root document with no-store so the WebView2 HTTP
+// cache can never pin a stale index.html — and with it the old hashed JS
+// bundle and WASM engine — after an app update. Every other resource is
+// content-hashed, so it self-invalidates on update; only index.html can go
+// stale, and the wails asset server sets no cache headers for it.
+func indexNoCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Pragma", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 //go:embed all:frontend/dist
@@ -211,8 +227,14 @@ func main() {
 		settingsCh <- loadSavedSettings()
 	}()
 
-	if configDir, err := os.UserConfigDir(); err == nil {
-		ls := store.NewLocalStateStore(filepath.Join(configDir, "uniTerm"))
+	// The early geometry read must use the same data dir the app saves to
+	// (store.ResolveDataDir), not a hardcoded <UserConfigDir>/uniTerm: in
+	// portable mode (exe/data) and custom-dir setups the runtime saves window
+	// geometry next to the data dir, while a fixed config-dir read would
+	// silently restore the geometry of a differently-located install (or the
+	// defaults) on every launch.
+	if dd, err := store.ResolveDataDir(); err == nil && dd.Path != "" {
+		ls := store.NewLocalStateStore(dd.Path)
 		done := make(chan store.LocalState, 1)
 		go func() {
 			if state, err := ls.Load(); err == nil {
@@ -270,8 +292,12 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 			// F-09b: production CSP + nosniff on every asset (dev server
-			// untouched — vite serves wails3 dev).
-			Middleware: cspMiddleware,
+			// untouched — vite serves wails3 dev), and index.html served
+			// with no-store so a rebuilt bundle is not shadowed by a cached
+			// document.
+			Middleware: func(next http.Handler) http.Handler {
+				return cspMiddleware(indexNoCache(next))
+			},
 		},
 		OnShutdown: app.shutdown,
 		// AppKit's terminate: exits the process without returning from Run().
@@ -494,7 +520,7 @@ func main() {
 	// exists so the click handlers can drive it. Skipped entirely when the
 	// user turned the icon off; created lazily if re-enabled at runtime
 	// (see applyTrayVisibility).
-	if trayIconEnabled(&savedSettings) {
+	if trayIconEnabled(&savedSettings) || minimizeToTrayEnabled(&savedSettings) {
 		setupTray(w3app, app, window, savedSettings.Language)
 	}
 
@@ -768,6 +794,13 @@ func buildTrayMenu(app *App, lang string) *application.Menu {
 // settings.json without the field) means on.
 func trayIconEnabled(s *store.AppSettings) bool {
 	return s.ShowTrayIcon == nil || *s.ShowTrayIcon
+}
+
+// minimizeToTrayEnabled reports whether the minimize button should hide the
+// window into the tray instead of the taskbar (issue #1556). Nil (older
+// settings.json without the field) means off — minimise as usual.
+func minimizeToTrayEnabled(s *store.AppSettings) bool {
+	return s.MinimizeToTray != nil && *s.MinimizeToTray
 }
 
 // applyTrayVisibility shows or hides the tray icon when the setting changes

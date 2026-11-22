@@ -1607,7 +1607,11 @@ func isOfficialOpenAIURL(base string) bool {
 
 // SummarizeAIContext uses non-streaming requests and never emits chat events or
 // changes chatCancel. Each request has its own cancellation identity.
-func (a *App) SummarizeAIContext(apiKey, baseURL, model, protocol, userAgent, proxyID, requestID, requestJSON string) (string, error) {
+// sessionID/sessionHeader mirror the chat path's per-model session header:
+// gateways that require it on every inference request reject a summary
+// request that arrives without it, which silently breaks compaction exactly
+// when the context has grown long enough to need it.
+func (a *App) SummarizeAIContext(apiKey, baseURL, model, protocol, userAgent, proxyID, requestID, requestJSON, sessionID, sessionHeader string) (string, error) {
 	if requestID == "" || strings.TrimSpace(requestJSON) == "" {
 		return "", fmt.Errorf("AI_COMPACTION_INVALID_INPUT")
 	}
@@ -1635,14 +1639,14 @@ func (a *App) SummarizeAIContext(apiKey, baseURL, model, protocol, userAgent, pr
 	// handoff request with a tool call (tools ride along only for cache-prefix
 	// identity). Non-standard relays may reject the parameter: retry once
 	// without it and fall back to the instruction plus response validation.
-	summary, err := a.summarizeAttempt(ctx, client, apiKey, baseURL, model, protocol, userAgent, neutral, true)
+	summary, err := a.summarizeAttempt(ctx, client, apiKey, baseURL, model, protocol, userAgent, neutral, sessionID, sessionHeader, true)
 	if err != nil && strings.HasSuffix(err.Error(), "HTTP_400") {
-		summary, err = a.summarizeAttempt(ctx, client, apiKey, baseURL, model, protocol, userAgent, neutral, false)
+		summary, err = a.summarizeAttempt(ctx, client, apiKey, baseURL, model, protocol, userAgent, neutral, sessionID, sessionHeader, false)
 	}
 	return summary, err
 }
 
-func (a *App) summarizeAttempt(ctx context.Context, client *http.Client, apiKey, baseURL, model, protocol, userAgent string, neutral map[string]interface{}, toolChoiceNone bool) (string, error) {
+func (a *App) summarizeAttempt(ctx context.Context, client *http.Client, apiKey, baseURL, model, protocol, userAgent string, neutral map[string]interface{}, sessionID, sessionHeader string, toolChoiceNone bool) (string, error) {
 	body, endpoint := summaryProtocolBody(protocol, model, baseURL, neutral, toolChoiceNone)
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -1665,6 +1669,9 @@ func (a *App) summarizeAttempt(ctx context.Context, client *http.Client, apiKey,
 	} else {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	// Same session header as the chat path, so a gateway that keys caching /
+	// routing on it accepts the summary request too (retry included).
+	applySessionHeader(req, sessionHeader, sessionID, baseURL)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -2142,28 +2149,44 @@ func (a *App) SetSkillEnabled(name string, enabled bool) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.SetEnabled(name, enabled)
+	err := a.skillsStore.SetEnabled(name, enabled)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SetSkillLocked(name string, locked bool) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.SetLocked(name, locked)
+	err := a.skillsStore.SetLocked(name, locked)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SetSkillSortOrder(name string, order int) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.SetSortOrder(name, order)
+	err := a.skillsStore.SetSortOrder(name, order)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) DeleteSkill(name string) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.Delete(name)
+	err := a.skillsStore.Delete(name)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) ImportSkillFromDir(srcDir string) (string, error) {
@@ -2173,7 +2196,11 @@ func (a *App) ImportSkillFromDir(srcDir string) (string, error) {
 	if a.skillsStore == nil {
 		return "", fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.ImportFromDir(srcDir)
+	name, err := a.skillsStore.ImportFromDir(srcDir)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return name, err
 }
 
 func (a *App) ImportSkillFromZip(zipPath string) (string, error) {
@@ -2183,21 +2210,33 @@ func (a *App) ImportSkillFromZip(zipPath string) (string, error) {
 	if a.skillsStore == nil {
 		return "", fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.ImportFromZip(zipPath)
+	name, err := a.skillsStore.ImportFromZip(zipPath)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return name, err
 }
 
 func (a *App) CreateSkill(name, description, body string) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.CreateSkill(name, description, body)
+	err := a.skillsStore.CreateSkill(name, description, body)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SaveSkill(name, description, body string) error {
 	if a.skillsStore == nil {
 		return fmt.Errorf("skills store not initialized")
 	}
-	return a.skillsStore.SaveSkill(name, description, body)
+	err := a.skillsStore.SaveSkill(name, description, body)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 // RecentStore methods
@@ -2774,6 +2813,7 @@ func (a *App) saveMCPClient(cfg store.MCPClientConfig, originalName string) erro
 	if err := a.mcpClientStore.Save(all); err != nil {
 		return err
 	}
+	a.triggerAutoSync()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	mgr.Reload(ctx)
@@ -2796,6 +2836,7 @@ func (a *App) RemoveMCPClient(name string) error {
 	if err := a.mcpClientStore.Save(kept); err != nil {
 		return err
 	}
+	a.triggerAutoSync()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	mgr.Reload(ctx)

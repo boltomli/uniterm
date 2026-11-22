@@ -41,13 +41,15 @@ func TestDefaultTableQueryRefQualifiesSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("sqlserver must implement SchemaDDL")
 	}
+	// SQL Server pages with a ROW_NUMBER() wrap, not OFFSET/FETCH: the latter
+	// is 2012+ syntax and a SQL Server 2008 server rejects it.
 	got = ssd.DefaultTableQueryRef(TableRef{Schema: "sales", Name: "orders"}, 10, 20)
-	want = "SELECT * FROM [sales].[orders] ORDER BY (SELECT NULL) OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
+	want = "SELECT * FROM (SELECT q_.*, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS __RN__ FROM (SELECT * FROM [sales].[orders]) q_) __paged WHERE __RN__ > 20 AND __RN__ <= 30"
 	if got != want {
 		t.Fatalf("mssql qualified browse query = %q, want %q", got, want)
 	}
 	got = ssd.DefaultTableQueryRef(TableRef{Name: "orders"}, 10, 0)
-	want = "SELECT * FROM [orders] ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"
+	want = "SELECT * FROM (SELECT q_.*, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS __RN__ FROM (SELECT * FROM [orders]) q_) __paged WHERE __RN__ > 0 AND __RN__ <= 10"
 	if got != want {
 		t.Fatalf("mssql plain browse query = %q, want %q", got, want)
 	}

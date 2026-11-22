@@ -50,7 +50,7 @@
 원격 터미널, 로컬 및 시리얼 터미널, 파일 전송, 원격 데스크톱, 데이터베이스, 컨테이너, 서버 모니터링까지 — 원격 접속에 필요한 모든 것을 다룹니다.
 
 - **터미널** — SSH / Telnet / Mosh / Raw TCP / 시리얼, 그리고 로컬 셸(PowerShell / CMD / Git Bash / WSL).
-- **파일 전송** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem을 지원하며, 듀얼 패인 브라우징과 SSH 터미널에서의 `rz`/`sz`를 지원합니다.
+- **파일 전송** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / 로컬 파일 / WSL 파일 / Zmodem을 지원하며, 듀얼 패인 브라우징과 SSH 터미널에서의 `rz`/`sz`를 지원합니다.
 - **원격 데스크톱** — RDP(Windows 원격 데스크톱), VNC(Linux 원격 제어), SPICE(KVM/QEMU 가상 머신), X11(X Window 포워딩)
 - **데이터베이스 클라이언트** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch를 지원하며, AI 기반 자연어 쿼리와 데이터 행 편집을 제공합니다.
 - **Kubernetes 및 컨테이너** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC를 지원하며, 클러스터 리소스 및 이미지 관리, Pod 로그와 exec 터미널, CPU/메모리 메트릭을 제공합니다.
@@ -73,7 +73,7 @@
 
 - **연결 관리자** — 서버 연결을 그룹화, 검색, 일괄 관리합니다. 암호화된 가져오기/내보내기와 다른 터미널 앱(MobaXterm, Xshell 등)에서 가져오기를 지원합니다.
 - **워크스페이스** — 터미널 탭을 콘텐츠 영역으로 드래그해 자유롭게 분할하고 하나의 워크스페이스로 조합할 수 있습니다. 패인 가장자리를 드래그해 크기 조정과 재배치도 가능합니다.
-- **네트워크 도구 상자** — 네트워크 스캔, SSH 포트 포워딩 터널, 다른 기기를 위한 임시 서버를 실행하는 로컬 서비스.
+- **네트워크 도구 상자** — 네트워크 스캔, SSH 포트 포워딩 터널, 트래픽 캡처, 방화벽 관리, 다른 기기를 위한 임시 서버를 실행하는 로컬 서비스.
 - **클라우드 동기화** — Git 저장소, WebDAV, SFTP, S3, SMB의 다섯 가지 모드로 암호화된 클라우드 동기화를 지원합니다 — 데이터 유실이나 유출 걱정 없이 여러 기기에서 작업을 원활하게 이어갈 수 있습니다.
 - **테마 및 국제화** — 28가지 터미널 테마, 3가지 UI 테마(다크 / 딥 블루 / 라이트), 커스텀 배경 이미지를 지원합니다. UI는 11개 언어를 지원합니다: 영어, 한국어, 일본어, 중국어(간체), 중국어(번체), 독일어, 스페인어, 프랑스어, 러시아어, 포르투갈어, 베트남어.
 
@@ -94,6 +94,8 @@
 | 파일 전송 | SMB | Windows 공유 폴더, NAS 파일 접근 |
 | 파일 전송 | WebDAV | WebDAV 서버 파일 관리 |
 | 파일 전송 | S3 | Amazon S3 호환 오브젝트 스토리지 |
+| 파일 전송 | 로컬 파일 | 로컬 파일 시스템 듀얼 패인 브라우저 |
+| 파일 전송 | WSL 파일 | WSL 배포판용 파일 브라우저 (Windows 전용) |
 | 파일 전송 | Zmodem | rz/sz 명령을 통한 터미널 내 파일 전송 |
 | 원격 데스크톱 | RDP | Windows 서버 원격 데스크톱 관리 |
 | 원격 데스크톱 | VNC | Linux 서버 원격 제어 |
@@ -354,6 +356,7 @@ uniTerm이 도움이 되었다면 ⭐ Star를 눌러 주세요 — 프로젝트�
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

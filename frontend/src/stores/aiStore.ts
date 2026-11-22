@@ -619,9 +619,12 @@ export const useAIStore = defineStore('ai', () => {
   }
 
   // Issue #756: drop one message (and its tool-result pairs) from the current
-  // session. The view array and the owning session's array are DIFFERENT
-  // arrays (switchSession copies messages with reactive({...m})), so the view
-  // splice alone would resurrect the message on the next switch — splice both.
+	// session. The view array and the owning session's array are DIFFERENT
+	// arrays (switchSession copies messages with reactive({...m})), so the view
+	// splice alone would resurrect the message on the next switch — remove the
+	// same ids from the session array too. The session array must NOT be aliased
+	// to messages.value — addMessage pushes into both arrays, so sharing one
+	// array would store every later message twice.
   function deleteMessage(messageId: string) {
     const idx = messages.value.findIndex(m => m.id === messageId)
     if (idx === -1) return
@@ -648,7 +651,7 @@ export const useAIStore = defineStore('ai', () => {
   // Drop a user message along with the AI's reply for that turn (everything up
   // to the next user message) so a mistyped question never leaves orphaned
   // assistant context behind. For any other message type it behaves like
-  // deleteMessage. Same shared-array semantics as its siblings.
+  // deleteMessage. Same splice-both-arrays semantics as deleteMessage.
   function deleteMessageWithReply(messageId: string) {
     const idx = messages.value.findIndex(m => m.id === messageId)
     if (idx === -1) return
@@ -666,12 +669,12 @@ export const useAIStore = defineStore('ai', () => {
     }
     messages.value.splice(idx, end - idx)
     const session = sessions.value.find(s => s.id === currentSessionId.value)
-    if (session) session.messages = messages.value
+    if (session) session.messages.splice(idx, end - idx)
     doSave()
   }
 
   // Issue #756: drop the message AND everything after it (context rollback,
-  // Trae-style partial deletion). Same dual-array semantics as deleteMessage.
+	// Trae-style partial deletion). Same dual-array semantics as deleteMessage.
   function truncateFrom(messageId: string) {
     const idx = messages.value.findIndex(m => m.id === messageId)
     if (idx === -1) return

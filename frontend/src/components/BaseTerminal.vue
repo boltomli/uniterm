@@ -91,14 +91,14 @@
         </MenuItem>
       </MenuSubmenu>
       <MenuSubmenu :label="t('terminal.clearScreen')">
-        <MenuItem @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
-        <MenuItem @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
+        <MenuItem :shortcut="menuShortcut('resetOutput')" @click="menu.closeMenu(); resetTerminalOutput()">{{ t('terminal.resetOutput') }}</MenuItem>
+        <MenuItem :shortcut="menuShortcut('clearScrollback')" @click="menu.closeMenu(); clearScrollback()">{{ t('terminal.clearScrollback') }}</MenuItem>
       </MenuSubmenu>
       <MenuSubmenu :label="t('session.logRecordMenu')">
-        <MenuItem v-if="supportsOutputLog" @click="toggleOutputLog">
+        <MenuItem v-if="supportsOutputLog" @click="menu.closeMenu(); toggleOutputLog()">
           {{ isOutputLogOn ? t('session.stopLog') : t('session.startLog') }}
         </MenuItem>
-        <MenuItem v-if="supportsOutputLog" @click="openLogDir">
+        <MenuItem v-if="supportsOutputLog" @click="menu.closeMenu(); openLogDir()">
           {{ t('session.openLogDir') }}
         </MenuItem>
         <MenuDivider />
@@ -166,7 +166,7 @@ import '@xterm/xterm/css/xterm.css'
 import { SessionResize, SessionEndZmodem, SessionPauseOutput, SessionResumeOutput } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { queuedSessionWrite as queueRawSessionWrite } from '../services/sessionWriter'
 import { observeCommandInput, updateCommandWraps, getTerminalSelection } from '../services/terminalCommandWrap'
-import { WriteFileBase64, SaveFileDialog, EnableSessionOutputLog, DisableSessionOutputLog, GetSessionOutputLogInfo, OpenPathInExplorer } from '../../bindings/github.com/ys-ll/uniterm/app'
+import { WriteFileBase64, SaveFileDialog } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useNativeFileDrop } from '../composables/useFilePanel'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
 import { isMobilePlatform, detectPlatformSync } from '../utils/platform'
@@ -183,6 +183,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTerminalMenu } from '../composables/useTerminalMenu'
+import { useOutputLog } from '../composables/useOutputLog'
 import { writeClipboard, readClipboardText } from '../composables/useClipboardWrite'
 import { filterTerminalInput, stripDeviceReplies } from '../utils/terminalInputFilter'
 import { isAuthFailureError } from '../utils/authError'
@@ -511,26 +512,34 @@ const dcsReassembler = new DcsReassembler()
 function renderTerminalData(rawData: string, countChunk = true) {
   if (!terminal) return
   // MobaXterm-style clear-screen (owner decision, supersedes the native
-  // handling from issue #1028): `clear` should scroll the current viewport
-  // into the scrollback instead of wiping it, so history is never lost.
-  // \x1b[3J (erase scrollback) is stripped — otherwise shells that emit
-  // ED2+ED3 would wipe the scrollback right after we pushed content into it.
-  // \x1b[2J is replaced by newline padding + home, pushing the viewport into
-  // scrollback before clearing. Full-screen apps (vim, tmux…) run on the
-  // alternate buffer and are left untouched.
-  let data = stripCursorBlink(rawData, settingsStore.settings.terminal.cursorBlink ?? true).replace(/\x1b\[3J/g, '')
-  if (data.includes('\x1b[2J') && terminal.buffer.active.type !== 'alternate') {
-    // Scroll from the current cursor position: rows newlines push every row
-    // above and including the cursor into the scrollback — and nothing
-    // below it, so the blank rows under a mid-screen prompt never pollute
-    // the history. Then wipe whatever is left on screen: the trailing blank
-    // rows for a shell prompt, or residue from a program that exited with
-    // the cursor mid-screen (that residue is dropped from history by
-    // design — trading it for a clean screen and unpolluted scrollback).
-    const scrollClear = '\n'.repeat(terminal.rows) + '\x1b[H\x1b[2J'
-    // Single pass: scrollClear itself ends with \x1b[H\x1b[2J, so a second
-    // replace pass would re-expand the sequence we just inserted.
-    data = data.replace(/\x1b\[H?\x1b\[2J/g, scrollClear)
+  // handling from issue #1028): with clearToScrollback on (default), `clear`
+  // scrolls the current viewport into the scrollback instead of wiping it,
+  // so history is never lost. \x1b[3J (erase scrollback) is stripped in this
+  // mode — otherwise shells that emit ED2+ED3 would wipe the scrollback
+  // right after we pushed content into it. \x1b[2J is replaced by newline
+  // padding + home, pushing the viewport into scrollback before clearing.
+  // Full-screen apps (vim, tmux…) run on the alternate buffer and are left
+  // untouched. With the switch off, standard terminal behaviour applies:
+  // ED2 passes through natively and only wipes the screen, and ED3 passes
+  // through too, so e.g. a `clear && printf '\e[3J'` alias wipes both the
+  // screen and the scrollback (issue #1549).
+  const preserveHistory = settingsStore.settings.terminal.clearToScrollback ?? true
+  let data = stripCursorBlink(rawData, settingsStore.settings.terminal.cursorBlink ?? true)
+  if (preserveHistory) {
+    data = data.replace(/\x1b\[3J/g, '')
+    if (data.includes('\x1b[2J') && terminal.buffer.active.type !== 'alternate') {
+      // Scroll from the current cursor position: rows newlines push every row
+      // above and including the cursor into the scrollback — and nothing
+      // below it, so the blank rows under a mid-screen prompt never pollute
+      // the history. Then wipe whatever is left on screen: the trailing blank
+      // rows for a shell prompt, or residue from a program that exited with
+      // the cursor mid-screen (that residue is dropped from history by
+      // design — trading it for a clean screen and unpolluted scrollback).
+      const scrollClear = '\n'.repeat(terminal.rows) + '\x1b[H\x1b[2J'
+      // Single pass: scrollClear itself ends with \x1b[H\x1b[2J, so a second
+      // replace pass would re-expand the sequence we just inserted.
+      data = data.replace(/\x1b\[H?\x1b\[2J/g, scrollClear)
+    }
   }
   data = sanitizeLiveTerminalOutput(data)
   if (props.mode === 'sftp') {
@@ -2750,27 +2759,10 @@ const supportsOutputLog = computed(() =>
   !!panel.value && ['ssh', 'telnet', 'serial', 'mosh', 'local', 'wsl'].includes(panel.value.type),
 )
 
-const isOutputLogOn = ref(false)
-const outputLogPath = ref('')
-
-async function refreshOutputLogState() {
-  const pid = props.panelId
-  const p = panel.value
-  if (!pid || !p) {
-    isOutputLogOn.value = false
-    outputLogPath.value = ''
-    return
-  }
-  try {
-    const info = await GetSessionOutputLogInfo(pid)
-    isOutputLogOn.value = !!info.enabled
-    outputLogPath.value = info.path || ''
-    panelStore.setOutputLog(pid, { enabled: isOutputLogOn.value, path: outputLogPath.value })
-  } catch {
-    isOutputLogOn.value = false
-    outputLogPath.value = ''
-  }
-}
+// Session output log state + menu operations, shared with Panel.vue /
+// TabItem.vue via the useOutputLog composable.
+const { isOutputLogOn, refreshOutputLogState, toggleOutputLog, openLogDir } =
+  useOutputLog({ getPanelId: () => props.panelId })
 
 function onTerminalContextMenu(e: MouseEvent) {
   // Right-click on the gutter (line-number/time columns) opens the gutter
@@ -2797,45 +2789,7 @@ function triggerSearch() {
   openSearch()
 }
 
-async function toggleOutputLog() {
-  menu.closeMenu()
-  const pid = props.panelId
-  if (!pid) return
-  try {
-    if (isOutputLogOn.value) {
-      await DisableSessionOutputLog(pid)
-      isOutputLogOn.value = false
-      const prev = outputLogPath.value
-      outputLogPath.value = ''
-      panelStore.setOutputLog(pid, { enabled: false, path: '' })
-      msg.copyable(t('session.logStopped', { path: prev }), 'info')
-      return
-    }
-    const path = await EnableSessionOutputLog(pid, '')
-    if (!path) {
-      msg.error(t('session.logFailed', { error: 'unknown' }))
-      return
-    }
-    isOutputLogOn.value = true
-    outputLogPath.value = path
-    panelStore.setOutputLog(pid, { enabled: true, path })
-    msg.copyable(t('session.logStarted', { path }), 'success')
-  } catch (e: any) {
-    msg.error(t('session.logFailed', { error: String(e?.message ?? e) }))
-  }
-}
-
-async function openLogDir() {
-  menu.closeMenu()
-  if (!outputLogPath.value) return
-  try {
-    await OpenPathInExplorer(outputLogPath.value)
-  } catch (e: any) {
-    msg.error(String(e?.message ?? e))
-  }
-}
-
-function openSftp() {
+async function openSftp() {
   menu.closeMenu()
   const p = panel.value
   if (p) {
@@ -3123,4 +3077,4 @@ defineExpose({
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
 }
-</style>
+</style>

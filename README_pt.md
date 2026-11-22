@@ -50,7 +50,7 @@
 Terminal remoto, terminal local e serial, transferência de arquivos, área de trabalho remota, banco de dados, containers e monitoramento de servidores — cobrindo todas as necessidades de acesso remoto.
 
 - **Terminal** — SSH / Telnet / Mosh / Raw TCP / Serial, além de shells locais (PowerShell / CMD / Git Bash / WSL).
-- **Transferência de Arquivos** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem, com navegação em painéis duplos e suporte a `rz`/`sz` em terminais SSH.
+- **Transferência de Arquivos** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Arquivo local / Arquivos WSL / Zmodem, com navegação em painéis duplos e suporte a `rz`/`sz` em terminais SSH.
 - **Área de Trabalho Remota** — RDP (área de trabalho remota do Windows), VNC (controle remoto de Linux), SPICE (máquinas virtuais KVM/QEMU), X11 (encaminhamento do X Window)
 - **Cliente de Banco de Dados** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch, com consultas em linguagem natural assistidas por IA e edição de linhas de dados.
 - **Kubernetes e Containers** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC, com gerenciamento de recursos e imagens do cluster, logs de Pods e terminais exec, e métricas de CPU/memória.
@@ -73,7 +73,7 @@ Gerenciamento de conexões, painéis divididos, sincronização em nuvem, temas 
 
 - **Gerenciador de Conexões** — Agrupe, pesquise e gerencie em lote conexões de servidores; importação/exportação criptografada e importação de outros apps de terminal (MobaXterm, Xshell etc.).
 - **Workspace** — Arraste abas de terminal para a área de conteúdo para dividir livremente e combiná-las em um workspace; arraste as bordas dos painéis para redimensionar e reorganizar.
-- **Caixa de Ferramentas de Rede** — Varredura de rede, túneis de encaminhamento de porta SSH e serviços locais para executar servidores temporários para outros dispositivos.
+- **Caixa de Ferramentas de Rede** — Varredura de rede, túneis de encaminhamento de porta SSH, captura de tráfego, gerenciamento de firewall e serviços locais para executar servidores temporários para outros dispositivos.
 - **Sincronização em Nuvem** — Sincronização em nuvem criptografada em cinco modos: repositório Git, WebDAV, SFTP, S3 e SMB — sem se preocupar com perda ou vazamento de dados, e retome seu trabalho perfeitamente entre dispositivos.
 - **Temas e Internacionalização** — 28 temas de terminal, além de 3 temas de UI (Escuro / Azul Profundo / Claro) e uma imagem de fundo personalizável; UI em 11 idiomas: chinês simplificado, chinês tradicional, inglês, japonês, coreano, alemão, espanhol, francês, russo, português, vietnamita.
 
@@ -94,6 +94,8 @@ Gerenciamento de conexões, painéis divididos, sincronização em nuvem, temas 
 | Transferência de Arquivos | SMB | Pastas compartilhadas do Windows, acesso a arquivos em NAS |
 | Transferência de Arquivos | WebDAV | Gerenciamento de arquivos em servidores WebDAV |
 | Transferência de Arquivos | S3 | Armazenamento de objetos compatível com Amazon S3 |
+| Transferência de Arquivos | Arquivo local | Navegador de dois painéis do sistema de arquivos local |
+| Transferência de Arquivos | Arquivos WSL | Navegador de arquivos para distribuições WSL (apenas Windows) |
 | Transferência de Arquivos | Zmodem | Transferência de arquivos no terminal via comandos rz/sz |
 | Área de Trabalho Remota | RDP | Gerenciamento de área de trabalho remota de servidores Windows |
 | Área de Trabalho Remota | VNC | Controle remoto de servidores Linux |
@@ -354,6 +356,7 @@ Agradecemos às seguintes pessoas por contribuírem com código e melhorias, e a
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

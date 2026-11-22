@@ -2,7 +2,7 @@
 
 uniTerm is a lightweight all-in-one terminal emulator supporting **30+** connection protocols, covering remote terminals, remote desktops, file transfers, database management, containers, and server monitoring. It ships with a built-in **autonomous AI Agent** that can independently plan and execute multi-round shell commands.
 
-Supported platforms: **Windows / macOS / Linux / Android**.
+Supported platforms: **Windows / macOS / Linux / Android / Docker Web**.
 
 
 ## Core Features
@@ -19,7 +19,7 @@ SSH / Telnet / Mosh / Raw TCP / Serial, plus local shells (PowerShell / CMD / Gi
 
 #### File Transfer
 
-Built-in **SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3** dual-pane file browser and file sidebar, with **WSL file management**, **Zmodem** (`rz`/`sz`), and unified transfer tasks (failed-transfer retry, per-file details).
+Built-in **SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Local File / WSL File** dual-pane file browser and file sidebar, with **Zmodem** (`rz`/`sz`), and unified transfer tasks (failed-transfer retry, per-file details).
 
 ![SFTP](/imgs/sftp_light.webp)
 
@@ -84,7 +84,7 @@ Drag and drop terminal tabs into the content area to freely split panes and comb
 
 #### Network Toolbox
 
-Built-in **network scanning** (discover reachable hosts and open ports on a subnet), **SSH tunnels** (local / remote / dynamic port forwarding), and **local network services** (TFTP / FTP / HTTP / SSH/SFTP / Telnet / NFS / S3) — a one-stop entry for network tools.
+Built-in **network scanning** (discover reachable hosts and open ports on a subnet), **SSH tunnels** (local / remote / dynamic port forwarding), **traffic capture** (real-time packet capture on a local adapter or a remote host), **firewall management** (manage firewalld / ufw over SSH), and **local network services** (TFTP / FTP / HTTP / SSH/SFTP / Telnet / NFS / S3) — a one-stop entry for network tools.
 
 ![SSH Tunnel](/imgs/ssh_tunnel_light.webp)
 

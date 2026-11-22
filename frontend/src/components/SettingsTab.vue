@@ -244,6 +244,18 @@
             </div>
           </div>
 
+          <!-- Minimize-to-tray: the minimize button hides the window to the
+               tray (issue #1556); no tray on mobile -->
+          <div v-if="!isMobile" class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.minimizeToTray') }}</div>
+              <div class="setting-desc">{{ t('settings.minimizeToTrayDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch v-model="settingsStore.settings.minimizeToTray" @change="settingsStore.save()" />
+            </div>
+          </div>
+
           <!-- Reopen last session's tabs at startup (issue #937) -->
           <div class="setting-card">
             <div class="setting-info">
@@ -706,6 +718,18 @@
               <el-switch :model-value="settingsStore.settings.terminal.inlineHint ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.inlineHint = v; settingsStore.save() }" />
             </div>
           </div>
+
+          <!-- What the shell's `clear` does: preserve history by scrolling
+               into the scrollback, or a standard screen wipe (issue #1551) -->
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.clearToScrollback') }}</div>
+              <div class="setting-desc">{{ t('settings.clearToScrollbackDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch :model-value="settingsStore.settings.terminal.clearToScrollback ?? true" @update:model-value="(v: boolean) => { settingsStore.settings.terminal.clearToScrollback = v; settingsStore.save() }" />
+            </div>
+          </div>
         </div>
 
         <h2 class="section-title">{{ t('settings.session') }}</h2>
@@ -804,6 +828,19 @@
 
           <div v-if="!isMobile" class="setting-card">
             <div class="setting-info">
+              <div class="setting-title">{{ t('settings.sessionLogAutoStart') }}</div>
+              <div class="setting-desc">{{ t('settings.sessionLogAutoStartDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-switch
+                v-model="settingsStore.settings.terminal.sessionLogAutoStart"
+                @change="settingsStore.save()"
+              />
+            </div>
+          </div>
+
+          <div v-if="!isMobile" class="setting-card">
+            <div class="setting-info">
               <div class="setting-title">{{ t('settings.sessionLogDir') }}</div>
               <div class="setting-desc">{{ t('settings.sessionLogDirDesc', { path: defaultLogDir }) }}</div>
             </div>
@@ -836,7 +873,7 @@
             <div class="setting-control">
               <el-input
                 v-model="settingsStore.settings.terminal.sessionLogFilename"
-                placeholder="%S_%H_%M%D_%h%m.log"
+                placeholder="%S_%H_%Y%M%D_%h%m.log"
                 @change="settingsStore.save()"
                 clearable
               />
@@ -1338,6 +1375,21 @@
               >
                 <el-radio-button value="plain">{{ t('settings.userMessageStylePlain') }}</el-radio-button>
                 <el-radio-button value="bubble">{{ t('settings.userMessageStyleBubble') }}</el-radio-button>
+              </el-radio-group>
+            </div>
+          </div>
+          <div class="setting-card">
+            <div class="setting-info">
+              <div class="setting-title">{{ t('settings.sendKey') }}</div>
+              <div class="setting-desc">{{ t('settings.sendKeyDesc') }}</div>
+            </div>
+            <div class="setting-control">
+              <el-radio-group
+                v-model="settingsStore.settings.ai.sendKey"
+                @change="settingsStore.save()"
+              >
+                <el-radio-button value="enter">{{ t('settings.sendKeyEnter') }}</el-radio-button>
+                <el-radio-button value="ctrl-enter">{{ t('settings.sendKeyCtrlEnter') }}</el-radio-button>
               </el-radio-group>
             </div>
           </div>
@@ -1844,7 +1896,7 @@ const webServerMode = ref(false)
 isWebServerMode().then((v) => { webServerMode.value = v })
 import { FetchModels, ChatCompletion, GetPlatform, GetAllFonts, GetDefaultSessionLogDir, OpenDirectoryDialog, OpenFileDialogFiltered, SetBackgroundImage, ClearBackgroundImage, GetBackgroundImage, RelaunchApp, ListExternalEditors, GenerateMCPToken, RevokeMCPToken, ListMCPTokens, GetMCPStatus, ListMCPClients, SaveMCPClient, UpdateMCPClient, RemoveMCPClient, TestMCPClient, MCPClientStatuses } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { useSettingsStore } from '../stores/settingsStore'
-import { useSyncStore, SYNC_FILE_ITEMS } from '../stores/syncStore'
+import { useSyncStore, SYNC_FILE_ITEMS, LEGACY_SCOPE } from '../stores/syncStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { useI18n, locale } from '../i18n'
@@ -2062,9 +2114,9 @@ async function handleAutoSyncToggle() {
   }
 }
 
-// nil scope = legacy default: settings.json unchecked, everything else checked.
-const LEGACY_SCOPE = SYNC_FILE_ITEMS.filter(i => i.file !== 'settings.json').map(i => i.file)
-
+// nil scope = legacy default: the always-on set only, opt-in entries
+// (settings/skills/commands/mcp_clients) unchecked — shared with the store
+// so the picker can never disagree with syncStore's mirror of the backend.
 const syncScopeModel = computed<string[]>({
   get: () => syncStore.config.syncScope ?? LEGACY_SCOPE,
   set: (v) => { syncStore.config.syncScope = v },
@@ -2607,7 +2659,7 @@ const shortcutCategories: { key: string; label: string; actions: ShortcutAction[
   {
     key: 'terminal',
     label: 'shortcut.catTerminal',
-    actions: ['focusTerminal', 'copy', 'paste', 'terminalSearch', 'zoomFontIn', 'zoomFontOut', 'toggleLineNumbers', 'toggleTimestamps'],
+    actions: ['focusTerminal', 'copy', 'paste', 'terminalSearch', 'zoomFontIn', 'zoomFontOut', 'toggleLineNumbers', 'toggleTimestamps', 'resetOutput', 'clearScrollback'],
   },
 ]
 

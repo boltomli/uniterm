@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -26,6 +27,7 @@ type SPICEProxy struct {
 	listener net.Listener
 	server   *http.Server
 	target   string
+	upstream *SocksProxy
 	// authToken is the per-listen random secret: it scopes the proxy's path
 	// in server mode, keys the /api/web dispatch registry, and is the only
 	// way to attach in loopback mode (?token=).
@@ -37,11 +39,12 @@ type SPICEProxy struct {
 	conns     map[*websocket.Conn]net.Conn
 }
 
-func NewSPICEProxy(target string) *SPICEProxy {
+func NewSPICEProxy(target string, upstream *SocksProxy) *SPICEProxy {
 	return &SPICEProxy{
-		target: target,
-		stopCh: make(chan struct{}),
-		conns:  make(map[*websocket.Conn]net.Conn),
+		target:   target,
+		upstream: upstream,
+		stopCh:   make(chan struct{}),
+		conns:    make(map[*websocket.Conn]net.Conn),
 	}
 }
 
@@ -119,8 +122,9 @@ func (p *SPICEProxy) handleWebSocket(ws *websocket.Conn) {
 	default:
 	}
 
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	tcp, err := dialer.Dial("tcp", p.target)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tcp, err := dialFirstHopContext(dialCtx, p.target, p.upstream)
 	if err != nil {
 		log.Writef("[SPICEProxy] TCP dial to %s failed: %v", p.target, err)
 		return

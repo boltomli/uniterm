@@ -60,8 +60,14 @@ type TerminalSettings struct {
 	// its default — omitempty so older settings.json files still load.
 	ZmodemIdleTimeoutSec int `json:"zmodemIdleTimeoutSec,omitempty"`
 	// SessionLogFilename controls names for new output logs. Supported tokens:
-	// %S session name, %H host, %M month, %D day, %h hour, %m minute.
+	// %S session name, %H host, %Y year, %M month, %D day, %h hour, %m minute.
 	SessionLogFilename string `json:"sessionLogFilename,omitempty"`
+	// SessionLogAutoStart, when true, starts the session output log
+	// automatically when a session registers with a panel (new tab or
+	// reconnect). Pointer + omitempty so older settings.json files (which
+	// lack this field) still load; the frontend defaults to false when
+	// nil, preserving manual per-panel logging.
+	SessionLogAutoStart *bool `json:"sessionLogAutoStart,omitempty"`
 	// WordSeparator overrides xterm.js's double-click word-selection
 	// separators. Empty means the frontend falls back to its built-in
 	// default. Mirrors the `wordSeparator` Terminal option.
@@ -99,6 +105,15 @@ type TerminalSettings struct {
 	// bracketed-paste markers without executing. Empty means the frontend
 	// falls back to "lines".
 	CommandSendMode string `json:"commandSendMode,omitempty"`
+	// ClearToScrollback controls what a clear-screen sequence (ED2, e.g. the
+	// shell's `clear`) does (issue #1551). Pointer + omitempty so settings.json
+	// written by older builds still loads; nil means true (the frontend
+	// default): scroll the viewport into the scrollback before clearing,
+	// preserving history, and strip ED3 (erase scrollback) so remote output
+	// can never wipe the scrollback. false is standard terminal behaviour:
+	// ED2 wipes only the screen and ED3 passes through, so erase-scrollback
+	// sequences (e.g. a `clear && printf '\e[3J'` alias) clear the history.
+	ClearToScrollback *bool `json:"clearToScrollback,omitempty"`
 }
 
 // TerminalThemeColors mirrors xterm.js's ITheme shape: the 4 base colors
@@ -165,6 +180,9 @@ type AISettings struct {
 	// "" (plain, default) keeps the shared left-aligned full-width layout,
 	// "bubble" right-aligns a content-sized chat bubble (issue #1478).
 	UserMessageStyle string          `json:"userMessageStyle,omitempty"`
+	// SendKey selects the AI-panel send shortcut: "enter" (default) sends on
+	// Enter, "ctrl-enter" sends on Ctrl/Cmd+Enter and Enter inserts a newline.
+	SendKey          string          `json:"sendKey,omitempty"`
 	Models           []AIModelConfig `json:"models"`
 	// Read only for migration to local_state.json. New clients omit this field.
 	ActiveModelID string `json:"activeModelId,omitempty"`
@@ -279,6 +297,13 @@ type AppSettings struct {
 	// Pointer + omitempty so settings.json written by older builds still
 	// loads; nil means "show" (the frontend default).
 	ShowTrayIcon *bool `json:"showTrayIcon,omitempty"`
+	// MinimizeToTray sends the minimize button to the tray instead of the
+	// taskbar (issue #1556): tabs and sessions keep running, restore via the
+	// tray icon — which is forced on while this is enabled so the hidden
+	// window stays recoverable. Close paths are untouched and keep quitting.
+	// Pointer + omitempty so settings.json written by older builds still
+	// loads; nil means "off" (minimise as usual).
+	MinimizeToTray *bool `json:"minimizeToTray,omitempty"`
 	// HostListMenuStyle selects how the host list opens the connection
 	// menu: "button" (hover buttons) or "rightclick". Empty means the
 	// frontend falls back to `button`.

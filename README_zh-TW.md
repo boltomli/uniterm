@@ -50,7 +50,7 @@
 遠端終端機、本地與序列埠終端機、檔案傳輸、遠端桌面、資料庫、容器與伺服器監控 —— 涵蓋所有遠端存取需求。
 
 - **終端機** — SSH / Telnet / Mosh / Raw TCP / 序列埠，外加本地 Shell（PowerShell / CMD / Git Bash / WSL）。
-- **檔案傳輸** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / Zmodem，雙窗格瀏覽，並在 SSH 終端機內支援 `rz`/`sz`。
+- **檔案傳輸** — SFTP / SCP / FTP / FTPS / SMB / WebDAV / S3 / 本機檔案 / WSL 檔案 / Zmodem，雙窗格瀏覽，並在 SSH 終端機內支援 `rz`/`sz`。
 - **遠端桌面** — RDP（Windows 遠端桌面）、VNC（Linux 遠端控制）、SPICE（KVM/QEMU 虛擬機器）、X11（X Window 轉發）
 - **資料庫用戶端** — MySQL / PostgreSQL / Oracle / SQL Server / SQLite / rqlite / Redis / MongoDB / Elasticsearch，支援 AI 自然語言查詢與資料列編輯。
 - **Kubernetes 與容器** — Kubernetes / Docker / Podman / nerdctl (containerd) / WSLC，叢集資源與映像檔管理、Pod 日誌與 exec 終端機、CPU/記憶體指標。
@@ -73,7 +73,7 @@
 
 - **連線管理員** — 分組、搜尋和批次管理伺服器連線；支援加密匯入/匯出，以及從其他終端機軟體匯入（MobaXterm、Xshell 等）。
 - **工作區** — 將終端機分頁拖曳至內容區即可自由分割，任意組合成工作區；拖曳面板邊緣可調整大小與重新排列。
-- **網路工具箱** — 網路掃描、SSH 連接埠轉發隧道，以及為其他裝置執行臨時伺服器的本地服務。
+- **網路工具箱** — 網路掃描、SSH 連接埠轉發隧道、流量擷取、防火牆管理，以及為其他裝置執行臨時伺服器的本地服務。
 - **雲端同步** — 提供 Git 儲存庫、WebDAV、SFTP、S3 與 SMB 五種模式的加密雲端同步，不必擔心資料遺失或外洩，並能在多裝置間無縫接續工作。
 - **主題與國際化** — 28 種終端機主題、3 種介面主題（深色 / 深藍 / 淺色）以及可自訂的背景圖片；支援 11 種語言介面：繁體中文、簡體中文、英文、日文、韓文、德文、西班牙文、法文、俄文、葡萄牙文、越南文。
 
@@ -94,6 +94,8 @@
 | 檔案傳輸 | SMB | Windows 共用資料夾、NAS 檔案存取 |
 | 檔案傳輸 | WebDAV | WebDAV 伺服器檔案管理 |
 | 檔案傳輸 | S3 | 相容 Amazon S3 的物件儲存 |
+| 檔案傳輸 | 本機檔案 | 本機檔案系統的雙窗格瀏覽器 |
+| 檔案傳輸 | WSL 檔案 | WSL 發行版檔案瀏覽器（僅 Windows） |
 | 檔案傳輸 | Zmodem | 在終端機內透過 rz/sz 指令傳輸檔案 |
 | 遠端桌面 | RDP | Windows 伺服器遠端桌面管理 |
 | 遠端桌面 | VNC | Linux 伺服器遠端控制 |
@@ -354,6 +356,7 @@ uniTerm/
   <tr>
     <td align="center"><a href="https://github.com/rsipka">@rsipka</a></td>
     <td align="center"><a href="https://github.com/caibingxin666">@caibingxin666</a></td>
+    <td align="center"><a href="https://github.com/zcy85611">@zcy85611</a></td>
   </tr>
 </table>
 

@@ -2,7 +2,7 @@
   <div
     class="companion-sidebar file-sidebar"
   >
-    <div v-if="!sessionId" class="companion-empty">
+    <div v-if="!sessionId || connectError" class="companion-empty">
       <span v-if="connecting">{{ t('companion.connecting') }}</span>
       <template v-else-if="connectError">
         <span>{{ connectError }}</span>
@@ -51,7 +51,7 @@
           @delete="onDelete"
           @mkdir="onMkdir"
           @symlink="onSymlink"
-          :supports-symlink="true"
+          :supports-symlink="!isLocalCompanion"
           show-copy-path-to-terminal
           @chmod="onChmod"
           @send-to-other="onDownloadTo"
@@ -261,6 +261,31 @@ async function ensureConnected() {
   }
 }
 
+// Recovery for a listing that hit a dead companion session ("not connected").
+// The action is gated by real session state — without this, an unreachable
+// host turns every failed list into an immediate re-list and the panel
+// refreshes in a tight loop:
+// - companion still connecting → wait; its 'connected' status event re-lists.
+// - companion connected → transient race, single delayed retry.
+// - companion dead → rebuild ONLY while the owning terminal session can still
+//   come up; when that one is down too, stay quiet — the terminal's
+//   'connected' status hook rebuilds the companion once it reconnects.
+async function recoverNotConnected() {
+  const sid = sessionId.value
+  try {
+    const sessions = await ListSessions()
+    const st = sessions.find((s: { id: string; status: string }) => s.id === sid)?.status
+    if (st === 'connecting') return
+    if (st === 'connected') { scheduleRefreshRetry(); return }
+    const pid = companionStore.activeFilesPanelId
+    const ownerSid = pid ? panelStore.getPanel(pid)?.sessionId : undefined
+    const ownerSt = ownerSid ? sessions.find((s: { id: string; status: string }) => s.id === ownerSid)?.status : undefined
+    if (ownerSt === 'connected' || ownerSt === 'connecting') ensureConnected()
+  } catch {
+    scheduleRefreshRetry() // status unknown — fall back to the plain retry
+  }
+}
+
 // Listing / navigation engine (refresh coalescing + retry glue stays here).
 const listing = useFileListing({
   sid: () => sessionId.value ?? undefined,
@@ -270,7 +295,14 @@ const listing = useFileListing({
   listTimeoutMs: LIST_TIMEOUT_MS,
   onListSuccess: () => { connectError.value = '' },
   onListError: (err) => {
-    if (/not connected/i.test(err)) { scheduleRefreshRetry(); return true }
+    if (/not connected/i.test(err)) {
+      // The companion session is gone (e.g. the owning SSH session was
+      // reconnected, which orphans the session built against the old
+      // connection). Recover by state-gated rebuild/retry, never by an
+      // immediate re-list (see recoverNotConnected).
+      recoverNotConnected()
+      return true
+    }
     if (/timeout/i.test(err)) { msg.warning(t('companion.refreshTimeout')); return true }
     return false
   },
@@ -321,6 +353,12 @@ function openStandaloneSftp() {
     }))
     return
   }
+  if (companionStore.isLocalPanel(pid)) {
+    window.dispatchEvent(new CustomEvent('app:connect-local-file', {
+      detail: { ...panel, sourceTabId: panel.tabId, initialPath },
+    }))
+    return
+  }
   const ev = companionStore.isWslPanel(pid) ? 'app:connect-wsl-file' : 'app:connect-sftp'
   // sourceTabId anchors the new tab beside the owning terminal tab
   window.dispatchEvent(new CustomEvent(ev, { detail: { ...panel, sourceTabId: panel.tabId, initialPath } }))
@@ -336,11 +374,16 @@ const followActive = computed(() => {
   const pid = companionStore.activeFilesPanelId
   return !!pid && companionStore.followPathByPanel[pid] === true
 })
-// Following requires an SSH or WSL terminal panel (the only panels that emit
-// terminal:cwd with POSIX paths).
+// Following requires a terminal panel that emits terminal:cwd: SSH (polling),
+// WSL (injected prompt hook) and local terminals (OSC-7 scanner; shells with
+// prompt integration report on their own, others get the hook injected on
+// demand).
 const followSupported = computed(() => !!companionStore.activeFilesPanelId)
 
-// WSL sessions whose terminal reported the cwd hook as requested this
+// Whether the active companion owns a local terminal panel.
+const isLocalCompanion = computed(() => companionStore.isLocalPanel(companionStore.activeFilesPanelId))
+
+// WSL/local sessions whose terminal reported the cwd hook as requested this
 // session: the follow toggle must not re-ask (or re-inject) for them.
 // Per-session by design — the hook lives in the session's shell, so every
 // new session asks once via the toggle confirmation.
@@ -351,7 +394,7 @@ async function toggleFollow() {
   if (!pid) return
   const enabling = companionStore.followPathByPanel[pid] !== true
   const panel = panelStore.getPanel(pid)
-  if (enabling && panel?.type === 'wsl' && panel.sessionId
+  if (enabling && (panel?.type === 'wsl' || panel?.type === 'local') && panel.sessionId
     && !cwdHookRequested.has(panel.sessionId)) {
     // The WSL cwd hook is typed into the session's shell on demand; ask
     // once per session before the first injection (issue #1388: injecting
@@ -411,15 +454,26 @@ function scheduleFollowNavigate(path: string) {
 
 let unsubCwd: (() => void) | null = null
 
+// A local terminal companion browses the local filesystem, whose sessions
+// report OSC-7 cwd as "/C:/Users/x" (url.Parse of "file:///C:/..."). The
+// sidebar and the local-file session speak the drive-first form ("C:/Users/x").
+function normalizeLocalCwdReport(path: string): string {
+  return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
+}
+
 function onTerminalCwd(ev: { data?: unknown }) {
   const p = ev?.data as { sessionId?: string; cwd?: string } | undefined
   if (!p?.sessionId || !p.cwd) return
-  // Only the active SSH/WSL panel's own terminal session drives navigation.
+  // Only the active SSH/WSL/local panel's own terminal session drives navigation.
   const pid = companionStore.activeFilesPanelId
   if (!pid || companionStore.followPathByPanel[pid] !== true) return
   const panel = panelStore.getPanel(pid)
   if (!panel || panel.sessionId !== p.sessionId) return
-  if (!p.cwd.startsWith('/')) return // Windows local terminals are out of scope
+  if (companionStore.isLocalPanel(pid)) {
+    scheduleFollowNavigate(normalizeLocalCwdReport(p.cwd))
+    return
+  }
+  if (!p.cwd.startsWith('/')) return // Windows paths only apply to local companions
   scheduleFollowNavigate(p.cwd)
 }
 
@@ -497,7 +551,16 @@ function bindListeners() {
   unsubData?.()
   unsubExtEdit?.()
   unsubStatus =Events.On('session:status', (ev) => { const payload: { id: string; status: string } = ev.data;
-    if (payload.id === followTerminalSessionId.value && payload.status === 'connected') syncCwdTracking()
+    if (payload.id === followTerminalSessionId.value && payload.status === 'connected') {
+      syncCwdTracking()
+      // The owning SSH panel (re)connected — e.g. the user pressed Enter to
+      // retry after a drop, which builds a NEW terminal session. The companion
+      // SFTP session created against the old connection is dead by then, so
+      // rebuild it (a no-op when it is still alive) instead of leaving the
+      // file view and drag-drop uploads broken until the user switches tabs
+      // back and forth.
+      if (companionStore.filesVisible) ensureConnected()
+    }
     if (payload.id !== sessionId.value) return
     if (payload.status === 'connected') {
       onRefresh()

@@ -1306,6 +1306,10 @@ async function reconnectWithSize(width: number, height: number) {
     status.value = 'error'
   } finally {
     reconnecting = false
+    if (pendingSecurityFallback) {
+      pendingSecurityFallback = false
+      void reconnect()
+    }
     // Catch viewport changes that happened while the handshake was running.
     onContainerResize()
   }

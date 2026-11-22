@@ -224,9 +224,13 @@ type App struct {
 	// customLogDir, when non-empty, overrides defaultSessionLogDir()
 	// as the target for new session logs. Set from settings via
 	// SetDefaultSessionLogDir; ongoing logs are not migrated.
-	customLogDir         string
-	sessionLogFilename   string
-	sessionLogSettingsMu stdsync.RWMutex
+	// sessionLogAutoStart, when true, starts the log of the first
+	// session on every panel automatically (global default; the
+	// per-connection LogOnConnect still applies independently).
+	customLogDir          string
+	sessionLogFilename    string
+	sessionLogAutoStart   bool
+	sessionLogSettingsMu  stdsync.RWMutex
 
 	// errCh accumulates non-fatal init failures during startup() so the
 	// frontend can surface them (see StartupError / "app:startup-error"
@@ -596,6 +600,7 @@ func (a *App) bootstrapStores(dataDir string, upgrade bool) {
 			fileGrants.addDir(settings.Terminal.SessionLogDir)
 			_ = a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
 			a.setSessionLogFilename(settings.Terminal.SessionLogFilename)
+			a.setSessionLogAutoStart(settings.Terminal.SessionLogAutoStart != nil && *settings.Terminal.SessionLogAutoStart)
 		}
 	}
 
@@ -2664,6 +2669,7 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		// granted on the next startup / LoadSettings, mirroring the zmodem dir.
 		_ = a.SetDefaultSessionLogDir(settings.Terminal.SessionLogDir)
 		a.setSessionLogFilename(settings.Terminal.SessionLogFilename)
+		a.setSessionLogAutoStart(settings.Terminal.SessionLogAutoStart != nil && *settings.Terminal.SessionLogAutoStart)
 		a.triggerAutoSync()
 		// Re-apply the global show/hide hotkey so binding changes (and the
 		// enable switch) take effect immediately. No-op when unchanged.
@@ -2672,8 +2678,10 @@ func (a *App) SaveSettings(settings store.AppSettings) error {
 		// No-op when the resolved language is unchanged.
 		a.refreshTrayLanguage(settings.Language)
 		// Show/hide the tray icon when that toggle changed; creates the
-		// tray lazily if the app started with it disabled.
-		a.applyTrayVisibility(trayIconEnabled(&settings), settings.Language)
+		// tray lazily if the app started with it disabled. Minimize-to-tray
+		// leaves no taskbar button, so the tray is the only way back to the
+		// hidden window — it forces the icon on.
+		a.applyTrayVisibility(trayIconEnabled(&settings) || minimizeToTrayEnabled(&settings), settings.Language)
 	}
 	return err
 }
@@ -2785,42 +2793,66 @@ func (a *App) SetCommandEnabled(name string, enabled bool) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.SetEnabled(name, enabled)
+	err := a.commandsStore.SetEnabled(name, enabled)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SetCommandLocked(name string, locked bool) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.SetLocked(name, locked)
+	err := a.commandsStore.SetLocked(name, locked)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SetCommandSortOrder(name string, order int) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.SetSortOrder(name, order)
+	err := a.commandsStore.SetSortOrder(name, order)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) DeleteCommand(name string) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.Delete(name)
+	err := a.commandsStore.Delete(name)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) CreateCommand(name, description, argumentHint, body string) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.CreateCommand(name, description, argumentHint, body)
+	err := a.commandsStore.CreateCommand(name, description, argumentHint, body)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 func (a *App) SaveCommand(name, description, argumentHint, body string) error {
 	if a.commandsStore == nil {
 		return fmt.Errorf("commands store not initialized")
 	}
-	return a.commandsStore.SaveCommand(name, description, argumentHint, body)
+	err := a.commandsStore.SaveCommand(name, description, argumentHint, body)
+	if err == nil {
+		a.triggerAutoSync()
+	}
+	return err
 }
 
 // expandDialogDir expands a leading "~" and returns dir only if it is an

@@ -39,7 +39,7 @@ func (s *SPICESession) Connect(config ConnectionConfig) error {
 	// Same wiring as VNCSession: a local WebSocket↔TCP proxy gives the
 	// frontend a 127.0.0.1 URL gated by a per-listen token instead of a
 	// direct browser→server socket.
-	proxy := NewSPICEProxy(net.JoinHostPort(host, strconv.Itoa(port)))
+	proxy := NewSPICEProxy(net.JoinHostPort(host, strconv.Itoa(port)), config.Proxy)
 	addr, err := proxy.Start()
 	if err != nil {
 		s.setStatus(StatusError)

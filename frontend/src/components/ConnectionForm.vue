@@ -51,6 +51,22 @@
                 </el-button>
               </div>
             </el-form-item>
+            <!-- ── Local/WSL file browser: distro + start path ── -->
+            <template v-if="form.type === 'local-file' || form.type === 'wsl-file'">
+              <el-form-item v-if="form.type === 'wsl-file'" :label="t('conn.wslDistro')" required>
+                <el-select v-model="form.shellPath" filterable allow-create clearable>
+                  <el-option
+                    v-for="sh in wslShellOptions"
+                    :key="sh.value"
+                    :label="sh.label"
+                    :value="sh.value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('conn.startPath')">
+                <el-input v-model="form.cwd" :placeholder="t('conn.startPathPlaceholder')" clearable />
+              </el-form-item>
+            </template>
             <el-form-item v-if="form.type === 'redis'" :label="t('conn.redisMode')">
               <el-radio-group v-model="form.redisMode">
                 <el-radio-button value="standalone">{{ t('conn.redisModeStandalone') }}</el-radio-button>
@@ -65,7 +81,7 @@
                 <el-input v-model="form.redisMasterName" placeholder="mymaster" />
               </el-form-item>
             </template>
-            <el-form-item :label="form.type === 's3' ? 'Endpoint' : form.type === 'webdav' ? 'URL' : t('conn.host')" required v-if="!isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'k8s' && form.type !== 'container' && !isRedisSentinel">
+            <el-form-item :label="form.type === 's3' ? 'Endpoint' : form.type === 'webdav' ? 'URL' : t('conn.host')" required v-if="!isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'k8s' && form.type !== 'container' && !isRedisSentinel">
               <div class="host-port-row">
                 <el-input ref="hostInputRef" v-model="form.host" class="host-input" :placeholder="form.type === 's3' ? 'e.g. https://s3.amazonaws.com' : form.type === 'webdav' ? 'https://dav.example.com/dav/' : t('conn.hostPlaceholder')" />
                 <template v-if="form.type !== 's3' && form.type !== 'webdav'">
@@ -107,11 +123,10 @@
                 </el-button>
               </div>
             </el-form-item>
-            <el-form-item v-if="(form.authType !== 'identity' || showsIdentityUserField) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
+            <el-form-item v-if="(form.authType !== 'identity' || showsIdentityUserField) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
               <el-input v-model="form.user" :placeholder="form.authType === 'identity' ? t('conn.identityUserOverrideHint') : (form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder'))" />
             </el-form-item>
-
-            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password') || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
+            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password') || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : savedSecretPlaceholder)" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
@@ -549,6 +564,14 @@
                       <el-option :label="t('conn.telnetSendModeChar')" value="character" />
                       <el-option :label="t('conn.telnetSendModeLine')" value="line" />
                     </el-select>
+                  </el-form-item>
+                </template>
+                <template v-if="form.type === 'mosh'">
+                  <el-form-item :label="t('conn.moshPort')">
+                    <el-input v-model="form.moshPort" :placeholder="t('conn.moshPortPlaceholder')" clearable />
+                  </el-form-item>
+                  <el-form-item :label="t('conn.moshLang')">
+                    <el-input v-model="form.moshLang" :placeholder="t('conn.moshLangPlaceholder')" clearable />
                   </el-form-item>
                 </template>
               </div>
@@ -1095,7 +1118,17 @@ const TUNNEL_UNSUPPORTED = ['mosh', 'local', 'wsl', 'serial', 'container']
 const showTunnel = computed(() =>
   !TUNNEL_UNSUPPORTED.includes(form.type) && !isSqliteDb.value
 )
-const showProxy = computed(() => ['ssh', 'sftp', 'scp', 'monitor'].includes(form.type))
+// Types whose first outbound TCP dial routes through the configured proxy.
+// Excluded: no network egress (local/wsl/serial), UDP-only (mosh), special
+// paths (container inherits its referenced SSH connection's proxy silently),
+// and driver limits (sqlite file db, rqlite, redis sentinel — no dialer hook).
+const PROXY_UNSUPPORTED = ['mosh', 'local', 'wsl', 'wsl-file', 'serial', 'container']
+const showProxy = computed(() =>
+  !PROXY_UNSUPPORTED.includes(form.type) &&
+  !isSqliteDb.value &&
+  form.dbType !== 'rqlite' &&
+  !isRedisSentinel.value
+)
 const showAdvancedToggle = computed(() =>
   showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'elasticsearch' || form.type === 'x11-desktop' || form.type === 'rdp'
 )
@@ -1185,6 +1218,8 @@ const form = reactive<ConnectionConfig>({
   encoding: 'utf-8',
   termType: 'xterm-256color',
   backspaceKey: 'del',
+  moshPort: '',
+  moshLang: '',
   telnetNegotiationMode: 'active' as 'active' | 'passive',
   telnetSendMode: 'character' as 'character' | 'line',
   localEcho: false,
@@ -1248,7 +1283,7 @@ const advGroupNetwork = computed(() =>
   showProxy.value || showTunnel.value
 )
 const advGroupProtocol = computed(() =>
-  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet', 'rdp', 'local', 'wsl'].includes(form.type) ||
+  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet', 'mosh', 'rdp', 'local', 'wsl'].includes(form.type) ||
   isSSHAlgoType.value
 )
 const sshAlgoDialogVisible = ref(false)
@@ -1541,6 +1576,11 @@ watch(() => form.type, (newType) => {
   if (newType === 'wsl' && wslShellOptions.value.length > 0) {
     form.shellPath = wslShellOptions.value[0].value
   }
+  // The standalone WSL file browser carries the distro on the same
+  // wsl://<distro> shell-path field; default it like the wsl terminal.
+  if (newType === 'wsl-file' && wslShellOptions.value.length > 0) {
+    form.shellPath = wslShellOptions.value[0].value
+  }
   if (newType === 'serial') {
     scanSerialPorts()
   }
@@ -1634,6 +1674,8 @@ function resetForm() {
   form.encoding = 'utf-8'
   form.termType = 'xterm-256color'
   form.backspaceKey = 'del'
+  form.moshPort = ''
+  form.moshLang = ''
   form.telnetNegotiationMode = 'active'
   form.telnetSendMode = 'character'
   form.localEcho = false
@@ -1923,16 +1965,26 @@ function normalizeForm(): ConnectionConfig {
   }
   // shellArgs/cwd only apply to local/wsl terminals; clear them when the
   // connection is switched to another type so stale values never persist
-  // (same semantics as the key-field cleanup above).
-  if (normalized.type !== 'local' && normalized.type !== 'wsl') {
+  // (same semantics as the key-field cleanup above). The local-file/wsl-file
+  // browsers keep cwd (it is their start path) but never run a shell.
+  if (normalized.type === 'local-file' || normalized.type === 'wsl-file') {
+    normalized.shellArgs = ''
+  } else if (normalized.type !== 'local' && normalized.type !== 'wsl') {
     normalized.shellArgs = ''
     normalized.cwd = ''
+  }
+  // mosh options only apply to mosh connections; clear them when the
+  // connection is switched to another type so stale values never persist
+  // (same semantics as the shellArgs cleanup above).
+  if (normalized.type !== 'mosh') {
+    normalized.moshPort = ''
+    normalized.moshLang = ''
   }
   const redisSentinel = normalized.type === 'redis' && normalized.redisMode === 'sentinel'
   if (redisSentinel) {
     if (!normalized.redisSentinels?.trim()) throw new Error(t('conn.redisSentinelsRequired'))
     if (!normalized.redisMasterName?.trim()) throw new Error(t('conn.redisMasterNameRequired'))
-  } else if (normalized.type !== 'local' && normalized.type !== 'wsl' && normalized.type !== 'serial' && normalized.type !== 'k8s' && normalized.type !== 'container' && !isSqliteDb.value && !normalized.host.trim()) {
+  } else if (normalized.type !== 'local' && normalized.type !== 'wsl' && normalized.type !== 'local-file' && normalized.type !== 'wsl-file' && normalized.type !== 'serial' && normalized.type !== 'k8s' && normalized.type !== 'container' && !isSqliteDb.value && !normalized.host.trim()) {
     throw new Error(t('conn.hostRequired'))
   }
   if (isSqliteDb.value && !normalized.host.trim()) {
@@ -1956,6 +2008,8 @@ function normalizeForm(): ConnectionConfig {
       normalized.type === 'serial' ? (normalized.serialPort || 'Serial')
         : normalized.type === 'k8s' ? (normalized.k8sContext || 'Kubernetes')
         : normalized.type === 'container' ? (normalized.containerRuntime || 'container')
+        : normalized.type === 'local-file' ? t('conn.localFiles')
+        : normalized.type === 'wsl-file' ? (getShellLabel(normalized.shellPath ?? '') || 'WSL Files')
         : redisSentinel ? (normalized.redisMasterName?.trim() || 'redis')
         : normalized.host.trim()
     )
@@ -2225,9 +2279,9 @@ function onConnect() {
   align-items: center;
   justify-content: center;
   gap: 0.1875rem;
-  min-width: 4rem;
+  min-width: 3.75rem;
   height: 3.25rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.25rem 0.375rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: transparent;

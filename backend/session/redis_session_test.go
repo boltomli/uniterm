@@ -107,10 +107,11 @@ func TestSwitchDBRoundTripAndValidation(t *testing.T) {
 		t.Fatal("key landed in db 5 after switching back to 0")
 	}
 
-	for _, idx := range []int{-1, 16} {
-		if err := s.SwitchDB(idx); err == nil {
-			t.Fatalf("SwitchDB(%d) succeeded, want error", idx)
-		}
+	// Only negative indexes are invalid client-side: the server decides how
+	// many databases it has (CONFIG GET databases / INFO keyspace), so index
+	// 16 is legal on a server configured with more than the default 16.
+	if err := s.SwitchDB(-1); err == nil {
+		t.Fatal("SwitchDB(-1) succeeded, want error")
 	}
 }
 

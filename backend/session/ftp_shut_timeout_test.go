@@ -103,6 +103,9 @@ func (s *fakeFTPServer) handle(conn net.Conn) {
 	reply("220 fake FTP server ready")
 
 	var dataLn net.Listener
+	// The session lists via CWD <dir> + LIST "" (legacy servers reject a
+	// path argument on the data command).
+	cwd := ""
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		fields := strings.Fields(strings.TrimSpace(scanner.Text()))
@@ -128,6 +131,9 @@ func (s *fakeFTPServer) handle(conn net.Conn) {
 			port := ln.Addr().(*net.TCPAddr).Port
 			reply("227 Entering Passive Mode (%s,%d,%d)",
 				strings.ReplaceAll(s.host, ".", ","), port/256, port%256)
+		case "CWD":
+			cwd = strings.Join(fields[1:], " ")
+			reply("250 Directory changed")
 		case "LIST":
 			if dataLn == nil {
 				reply("425 use PASV first")
@@ -142,6 +148,9 @@ func (s *fakeFTPServer) handle(conn net.Conn) {
 				continue
 			}
 			path := strings.Join(fields[1:], " ")
+			if path == "" {
+				path = cwd
+			}
 			reply("150 Opening data connection for %s", path)
 
 			// Unix ls -l lines; parseListLine needs the 10-char mode field.
