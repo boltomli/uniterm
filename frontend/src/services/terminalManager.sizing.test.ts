@@ -8,7 +8,11 @@ const { FakeTerminal, FakeFitAddon } = vi.hoisted(() => {
     cols = 80
     rows = 24
     options: Record<string, unknown> = {}
-    element: { parentElement: unknown } | null = null
+    // Real xterm exposes the rendered `.xterm` root here; the IME composition
+    // overlay queries the helper textarea and `.xterm-screen` inside it. This
+    // fake has no rendered children, so querySelector() reports them missing
+    // and the overlay no-ops (it must never be installed headless).
+    element: { parentElement: unknown; querySelector: (sel: string) => null } | null = null
     unicode = { activeVersion: '6' }
     buffer = { normal: { baseY: 0, cursorY: 0, getLine: () => undefined } }
     resizeHandlers: Array<(dims: { cols: number; rows: number }) => void> = []
@@ -30,7 +34,7 @@ const { FakeTerminal, FakeFitAddon } = vi.hoisted(() => {
       this.resizeHandlers.forEach(cb => cb({ cols, rows }))
     }
     open() {
-      this.element = { parentElement: null }
+      this.element = { parentElement: null, querySelector: () => null }
     }
     dispose() {}
   }
