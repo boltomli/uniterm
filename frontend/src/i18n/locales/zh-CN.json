@@ -1,4 +1,4 @@
-﻿{
+{
   "webUsers.resetPassword": "重置密码",
   "webUsers.resetPrompt": "为 {name} 设置新密码（≥6 位）。该操作会清空其全部密钥数据——登录密码即数据主密码。",
   "webUsers.resetTitle": "重置密码",
