@@ -60,6 +60,7 @@ wails build                 # Production build
 - Keep commits focused and atomic
 - Use the present tense ("Add feature", not "Added feature")
 - **Frontend type errors must be zero.** `npm run build` (Vite) does not type-check, so every commit touching `frontend/` is gated by the hook installed with `sh scripts/install-git-hooks.sh`; CI re-runs the same check. Run it manually any time with `cd frontend && npm run typecheck` (or `wails3 task check:frontend:types`). Do not weaken `strict`, `noUnusedLocals`/`noUnusedParameters`, or the generated-binding type shims to make an error disappear.
+- **Failing tests are in scope.** Alongside the typecheck, run `go test ./...` and `cd frontend && npx vitest run`. Fix what you find, including failures that predate your change — a stale assertion against superseded code, a test mock missing a DOM method the new code calls, a stray BOM in a JSON fixture. A red suite that nobody owns hides the next real regression. If a fix is genuinely out of scope, say so in the commit message instead of leaving it silent.
 
 ## Pull Request Guidelines
 
@@ -86,6 +87,24 @@ Merging `main` into a hardening branch is the highest-risk moment. Read
 [`docs/dev/2026-11-19-startup-safety-invariants.md`](docs/dev/2026-11-19-startup-safety-invariants.md)
 before resolving conflicts: invariants come first, then features, then performance — and a conflict must
 never be resolved by dropping a hardening guard.
+
+### Every Merge Re-verifies Security and Performance
+
+A merge can revert a hardening commit or reintroduce an unbounded path even when git reports no conflict
+(the other side rewrote the surrounding code). Before pushing a merge commit:
+
+- **Dependencies must not go backwards.** Diff the resolved versions against *both* parents; keep the
+  newer of the two, keep every `replace` pin and the vendored `file:vendor/*.tgz` references (npm stays
+  remote-free — no remote tarball URLs in `frontend/package.json`).
+- **Existing hardening still stands**: TOFU host-key verification (`HostKeyCallback`; no
+  `InsecureIgnoreHostKey` outside tests), `fileGrants` / `SafeLocalJoin`, capped Redis value reads,
+  TFTP `blksize` clamping and per-request panic recovery, CSP, renderer redaction, update signatures.
+- **Read the new code from `main`** for unbounded reads/allocations, missing timeouts or deadlines, new
+  unauthenticated surfaces, swallowed errors on hot paths, and `v-html` without `sanitizeRenderedHtml`.
+- **Hand-resolved conflicts must not cost performance**: no extra round trip per call, no O(n²) loop; keep
+  pipelined/transactional commands batched exactly as before.
+- Record what you checked in the merge commit message, including any pre-existing failure you fixed or
+deferred along the way.
 
 ## Project Structure
 
@@ -187,6 +206,7 @@ wails build                 # 生产构建
 - 保持每次提交聚焦且原子化
 - 使用现在时态（"Add feature" 而非 "Added feature"）
 - **前端类型错误必须为零。** `npm run build`（Vite）不做类型检查，因此凡是改动 `frontend/` 的提交，都会由 `sh scripts/install-git-hooks.sh` 安装的 pre-commit 钩子执行 `npm run typecheck` 拦截；CI 会再跑一遍同一检查。也可以随时手动执行 `cd frontend && npm run typecheck`（或 `wails3 task check:frontend:types`）。不允许通过放宽 `strict`、`noUnusedLocals`/`noUnusedParameters` 或生成绑定的类型声明来“消除”错误。
+- **失败的测试同样在范围内。** 除了类型检查，提交前还要跑 `go test ./...` 和 `cd frontend && npx vitest run`。发现问题就修，**包括改动之前就已经失败的那些**：断言还对着已被上游改写的实现、测试 mock 缺少新代码要调的 DOM 方法、JSON fixture 里混进 BOM。长期红灯的套件会把下一个真实回归埋掉。确实超出本次范围的，必须在提交信息里写清楚，而不是默默留着。
 
 ## PR 规范
 
@@ -211,6 +231,21 @@ wails build                 # 生产构建
 把 `main` 合并进加固分支是最危险的时刻。解冲突前先读
 [`docs/dev/2026-11-19-startup-safety-invariants.md`](docs/dev/2026-11-19-startup-safety-invariants.md)：
 不变量优先，其次功能，最后性能；**不允许**靠删掉加固代码来"解决冲突"。
+
+### 每次合并都要重新校验安全与性能
+
+即使 git 报告没有冲突，合并也可能把某个加固提交改回去、或重新引入无上限的路径（因为对端重写了周边代码）。
+推送合并提交前请确认：
+
+- **依赖不能倒退。** 把解析出的版本与**两边父提交**逐一对比，取较新者；保留所有 `replace` 钉版和
+  `frontend/vendor/*.tgz` 本地引用（npm 保持不依赖远端——`frontend/package.json` 里不允许出现远程 tarball URL）。
+- **既有加固仍然有效**：主机密钥 TOFU 校验（`HostKeyCallback`，测试之外不得出现
+  `InsecureIgnoreHostKey`）、`fileGrants` / `SafeLocalJoin`、Redis 值读取上限、TFTP `blksize` 钳制与
+  单请求 panic 兜底、CSP、renderer 脱敏、更新签名校验。
+- **读一遍 `main` 新来的代码**：有没有无上限读取/分配、缺失的超时与 deadline、新的未认证入口、热路径上
+  被吞掉的错误、以及没有 `sanitizeRenderedHtml` 的 `v-html`。
+- **手工解冲突不能带来性能损失**：不能多出每调用一次的往返，不能出现 O(n²)；流水线/事务命令保持原本的批量形态。
+- 在合并提交信息里写清楚查了什么，以及顺手修掉或明确推迟的既有失败。
 
 ## 项目结构
 
