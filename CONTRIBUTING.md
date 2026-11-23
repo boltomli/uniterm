@@ -104,7 +104,7 @@ A merge can revert a hardening commit or reintroduce an unbounded path even when
 - **Hand-resolved conflicts must not cost performance**: no extra round trip per call, no O(n²) loop; keep
   pipelined/transactional commands batched exactly as before.
 - Record what you checked in the merge commit message, including any pre-existing failure you fixed or
-deferred along the way.
+  deferred along the way.
 
 ## Project Structure
 
