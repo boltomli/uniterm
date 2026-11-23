@@ -557,9 +557,18 @@ func (s *RedisSession) GetKeyInfo(key string) (*RedisKeyInfo, error) {
 			info.TTL = ttl
 		}
 		for i := range lengthCmds {
-			// A WRONGTYPE reply is the expected answer for every type but
-			// one, so these errors are deliberately ignored.
-			reply, _ := receive()
+			// WRONGTYPE is the expected answer for every type but one, so
+			// those error replies are dropped. Anything else (a broken
+			// connection, a protocol error) is a real failure and must not be
+			// masked as "length unknown".
+			reply, replyErr := receive()
+			if replyErr != nil {
+				var redisErr redis.Error
+				if errors.As(replyErr, &redisErr) && strings.HasPrefix(redisErr.Error(), "WRONGTYPE") {
+					continue
+				}
+				return replyErr
+			}
 			if n, ok := reply.(int64); ok {
 				lengths[i] = n
 			}

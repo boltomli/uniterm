@@ -761,3 +761,21 @@ func TestGetKeyInfoLength(t *testing.T) {
 		}
 	}
 }
+
+// TestGetKeyInfoSurfacesTransportErrors guards the error handling in the
+// length pipeline: the WRONGTYPE replies from the non-matching LEN/CARD
+// commands are expected and dropped, but a real failure must surface instead
+// of silently reporting "length unknown" (0).
+func TestGetKeyInfoSurfacesTransportErrors(t *testing.T) {
+	m := miniredis.RunT(t)
+	s := newTestRedisSession(t, m)
+
+	if err := s.SetString("k", "v"); err != nil {
+		t.Fatalf("SetString: %v", err)
+	}
+	m.Close()
+
+	if _, err := s.GetKeyInfo("k"); err == nil {
+		t.Fatal("GetKeyInfo on a dead server returned no error")
+	}
+}
