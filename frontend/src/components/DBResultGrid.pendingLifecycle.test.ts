@@ -34,9 +34,13 @@ describe('DBResultGrid pending lifecycle (DB-02)', () => {
     expect(rowsWatch).toMatch(/bumpPending\(\)/)
   })
 
-  it('clears the selection when its row left the array', () => {
+  it('clears the selection when the rows array changes', () => {
+    // The grid now uses spreadsheet-style range selection (see
+    // DBResultGrid.selection.test.ts): selection is stored as row/column
+    // indexes and clearSelection() drops it on every rows change, so a cleared
+    // selection can never point at a row that left the array.
     const rowsWatch = bodyOf(gridScript, 'watch(() => props.rows', 'defineExpose')
-    expect(rowsWatch).toMatch(/if \(selectedCell\.value && !rows\.includes\(selectedCell\.value\.row\)\)/)
+    expect(rowsWatch).toMatch(/clearSelection\(\)/)
   })
 })
 

@@ -113,7 +113,10 @@ import { java } from '@codemirror/lang-java'
 import { rust } from '@codemirror/lang-rust'
 import { useSettingsStore } from '../stores/settingsStore'
 
-const props = defineProps<{
+// `wrap` defaults to true. Vue casts an absent Boolean prop (no default
+// declared) to false, so without an explicit default every caller that omits
+// the prop silently lost EditorView.lineWrapping.
+const props = withDefaults(defineProps<{
   modelValue: string
   filePath?: string
   compact?: boolean
@@ -121,7 +124,7 @@ const props = defineProps<{
   wrap?: boolean
   readonly?: boolean
   fontSize?: number
-}>()
+}>(), { wrap: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,9 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/FZambia/sentinel"
+	"github.com/gomodule/redigo/redis"
 	"github.com/ys-ll/uniterm/backend/log"
 )
+
+// errRedisNil mirrors go-redis' redis.Nil error message so frontend error
+// handling keeps seeing the same "redis: nil" string for missing keys.
+var errRedisNil = errors.New("redis: nil")
 
 // defaultRedisReadLimit is the fallback cap for capped value reads
 // (GetHashFields / GetSetMembers / GetZSetRangeCapped) when the caller passes
@@ -48,14 +54,15 @@ type ScoredMember struct {
 	Member  string  `json:"member"`
 }
 
-// RedisSession implements the Session interface for Redis connections using go-redis.
+// RedisSession implements the Session interface for Redis connections using
+// redigo (a thin RESP client) instead of go-redis to keep the binary small.
 type RedisSession struct {
 	baseSession
-	client *redis.Client
+	pool   *redis.Pool
 	dbIdx  int
 	closed bool
 	// cfg is the config of the last successful Connect, kept so SwitchDB can
-	// rebuild a client pinned to another database index.
+	// rebuild a pool pinned to another database index.
 	cfg ConnectionConfig
 }
 
@@ -71,44 +78,45 @@ func NewRedisSession(id string) *RedisSession {
 	}
 }
 
-// newRedisClient builds a go-redis client for the given connection config,
-// pinned to database index db. go-redis pins SELECT per client — every
-// connection it opens issues `SELECT db` on init — so a database switch must
-// go through a fresh client instead of a SELECT on one pooled connection.
-func newRedisClient(config ConnectionConfig, db int) (*redis.Client, error) {
-	if config.RedisMode == "sentinel" {
-		addrs := make([]string, 0)
-		for _, a := range strings.Split(config.RedisSentinels, ",") {
-			if a = strings.TrimSpace(a); a != "" {
-				addrs = append(addrs, a)
-			}
-		}
-		if len(addrs) == 0 {
-			return nil, fmt.Errorf("redis sentinel: no sentinel addresses")
-		}
-		if config.RedisMasterName == "" {
-			return nil, fmt.Errorf("redis sentinel: master name required")
-		}
-		return redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:       config.RedisMasterName,
-			SentinelAddrs:    addrs,
-			SentinelUsername: config.SentinelUser,
-			SentinelPassword: config.SentinelPassword,
-			Username:         config.User,
-			Password:         config.Password,
-			DB:               db,
-		}), nil
+// redigoDialOptions builds the dial options shared by every connection mode.
+func redigoDialOptions(user, password string, upstream *SocksProxy) []redis.DialOption {
+	opts := []redis.DialOption{
+		redis.DialConnectTimeout(10 * time.Second),
+		redis.DialReadTimeout(30 * time.Second),
+		redis.DialWriteTimeout(30 * time.Second),
 	}
-	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	return redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Username: config.User,
-		Password: config.Password,
-		DB:       db,
-		// Standalone only: FailoverOptions has no Dialer field, so
-		// sentinel connections cannot route through a proxy.
-		Dialer: ProxyDialFunc(config.Proxy),
-	}), nil
+	if user != "" {
+		opts = append(opts, redis.DialUsername(user))
+	}
+	if password != "" {
+		opts = append(opts, redis.DialPassword(password))
+	}
+	if upstream != nil {
+		proxyDial := ProxyDialFunc(upstream)
+		opts = append(opts, redis.DialNetDial(func(network, addr string) (net.Conn, error) {
+			return proxyDial(context.Background(), network, addr)
+		}))
+	}
+	return opts
+}
+
+// dialWithDB dials a Redis connection and re-selects database index db, so
+// every pooled connection lands on the same db as the session. redigo keeps no
+// per-pool db state — SELECT applies to one connection only — so the index
+// must be re-applied on every dial.
+func dialWithDB(network, addr string, upstream *SocksProxy, user, password string, db int) (redis.Conn, error) {
+	opts := redigoDialOptions(user, password, upstream)
+	conn, err := redis.Dial(network, addr, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if db > 0 {
+		if _, err := conn.Do("SELECT", db); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+	return conn, nil
 }
 
 // Connect establishes a connection to the Redis server.
@@ -124,24 +132,30 @@ func (s *RedisSession) Connect(config ConnectionConfig) error {
 		s.title = fmt.Sprintf("redis:%s:%d", config.Host, config.Port)
 	}
 
-	client, err := newRedisClient(config, 0)
+	pool, err := s.buildPool(config, 0)
 	if err != nil {
 		s.setStatus(StatusError)
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if _, err := client.Ping(ctx).Result(); err != nil {
+	conn, err := pool.GetContext(context.Background())
+	if err != nil {
+		log.Writef("[RedisSession.Connect] dial failed: %v", err)
+		pool.Close()
+		s.setStatus(StatusError)
+		return fmt.Errorf("redis dial: %w", err)
+	}
+	if _, err := redis.DoWithTimeout(conn, 10*time.Second, "PING"); err != nil {
 		log.Writef("[RedisSession.Connect] PING failed: %v", err)
-		client.Close()
+		conn.Close()
+		pool.Close()
 		s.setStatus(StatusError)
 		return fmt.Errorf("redis ping: %w", err)
 	}
+	conn.Close()
 
 	s.mu.Lock()
-	s.client = client
+	s.pool = pool
 	s.cfg = config
 	s.mu.Unlock()
 
@@ -150,7 +164,89 @@ func (s *RedisSession) Connect(config ConnectionConfig) error {
 	return nil
 }
 
-// Disconnect closes the Redis connection.
+// buildPool returns a fresh pool for config whose connections are pinned to
+// database index db.
+func (s *RedisSession) buildPool(config ConnectionConfig, db int) (*redis.Pool, error) {
+	if config.RedisMode != "sentinel" {
+		return s.standalonePool(config, db), nil
+	}
+	addrs := make([]string, 0)
+	for _, a := range strings.Split(config.RedisSentinels, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("redis sentinel: no sentinel addresses")
+	}
+	if config.RedisMasterName == "" {
+		return nil, fmt.Errorf("redis sentinel: master name required")
+	}
+	return s.sentinelPool(config, addrs, db), nil
+}
+
+// standalonePool returns a pool dialing host:port directly (proxy-aware),
+// pinned to database index db.
+func (s *RedisSession) standalonePool(config ConnectionConfig, db int) *redis.Pool {
+	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+	return &redis.Pool{
+		Dial: func() (redis.Conn, error) {
+			return dialWithDB("tcp", addr, config.Proxy, config.User, config.Password, db)
+		},
+		TestOnBorrow: testOnBorrow,
+	}
+}
+
+// sentinelPool returns a pool that resolves the current master through the
+// sentinels on every dial, so failover is picked up on reconnect. Connections
+// are pinned to database index db.
+func (s *RedisSession) sentinelPool(config ConnectionConfig, addrs []string, db int) *redis.Pool {
+	sntnl := &sentinel.Sentinel{
+		Addrs:      addrs,
+		MasterName: config.RedisMasterName,
+		Dial: func(addr string) (redis.Conn, error) {
+			opts := []redis.DialOption{
+				redis.DialConnectTimeout(10 * time.Second),
+				redis.DialReadTimeout(5 * time.Second),
+				redis.DialWriteTimeout(5 * time.Second),
+			}
+			if config.SentinelUser != "" {
+				opts = append(opts, redis.DialUsername(config.SentinelUser))
+			}
+			if config.SentinelPassword != "" {
+				opts = append(opts, redis.DialPassword(config.SentinelPassword))
+			}
+			if config.Proxy != nil {
+				proxyDial := ProxyDialFunc(config.Proxy)
+				opts = append(opts, redis.DialNetDial(func(network, a string) (net.Conn, error) {
+					return proxyDial(context.Background(), network, a)
+				}))
+			}
+			return redis.Dial("tcp", addr, opts...)
+		},
+	}
+	return &redis.Pool{
+		Dial: func() (redis.Conn, error) {
+			masterAddr, err := sntnl.MasterAddr()
+			if err != nil {
+				return nil, fmt.Errorf("redis sentinel: resolve master: %w", err)
+			}
+			return dialWithDB("tcp", masterAddr, config.Proxy, config.User, config.Password, db)
+		},
+		TestOnBorrow: testOnBorrow,
+	}
+}
+
+// testOnBorrow pings idle connections before reuse.
+func testOnBorrow(c redis.Conn, t time.Time) error {
+	if time.Since(t) < time.Minute {
+		return nil
+	}
+	_, err := redis.DoWithTimeout(c, 5*time.Second, "PING")
+	return err
+}
+
+// Disconnect closes the Redis connection pool.
 func (s *RedisSession) Disconnect() error {
 	s.mu.Lock()
 	if s.closed {
@@ -160,18 +256,18 @@ func (s *RedisSession) Disconnect() error {
 	s.closed = true
 	s.mu.Unlock()
 
-	if s.client != nil {
-		s.client.Close()
+	if s.pool != nil {
+		s.pool.Close()
 	}
 	s.setStatus(StatusDisconnected)
 	return nil
 }
 
-// IsConnected returns true if the session is connected and the client is valid.
+// IsConnected returns true if the session is connected and the pool is valid.
 func (s *RedisSession) IsConnected() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.status == StatusConnected && s.client != nil
+	return s.status == StatusConnected && s.pool != nil
 }
 
 // Write is a no-op for Redis sessions (no interactive terminal I/O).
@@ -180,11 +276,46 @@ func (s *RedisSession) Write(data []byte) error { return nil }
 // Resize is a no-op for Redis sessions (no terminal dimensions).
 func (s *RedisSession) Resize(cols, rows int) error { return nil }
 
-// Client returns the underlying go-redis client.
-func (s *RedisSession) Client() *redis.Client {
+// Client returns the underlying connection pool.
+func (s *RedisSession) Client() *redis.Pool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.client
+	return s.pool
+}
+
+// do runs a single command with the given timeout on a pooled connection.
+func (s *RedisSession) do(timeout time.Duration, cmd string, args ...interface{}) (interface{}, error) {
+	pool := s.Client()
+	if pool == nil {
+		return nil, fmt.Errorf("not connected")
+	}
+	conn := pool.Get()
+	defer conn.Close()
+	return redis.DoWithTimeout(conn, timeout, cmd, args...)
+}
+
+// pipeline runs Send/Flush/Receive batches on one pooled connection. The
+// callback sends commands via send, then must call flush before receiving
+// replies — redigo buffers Send calls, so Receive without Flush blocks until
+// the read timeout.
+func (s *RedisSession) pipeline(timeout time.Duration, fn func(send func(cmd string, args ...interface{}) error, flush func() error, receive func() (interface{}, error)) error) error {
+	pool := s.Client()
+	if pool == nil {
+		return fmt.Errorf("not connected")
+	}
+	conn := pool.Get()
+	defer conn.Close()
+
+	send := func(cmd string, args ...interface{}) error {
+		return conn.Send(cmd, args...)
+	}
+	flush := func() error {
+		return conn.Flush()
+	}
+	receive := func() (interface{}, error) {
+		return redis.ReceiveWithTimeout(conn, timeout)
+	}
+	return fn(send, flush, receive)
 }
 
 // DBIndex returns the current database index.
@@ -196,50 +327,50 @@ func (s *RedisSession) DBIndex() int {
 
 // Ping checks connectivity to the Redis server.
 func (s *RedisSession) Ping() error {
-	client := s.Client()
-	if client == nil {
-		return fmt.Errorf("not connected")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.Ping(ctx).Err()
+	_, err := s.do(5*time.Second, "PING")
+	return err
 }
 
-// SwitchDB switches to the specified Redis database index. It builds a
-// fresh client pinned to the new database and closes the old one: go-redis
-// pins SELECT per client, so issuing SELECT on a single pooled connection
-// would leave every other pooled connection (and every connection recreated
-// after an idle reap or reconnect) operating on the previous database.
+// SwitchDB switches to the specified Redis database index. It builds a fresh
+// pool whose connections are pinned to the new database and swaps it in. A
+// bare SELECT on one pooled connection would leave every other pooled
+// connection — and every connection recreated after an idle reap or a
+// reconnect — operating on the previous database.
 func (s *RedisSession) SwitchDB(idx int) error {
 	if idx < 0 {
 		return fmt.Errorf("invalid db index: %d (must be >= 0)", idx)
 	}
 	s.mu.RLock()
-	old := s.client
+	old := s.pool
 	cfg := s.cfg
 	s.mu.RUnlock()
 	if old == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	client, err := newRedisClient(cfg, idx)
+	pool, err := s.buildPool(cfg, idx)
 	if err != nil {
 		return fmt.Errorf("switch db %d: %w", idx, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
+	conn, err := pool.GetContext(context.Background())
+	if err != nil {
+		pool.Close()
+		return fmt.Errorf("switch db %d: %w", idx, err)
+	}
+	if _, err := redis.DoWithTimeout(conn, 5*time.Second, "PING"); err != nil {
+		conn.Close()
+		pool.Close()
 		log.Writef("[RedisSession.SwitchDB] failed to switch to db %d: %v", idx, err)
 		return fmt.Errorf("switch db %d: %w", idx, err)
 	}
+	conn.Close()
 
 	s.mu.Lock()
-	s.client = client
+	s.pool = pool
 	s.dbIdx = idx
 	s.mu.Unlock()
-	// Close the old client only after the swap so concurrent readers always
-	// hold a usable client.
+	// Close the old pool only after the swap so concurrent readers always
+	// hold a usable connection.
 	old.Close()
 	return nil
 }
@@ -249,22 +380,15 @@ func (s *RedisSession) SwitchDB(idx int) error {
 // back to the highest db index reported by INFO keyspace plus one, and
 // finally to the Redis default of 16.
 func (s *RedisSession) DBCount() (int, error) {
-	client := s.Client()
-	if client == nil {
-		return 0, fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if cfg, err := client.ConfigGet(ctx, "databases").Result(); err == nil {
-		if v, ok := cfg["databases"]; ok {
-			if n, parseErr := strconv.Atoi(v); parseErr == nil && n > 0 {
+	reply, err := s.do(5*time.Second, "CONFIG", "GET", "databases")
+	if err != nil {
+		log.Writef("[RedisSession.DBCount] CONFIG GET databases failed: %v", err)
+	} else if pair, ok := reply.([]interface{}); ok && len(pair) == 2 {
+		if v, ok := pair[1].([]byte); ok {
+			if n, parseErr := strconv.Atoi(string(v)); parseErr == nil && n > 0 {
 				return n, nil
 			}
 		}
-	} else {
-		log.Writef("[RedisSession.DBCount] CONFIG GET databases failed: %v", err)
 	}
 
 	// Fallback: INFO keyspace only lists non-empty dbs, so this may
@@ -283,20 +407,44 @@ func (s *RedisSession) DBCount() (int, error) {
 	return 16, nil
 }
 
+// parseScanReply splits a SCAN reply into (keys, nextCursor).
+func parseScanReply(reply interface{}) ([]string, uint64, error) {
+	pair, ok := reply.([]interface{})
+	if !ok || len(pair) != 2 {
+		return nil, 0, fmt.Errorf("scan: unexpected reply shape")
+	}
+	rawCursor, ok := pair[0].([]byte)
+	if !ok {
+		return nil, 0, fmt.Errorf("scan: unexpected cursor type")
+	}
+	nextCursor, err := strconv.ParseUint(string(rawCursor), 10, 64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("scan: bad cursor %q: %w", rawCursor, err)
+	}
+	keys := make([]string, 0, len(pair[1].([]interface{})))
+	if items, ok := pair[1].([]interface{}); ok {
+		for _, item := range items {
+			if kb, ok := item.([]byte); ok {
+				keys = append(keys, string(kb))
+			}
+		}
+	}
+	return keys, nextCursor, nil
+}
+
 // ScanKeys scans keys matching pattern with cursor-based pagination.
 // Returns key metadata (name, type, TTL) via pipeline batching.
 func (s *RedisSession) ScanKeys(pattern string, cursor uint64, count int64) (*ScanResult, error) {
 	if count <= 0 {
 		count = 100
 	}
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	keys, nextCursor, err := client.Scan(ctx, cursor, pattern, count).Result()
+	reply, err := s.do(10*time.Second, "SCAN", strconv.FormatUint(cursor, 10), "MATCH", pattern, "COUNT", count)
 	if err != nil {
 		return nil, fmt.Errorf("scan: %w", err)
+	}
+	keys, nextCursor, err := parseScanReply(reply)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &ScanResult{
@@ -304,34 +452,62 @@ func (s *RedisSession) ScanKeys(pattern string, cursor uint64, count int64) (*Sc
 		Cursor:    nextCursor,
 		ScanCount: len(keys),
 	}
-
 	if len(keys) == 0 {
 		return result, nil
 	}
 
 	// Batch TYPE + TTL via pipeline
-	pipe := client.Pipeline()
-	typeCmds := make([]*redis.StatusCmd, len(keys))
-	ttlCmds := make([]*redis.DurationCmd, len(keys))
-	for i, key := range keys {
-		typeCmds[i] = pipe.Type(ctx, key)
-		ttlCmds[i] = pipe.TTL(ctx, key)
+	type typesAndTTLs struct {
+		types []string
+		ttls  []int64
 	}
-	_, err = pipe.Exec(ctx)
-	if err != nil && err != redis.Nil {
+	batch := &typesAndTTLs{
+		types: make([]string, len(keys)),
+		ttls:  make([]int64, len(keys)),
+	}
+	err = s.pipeline(10*time.Second, func(send func(cmd string, args ...interface{}) error, flush func() error, receive func() (interface{}, error)) error {
+		for _, key := range keys {
+			if err := send("TYPE", key); err != nil {
+				return err
+			}
+			if err := send("TTL", key); err != nil {
+				return err
+			}
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		for i := range keys {
+			typeReply, err := receive()
+			if err != nil {
+				return err
+			}
+			if t, ok := typeReply.(string); ok {
+				batch.types[i] = string(t)
+			}
+			ttlReply, err := receive()
+			if err != nil {
+				return err
+			}
+			if ttl, ok := ttlReply.(int64); ok {
+				batch.ttls[i] = ttl
+			}
+		}
+		return nil
+	})
+	if err != nil && err != redis.ErrNil {
 		return nil, fmt.Errorf("scan pipeline: %w", err)
 	}
 
 	for i, key := range keys {
-		t := typeCmds[i].Val()
+		t := batch.types[i]
 		if t == "none" {
 			continue
 		}
-		ttlVal := ttlCmds[i].Val()
 		ttl := int64(-1)
-		if ttlVal > 0 {
-			ttl = int64(ttlVal.Seconds())
-		} else if ttlVal == -2 {
+		if batch.ttls[i] > 0 {
+			ttl = batch.ttls[i]
+		} else if batch.ttls[i] == -2 {
 			ttl = -2
 		}
 		result.Keys = append(result.Keys, RedisKeyInfo{
@@ -343,77 +519,103 @@ func (s *RedisSession) ScanKeys(pattern string, cursor uint64, count int64) (*Sc
 	return result, nil
 }
 
-// GetKeyInfo returns metadata (type, TTL) for a single key.
+// GetKeyInfo returns metadata (type, TTL, element count) for a single key.
 func (s *RedisSession) GetKeyInfo(key string) (*RedisKeyInfo, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pipe := client.Pipeline()
-	typeCmd := pipe.Type(ctx, key)
-	ttlCmd := pipe.TTL(ctx, key)
-	lenStr := pipe.StrLen(ctx, key)
-	lenHash := pipe.HLen(ctx, key)
-	lenList := pipe.LLen(ctx, key)
-	lenSet := pipe.SCard(ctx, key)
-	lenZSet := pipe.ZCard(ctx, key)
-	// The per-type count commands fail with WRONGTYPE on other key types;
-	// only the TYPE command's error is meaningful here.
-	_, _ = pipe.Exec(ctx)
-
-	if err := typeCmd.Err(); err != nil {
+	info := &RedisKeyInfo{Name: key}
+	// One command per key type: only the one matching TYPE returns a count,
+	// the rest answer with WRONGTYPE and are dropped.
+	lengthCmds := []string{"STRLEN", "HLEN", "LLEN", "SCARD", "ZCARD"}
+	lengthTypes := []string{"string", "hash", "list", "set", "zset"}
+	lengths := make([]int64, len(lengthCmds))
+	err := s.pipeline(5*time.Second, func(send func(cmd string, args ...interface{}) error, flush func() error, receive func() (interface{}, error)) error {
+		if err := send("TYPE", key); err != nil {
+			return err
+		}
+		if err := send("TTL", key); err != nil {
+			return err
+		}
+		for _, cmd := range lengthCmds {
+			if err := send(cmd, key); err != nil {
+				return err
+			}
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		typeReply, err := receive()
+		if err != nil {
+			return err
+		}
+		if t, ok := typeReply.(string); ok {
+			info.Type = string(t)
+		}
+		ttlReply, err := receive()
+		if err != nil {
+			return err
+		}
+		if ttl, ok := ttlReply.(int64); ok {
+			info.TTL = ttl
+		}
+		for i := range lengthCmds {
+			// A WRONGTYPE reply is the expected answer for every type but
+			// one, so these errors are deliberately ignored.
+			reply, _ := receive()
+			if n, ok := reply.(int64); ok {
+				lengths[i] = n
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("get key info: %w", err)
 	}
-
-	t := typeCmd.Val()
-	if t == "none" {
+	if info.Type == "none" {
 		return nil, fmt.Errorf("key not found: %s", key)
 	}
-	ttlVal := ttlCmd.Val()
 	ttl := int64(-1)
-	if ttlVal > 0 {
-		ttl = int64(ttlVal.Seconds())
-	} else if ttlVal == -2 {
+	if info.TTL > 0 {
+		ttl = info.TTL
+	} else if info.TTL == -2 {
 		ttl = -2
 	}
-	var length int64
-	switch t {
-	case "string":
-		length = lenStr.Val()
-	case "hash":
-		length = lenHash.Val()
-	case "list":
-		length = lenList.Val()
-	case "set":
-		length = lenSet.Val()
-	case "zset":
-		length = lenZSet.Val()
+	info.TTL = ttl
+	for i, t := range lengthTypes {
+		if info.Type == t {
+			info.Length = lengths[i]
+		}
 	}
-	return &RedisKeyInfo{Name: key, Type: t, TTL: ttl, Length: length}, nil
+	return info, nil
 }
 
 // DBSize returns the number of keys in the current database.
 func (s *RedisSession) DBSize() (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.DBSize(ctx).Result()
+	reply, err := s.do(5*time.Second, "DBSIZE")
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := reply.(int64); ok {
+		return n, nil
+	}
+	return 0, fmt.Errorf("dbsize: unexpected reply type")
 }
 
 // KeyspaceInfo returns key counts for all databases via INFO keyspace.
 // Returns a map of db index -> key count. Empty dbs are omitted by Redis.
 func (s *RedisSession) KeyspaceInfo() (map[int]int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	info, err := client.Info(ctx, "keyspace").Result()
+	reply, err := s.do(5*time.Second, "INFO", "keyspace")
 	if err != nil {
 		return nil, err
 	}
+	info, ok := reply.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("info: unexpected reply type")
+	}
+	return parseKeyspaceInfo(string(info)), nil
+}
 
+// parseKeyspaceInfo extracts db index -> key counts from a INFO keyspace
+// payload ("db0:keys=2,expires=0,avg_ttl=0" lines).
+func parseKeyspaceInfo(info string) map[int]int64 {
 	result := make(map[int]int64)
 	for _, line := range strings.Split(info, "\r\n") {
 		if strings.HasPrefix(line, "db") {
@@ -434,88 +636,85 @@ func (s *RedisSession) KeyspaceInfo() (map[int]int64, error) {
 			}
 		}
 	}
-	return result, nil
+	return result
 }
 
 // DeleteKey deletes a key from Redis.
 func (s *RedisSession) DeleteKey(key string) error {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.Del(ctx, key).Err()
+	_, err := s.do(5*time.Second, "DEL", key)
+	return err
 }
 
 // KeyExists returns true if the key exists in Redis.
 func (s *RedisSession) KeyExists(key string) (bool, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	n, err := client.Exists(ctx, key).Result()
-	return n > 0, err
+	reply, err := s.do(5*time.Second, "EXISTS", key)
+	if err != nil {
+		return false, err
+	}
+	n, ok := reply.(int64)
+	return ok && n > 0, nil
 }
 
 // GetKeyTTL returns the TTL for a key in seconds.
 func (s *RedisSession) GetKeyTTL(key string) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	d, err := client.TTL(ctx, key).Result()
+	reply, err := s.do(5*time.Second, "TTL", key)
 	if err != nil {
 		return -2, err
 	}
-	return int64(d.Seconds()), nil
+	ttl, ok := reply.(int64)
+	if !ok {
+		return -2, fmt.Errorf("ttl: unexpected reply type")
+	}
+	return ttl, nil
 }
 
 // SetKeyTTL sets the TTL for a key in seconds.
 func (s *RedisSession) SetKeyTTL(key string, seconds int64) error {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	if seconds < 0 {
-		return client.Persist(ctx, key).Err()
+		_, err := s.do(5*time.Second, "PERSIST", key)
+		return err
 	}
-	return client.Expire(ctx, key, time.Duration(seconds)*time.Second).Err()
+	_, err := s.do(5*time.Second, "EXPIRE", key, seconds)
+	return err
 }
 
 // --- String operations ---
 
 // GetString returns the string value of a key.
 func (s *RedisSession) GetString(key string) (string, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.Get(ctx, key).Result()
+	reply, err := s.do(5*time.Second, "GET", key)
+	if err != nil {
+		return "", err
+	}
+	if v, ok := reply.([]byte); ok {
+		return string(v), nil
+	}
+	return "", errRedisNil
 }
 
 // SetString sets a string value for a key.
 func (s *RedisSession) SetString(key string, value string) error {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.Set(ctx, key, value, 0).Err()
+	_, err := s.do(5*time.Second, "SET", key, value)
+	return err
 }
 
 // --- Hash operations ---
 
 // GetHashAll returns all field-value pairs of a hash.
 func (s *RedisSession) GetHashAll(key string) ([]FieldEntry, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	m, err := client.HGetAll(ctx, key).Result()
+	reply, err := s.do(5*time.Second, "HGETALL", key)
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]FieldEntry, 0, len(m))
-	for field, value := range m {
-		entries = append(entries, FieldEntry{Field: field, Value: value})
+	items, ok := reply.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("hgetall: unexpected reply type")
+	}
+	entries := make([]FieldEntry, 0, len(items)/2)
+	for i := 0; i+1 < len(items); i += 2 {
+		field, _ := items[i].([]byte)
+		value, _ := items[i+1].([]byte)
+		entries = append(entries, FieldEntry{Field: string(field), Value: string(value)})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Field < entries[j].Field })
 	return entries, nil
@@ -523,20 +722,25 @@ func (s *RedisSession) GetHashAll(key string) ([]FieldEntry, error) {
 
 // HashSet sets a field in a hash.
 func (s *RedisSession) HashSet(key string, field string, value string) error {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.HSet(ctx, key, field, value).Err()
+	_, err := s.do(5*time.Second, "HSET", key, field, value)
+	return err
 }
 
 // HashDel deletes one or more fields from a hash.
 func (s *RedisSession) HashDel(key string, fields []string) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.HDel(ctx, key, fields...).Result()
+	args := make([]interface{}, 0, len(fields)+1)
+	args = append(args, key)
+	for _, f := range fields {
+		args = append(args, f)
+	}
+	reply, err := s.do(5*time.Second, "HDEL", args...)
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := reply.(int64); ok {
+		return n, nil
+	}
+	return 0, fmt.Errorf("hdel: unexpected reply type")
 }
 
 // HashSetFields sets multiple field-value pairs in one round trip.
@@ -544,18 +748,31 @@ func (s *RedisSession) HashSetFields(key string, entries []FieldEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	client := s.Client()
-	if client == nil {
-		return fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	values := make([]any, 0, len(entries)*2)
+	args := make([]interface{}, 0, len(entries)*2+1)
+	args = append(args, key)
 	for _, e := range entries {
-		values = append(values, e.Field, e.Value)
+		args = append(args, e.Field, e.Value)
 	}
-	return client.HSet(ctx, key, values...).Err()
+	_, err := s.do(15*time.Second, "HSET", args...)
+	return err
+}
+
+// parseCursorBatch splits a *SCAN reply into its next cursor and the raw item
+// slice of the current page.
+func parseCursorBatch(reply interface{}, op string) (string, []interface{}, error) {
+	pair, ok := reply.([]interface{})
+	if !ok || len(pair) != 2 {
+		return "", nil, fmt.Errorf("%s: unexpected reply shape", op)
+	}
+	rawCursor, ok := pair[0].([]byte)
+	if !ok {
+		return "", nil, fmt.Errorf("%s: unexpected cursor type", op)
+	}
+	items, ok := pair[1].([]interface{})
+	if !ok {
+		return "", nil, fmt.Errorf("%s: unexpected batch type", op)
+	}
+	return string(rawCursor), items, nil
 }
 
 // GetHashFields reads up to limit hash fields via HSCAN. Unlike GetHashAll
@@ -565,29 +782,27 @@ func (s *RedisSession) GetHashFields(key string, limit int64) ([]FieldEntry, err
 	if limit <= 0 {
 		limit = defaultRedisReadLimit
 	}
-	client := s.Client()
-	if client == nil {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var cursor uint64
 	entries := make([]FieldEntry, 0, min(limit, 4096))
+	cursor := "0"
 	for {
-		fields, next, err := client.HScan(ctx, key, cursor, "", 100).Result()
+		reply, err := s.do(10*time.Second, "HSCAN", key, cursor, "COUNT", 100)
+		if err != nil {
+			return nil, err
+		}
+		next, items, err := parseCursorBatch(reply, "hscan")
 		if err != nil {
 			return nil, err
 		}
 		// HSCAN returns a flat [field, value, field, value, …] slice.
-		for i := 0; i+1 < len(fields); i += 2 {
-			entries = append(entries, FieldEntry{Field: fields[i], Value: fields[i+1]})
+		for i := 0; i+1 < len(items); i += 2 {
+			field, _ := items[i].([]byte)
+			value, _ := items[i+1].([]byte)
+			entries = append(entries, FieldEntry{Field: string(field), Value: string(value)})
 			if int64(len(entries)) >= limit {
 				break
 			}
 		}
-		if int64(len(entries)) >= limit || next == 0 {
+		if int64(len(entries)) >= limit || next == "0" {
 			break
 		}
 		cursor = next
@@ -603,53 +818,76 @@ func (s *RedisSession) GetHashFields(key string, limit int64) ([]FieldEntry, err
 
 // GetListRange returns elements from a list within the specified range.
 func (s *RedisSession) GetListRange(key string, start int64, stop int64) ([]string, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.LRange(ctx, key, start, stop).Result()
+	reply, err := s.do(5*time.Second, "LRANGE", key, start, stop)
+	if err != nil {
+		return nil, err
+	}
+	items, ok := reply.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("lrange: unexpected reply type")
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if b, ok := item.([]byte); ok {
+			values = append(values, string(b))
+		}
+	}
+	return values, nil
 }
 
 // ListPush pushes values onto a list from the specified direction ("left" or "right").
 func (s *RedisSession) ListPush(key string, direction string, values []string) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if direction == "left" {
-		return client.LPush(ctx, key, values).Result()
+	args := make([]interface{}, 0, len(values)+1)
+	args = append(args, key)
+	for _, v := range values {
+		args = append(args, v)
 	}
-	return client.RPush(ctx, key, values).Result()
+	cmd := "RPUSH"
+	if direction == "left" {
+		cmd = "LPUSH"
+	}
+	reply, err := s.do(5*time.Second, cmd, args...)
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := reply.(int64); ok {
+		return n, nil
+	}
+	return 0, fmt.Errorf("%s: unexpected reply type", strings.ToLower(cmd))
 }
 
 // ListPop pops a value from a list from the specified direction ("left" or "right").
 func (s *RedisSession) ListPop(key string, direction string) (string, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	cmd := "RPOP"
 	if direction == "left" {
-		return client.LPop(ctx, key).Result()
+		cmd = "LPOP"
 	}
-	return client.RPop(ctx, key).Result()
+	reply, err := s.do(5*time.Second, cmd, key)
+	if err != nil {
+		return "", err
+	}
+	if v, ok := reply.([]byte); ok {
+		return string(v), nil
+	}
+	return "", errRedisNil
 }
 
 // ListSet sets the value at an index in a list.
 func (s *RedisSession) ListSet(key string, index int64, value string) error {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.LSet(ctx, key, index, value).Err()
+	_, err := s.do(5*time.Second, "LSET", key, index, value)
+	return err
 }
 
 // ListRemove removes elements from a list matching the value.
 func (s *RedisSession) ListRemove(key string, value string, count int64) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.LRem(ctx, key, count, value).Result()
+	reply, err := s.do(5*time.Second, "LREM", key, count, value)
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := reply.(int64); ok {
+		return n, nil
+	}
+	return 0, fmt.Errorf("lrem: unexpected reply type")
 }
 
 // ListReplace atomically replaces the whole list contents in one
@@ -658,31 +896,57 @@ func (s *RedisSession) ListRemove(key string, value string, count int64) (int64,
 // which could leave the list empty if the connection dropped mid-save, and
 // cost one round trip per element.
 func (s *RedisSession) ListReplace(key string, values []string) error {
-	client := s.Client()
-	if client == nil {
-		return fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pipe := client.TxPipeline()
-	pipe.Del(ctx, key)
-	if len(values) > 0 {
-		pipe.RPush(ctx, key, values)
-	}
-	_, err := pipe.Exec(ctx)
-	return err
+	return s.pipeline(30*time.Second, func(send func(cmd string, args ...interface{}) error, flush func() error, receive func() (interface{}, error)) error {
+		if err := send("MULTI"); err != nil {
+			return err
+		}
+		if err := send("DEL", key); err != nil {
+			return err
+		}
+		if len(values) > 0 {
+			if err := send("RPUSH", strSliceCmd(key, values)...); err != nil {
+				return err
+			}
+		}
+		if err := send("EXEC"); err != nil {
+			return err
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		// MULTI, DEL, [RPUSH] and EXEC answer with one reply each.
+		replies := 3
+		if len(values) > 0 {
+			replies++
+		}
+		for range replies {
+			if _, err := receive(); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // --- Set operations ---
 
 // GetSetAll returns all members of a set.
 func (s *RedisSession) GetSetAll(key string) ([]string, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.SMembers(ctx, key).Result()
+	reply, err := s.do(5*time.Second, "SMEMBERS", key)
+	if err != nil {
+		return nil, err
+	}
+	items, ok := reply.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("smembers: unexpected reply type")
+	}
+	members := make([]string, 0, len(items))
+	for _, item := range items {
+		if b, ok := item.([]byte); ok {
+			members = append(members, string(b))
+		}
+	}
+	return members, nil
 }
 
 // GetSetMembers reads up to limit set members via SSCAN. Unlike GetSetAll
@@ -691,23 +955,26 @@ func (s *RedisSession) GetSetMembers(key string, limit int64) ([]string, error) 
 	if limit <= 0 {
 		limit = defaultRedisReadLimit
 	}
-	client := s.Client()
-	if client == nil {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var cursor uint64
 	members := make([]string, 0, min(limit, 4096))
+	cursor := "0"
 	for {
-		page, next, err := client.SScan(ctx, key, cursor, "", 100).Result()
+		reply, err := s.do(10*time.Second, "SSCAN", key, cursor, "COUNT", 100)
 		if err != nil {
 			return nil, err
 		}
-		members = append(members, page...)
-		if int64(len(members)) >= limit || next == 0 {
+		next, items, err := parseCursorBatch(reply, "sscan")
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if b, ok := item.([]byte); ok {
+				members = append(members, string(b))
+			}
+			if int64(len(members)) >= limit {
+				break
+			}
+		}
+		if int64(len(members)) >= limit || next == "0" {
 			break
 		}
 		cursor = next
@@ -720,40 +987,58 @@ func (s *RedisSession) GetSetMembers(key string, limit int64) ([]string, error) 
 
 // SetAdd adds members to a set.
 func (s *RedisSession) SetAdd(key string, members []string) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.SAdd(ctx, key, members).Result()
+	reply, err := s.do(5*time.Second, "SADD", strSliceCmd(key, members)...)
+	if err != nil {
+		return 0, err
+	}
+	return replyAsInt64(reply, "sadd")
 }
 
 // SetRemove removes members from a set.
 func (s *RedisSession) SetRemove(key string, members []string) (int64, error) {
-	client := s.Client()
+	reply, err := s.do(5*time.Second, "SREM", strSliceCmd(key, members)...)
+	if err != nil {
+		return 0, err
+	}
+	return replyAsInt64(reply, "srem")
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.SRem(ctx, key, members).Result()
+// strSliceCmd builds args for "CMD key members..." calls.
+func strSliceCmd(key string, values []string) []interface{} {
+	args := make([]interface{}, 0, len(values)+1)
+	args = append(args, key)
+	for _, v := range values {
+		args = append(args, v)
+	}
+	return args
+}
+
+// replyAsInt64 converts an integer reply, reporting unexpected shapes.
+func replyAsInt64(reply interface{}, op string) (int64, error) {
+	if n, ok := reply.(int64); ok {
+		return n, nil
+	}
+	return 0, fmt.Errorf("%s: unexpected reply type", op)
 }
 
 // --- Sorted Set operations ---
 
-// GetSortedSetRange returns members within a score range, with scores.
-func (s *RedisSession) GetSortedSetRange(key string, min string, max string) ([]ScoredMember, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	opt := &redis.ZRangeBy{Min: min, Max: max}
-	vals, err := client.ZRangeByScoreWithScores(ctx, key, opt).Result()
-	if err != nil {
-		return nil, err
+// parseScoredMembers converts a flat ZRANGEBYSCORE WITHSCORES reply
+// ([member, score, member, score, …]) into ScoredMember values.
+func parseScoredMembers(reply interface{}, op string) ([]ScoredMember, error) {
+	items, ok := reply.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s: unexpected reply type", op)
 	}
-
-	members := make([]ScoredMember, len(vals))
-	for i, v := range vals {
-		members[i] = ScoredMember{Member: v.Member.(string), Score: v.Score}
+	members := make([]ScoredMember, 0, len(items)/2)
+	for i := 0; i+1 < len(items); i += 2 {
+		member, _ := items[i].([]byte)
+		scoreBytes, _ := items[i+1].([]byte)
+		score, parseErr := strconv.ParseFloat(string(scoreBytes), 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%s: bad score %q: %w", op, scoreBytes, parseErr)
+		}
+		members = append(members, ScoredMember{Member: string(member), Score: score})
 	}
 	return members, nil
 }
@@ -764,45 +1049,41 @@ func (s *RedisSession) GetZSetRangeCapped(key string, min, max string, limit int
 	if limit <= 0 {
 		limit = defaultRedisReadLimit
 	}
-	client := s.Client()
-	if client == nil {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	opt := &redis.ZRangeBy{Min: min, Max: max, Offset: 0, Count: limit}
-	vals, err := client.ZRangeByScoreWithScores(ctx, key, opt).Result()
+	reply, err := s.do(10*time.Second, "ZRANGEBYSCORE", key, min, max, "WITHSCORES", "LIMIT", 0, limit)
 	if err != nil {
 		return nil, err
 	}
+	return parseScoredMembers(reply, "zrangebyscore")
+}
 
-	members := make([]ScoredMember, len(vals))
-	for i, v := range vals {
-		members[i] = ScoredMember{Member: v.Member.(string), Score: v.Score}
+// GetSortedSetRange returns members within a score range, with scores.
+func (s *RedisSession) GetSortedSetRange(key string, min string, max string) ([]ScoredMember, error) {
+	reply, err := s.do(5*time.Second, "ZRANGEBYSCORE", key, min, max, "WITHSCORES")
+	if err != nil {
+		return nil, err
 	}
-	return members, nil
+	return parseScoredMembers(reply, "zrangebyscore")
 }
 
 // ZSetAdd adds members with scores to a sorted set.
 func (s *RedisSession) ZSetAdd(key string, members []ScoredMember) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	zs := make([]redis.Z, len(members))
-	for i, m := range members {
-		zs[i] = redis.Z{Score: m.Score, Member: m.Member}
+	args := make([]interface{}, 0, len(members)*2+1)
+	args = append(args, key)
+	for _, m := range members {
+		args = append(args, m.Score, m.Member)
 	}
-	return client.ZAdd(ctx, key, zs...).Result()
+	reply, err := s.do(5*time.Second, "ZADD", args...)
+	if err != nil {
+		return 0, err
+	}
+	return replyAsInt64(reply, "zadd")
 }
 
 // ZSetRemove removes members from a sorted set.
 func (s *RedisSession) ZSetRemove(key string, members []string) (int64, error) {
-	client := s.Client()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.ZRem(ctx, key, members).Result()
+	reply, err := s.do(5*time.Second, "ZREM", strSliceCmd(key, members)...)
+	if err != nil {
+		return 0, err
+	}
+	return replyAsInt64(reply, "zrem")
 }
