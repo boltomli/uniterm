@@ -46,7 +46,7 @@ func (m *Manager) StartFTPServer(cfg FTPConfig) (string, error) {
 	id, ctx := m.newServer()
 	m.log(ServiceFTP, id, fmt.Sprintf("Starting FTP server on port %d ...", cfg.Port))
 
-	ln, err := listen(ctx, "tcp", fmt.Sprintf(":%d", cfg.Port))
+	ln, err := listen(ctx, "tcp", listenAddr(cfg.Port))
 	if err != nil {
 		m.finish(id)
 		return "", fmt.Errorf("failed to listen on port %d: %w", cfg.Port, err)
@@ -465,7 +465,7 @@ func (m *Manager) ftpPasv(ctx context.Context, sess *ftpSession, writeFTP func(s
 // ftpEpsv opens an extended passive-mode listener.
 func (m *Manager) ftpEpsv(ctx context.Context, sess *ftpSession, writeFTP func(string, ...any)) {
 	sess.closeData()
-	ln, err := net.Listen("tcp", "[::]:0")
+	ln, err := net.Listen("tcp", listenAddr(0))
 	if err != nil {
 		writeFTP("425 Can't open data connection")
 		return

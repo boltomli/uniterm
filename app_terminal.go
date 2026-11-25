@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.bug.st/serial"
@@ -178,9 +181,7 @@ func (a *App) CreateSession(sessionType string, config session.ConnectionConfig)
 		a.emitSessionData(s.ID(), string(data))
 	})
 
-	s.SetOnBinaryCallback(func(data []byte) {
-		a.emitSessionBinary(s.ID(), data)
-	})
+	s.SetOnBinaryCallback(a.instrumentedBinaryEmitter(s.ID()))
 
 	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		payload := map[string]interface{}{
@@ -466,9 +467,7 @@ func (a *App) DuplicateSSHChannel(sourceSessionID string, config session.Connect
 	s.SetOnDataCallback(func(data []byte) {
 		a.emitSessionData(s.ID(), string(data))
 	})
-	s.SetOnBinaryCallback(func(data []byte) {
-		a.emitSessionBinary(s.ID(), data)
-	})
+	s.SetOnBinaryCallback(a.instrumentedBinaryEmitter(s.ID()))
 	s.SetOnStatusChangeCallback(func(status session.SessionStatus) {
 		payload := map[string]interface{}{
 			"id":     s.ID(),
@@ -883,8 +882,10 @@ var maxWriteFileBase64Bytes = 64 << 20 // 64 MiB
 // through os.Root, refusing a symlink at the target. Root.OpenFile resolves
 // the name against the root fd, so a link swapped in after the grant check
 // cannot escape the directory (same protection AppendFileBase64 already had;
-// WriteFileBase64 used os.WriteFile, which follows symlinks). The caller
-// closes the returned file.
+// WriteFileBase64 used os.WriteFile, which follows symlinks). The open goes
+// through openWithLockRetry so a virus scanner holding a freshly downloaded
+// file for inspection (issue #1582) stalls the append for a bounded moment
+// instead of failing the transfer. The caller closes the returned file.
 func openRootFileForWrite(path string, flag int, perm os.FileMode) (*os.File, error) {
 	dir, name := filepath.Split(path)
 	root, err := os.OpenRoot(dir)
@@ -897,7 +898,7 @@ func openRootFileForWrite(path string, flag int, perm os.FileMode) (*os.File, er
 	} else if statErr != nil && !os.IsNotExist(statErr) {
 		return nil, fmt.Errorf("inspect file: %w", statErr)
 	}
-	f, err := root.OpenFile(name, flag, perm)
+	f, err := openWithLockRetry(root, name, flag, perm)
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
 	}
@@ -949,7 +950,9 @@ func (a *App) AppendFileBase64(path string, base64Data string, offset int64) err
 		flag |= os.O_APPEND
 	}
 	// Resolve the final component through os.Root so a symlink swapped in
-	// after Lstat cannot escape the parent directory.
+	// after Lstat cannot escape the parent directory, and retry a transient
+	// Windows sharing violation (virus scanner holding the freshly written
+	// file) inside the helper.
 	f, err := openRootFileForWrite(path, flag, 0644)
 	if err != nil {
 		return err
@@ -1583,4 +1586,73 @@ func (a *App) AcceptHostKeyChange(host, keyType, newKeyB64 string, port int) err
 // session.AcceptHostKeyOnce.
 func (a *App) AcceptHostKeyOnce(host, keyType, newKeyB64 string, port int) error {
 	return session.AcceptHostKeyOnce(host, strconv.Itoa(port), newKeyB64)
+}
+
+// instrumentedBinaryEmitter returns a session:binary emit callback tagged
+// with per-session instrumentation for the issue #1582 investigation: a
+// sequence number (gaps = lost or reordered chunks), the raw length and an
+// IEEE CRC-32 of the chunk (mismatch = content corruption). The frontend
+// checks these on arrival and reports anomalies via FrontendLog; a clean
+// stream (seq contiguous, crc matching) rules the transport out as the
+// corruption source.
+func (a *App) instrumentedBinaryEmitter(id string) func([]byte) {
+	seq := 0
+	return func(data []byte) {
+		seq++
+		// Periodic heartbeat so the backend emission timeline can be
+		// correlated with the frontend's receipt log after a failure.
+		if seq%100 == 0 {
+			log.Writef("zmodem-bin %s emitted seq=%d n=%d", id, seq, len(data))
+		}
+		a.emit("session:binary", sessionBinaryProbeEvent{
+			ID:   id,
+			Data: base64.StdEncoding.EncodeToString(data),
+			Seq:  seq,
+			N:    len(data),
+			CRC:  crc32.ChecksumIEEE(data),
+		})
+	}
+}
+
+// openWithLockRetry opens name under root, retrying briefly when the OS
+// reports a transient file lock. Antivirus engines hold freshly written
+// executables for a scan the moment they look complete, so a long zmodem
+// download can fail at a batch re-open with "being used by another process"
+// even though the transfer itself is healthy (issue #1582). The transfer
+// tolerates a short stall — sz keeps streaming into the SSH channel window
+// while we wait — so the retry window is generous but bounded.
+func openWithLockRetry(root *os.Root, name string, flag int, perm os.FileMode) (*os.File, error) {
+	f, err := root.OpenFile(name, flag, perm)
+	if err == nil || !isTransientFileLockError(err) {
+		return f, err
+	}
+	for attempt := 0; attempt < fileLockRetries && err != nil; attempt++ {
+		time.Sleep(fileLockRetryDelay)
+		f, err = root.OpenFile(name, flag, perm)
+	}
+	return f, err
+}
+
+const (
+	// 15 × 200ms = 3s of tolerance for a virus-scanner hold on the target.
+	fileLockRetries    = 15
+	fileLockRetryDelay = 200 * time.Millisecond
+)
+
+// isTransientFileLockError reports whether err is a Windows sharing violation:
+// another process (typically a virus scanner holding a freshly written
+// executable for inspection) has the file open without share access. These
+// holds are brief, so callers retry.
+//
+// The two errno values are compared numerically so a single definition serves
+// every platform: on Windows syscall.Errno 32/33 are exactly
+// ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION, and on POSIX an OpenFile
+// never fails with EPIPE (32) / EDOM (33), so the check can only ever be
+// false there.
+func isTransientFileLockError(err error) bool {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno == 32 || errno == 33
+	}
+	return false
 }

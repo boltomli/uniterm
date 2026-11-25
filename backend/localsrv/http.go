@@ -97,7 +97,7 @@ func (m *Manager) StartHTTPServer(cfg HTTPConfig) (string, error) {
 	})
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
+		Addr:    listenAddr(cfg.Port),
 		Handler: handler,
 	}
 

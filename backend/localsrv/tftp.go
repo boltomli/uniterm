@@ -3,6 +3,7 @@ package localsrv
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -63,7 +64,7 @@ func (m *Manager) StartTFTPServer(cfg TFTPConfig) (string, error) {
 	id, ctx := m.newServer()
 	m.log(ServiceTFTP, id, fmt.Sprintf("Starting TFTP server on port %d (block size %d) ...", cfg.Port, blockSize))
 
-	conn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", cfg.Port))
+	conn, err := net.ListenPacket("udp", listenAddr(cfg.Port))
 	if err != nil {
 		m.finish(id)
 		return "", fmt.Errorf("failed to listen on UDP port %d: %w", cfg.Port, err)
@@ -168,18 +169,30 @@ func (m *Manager) handleTFTPRequest(ctx context.Context, id string, clientAddr n
 	}
 
 	// Open a new UDP socket for this transfer (TID).
-	conn, err := net.ListenPacket("udp", ":0")
+	// The transfer socket lives on the same host as the listener: a client that
+	// reached us on a specific address must be able to reach the TID we answer
+	// from, and a test-time loopback bind must not widen to all interfaces.
+	conn, err := net.ListenPacket("udp", listenAddr(0))
 	if err != nil {
 		m.sendTFTPError(clientAddr, tftpErrNotDefined, "no resources")
 		return
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	// Overall safety cap only; per-read deadlines below drive progress. 30s was
+	// too tight for large configs on slow links, and it also aborted transfers
+	// that were still making progress.
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
 
-	// Negotiate block size via OACK if the client sent "blksize". The value is
-	// attacker-controlled: clamp it to the RFC 2348 range before it is ever
-	// used as an allocation size.
-	negotiatedBlock := blockSize
+	// RFC 1350: without blksize negotiation the block size is fixed at 512.
+	// The configured blockSize is only the answer we offer when the client asks
+	// for a larger block via the blksize option (negotiated below). Using it as
+	// the default broke every client that does not negotiate: the server
+	// expected e.g. 8192-byte blocks, saw the first 512-byte DATA block,
+	// mistook it for the last block and ended the transfer after exactly 512
+	// bytes. A negotiated blksize is attacker-controlled, so it is clamped to
+	// the RFC 2348 range (8..65464) before it is ever used as a block or an
+	// allocation size.
+	negotiatedBlock := tftpDefaultBlockSize
 	didOACK := false
 	if bs, ok := options["blksize"]; ok {
 		var requested int
@@ -191,6 +204,13 @@ func (m *Manager) handleTFTPRequest(ctx context.Context, id string, clientAddr n
 				requested = 8
 			}
 			negotiatedBlock = requested
+			// Never exceed what the server was configured to accept.
+			if blockSize > 0 && negotiatedBlock > blockSize {
+				negotiatedBlock = blockSize
+			}
+			if negotiatedBlock < 8 {
+				negotiatedBlock = tftpDefaultBlockSize
+			}
 		}
 		// Send OACK with the negotiated block size.
 		oack := make([]byte, 0, 16)
@@ -202,7 +222,7 @@ func (m *Manager) handleTFTPRequest(ctx context.Context, id string, clientAddr n
 		}
 		didOACK = true
 		// OACK is itself the implicit acknowledgement. Don't sit here waiting
-		// for an explicit ACK(0) — many TFTP clients (notably Huawei network
+		// for an explicit ACK(0) — many TFTP clients (notably network
 		// devices) skip it and jump straight to the first DATA block. The
 		// data/ACK loops in tftpWriteFile/tftpReadFile will handle whichever
 		// packet shows up first, and learn the peer's current source address
@@ -278,7 +298,7 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 	// signal we are ready to receive. When OACK was negotiated that already
 	// serves as the implicit acknowledgement — sending ACK(0) on top would
 	// be redundant and, with clients that close their initial socket right
-	// after WRQ (Huawei network devices), would just generate a spurious
+	// after WRQ (common on embedded devices), would just generate a spurious
 	// ICMP port-unreachable back at us.
 	if !didOACK {
 		if !m.sendTFTPAck(conn, clientAddr, 0) {
@@ -296,6 +316,10 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 	m.log(ServiceTFTP, id, fmt.Sprintf("WRQ %s -> %s", clientAddr, filepath.Base(fullPath)))
 
 	block := uint16(1)
+	idleTimeouts := 0   // consecutive 10s windows with no packet
+	hardErrors := 0     // consecutive non-timeout read errors (e.g. WSAECONNRESET)
+	written := 0        // bytes persisted so far
+	dups := 0           // duplicate blocks re-ACKed
 	for {
 		select {
 		case <-ctx.Done():
@@ -306,16 +330,41 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 		buf := make([]byte, blockSize+4)
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
-			m.log(ServiceTFTP, id, fmt.Sprintf("receive error: %v", err))
-			return
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				// Give the peer a few idle windows before giving up: some devices
+				// pause between blocks while writing flash.
+				idleTimeouts++
+				if idleTimeouts >= 3 {
+					m.log(ServiceTFTP, id, fmt.Sprintf("receive timed out at block %d", block))
+					return
+				}
+				continue
+			}
+			// Transient UDP read errors must NOT abort the transfer. On Windows a
+			// single ICMP port-unreachable arriving at this socket (e.g. an ACK we
+			// sent to a port the peer had just closed) surfaces as WSAECONNRESET
+			// from recvfrom. Returning here silently truncates the file mid-way,
+			// which shows up on the peer as a few blocks transferred and then a
+			// timeout, with a truncated file on disk.
+			hardErrors++
+			if hardErrors > 50 {
+				m.log(ServiceTFTP, id, fmt.Sprintf("receive error: %v", err))
+				return
+			}
+			m.log(ServiceTFTP, id, fmt.Sprintf("transient receive error (ignored): %v", err))
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
-		// Learn the peer's current address from every incoming packet. Many
-		// TFTP clients (notably Huawei/YuZhou network devices) re-source
-		// subsequent DATA/ACK packets from a *different* ephemeral port than
-		// the one used for the initial WRQ/RRQ. If we still send our ACKs to
-		// the stale address captured at WRQ time, the peer will never see them
-		// and time out mid-transfer — the classic "51 % dead" symptom.
-		if addr.String() != clientAddr.String() {
+		idleTimeouts = 0
+		hardErrors = 0
+		// Learn the peer's source port from incoming packets: many network
+		// devices (switches, routers, embedded stacks) re-source subsequent DATA/ACK
+		// packets from a *different* ephemeral port than the initial WRQ. If we
+		// keep sending ACKs to the stale address the peer never sees them and
+		// times out mid-transfer. Only follow port changes from the same host,
+		// so stray traffic from other machines cannot hijack the session.
+		if addr.String() != clientAddr.String() && sameHost(addr, clientAddr) {
 			clientAddr = addr
 		}
 		if n < 4 {
@@ -327,8 +376,8 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 			return
 		}
 		// After an OACK negotiation the client may send an explicit ACK(0)
-		// (RFC-compliant) or jump straight to the first DATA block (Huawei
-		// and other terse clients). Either is fine — an ACK(0) just means
+		// (RFC-compliant) or jump straight to the first DATA block (many
+		// embedded clients). Either is fine — an ACK(0) just means
 		// "proceed", so skip it and keep waiting for real data.
 		if op == tftpOpACK {
 			continue
@@ -346,9 +395,11 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 			}
 			m.sendTFTPAck(conn, clientAddr, recvBlock)
 			if recvBlock != 0 && len(data) < blockSize {
-				m.log(ServiceTFTP, id, fmt.Sprintf("received %s", filepath.Base(fullPath)))
+				m.log(ServiceTFTP, id, fmt.Sprintf("received %s (%d blocks, %d bytes)",
+					filepath.Base(fullPath), recvBlock, written))
 				return
 			}
+			written += len(data)
 			block++
 			continue
 		}
@@ -356,32 +407,62 @@ func (m *Manager) tftpWriteFile(ctx context.Context, id string, conn net.PacketC
 		// out-of-order block: don't advance, but idempotently re-ACK it so the
 		// client can continue instead of timing out and aborting the transfer.
 		if recvBlock > 0 && recvBlock < block {
+			dups++
+			m.log(ServiceTFTP, id, fmt.Sprintf("duplicate block %d (expecting %d), re-ACK", recvBlock, block))
 			m.sendTFTPAck(conn, clientAddr, recvBlock)
 		}
 	}
 }
 
-// recvTFTPAck reads a packet and returns true if it is an ACK for block.
-// The caller-provided clientAddr is used only as a hint for the initial peer
-// address; we intentionally accept an ACK from *any* source address and
-// return the actual peer address so the caller can learn if the client has
-// re-sourced to a different ephemeral port (as Huawei network devices do).
+// sameHost reports whether two UDP addresses belong to the same IP host,
+// ignoring the port.
+func sameHost(a, b net.Addr) bool {
+	ua, ok1 := a.(*net.UDPAddr)
+	ub, ok2 := b.(*net.UDPAddr)
+	if !ok1 || !ok2 {
+		return true
+	}
+	return ua.IP.Equal(ub.IP)
+}
+
+// recvTFTPAck waits up to 3s for an ACK of the given block. Transient read
+// errors are retried instead of being reported as "no ACK". The returned
+// address is the peer's current address, so the caller can follow a client
+// that re-sourced to a different ephemeral port mid-transfer.
 func (m *Manager) recvTFTPAck(conn net.PacketConn, clientAddr net.Addr, block uint16) (bool, net.Addr) {
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 64)
-	n, addr, err := conn.ReadFrom(buf)
-	if err != nil {
-		return false, clientAddr
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				continue // keep waiting until the overall deadline
+			}
+			// Transient UDP errors (e.g. ICMP-induced WSAECONNRESET on Windows)
+			// must not be mistaken for "no ACK": just keep listening.
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		if n < 4 {
+			continue
+		}
+		op := binary.BigEndian.Uint16(buf[:2])
+		if op != tftpOpACK {
+			continue
+		}
+		recvBlock := binary.BigEndian.Uint16(buf[2:4])
+		if recvBlock != block {
+			continue
+		}
+		// Only follow a re-sourced port when it comes from the same host.
+		if sameHost(addr, clientAddr) {
+			return true, addr
+		}
+		return true, clientAddr
 	}
-	if n < 4 {
-		return false, clientAddr
-	}
-	op := binary.BigEndian.Uint16(buf[:2])
-	if op != tftpOpACK {
-		return false, clientAddr
-	}
-	recvBlock := binary.BigEndian.Uint16(buf[2:4])
-	return recvBlock == block, addr
+	return false, clientAddr
 }
 
 // sendTFTPAck sends an ACK packet for the given block number.

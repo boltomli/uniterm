@@ -36,7 +36,7 @@ func (m *Manager) StartTelnetServer(cfg TelnetConfig) (string, error) {
 	id, ctx := m.newServer()
 	m.log(ServiceTelnet, id, fmt.Sprintf("Starting Telnet server on port %d ...", cfg.Port))
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
+	ln, err := net.Listen("tcp", listenAddr(cfg.Port))
 	if err != nil {
 		m.finish(id)
 		return "", fmt.Errorf("failed to listen on TCP port %d: %w", cfg.Port, err)

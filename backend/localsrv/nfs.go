@@ -32,7 +32,7 @@ func (m *Manager) StartNFSServer(cfg NFSConfig) (string, error) {
 
 	b := backend.New(func() fs.FS { return mfs }, auth.Null)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
+	addr := listenAddr(cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		m.finish(id)

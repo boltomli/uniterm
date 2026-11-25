@@ -1061,6 +1061,19 @@ type sessionBinaryEvent struct {
 	Data string `json:"data"`
 }
 
+// sessionBinaryProbeEvent is the instrumented shape used for the issue #1582
+// investigation: it adds a per-session sequence number (gaps = lost or
+// reordered chunks), the raw chunk length and an IEEE CRC-32 (mismatch =
+// content corruption). Kept as a typed struct so this hot path stays at one
+// allocation, like sessionBinaryEvent (F-205).
+type sessionBinaryProbeEvent struct {
+	ID   string `json:"id"`
+	Data string `json:"data"`
+	Seq  int    `json:"seq"`
+	N    int    `json:"n"`
+	CRC  uint32 `json:"crc"`
+}
+
 // emitSessionData pushes one terminal-output chunk.
 func (a *App) emitSessionData(id, data string) {
 	a.emit("session:data", sessionDataEvent{ID: id, Data: data})

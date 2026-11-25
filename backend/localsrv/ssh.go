@@ -69,7 +69,7 @@ func (m *Manager) StartSSHServer(cfg SSHConfig) (string, error) {
 	}
 	sshCfg.AddHostKey(signer)
 
-	ln, err := listen(ctx, "tcp", fmt.Sprintf(":%d", cfg.Port))
+	ln, err := listen(ctx, "tcp", listenAddr(cfg.Port))
 	if err != nil {
 		m.finish(id)
 		return "", fmt.Errorf("failed to listen on port %d: %w", cfg.Port, err)

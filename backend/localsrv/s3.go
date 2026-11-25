@@ -65,7 +65,7 @@ func (m *Manager) StartS3Server(cfg S3Config) (string, error) {
 	})
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
+		Addr:    listenAddr(cfg.Port),
 		Handler: handler,
 	}
 

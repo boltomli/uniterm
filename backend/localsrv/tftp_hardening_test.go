@@ -64,6 +64,10 @@ func tftpNegotiate(t *testing.T, port int, blksize string) string {
 // TestTFTPBlkSizeIsClamped is the regression test for the remote crash: the
 // attacker-supplied blksize must never size the transfer buffer directly.
 //
+// The server is configured at the RFC 2348 ceiling so these assertions pin the
+// hostile-value clamp itself; the separate configured-ceiling rule is covered
+// by TestTFTPNegotiationStaysWithinConfiguredBlockSize.
+//
 // The requested file deliberately does not exist: the server answers the RRQ
 // with the OACK before it opens the file, so negotiating against a missing
 // path exercises the clamp without leaving an open handle behind. A real file
@@ -71,7 +75,7 @@ func tftpNegotiate(t *testing.T, port int, blksize string) string {
 // this test never answers, which on Windows makes the temp-dir cleanup fail.
 func TestTFTPBlkSizeIsClamped(t *testing.T) {
 	root := t.TempDir()
-	port := startTestTFTP(t, root, 0)
+	port := startTestTFTP(t, root, tftpMaxBlockSize)
 
 	for _, requested := range []string{"999999999", "9223372036854775807"} {
 		got := tftpNegotiate(t, port, requested)
@@ -107,5 +111,21 @@ func TestTFTPConfiguredBlockSizeIsClamped(t *testing.T) {
 	port := startTestTFTP(t, root, 1<<30)
 	if got := tftpNegotiate(t, port, "512"); got != "512" {
 		t.Fatalf("negotiated %q", got)
+	}
+}
+
+// TestTFTPNegotiationStaysWithinConfiguredBlockSize pins main's blksize rule:
+// the configured block size is the largest block the server will offer, so a
+// client asking for more is answered with the configured value instead of the
+// requested one. That keeps the negotiated block (which sizes the transfer
+// buffer) bounded by configuration, not by the request.
+func TestTFTPNegotiationStaysWithinConfiguredBlockSize(t *testing.T) {
+	root := t.TempDir()
+	port := startTestTFTP(t, root, 1024)
+	if got := tftpNegotiate(t, port, "65464"); got != "1024" {
+		t.Fatalf("blksize=65464 negotiated %q, want the configured ceiling 1024", got)
+	}
+	if got := tftpNegotiate(t, port, "512"); got != "512" {
+		t.Fatalf("blksize=512 negotiated %q, want 512", got)
 	}
 }
