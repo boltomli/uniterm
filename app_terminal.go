@@ -1659,6 +1659,7 @@ func isTransientFileLockError(err error) bool {
 	}
 	return false
 }
+
 // app_recorder.go exposes the terminal recorder (asciinema cast v2) as Wails
 // bindings. The frontend terminalRecorder.ts service calls these to start
 // recording a session, stream session:data into the cast file, and later
@@ -1678,7 +1679,15 @@ func recorderInst() *recorder.Recorder {
 // and writes the JSON header. Returns the absolute file path the frontend should
 // pass to subsequent RecorderWriteData / RecorderStop calls.
 func (a *App) RecorderStart(sessionID string, width int, height int, title string) (string, error) {
-	return recorderInst().StartRecording(sessionID, width, height, title)
+	path, err := recorderInst().StartRecording(sessionID, width, height, title)
+	if err != nil {
+		return "", err
+	}
+	// The recording was created by the Go side under the app-owned records
+	// dir; grant it so the read/delete bindings (grant-gated like every raw
+	// file binding) accept the path this call handed to the webview.
+	fileGrants.addFile(path)
+	return path, nil
 }
 
 // RecorderWriteData appends one `[elapsed, "o", data]` row to the cast file
@@ -1701,19 +1710,35 @@ func (a *App) RecorderIsRecording(filePath string) bool {
 
 // RecorderList returns metadata for every .cast file in the records
 // directory, newest first.
+// RecorderList enumerates the app-owned records dir on the Go side; each
+// returned path is Go-derived (ReadDir), so the list grants them for the
+// delete/content bindings rather than trusting a webview-supplied path.
 func (a *App) RecorderList() ([]recorder.RecordingInfo, error) {
-	return recorderInst().ListRecordings()
+	list, err := recorderInst().ListRecordings()
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		fileGrants.addFile(list[i].FilePath)
+	}
+	return list, nil
 }
 
 // RecorderDelete removes a cast file from disk. If the recording is open it
 // is stopped first.
 func (a *App) RecorderDelete(filePath string) error {
+	if err := requireFileGrant(filePath); err != nil {
+		return err
+	}
 	return recorderInst().DeleteRecording(filePath)
 }
 
 // RecorderGetContent reads the entire cast file as a string. The frontend
 // player parses the header + data rows to drive xterm.js replay.
 func (a *App) RecorderGetContent(filePath string) (string, error) {
+	if err := requireFileGrant(filePath); err != nil {
+		return "", err
+	}
 	return recorderInst().GetRecordingContent(filePath)
 }
 
