@@ -617,7 +617,7 @@ watch(searchQuery, (q) => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.625rem 0.625rem 0.375rem;
+  padding: 0.375rem;
   flex-shrink: 0;
 }
 
@@ -654,7 +654,7 @@ watch(searchQuery, (q) => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.375rem 0.625rem 0.375rem 0.375rem;
+  padding: 0.375rem;
   user-select: none;
   border-radius: var(--radius-sm);
   transition: background 0.12s ease;
@@ -689,7 +689,7 @@ watch(searchQuery, (q) => {
   display: flex;
   align-items: center;
   gap: 0.625rem;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   min-height: 2.25rem;
   border-radius: var(--radius-sm);
   transition: all 0.12s ease;

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,25 +48,67 @@ func TestContentSecurityPolicyDirectives(t *testing.T) {
 }
 
 // The inline theme bootstrap in index.html is the only inline script; the
-// CSP hash must match it exactly or the pre-paint theme logic stops running.
+// CSP hash must match the document actually served (the embedded
+// frontend/dist/index.html) exactly or the pre-paint theme logic stops
+// running. The policy derives the hash from that document at init, so this
+// pins the derivation rather than a hand-copied constant.
 func TestContentSecurityPolicyHashesInlineThemeScript(t *testing.T) {
-	html, err := os.ReadFile("frontend/index.html")
+	if servedIndexHTML == "" {
+		t.Fatal("embedded frontend/dist/index.html is empty — build the frontend")
+	}
+	want := inlineScriptHash(servedIndexHTML)
+	if want == "" {
+		t.Fatal("served index.html has no inline script; the policy would carry no hash")
+	}
+	if !strings.Contains(contentSecurityPolicy, want) {
+		t.Fatalf("CSP does not allow the served inline script %s\nCSP: %s", want, contentSecurityPolicy)
+	}
+	// Exactly one hash, in script-src, and nothing else that allows inline
+	// execution.
+	if n := strings.Count(contentSecurityPolicy, "'sha256-"); n != 1 {
+		t.Fatalf("CSP carries %d script hashes, want exactly 1: %s", n, contentSecurityPolicy)
+	}
+
+	// The served document must be the built copy of the source template:
+	// Vite copies the inline script verbatim, so apart from line endings
+	// the two must agree — otherwise a source edit could ship without the
+	// hash following it (or vice versa).
+	src, err := os.ReadFile("frontend/index.html")
 	if err != nil {
 		t.Fatalf("read index.html: %v", err)
 	}
-	start := strings.Index(string(html), "<script>")
-	end := strings.Index(string(html), "</script>")
-	if start < 0 || end < start {
-		t.Fatal("inline theme script not found in index.html")
+	stripEOL := func(s string) string { return strings.ReplaceAll(s, "\r", "") }
+	if got, wantSrc := stripEOL(firstInlineScript(servedIndexHTML)), stripEOL(firstInlineScript(string(src))); got != wantSrc {
+		t.Fatalf("inline script in frontend/dist/index.html differs from frontend/index.html — rebuild the frontend\n--- dist ---\n%s\n--- src ---\n%s", got, wantSrc)
 	}
-	script := string(html)[start+len("<script>") : end]
 
-	sum := sha256.Sum256([]byte(script))
-	want := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
-	if !strings.Contains(contentSecurityPolicy, want) {
-		t.Fatalf("CSP hash %s does not match the index.html inline script %s — regenerate the constant", want,
-			"'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
+	// Endings-independence: the derivation must accept the same script with
+	// LF or CRLF and produce the hash for exactly those bytes — the policy
+	// follows whatever the build shipped.
+	lf := strings.ReplaceAll(servedIndexHTML, "\r\n", "\n")
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	if inlineScriptHash(lf) == inlineScriptHash(crlf) && strings.Contains(firstInlineScript(lf), "\n") {
+		t.Fatal("hash is insensitive to line endings — it is not hashing the script bytes")
 	}
+	if inlineScriptHash(strings.Replace(servedIndexHTML, "<script>", "<script src=\"x\">", 1)) != "" {
+		t.Fatal("an external first script must yield no inline allowance")
+	}
+	if inlineScriptHash("<html><head></head></html>") != "" {
+		t.Fatal("a document without scripts must yield no inline allowance")
+	}
+	if !strings.Contains(buildContentSecurityPolicy(""), "script-src 'self' 'wasm-unsafe-eval';") {
+		t.Fatalf("empty hash must not widen script-src: %s", buildContentSecurityPolicy(""))
+	}
+}
+
+// firstInlineScript returns the body of the first <script>…</script> in html.
+func firstInlineScript(html string) string {
+	start := strings.Index(html, "<script>")
+	end := strings.Index(html, "</script>")
+	if start < 0 || end < start {
+		return ""
+	}
+	return html[start+len("<script>") : end]
 }
 
 func TestCSPMiddlewareSetsHeaders(t *testing.T) {

@@ -40,14 +40,15 @@ func openHangDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestQueryHelpersHonorQueryTimeout guards F-12.4: queryStrings/queryAny must
-// run under queryTimeout, otherwise a hung server pins the calling goroutine
-// (and a pooled connection) forever. The watchdog makes a regression fail
-// instead of hanging the test binary.
-func TestQueryHelpersHonorQueryTimeout(t *testing.T) {
-	old := queryTimeout
-	queryTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { queryTimeout = old })
+// TestQueryHelpersHonorSchemaTimeout guards F-12.4: queryStrings/queryAny
+// are the schema/metadata probe helpers and must run under schemaTimeout,
+// otherwise a hung server pins the calling goroutine (and a pooled
+// connection) forever. The watchdog makes a regression fail instead of
+// hanging the test binary.
+func TestQueryHelpersHonorSchemaTimeout(t *testing.T) {
+	old := schemaTimeout
+	schemaTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { schemaTimeout = old })
 
 	run := func(name string, fn func(db *sql.DB) error) {
 		t.Helper()
@@ -61,7 +62,7 @@ func TestQueryHelpersHonorQueryTimeout(t *testing.T) {
 				t.Fatalf("%s: expected an error from a hung server", name)
 			}
 			if elapsed := time.Since(start); elapsed > 3*time.Second {
-				t.Fatalf("%s: took %v, queryTimeout=%v not respected", name, elapsed, queryTimeout)
+				t.Fatalf("%s: took %v, schemaTimeout=%v not respected", name, elapsed, schemaTimeout)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s: did not return within 5s — query without context (F-12.4 regression)", name)
@@ -76,4 +77,53 @@ func TestQueryHelpersHonorQueryTimeout(t *testing.T) {
 		_, _, err := queryAny(db, "SELECT hang")
 		return err
 	})
+}
+
+// TestQueryHelpersDmGetsNoDeadlineButKeepsParentCancel pins the dm
+// exemption in dbCtx: the driver nil-derefs on a deadline context, so dm
+// must get none — but it must still inherit the caller's cancellation, or a
+// hung dm server would pin the goroutine for good (the F-12.4 failure mode
+// the exemption must not reintroduce). It needs a *sql.DB recorded as "dm"
+// under a driver that hangs until its context ends, so the same hang driver
+// is reused with the dm name recorded for the handle.
+func TestQueryHelpersDmGetsNoDeadlineButKeepsParentCancel(t *testing.T) {
+	old := schemaTimeout
+	schemaTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { schemaTimeout = old })
+
+	db := openHangDB(t)
+	trackDBDriver(db, "dm")
+
+	// 1. No deadline: with the (short) schemaTimeout budget and no caller
+	//    cancellation, the helper must still be waiting well past the
+	//    budget — a deadline would have fired by then and returned.
+	done := make(chan error, 1)
+	go func() { _, _, err := queryAny(db, "SELECT hang"); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("dm query returned under a deadline-free policy (err=%v) — dbCtx gave it a deadline", err)
+	case <-time.After(3 * schemaTimeout):
+	}
+
+	// 2. Parent cancellation still reaches it: cancel the parent and the
+	//    helper must come back promptly with the context error.
+	parent, cancel := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := queryStringsCtx(parent, db, "SELECT hang")
+		done2 <- err
+	}()
+	time.Sleep(2 * schemaTimeout)
+	cancel()
+	select {
+	case err := <-done2:
+		if err == nil {
+			t.Fatal("dm query returned nil after parent cancel")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dm query ignored parent cancellation — a hung dm server would pin this goroutine forever (F-12.4)")
+	}
+
+	// The un-cancelled query from step 1 is released by closing the handle.
+	_ = db.Close()
 }

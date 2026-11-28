@@ -4,10 +4,11 @@
     <div v-if="bgVisible" class="app-bg" :style="bgStyle"></div>
     <AppHeader
       :sidebar-visible="sidebarVisible"
-      @toggle-ai="aiStore.toggle"
+      @toggle-right-panel="onToggleRightPanel"
       @toggle-sidebar="sidebarVisible = !sidebarVisible"
       @open-settings="openSettings"
       @open-netscan="openNetscan"
+      @open-tools="openTools"
       @open-packetcap="openPacketcap"
       @open-firewall="openFirewall"
       @open-local-services="openLocalServices"
@@ -21,9 +22,9 @@
       @new-local-terminal="createNewTab"
     />
     <div class="main-content">
-      <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)" @connect-only="onConnectOnly" @open-netscan="openNetscan" />
+      <Sidebar ref="sidebarRef" :visible="sidebarVisible" @toggle="sidebarVisible = !sidebarVisible" @connect="onSidebarConnect" @connect-to-workspace="({ config, workspaceId }: any) => onConnect(config, undefined, undefined, true, workspaceId)" @create-workspace="(configs: any) => onCreateWorkspaceFromConfigs(configs)" @connect-only="onConnectOnly" @open-netscan="openNetscan" @open-settings="openSettings" />
       <div class="center-column">
-      <div class="tab-area">
+      <div class="tab-area" :class="{ frameless: tabAreaFrameless }">
         <template v-if="activeTab">
           <KeepAlive>
             <TerminalTabContent
@@ -35,6 +36,9 @@
             />
             <SettingsTabContent
               v-else-if="activeTab.type === 'settings'"
+            />
+            <ToolsTabContent
+              v-else-if="activeTab.type === 'tools'"
             />
             <WorkspaceContent
               v-else-if="activeTab.type === 'workspace'"
@@ -93,7 +97,7 @@
               :session-id="getPanelSessionId(activeTab.panelId) || ''"
             />
             <ElasticsearchTabContent
-              v-else-if="activeTab.type === 'elasticsearch'"
+              v-else-if="activeTab.type === 'elasticsearch' || activeTab.type === 'opensearch'"
               :key="activeTab.id"
               :session-id="getPanelSessionId(activeTab.panelId) || ''"
             />
@@ -134,8 +138,12 @@
       </div>
       <BottomPanel @select="onBottomPanelSelect" />
       </div>
-      <AISidebar ref="aiSidebarRef" @open-settings="openSettings" />
+      <RightPanel @select="onRightPanelSelect" />
     </div>
+    <!-- Universal ＋ junctions: four-way grips wherever a vertical drag bar
+         (workspace splitter / sidebar / AI sidebar handle) crosses a
+         horizontal one (row splitter / bottom panel handle) -->
+    <SplitterCrossings />
     <ConnectionForm v-model="showConnectionForm" :edit-config="editConfig ?? undefined" :default-group-id="pendingGroupId" @save="onSaveOnly" @connect="(c: ConnectionConfig, ko?: boolean) => { const wasEdit = !!editConfig?.id; editConfig = null; onConnect(c, ko, wasEdit) }" @connect-only="onConnectOnly" @cancel="editConfig = null" />
 
     <CredentialPrompt
@@ -199,8 +207,9 @@ import PacketCaptureTabContent from './components/packetcap/PacketCaptureTabCont
 import FirewallTabContent from './components/firewall/FirewallTabContent.vue'
 import HostKeyChangedDialog from './components/HostKeyChangedDialog.vue'
 import LocalServices from './components/localsrv/LocalServices.vue'
-import AISidebar from './components/AISidebar.vue'
 import BottomPanel from './components/BottomPanel.vue'
+import RightPanel from './components/RightPanel.vue'
+import SplitterCrossings from './components/SplitterCrossings.vue'
 import SyncConflictDialog from './components/SyncConflictDialog.vue'
 import WorkspaceSaveDialog from './components/WorkspaceSaveDialog.vue'
 import MultilinePasteDialog from './components/MultilinePasteDialog.vue'
@@ -225,6 +234,7 @@ import { useSessionStore } from './stores/sessionStore'
 import { useAIStore } from './stores/aiStore'
 import { useCompanionStore } from './stores/companionStore'
 import { useSettingsStore } from './stores/settingsStore'
+import { deferToIdle } from './utils/deferToIdle'
 import { useQuickCommandStore } from './stores/quickCommandStore'
 import { useNotesStore } from './stores/notesStore'
 import { useSkillStore } from './stores/skillStore'
@@ -275,6 +285,7 @@ import { createWorkspaceFromSelection } from './composables/createWorkspace'
 
 const TerminalTabContent = defineAsyncComponent(() => import('./components/TerminalTabContent.vue'))
 const SettingsTabContent = defineAsyncComponent(() => import('./components/SettingsTabContent.vue'))
+const ToolsTabContent = defineAsyncComponent(() => import('./components/ToolsTabContent.vue'))
 const WorkspaceContent = defineAsyncComponent(() => import('./components/WorkspaceContent.vue'))
 const FileTabContent = defineAsyncComponent(() => import('./components/FileTabContent.vue'))
 const RDPTabContent = defineAsyncComponent(() => import('./components/RDPTabContent.vue'))
@@ -335,6 +346,17 @@ const bgStyle = computed(() => {
 const connectionStore = useConnectionStore()
 const tabStore = useTabStore()
 const activeTab = computed(() => tabStore.activeTab)
+
+/* Tabs whose content draws its own island panels (left tree + right pane,
+   or a multi-panel workspace grid): the tab-area frame would be a second
+   ring around them, so it hides. */
+const FRAMELESS_TAB_TYPES = new Set(['database', 'elasticsearch', 'opensearch', 'mongodb', 'redis', 'k8s', 'container', 'sftp'])
+const tabAreaFrameless = computed(() => {
+  const tab = activeTab.value
+  if (!tab) return false
+  if (tab.type === 'workspace') return 'panelIds' in tab && tab.panelIds.length > 1
+  return FRAMELESS_TAB_TYPES.has(tab.type)
+})
 const panelStore = usePanelStore()
 const sessionStore = useSessionStore()
 
@@ -538,7 +560,6 @@ async function checkCredentials() {
 const showConnectionForm = ref(false)
 const sidebarVisible = ref(false)
 const sidebarRef = ref<any>(null)
-const aiSidebarRef = ref<any>(null)
 
 
 // Input context menu state
@@ -854,17 +875,23 @@ function onWheel(e: WheelEvent) {
 // (maximizePanel action).
 let isMac = false
 
-// Toggle the AI sidebar, restoring terminal focus on hide and focusing the
-// chat input on show. Shared by the keyboard-settings action and the
-// double-Ctrl gesture.
+// Mirror the AI view's on-screen state into aiStore.visible so the AI
+// internals (timers, auto-open paths, collapsed styling) keep their single
+// source of truth without reaching into the dock layout.
+watch(() => uiLayout.aiShown, (shown) => { aiStore.visible = shown }, { immediate: true })
+
+// Toggle the AI panel with the same dock contract as every other panel
+// (sidebarViewShortcut): foreground → collapse its dock; otherwise open its
+// dock and bring AI to the front. Terminal focus returns on hide, the chat
+// input takes it on show. Shared by the keyboard action and double-Ctrl.
 function toggleAISidebar() {
-  if (aiStore.visible) {
-    aiStore.visible = false
+  const showing = !uiLayout.aiShown
+  sidebarViewShortcut('ai')
+  if (showing) {
+    nextTick(() => sidebarRef.value?.focusAIInput())
+  } else {
     const pid = tabStore.getActivePanelId()
     if (pid) nextTick(() => focusPanelTerminal(pid))
-  } else {
-    aiStore.visible = true
-    nextTick(() => aiSidebarRef.value?.focusInput())
   }
 }
 
@@ -962,7 +989,10 @@ function onPlatformSystemShortcut(e: KeyboardEvent) {
 onMounted(async () => {
   connectionStore.load()
   aiStore.init()
-  updateCheck.initAutoCheck()
+  // Update check does an IPC roundtrip (GetAppInfo/isWebServerMode) and
+  // schedules network requests — nothing on screen depends on it, so keep it
+  // off the startup critical path.
+  deferToIdle(() => updateCheck.initAutoCheck())
 
   // Load local-only state (sidebar visibility, background image, etc.)
   await localStateStore.init()
@@ -1003,10 +1033,6 @@ onMounted(async () => {
     }
   )
   installTabSnapshotSaver()
-  // Pre-load noVNC so VNC tab switches don't pay the dynamic import cost.
-  import('@novnc/novnc').then((m: any) => {
-    ;(window as any).__novnc_RFB = m.default || m
-  }).catch(() => {})
   window.addEventListener('input:contextmenu', onInputContextMenu)
   // Capture phase: xterm v6's viewport stopPropagation()s wheel events it
   // scrolls, but bails on defaultPrevented — so we must preempt it.
@@ -1184,21 +1210,29 @@ function closeSidebar() {
   if (pid) nextTick(() => focusPanelTerminal(pid))
 }
 
-// Toggle a view on whichever dock it currently lives in (left sidebar or
-// bottom panel): not in the foreground → open it there; already in the
-// foreground → collapse its dock and hand focus back to the terminal.
+// Toggle a view on whichever dock it currently lives in (left sidebar, right
+// rail or bottom panel): not in the foreground → open it there; already in
+// the foreground → collapse its dock and hand focus back to the terminal.
 function sidebarViewShortcut(view: SidebarView, usePanelOpener = false) {
-  const atBottom = uiLayout.panelLocation(view) === 'bottom'
-  const isForeground = atBottom
-    ? uiLayout.bottomPanelVisible && uiLayout.bottomActiveView === view
-    : sidebarVisible.value && sidebarRef.value?.activeView === view
+  const loc = uiLayout.effectiveLocation(view)
+  const isForeground =
+    loc === 'bottom'
+      ? uiLayout.bottomPanelVisible && uiLayout.bottomActiveView === view
+      : loc === 'right'
+        ? uiLayout.rightPanelVisible && uiLayout.rightActiveView === view
+        : sidebarVisible.value && sidebarRef.value?.activeView === view
   if (isForeground) {
-    if (atBottom) uiLayout.setBottomPanelVisible(false)
+    if (loc === 'bottom') uiLayout.setBottomPanelVisible(false)
+    else if (loc === 'right') uiLayout.setRightPanelVisible(false)
     else closeSidebar()
     return
   }
-  if (atBottom) {
+  // Re-show a view hidden via the panel menu, then surface its dock.
+  uiLayout.setViewVisible(view, true)
+  if (loc === 'bottom') {
     if (!uiLayout.bottomPanelVisible) uiLayout.setBottomPanelVisible(true)
+  } else if (loc === 'right') {
+    if (!uiLayout.rightPanelVisible) uiLayout.setRightPanelVisible(true)
   } else {
     sidebarVisible.value = true
   }
@@ -1214,10 +1248,23 @@ function onToggleBottomPanel() {
   uiLayout.setBottomPanelVisible(!uiLayout.bottomPanelVisible)
 }
 
+// Header right-rail button: show/hide the whole dock (same as the left
+// sidebar and bottom panel toggles). The AI panel itself is toggled by the
+// keyboard action / double-Ctrl gesture, not here.
+function onToggleRightPanel() {
+  uiLayout.setRightPanelVisible(!uiLayout.rightPanelVisible)
+}
+
 // Bottom-panel tab click: route through Sidebar.openTab so files/monitor
 // tabs keep their companion-session open logic; activeView lives in the
 // shared uiLayout store, so both strips highlight the same view.
 function onBottomPanelSelect(view: string) {
+  sidebarRef.value?.openTab(view)
+}
+
+// Right-rail tab click: same routing — openTab activates the view as the
+// right dock's active tab wherever it is docked.
+function onRightPanelSelect(view: string) {
   sidebarRef.value?.openTab(view)
 }
 
@@ -1386,6 +1433,19 @@ function openSettings(category?: string) {
   }
 }
 
+function openTools() {
+  // Check if tools tab already exists
+  const existingTab = tabStore.tabs.find(t => t.type === 'tools')
+  if (existingTab) {
+    tabStore.setActiveTab(existingTab.id)
+  } else {
+    const panel = panelStore.createPanel(null, 'tools')
+    panelStore.updateTitle(panel.id, t('tools.title'))
+    const tab = tabStore.createTab('tools', t('tools.title'), panel.id)
+    panelStore.movePanelToTab(panel.id, tab.id)
+  }
+}
+
 function openNetscan() {
   netscanVisible.value = true
 }
@@ -1493,7 +1553,7 @@ async function closeTab(tabId: string, opts: { skipConfirm?: boolean } = {}) {
     }
   }
   // Close redis session
-  if (tab && (tab.type === 'redis' || tab.type === 'mongodb' || tab.type === 'elasticsearch')) {
+  if (tab && (tab.type === 'redis' || tab.type === 'mongodb' || tab.type === 'elasticsearch' || tab.type === 'opensearch')) {
     const p = panelStore.getPanel(tab.panelId)
     if (p?.sessionId) {
       try { await CloseSession(p.sessionId) } catch (_) {}
@@ -1592,7 +1652,7 @@ async function closeTabBatch(tabIds: string[]) {
   if (!targets.length) return
 
   const connectedCount = targets.reduce((n, tab) => {
-    if (tab.type === 'settings' || tab.type === 'start' || tab.type === 'netscan') return n
+    if (tab.type === 'settings' || tab.type === 'tools' || tab.type === 'start' || tab.type === 'netscan') return n
     const panelIds = tab.type === 'workspace' ? tab.panelIds : 'panelId' in tab ? [tab.panelId] : []
     const hit = panelIds.some(pid => {
       const p = panelStore.getPanel(pid)
@@ -1873,7 +1933,7 @@ async function reconnectDatabasePanel(panel: { id: string; sessionId: string | n
   if (!cfg) return
   // Standalone NoSQL types carry their session type in config.type; the SQL
   // family stays on the generic 'database' session.
-  const sessionType = cfg.type === 'redis' || cfg.type === 'mongodb' || cfg.type === 'elasticsearch'
+  const sessionType = cfg.type === 'redis' || cfg.type === 'mongodb' || cfg.type === 'elasticsearch' || cfg.type === 'opensearch'
     ? cfg.type
     : 'database'
   try {
@@ -1920,7 +1980,7 @@ async function reconnectSftpPanel(panel: { id: string; sessionId: string | null;
 
 // Panel kinds whose sessions are created in connectionLauncher's database
 // family spec (shared 'database' panel type + own session kind).
-const DB_FAMILY_PANEL_TYPES = ['database', 'redis', 'mongodb', 'elasticsearch']
+const DB_FAMILY_PANEL_TYPES = ['database', 'redis', 'mongodb', 'elasticsearch', 'opensearch']
 
 function onPanelReconnectEvent(e: Event) {
   const panelId = (e as CustomEvent)?.detail?.panelId
@@ -2126,15 +2186,22 @@ watch(
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: var(--bg-base);
-  border: 1px solid var(--border-subtle);
+  /* The gutters between floating panels show this color — same tier as the
+     title bar so the chrome (bar + gutters) reads as one plane */
+  background: var(--bg-titlebar);
   position: relative;
 }
 .main-content {
   display: flex;
   flex: 1;
   overflow: hidden;
-  gap: 0;
+  /* VS Code-style floating panels: 4px gutters between and around the
+     sidebar / center column / AI sidebar so each reads as its own island.
+     Top gutter is tighter so the title bar doesn't drift too far from
+     the content. */
+  gap: 0.25rem;
+  /* Outer frame margin, same width as the inner gutters */
+  padding: 0 0.25rem 0.25rem;
   position: relative;
   z-index: 1;
 }
@@ -2145,6 +2212,18 @@ watch(
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-base);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+/* Multi-panel workspace: the panels carry their own island borders, so the
+   enclosing frame would read as a second ring around them. Border goes away;
+   the tab-area radius still clips the grid's outer corners. */
+.tab-area.frameless {
+  /* Remove the border entirely: transparent-color kept a 1px empty ring
+     around self-framing views (workspace/sftp/db/container/...) */
+  border: none;
+  /* Keep the plain content floor here — only the gutter elements themselves
+     are tinted chrome (see the per-view gutter rules) */
 }
 
 /* Center column between the left sidebar and the AI sidebar: active tab
@@ -2155,6 +2234,8 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Gutter between the tab area and the docked bottom panel */
+  gap: 0.25rem;
 }
 
 .group-list {
@@ -2370,6 +2451,7 @@ body > .conn-context-menu {
 /* 边栏毛玻璃 */
 .app-container.has-bg .main-content :deep(.sidebar),
 .app-container.has-bg .main-content :deep(.ai-sidebar),
+.app-container.has-bg .main-content :deep(.right-panel),
 .app-container.has-bg .main-content :deep(.companion-sidebar) {
   backdrop-filter: blur(0.5rem);
 }

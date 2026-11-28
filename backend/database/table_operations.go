@@ -116,19 +116,43 @@ func textCast(driver, quotedColumn string) string {
 	switch driver {
 	case "mysql":
 		return "CAST(" + quotedColumn + " AS CHAR)"
+	case "clickhouse":
+		return "CAST(" + quotedColumn + " AS String)"
 	case "sqlserver":
 		return "CAST(" + quotedColumn + " AS NVARCHAR(MAX))"
 	case "oracle":
 		return "CAST(" + quotedColumn + " AS VARCHAR2(4000))"
+	case "dm":
+		return "CAST(" + quotedColumn + " AS VARCHAR(4000))"
+	case "gbase8s":
+		// Informix: plain VARCHAR in a CAST needs a length and truncates at
+		// it; LVARCHAR has no such cap.
+		return "CAST(" + quotedColumn + " AS LVARCHAR)"
 	default:
 		return "CAST(" + quotedColumn + " AS TEXT)"
 	}
 }
 
-func likeLiteral(s string) string {
-	s = strings.ReplaceAll(s, "!", "!!")
-	s = strings.ReplaceAll(s, "%", "!%")
-	return strings.ReplaceAll(s, "_", "!_")
+// likeEscapeChar returns the LIKE escape character for a driver. ClickHouse
+// supports no ESCAPE clause and always treats a backslash as the escape
+// character.
+func likeEscapeChar(driver string) string {
+	if driver == "clickhouse" {
+		return "\\"
+	}
+	return "!"
+}
+
+// hasEscapeClause reports whether the driver accepts an explicit ESCAPE
+// suffix on LIKE.
+func hasEscapeClause(driver string) bool {
+	return driver != "clickhouse"
+}
+
+func likeLiteral(s, esc string) string {
+	s = strings.ReplaceAll(s, esc, esc+esc)
+	s = strings.ReplaceAll(s, "%", esc+"%")
+	return strings.ReplaceAll(s, "_", esc+"_")
 }
 
 func buildBrowseSQL(p Provider, schema, tableName string, cols map[string]bool, opts BrowseOptions) (string, []any, error) {
@@ -151,14 +175,19 @@ func buildBrowseSQL(p Provider, schema, tableName string, cols map[string]bool, 
 			args = append(args, f.Value)
 			predicates = append(predicates, col+" = "+placeholder(p.DriverName(), len(args)))
 		case "contains", "startsWith":
-			value := likeLiteral(f.Value)
+			esc := likeEscapeChar(p.DriverName())
+			value := likeLiteral(f.Value, esc)
 			if f.Op == "contains" {
 				value = "%" + value + "%"
 			} else {
 				value += "%"
 			}
 			args = append(args, value)
-			predicates = append(predicates, "LOWER("+textCast(p.DriverName(), col)+") LIKE LOWER("+placeholder(p.DriverName(), len(args))+") ESCAPE '!'")
+			escape := ""
+			if hasEscapeClause(p.DriverName()) {
+				escape = " ESCAPE '!'"
+			}
+			predicates = append(predicates, "LOWER("+textCast(p.DriverName(), col)+") LIKE LOWER("+placeholder(p.DriverName(), len(args))+")"+escape)
 		default:
 			return "", nil, fmt.Errorf("unsupported filter operator %q", f.Op)
 		}
@@ -328,7 +357,7 @@ func UpdateRowsAtomic(p Provider, db *sql.DB, dbName, schema, tableName string, 
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := dbCtx(context.Background(), db, 2*time.Minute)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -429,7 +458,7 @@ func ImportCSV(p Provider, db *sql.DB, dbName, schema, tableName, path string, m
 		placeholders[i] = placeholder(p.DriverName(), i+1)
 	}
 	query := "INSERT INTO " + qualifyTable(p, schema, tableName) + " (" + strings.Join(quoted, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ")"
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := dbCtx(context.Background(), db, 10*time.Minute)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {

@@ -17,8 +17,11 @@
 
       <!-- Right content: sub-type grid + form -->
       <div class="conn-main">
-        <!-- Sub-type icon grid -->
-        <div class="subtype-grid">
+        <!-- Sub-type icon grid. Other categories lay out every entry directly.
+             The SQL category pins one row — 5 fixed databases, a live mirror
+             slot, and the toggle fixed at the row's right edge — and expanded,
+             the remaining types flow alphabetically on their own rows below. -->
+        <div v-if="category !== 'sql'" class="subtype-grid">
           <button
             v-for="st in currentSubTypes"
             :key="st.type + (st.dbType || '') + (st.containerRuntime || '')"
@@ -30,6 +33,63 @@
             <span>{{ st.label }}</span>
           </button>
         </div>
+        <template v-else>
+          <!-- SQL block: pinned row + (expanded) filterable extra rows. The
+               block wrapper carries the full-width divider, and the expanded
+               area renders as a form row with its own field label. -->
+          <div class="sql-types-block">
+            <div class="subtype-grid">
+              <button
+                v-for="st in sqlPinnedRow"
+                :key="st.type + (st.dbType || '') + (st.containerRuntime || '')"
+                class="subtype-btn"
+                :class="{ active: isSubTypeActive(st) }"
+                @click="selectType(st)"
+              >
+                <component :is="st.icon" :size="lucideSize('1.125rem')" />
+                <span>{{ st.label }}</span>
+              </button>
+              <button
+                class="subtype-btn more-toggle"
+                :class="{ active: sqlTypesExpanded }"
+                @click="onToggleSqlExpanded"
+              >
+                <component :is="sqlTypesExpanded ? ChevronUp : ChevronDown" :size="lucideSize('1.125rem')" />
+                <span>{{ sqlTypesExpanded ? t('conn.fewerDbTypes') : t('conn.moreDbTypes') }}</span>
+              </button>
+            </div>
+            <!-- Same key/value structure and styling as the form items below;
+                 label-width/label-position are set explicitly since this sits
+                 outside el-form. -->
+            <el-form-item
+              v-if="sqlTypesExpanded"
+              label-width="6.5rem"
+              label-position="right"
+              :label="t('conn.dbTypeLabel')"
+              class="subtype-more-item"
+            >
+              <el-input
+                v-model="sqlTypeFilter"
+                class="subtype-more-filter"
+                clearable
+                :placeholder="t('conn.searchDbTypes')"
+              />
+              <div v-if="sqlMoreSubTypes.length > 0" class="subtype-grid subtype-grid-more">
+                <button
+                  v-for="st in sqlMoreSubTypes"
+                  :key="'more-' + st.type + (st.dbType || '') + (st.containerRuntime || '')"
+                  class="subtype-btn"
+                  :class="{ active: isSubTypeActive(st) }"
+                  @click="selectType(st)"
+                >
+                  <component :is="st.icon" :size="lucideSize('1.125rem')" />
+                  <span>{{ st.label }}</span>
+                </button>
+              </div>
+              <div v-else class="subtype-more-empty">{{ t('conn.noMatchingDbTypes') }}</div>
+            </el-form-item>
+          </div>
+        </template>
 
         <!-- Form fields -->
         <div class="conn-fields">
@@ -51,7 +111,7 @@
                 </el-button>
               </div>
             </el-form-item>
-            <!-- ── Local/WSL file browser: distro + start path ── -->
+            <!-- ── Local/WSL file browser: distro ── -->
             <template v-if="form.type === 'local-file' || form.type === 'wsl-file'">
               <el-form-item v-if="form.type === 'wsl-file'" :label="t('conn.wslDistro')" required>
                 <el-select v-model="form.shellPath" filterable allow-create clearable>
@@ -62,9 +122,6 @@
                     :value="sh.value"
                   />
                 </el-select>
-              </el-form-item>
-              <el-form-item :label="t('conn.startPath')">
-                <el-input v-model="form.cwd" :placeholder="t('conn.startPathPlaceholder')" clearable />
               </el-form-item>
             </template>
             <el-form-item v-if="form.type === 'redis'" :label="t('conn.redisMode')">
@@ -126,7 +183,7 @@
             <el-form-item v-if="(form.authType !== 'identity' || showsIdentityUserField) && form.type !== 'vnc' && form.type !== 'spice' && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb && form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && !isEsApiKey" :label="form.authType === 'identity' ? t('conn.identityUserOverride') : (form.type === 's3' ? 'Access Key' : t('conn.user'))">
               <el-input v-model="form.user" :placeholder="form.authType === 'identity' ? t('conn.identityUserOverrideHint') : (form.type === 's3' ? 'Access Key ID' : t('conn.userPlaceholder'))" />
             </el-form-item>
-            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password') || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || form.type === 'elasticsearch') && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
+            <el-form-item v-if="form.type !== 'local' && form.type !== 'wsl' && form.type !== 'local-file' && form.type !== 'wsl-file' && form.type !== 'serial' && form.type !== 'tcp' && form.type !== 'k8s' && form.type !== 'container' && form.authType !== 'identity' && ((form.authType === 'password') || form.type === 'vnc' || form.type === 'spice' || form.type === 'database' || form.type === 'telnet' || form.type === 'ftp' || form.type === 'smb' || form.type === 'webdav' || form.type === 's3' || isElasticsearch) && !(form.type === 'database' && form.dbType === 'rqlite') && !isSqliteDb" :label="form.type === 's3' ? 'Secret Key' : (isEsApiKey ? t('conn.esApiKey') : t('conn.password'))">
               <el-input v-model="form.password" type="password" show-password :key="passwordInputKey" :placeholder="form.type === 's3' ? 'Secret Access Key' : (isEsApiKey ? t('conn.esApiKeyPlaceholder') : savedSecretPlaceholder)" />
             </el-form-item>
             <el-form-item v-if="form.authType === 'kerberos' && !isMobilePlatform()" :label="t('conn.kerberos')">
@@ -212,9 +269,16 @@
               <el-form-item v-if="form.totpEnabled" :label="t('conn.totpSecret')" required>
                 <el-input v-model="form.totpSecret" type="password" show-password :key="passwordInputKey" autocomplete="new-password" :placeholder="t('conn.totpSecretPlaceholder')" />
                 <div class="field-hint">{{ t('conn.totpHint') }}</div>
+                <!-- Live code for bastion web-console binding (#1583). Uses the
+                     secret as typed, so it also works before the host is saved. -->
+                <div v-if="form.totpSecret" class="totp-current">
+                  <div class="totp-current-label">{{ t('conn.totpCurrentCode') }}</div>
+                  <TotpCodePanel :secret="form.totpSecret" :active="visible" />
+                  <div class="field-hint">{{ t('conn.totpCodeHint') }}</div>
+                </div>
               </el-form-item>
             </template>
-            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceName') : t('db.databases')" :required="form.dbType === 'postgres' || (form.type === 'database' && form.dbType === 'oracle')">
+            <el-form-item v-if="(form.type === 'database' && form.dbType !== 'rqlite' && form.dbType !== 'sqlite' && form.dbType !== 'redis' && form.dbType !== 'elasticsearch') || form.type === 'mongodb'" :label="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceName') : t('db.databases')" :required="requiresDbName(form.dbType) || (form.type === 'database' && form.dbType === 'oracle')">
               <el-input v-model="form.dbName" :placeholder="form.type === 'database' && form.dbType === 'oracle' ? t('db.serviceNamePlaceholder') : t('db.databases')" />
             </el-form-item>
             <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.shell')">
@@ -428,6 +492,18 @@
                 <el-form-item v-if="form.type === 'local' || form.type === 'wsl'" :label="t('conn.workingDir')">
                   <el-input v-model="form.cwd" :placeholder="t('conn.workingDirPlaceholder')" clearable />
                 </el-form-item>
+                <!-- File-panel start paths: the local pane (left) and the remote
+                     pane (right). Empty keeps the respective home default;
+                     opening the panel from a terminal still lands at the shell's
+                     cwd. -->
+                <template v-if="hasFileStartPaths">
+                  <el-form-item :label="t('conn.localStartPath')">
+                    <el-input v-model="form.localDir" :placeholder="t('conn.localStartPathPlaceholder')" clearable />
+                  </el-form-item>
+                  <el-form-item :label="t('conn.remoteStartPath')">
+                    <el-input v-model="form.cwd" :placeholder="t('conn.remoteStartPathPlaceholder')" clearable />
+                  </el-form-item>
+                </template>
                 <el-form-item v-if="isSSHAlgoType" :label="t('conn.sshAlgoMode')">
                   <el-radio-group v-model="sshAlgoMode">
                     <el-radio-button value="compatible">{{ t('conn.sshAlgoModeCompatible') }}</el-radio-button>
@@ -502,9 +578,10 @@
                     <el-radio-group v-model="form.fileTransferProto">
                       <el-radio-button value="sftp">SFTP</el-radio-button>
                       <el-radio-button value="scp">SCP</el-radio-button>
+                      <el-radio-button value="none">{{ t('conn.fileTransferProtoNone') }}</el-radio-button>
                     </el-radio-group>
                   </el-form-item>
-                  <el-form-item v-if="form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
+                  <el-form-item v-if="(form.type === 'ssh' && form.fileTransferProto !== 'none') || form.type === 'sftp' || form.type === 'scp'" :label="t('conn.sftpMaxConcurrency')">
                     <el-input-number v-model="form.sftpMaxConcurrency" :min="0" :max="20" controls-position="right" style="width: 8rem" />
                   </el-form-item>
                 </div>
@@ -762,7 +839,7 @@
       >
         {{ t('conn.testConnection') }}
       </el-button>
-      <el-button v-if="!isEdit" @click="onConnectOnly">{{ t('conn.connectOnly') }}</el-button>
+      <el-button v-if="!isEdit && form.type !== 'container'" @click="onConnectOnly">{{ t('conn.connectOnly') }}</el-button>
       <el-button @click="onSave">{{ t('conn.saveOnly') }}</el-button>
       <el-button type="primary" @click="onConnect">{{ t('conn.saveConnect') }}</el-button>
     </template>
@@ -816,7 +893,7 @@ import type { ConnectionConfig, PostLoginExpectStep, SSHAlgoConfig } from '../ty
 import { OpenFileDialog, OpenFileDialogFiltered, OpenPrivateKeyFile, OpenKubeconfigFile, GetPlatform, ListSerialPorts, TestConnection, GetDefaultSSHKeyPaths } from '../../bindings/github.com/ys-ll/uniterm/app'
 import { ElInput } from 'element-plus'
 import { msg } from '../services/message'
-import { Plus, Trash2, ChevronRight, FolderOpen, Eye, EyeOff, RefreshCw, CircleCheck, CircleX, KeyRound } from '@lucide/vue'
+import { Plus, Trash2, ChevronDown, ChevronRight, ChevronUp, FolderOpen, Eye, EyeOff, RefreshCw, CircleCheck, CircleX, KeyRound } from '@lucide/vue'
 import { listContexts } from '../services/k8sClient'
 // CodeMirror (SyntaxEditor) is the heaviest editor dependency — only loaded
 // when this view actually opens.
@@ -825,6 +902,7 @@ import type { K8sContextInfo } from '../types/k8s'
 import IdentityEditDialog from './IdentityEditDialog.vue'
 import ProxyEditDialog from './ProxyEditDialog.vue'
 import SSHAlgorithmsDialog from './SSHAlgorithmsDialog.vue'
+import TotpCodePanel from './TotpCodePanel.vue'
 import { isSqlDbType } from '../utils/quickConnect'
 import {
   isWebServerMode,
@@ -879,6 +957,7 @@ interface SubTypeInfo {
   containerRuntime?: string
   label: string
   icon: any
+  pinned?: boolean
 }
 
 // Category sidebar and subtype cards derive from the connectionTypes registry.
@@ -903,12 +982,90 @@ const allSubTypes = computed((): Record<string, SubTypeInfo[]> => {
       containerRuntime: info.containerRuntime,
       label: connectionTypeFormLabel(info, t),
       icon: info.icon,
+      pinned: !!info.formPinned,
     })
   }
   return groups
 })
 
 const currentSubTypes = computed(() => allSubTypes.value[category.value] || allSubTypes.value.terminal)
+
+// PostgreSQL-family dbTypes bind a connection to a single database, so the
+// database field is required just like plain PostgreSQL.
+const pgFamilyDbTypes = ['postgres', 'kingbase', 'opengauss']
+function requiresDbName(dbType?: string): boolean {
+  return !!dbType && pgFamilyDbTypes.includes(dbType)
+}
+
+// ── SQL category's collapsed pinned row ──
+// Collapsed shows only the pinned SQL types; the toggle at the row's end
+// expands the full grid. The last pinned slot (ClickHouse) is a mirror:
+// every time the row collapses it takes on the selected non-pinned SQL
+// type, so the current selection always stays visible once the extra rows
+// are hidden. The mirror keeps its captured type across expand/collapse
+// cycles — it never reverts to the default (ClickHouse) on its own.
+// Expanded state lives for the session only.
+const sqlTypesExpanded = ref(false)
+
+const sqlPinnedSubTypes = computed(() =>
+  (allSubTypes.value.sql || []).filter(st => st.pinned)
+)
+
+// The pinned type whose slot doubles as the dynamic mirror.
+const SQL_MIRROR_DEFAULT = 'clickhouse'
+
+// null → the mirror slot shows its default (ClickHouse).
+const sqlMirrorDbType = ref<string | null>(null)
+
+// Capture the selected SQL type into the mirror slot: a non-pinned type
+// takes the slot over; a pinned selection clears it back to its default (DM).
+// Called when the pinned row collapses and when the dialog opens (edit load)
+// — never a reactive watcher, since `form` is declared further down in setup
+// and any watch getter would hit the temporal dead zone at registration.
+function captureSqlMirror() {
+  const selectedDbType = form.type === 'database' ? form.dbType : undefined
+  if (selectedDbType && !sqlPinnedSubTypes.value.some(st => st.dbType === selectedDbType)) {
+    sqlMirrorDbType.value = selectedDbType
+  } else {
+    sqlMirrorDbType.value = null
+  }
+}
+
+function onToggleSqlExpanded() {
+  if (sqlTypesExpanded.value) {
+    sqlTypesExpanded.value = false
+    sqlTypeFilter.value = ''
+    captureSqlMirror()
+  } else {
+    sqlTypesExpanded.value = true
+  }
+}
+
+const sqlPinnedRow = computed(() => {
+  const row = sqlPinnedSubTypes.value.slice()
+  const mirrorDbType = sqlMirrorDbType.value
+  if (!mirrorDbType || row.some(st => st.dbType === mirrorDbType)) return row
+  const mirrorIdx = row.findIndex(st => st.dbType === SQL_MIRROR_DEFAULT)
+  const match = (allSubTypes.value.sql || []).find(st => st.dbType === mirrorDbType)
+  if (mirrorIdx >= 0 && match) row[mirrorIdx] = match
+  return row
+})
+
+// Extra SQL types shown below the pinned row while expanded, alphabetically
+// sorted so the grown family stays scannable, narrowed by the filter input.
+// Types already visible in the pinned row (including the live mirror slot)
+// are not repeated.
+const sqlTypeFilter = ref('')
+
+const sqlMoreSubTypes = computed(() => {
+  if (category.value !== 'sql' || !sqlTypesExpanded.value) return []
+  const shown = new Set(sqlPinnedRow.value.map(st => st.dbType))
+  const q = sqlTypeFilter.value.trim().toLowerCase()
+  return currentSubTypes.value
+    .filter(st => !shown.has(st.dbType))
+    .filter(st => q === '' || st.label.toLowerCase().includes(q) || (st.dbType || '').toLowerCase().includes(q))
+    .sort((a, b) => a.label.localeCompare(b.label))
+})
 
 function isSubTypeActive(st: SubTypeInfo): boolean {
   if (st.dbType) {
@@ -929,6 +1086,12 @@ function selectType(st: SubTypeInfo) {
     form.containerRuntime = st.containerRuntime as 'docker' | 'podman' | 'nerdctl' | 'wslc'
   } else {
     form.type = st.type as ConnectionConfig['type']
+  }
+  // Picking a type from the expanded extra rows is done: collapse back to the
+  // pinned row and let the mirror slot take over the selection.
+  if (category.value === 'sql' && sqlTypesExpanded.value) {
+    sqlTypesExpanded.value = false
+    captureSqlMirror()
   }
 }
 
@@ -975,7 +1138,7 @@ const showAdvanced = ref(false)
 
 // Connection types that support the "test connection" button (issue #377).
 // local/serial/mosh/vnc/rdp/spice/x11-desktop don't have a non-interactive probe.
-const TESTABLE_TYPES = ['ssh', 'telnet', 'ftp', 'sftp', 'scp', 's3', 'webdav', 'smb', 'database', 'mongodb', 'redis', 'elasticsearch', 'k8s', 'container', 'tcp']
+const TESTABLE_TYPES = ['ssh', 'telnet', 'ftp', 'sftp', 'scp', 's3', 'webdav', 'smb', 'database', 'mongodb', 'redis', 'elasticsearch', 'opensearch', 'k8s', 'container', 'tcp']
 // Test-connection result state: 'checking' shows a spinner; 'success'/'error'
 // keep a colored status icon on the button until the next test or a reopen.
 const testStatus = ref<'idle' | 'checking' | 'success' | 'error'>('idle')
@@ -1081,6 +1244,13 @@ watch(visible, (val) => {
 })
 
 function onDialogOpened() {
+  // Every open starts collapsed: the SQL extra-types grid never carries over
+  // from a previous dialog session.
+  sqlTypesExpanded.value = false
+  sqlTypeFilter.value = ''
+  // Sync the mirror slot with a loaded non-pinned SQL type (edit) so the
+  // collapsed row always shows the current selection.
+  captureSqlMirror()
   // New connections: focus the host field by default. The dialog's @opened
   // event fires after the open transition, so the host input is mounted.
   if (!isEdit.value) {
@@ -1130,14 +1300,14 @@ const showProxy = computed(() =>
   !isRedisSentinel.value
 )
 const showAdvancedToggle = computed(() =>
-  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || form.type === 'elasticsearch' || form.type === 'x11-desktop' || form.type === 'rdp'
+  showTunnel.value || form.type === 'ssh' || form.type === 'sftp' || form.type === 'scp' || form.type === 'telnet' || form.type === 'mosh' || form.type === 'local' || form.type === 'wsl' || form.type === 'serial' || form.type === 'ftp' || form.type === 'database' || isElasticsearch.value || form.type === 'x11-desktop' || form.type === 'rdp'
 )
 
 const isRedisSentinel = computed(() =>
   form.type === 'redis' && form.redisMode === 'sentinel'
 )
 const isElasticsearch = computed(() =>
-  form.type === 'elasticsearch'
+  form.type === 'elasticsearch' || form.type === 'opensearch'
 )
 const isEsApiKey = computed(() =>
   isElasticsearch.value && form.authType === 'apikey'
@@ -1162,6 +1332,7 @@ const defaultParamsHint = computed(() => {
     case 'mysql': return `${t('db.paramsDefault')}: charset=utf8mb4`
     case 'postgres': return `${t('db.paramsDefault')}: sslmode=disable`
     case 'sqlserver': return `${t('db.paramsDefault')}: encrypt=disable`
+    case 'gbase8s': return `${t('db.paramsExample')}: GBASEDBTSERVER=<服务名>`
     case 'sqlite': return `${t('db.paramsExample')}: journal_mode=WAL`
     default: return ''
   }
@@ -1205,7 +1376,7 @@ const form = reactive<ConnectionConfig>({
   postLoginScript: '',
   postLoginExpectSteps: [],
   sftpMaxConcurrency: 5,
-  fileTransferProto: 'sftp' as 'sftp' | 'scp',
+  fileTransferProto: 'sftp' as 'sftp' | 'scp' | 'none',
   x11Forwarding: false,
   agentForwarding: false,
   ftpEncryption: 'none',
@@ -1227,6 +1398,7 @@ const form = reactive<ConnectionConfig>({
   shellPath: '',
   shellArgs: '',
   cwd: '',
+  localDir: '',
   smbDomain: 'WORKGROUP',
   smbShare: '',
   s3Region: 'us-east-1',
@@ -1251,6 +1423,12 @@ const form = reactive<ConnectionConfig>({
 // mode opens the algorithm editor to fill the four preference lists.
 const isSSHAlgoType = computed(() => ['ssh', 'scp', 'sftp', 'mosh', 'x11-desktop'].includes(form.type))
 
+// Connection types whose companion file panel has both a local pane and a
+// remote pane (the sftp-family panel renders both regardless of the wire
+// protocol behind it). These get the local/remote start-path fields.
+const hasFileStartPaths = computed(() =>
+  ['ssh', 'scp', 'sftp', 'ftp', 's3', 'smb', 'webdav', 'container', 'local-file', 'wsl-file'].includes(form.type))
+
 // Identity (密钥库) auth extends beyond the SSH family (issues #1389/#1440):
 // every protocol that authenticates with a username+password pair can
 // reference a password-type identity. VNC/SPICE are password-only protocols
@@ -1258,7 +1436,7 @@ const isSSHAlgoType = computed(() => ['ssh', 'scp', 'sftp', 'mosh', 'x11-desktop
 // carry no credentials at all. Key-type identities only make sense for the
 // SSH family — the identity select filters to password entries elsewhere.
 const IDENTITY_USERLESS_TYPES = ['vnc', 'spice']
-const IDENTITY_EXTRA_TYPES = ['rdp', 'telnet', 'ftp', 'smb', 'webdav', 's3', 'vnc', 'spice', 'redis', 'mongodb', 'elasticsearch']
+const IDENTITY_EXTRA_TYPES = ['rdp', 'telnet', 'ftp', 'smb', 'webdav', 's3', 'vnc', 'spice', 'redis', 'mongodb', 'elasticsearch', 'opensearch']
 const supportsIdentityAuth = computed(() => {
   if (isSSHAlgoType.value) return true
   if (form.type === 'database') return form.dbType !== 'sqlite' && form.dbType !== 'rqlite'
@@ -1283,7 +1461,8 @@ const advGroupNetwork = computed(() =>
   showProxy.value || showTunnel.value
 )
 const advGroupProtocol = computed(() =>
-  ['database', 'mongodb', 'redis', 'elasticsearch', 'ftp', 'vnc', 'telnet', 'mosh', 'rdp', 'local', 'wsl'].includes(form.type) ||
+  ['database', 'mongodb', 'redis', 'elasticsearch', 'opensearch', 'ftp', 'vnc', 'telnet', 'mosh', 'rdp', 'local', 'wsl',
+   's3', 'smb', 'webdav', 'container', 'local-file', 'wsl-file'].includes(form.type) ||
   isSSHAlgoType.value
 )
 const sshAlgoDialogVisible = ref(false)
@@ -1450,10 +1629,14 @@ watch(() => props.editConfig, (config) => {
     hydrating.value = true
     Object.assign(form, { ...config, postLoginExpectSteps: cloneExpectSteps(config.postLoginExpectSteps || []) })
     if (!form.termType) form.termType = 'xterm-256color'
+    // Configs saved before the auth-type radio covered the identity-capable
+    // types (rdp/telnet/ftp/...) carry authType: "" — the backends treat empty
+    // as password, so backfill it to keep the radio and password field shown.
+    if (!form.authType) form.authType = 'password'
     // Backfill legacy ES auth: older versions stored the auth type in a dedicated
     // `esAuthType` ('basic'|'apikey') and the key in `esApiKey`. Both now live in
     // the shared `authType` ('password'|'apikey') and `password` fields.
-    if (form.type === 'elasticsearch') {
+    if (isElasticsearch.value) {
       const legacy = config as any
       const legacyType = legacy?.esAuthType
       if (legacyType) {
@@ -1550,7 +1733,7 @@ watch(() => form.type, (newType) => {
   if (isEdit.value) return
   const port = defaultPortFor(newType)
   if (port !== undefined) form.port = port
-  if (newType === 'elasticsearch') {
+  if (isElasticsearch.value) {
     // ES shares the common `authType` field; default to 'password' unless an API key was already chosen.
     form.authType = form.authType === 'apikey' ? 'apikey' : 'password'
   }
@@ -1562,7 +1745,7 @@ watch(() => form.type, (newType) => {
   if (!isSSHAlgoType.value && ['key', 'keyText', 'kerberos', 'agent'].includes(form.authType)) {
     form.authType = 'password'
   }
-  if (form.authType === 'apikey' && newType !== 'elasticsearch') {
+  if (form.authType === 'apikey' && !isElasticsearch.value) {
     form.authType = 'password'
   }
   if (form.authType === 'identity' && !supportsIdentityAuth.value) {
@@ -1683,6 +1866,7 @@ function resetForm() {
   form.shellPath = ''
   form.shellArgs = ''
   form.cwd = ''
+  form.localDir = ''
   form.serialPort = ''
   form.serialBaudRate = 115200
   form.serialDataBits = 8
@@ -1963,15 +2147,21 @@ function normalizeForm(): ConnectionConfig {
   } else {
     normalized.postLoginScript = ''
   }
-  // shellArgs/cwd only apply to local/wsl terminals; clear them when the
-  // connection is switched to another type so stale values never persist
-  // (same semantics as the key-field cleanup above). The local-file/wsl-file
-  // browsers keep cwd (it is their start path) but never run a shell.
-  if (normalized.type === 'local-file' || normalized.type === 'wsl-file') {
+  // shellArgs only applies to local/wsl terminals; the start paths apply to
+  // file-panel types (cwd = remote pane, localDir = local pane) and to
+  // local/wsl terminals (cwd = working directory). Clear whichever group the
+  // selected type does not use so stale values never persist (same semantics
+  // as the key-field cleanup above).
+  if (hasFileStartPaths.value) {
     normalized.shellArgs = ''
+    if (normalized.cwd) normalized.cwd = normalized.cwd.trim()
+    if (normalized.localDir) normalized.localDir = normalized.localDir.trim()
   } else if (normalized.type !== 'local' && normalized.type !== 'wsl') {
     normalized.shellArgs = ''
     normalized.cwd = ''
+    normalized.localDir = ''
+  } else {
+    normalized.localDir = ''
   }
   // mosh options only apply to mosh connections; clear them when the
   // connection is switched to another type so stale values never persist
@@ -1994,13 +2184,13 @@ function normalizeForm(): ConnectionConfig {
     if (!normalized.user?.trim()) throw new Error('S3: Access Key is required')
     if (!normalized.password?.trim()) throw new Error('S3: Secret Key is required')
   }
-  if (normalized.type === 'database' && normalized.dbType === 'postgres' && !normalized.dbName?.trim()) {
+  if (normalized.type === 'database' && requiresDbName(normalized.dbType) && !normalized.dbName?.trim()) {
     throw new Error(t('db.pgDbNameRequired'))
   }
   if (normalized.type === 'database' && normalized.dbType === 'oracle' && !normalized.dbName?.trim()) {
     throw new Error(t('db.serviceNameRequired'))
   }
-  if (normalized.type === 'elasticsearch' && normalized.authType === 'apikey' && !normalized.password?.trim()) {
+  if (isElasticsearch.value && normalized.authType === 'apikey' && !normalized.password?.trim()) {
     throw new Error(t('conn.esApiKeyRequired'))
   }
   if (!normalized.name.trim()) {
@@ -2305,6 +2495,57 @@ function onConnect() {
   box-shadow: 0 0 0 1px var(--accent-glow), 0 0.125rem 0.5rem var(--accent-glow);
 }
 
+/* The SQL expand/collapse toggle is the last button of the pinned first
+   row, centered together with it; the extra types form their own rows
+   below. The block wrapper carries the divider so it always spans the full
+   column width, whatever the expanded rows' indent is. */
+.sql-types-block {
+  padding-bottom: 0.875rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sql-types-block .subtype-grid {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+/* While expanded the pinned row is followed by the extra-types form row:
+   put the divider back between the two, with the same spacing the plain
+   grid's bottom divider has. */
+.sql-types-block .subtype-grid:has(+ .el-form-item) {
+  padding-bottom: 0.875rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Expanded extra types reuse el-form-item (same key/value styling as the
+   fields below). The el-input is inline by default in form items, so force
+   the stacked layout: filter on top, list under it. */
+.subtype-more-item .el-form-item__content {
+  display: block;
+}
+
+.subtype-more-filter {
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+.subtype-grid-more {
+  justify-content: flex-start;
+  max-height: 7.25rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.subtype-more-empty {
+  padding: 0.25rem 0 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: left;
+}
+
 .subtype-btn span {
   text-align: center;
   line-height: 1.2;
@@ -2375,6 +2616,22 @@ function onConnect() {
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+/* ── Live TOTP code under the secret field (issue #1583) ── */
+.totp-current {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.375rem;
+  background: var(--bg-elevated);
+}
+
+.totp-current-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-bottom: 0.125rem;
 }
 
 /* Hint that follows a switch on the same line: occupy the remaining width

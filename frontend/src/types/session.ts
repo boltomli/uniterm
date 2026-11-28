@@ -28,7 +28,7 @@ export interface ConnectionConfig {
   id: string
   name: string
   remark?: string
-  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'local' | 'wsl' | 'wsl-file' | 'local-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'container-file' | 'x11-desktop' | 'workspace'
+  type: 'ssh' | 'telnet' | 'mosh' | 'rdp' | 'vnc' | 'spice' | 'database' | 'redis' | 'mongodb' | 'elasticsearch' | 'opensearch' | 'local' | 'wsl' | 'wsl-file' | 'local-file' | 'sftp' | 'scp' | 'monitor' | 'ftp' | 'serial' | 'smb' | 'webdav' | 's3' | 'tcp' | 'k8s' | 'container' | 'container-file' | 'x11-desktop' | 'workspace'
   host: string
   port: number
   user: string
@@ -55,8 +55,9 @@ export interface ConnectionConfig {
   proxyId?: string // reference to a saved outbound proxy (SOCKS5/HTTP)
   // File-transfer protocol for the SSH companion file panel / "connect SFTP/SCP"
   // actions. Undefined/'sftp' = SFTP (default); 'scp' for hosts without an
-  // SFTP subsystem.
-  fileTransferProto?: 'sftp' | 'scp'
+  // SFTP subsystem; 'none' disables the companion file panel entirely (no
+  // session, no directory probing) for hosts without any file transfer.
+  fileTransferProto?: 'sftp' | 'scp' | 'none'
   groupId?: string
   // RDP-specific
   // Desktop size, or a sentinel: -1 = follow the primary monitor
@@ -90,6 +91,8 @@ export interface ConnectionConfig {
   shellArgs?: string
   // Working directory for local terminal (defaults to user home)
   cwd?: string
+  // File-panel local pane start directory (defaults to the local home)
+  localDir?: string
   // Serial port
   serialPort?: string
   serialBaudRate?: number

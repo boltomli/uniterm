@@ -1,23 +1,21 @@
 :root {
-  /* Core palette - near-black window floor against lighter panels, so the
-     layer contrast reads clearly */
-  --bg-base: #0f0f0f;
-  --bg-elevated: #202020;
-  --bg-surface: #242424;
-  --bg-overlay: #2b2b2b;
-  --bg-hover: #303030;
-  --bg-active: #383838;
+  /* Neutral grays inspired by VS Code Dark Modern; keep color in the accents. */
+  --bg-base: #101010;
+  --bg-elevated: #252525;
+  --bg-surface: #303030;
+  --bg-overlay: #383838;
+  --bg-hover: #404040;
+  --bg-active: #484848;
+  --bg-titlebar: #181818;
 
-  /* Text */
-  --text-primary: #ffffff;
-  --text-secondary: #cccccc;
-  --text-muted: #9a9a9a;
-  --text-disabled: #636363;
+  --text-primary: #f4f4f4;
+  --text-secondary: #dedede;
+  --text-muted: #b8b8b8;
+  --text-disabled: #888888;
 
-  /* Accent - brightened one step so it stays vivid on the near-black base */
   --accent: #3794ff;
   --accent-glow: rgba(55, 148, 255, 0.25);
-  --accent-subtle: rgba(55, 148, 255, 0.1);
+  --accent-subtle: rgba(55, 148, 255, 0.12);
 
   /* Info - secondary link/informational blue, distinct from --accent */
   --info: #4c9df0;
@@ -49,9 +47,9 @@
   --error-subtle: rgba(248, 113, 113, 0.06);
   --error-glow: rgba(248, 113, 113, 0.15);
 
-  /* Borders - separators read slightly heavier than hairlines */
-  --border-subtle: rgba(255, 255, 255, 0.16);
-  --border-hover: rgba(255, 255, 255, 0.22);
+  /* Opaque strokes keep the same contrast over every panel. */
+  --border-subtle: #484848;
+  --border-hover: #606060;
 
   /* Shadows */
   --shadow-sm: 0 1px 0.125rem rgba(0, 0, 0, 0.3);
@@ -67,14 +65,14 @@
   --font-ui: -apple-system, 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', sans-serif;
   --font-mono: 'JetBrains Mono Variable', monospace;
 
-  /* Spacing - two-tier radius: 4px controls, 8px surfaces */
-  --radius-sm: 0.25rem;
+  /* Spacing - two-tier radius: 8px controls, 8px surfaces */
+  --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.5rem;
 
   /* Scrollbar */
-  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.36);
 
   /* Element Plus theme overrides */
   /* Primary color family - align Element Plus internals (el-select focus ring,
@@ -84,19 +82,21 @@
      currently-applied [data-theme] defines. */
   --el-color-primary: var(--accent);
   --el-input-focus-border-color: var(--accent);
-  --el-bg-color: #1a1a1a;
-  --el-bg-color-page: #0f0f0f;
-  --el-fill-color-blank: #1f1f1f;
-  --el-fill-color: #1a1a1a;
-  --el-fill-color-light: #262626;
-  --el-fill-color-lighter: #2d2d2d;
-  --el-text-color-primary: #ffffff;
-  --el-text-color-regular: #cccccc;
-  --el-text-color-secondary: #9a9a9a;
-  --el-text-color-placeholder: #636363;
-  --el-border-color: rgba(255, 255, 255, 0.14);
-  --el-border-color-light: rgba(255, 255, 255, 0.1);
-  --el-border-color-lighter: rgba(255, 255, 255, 0.08);
+  /* Keep EP component corners in sync with our control radius (--radius-sm) */
+  --el-border-radius-base: var(--radius-sm);
+  --el-bg-color: #202020;
+  --el-bg-color-page: #101010;
+  --el-fill-color-blank: #2b2b2b;
+  --el-fill-color: #202020;
+  --el-fill-color-light: #343434;
+  --el-fill-color-lighter: #3c3c3c;
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-disabled);
+  --el-border-color: var(--border-subtle);
+  --el-border-color-light: color-mix(in srgb, #ffffff 7%, var(--bg-base));
+  --el-border-color-lighter: color-mix(in srgb, #ffffff 5%, var(--bg-base));
   /* Loading mask: uniform dark overlay matching the project's .loading-overlay convention (no white flash on refresh) */
   --el-mask-color: var(--scrim);
 
@@ -115,26 +115,29 @@
   --el-font-size-extra-large: 1.25rem;
 }
 
-/* Deep blue - oceanic dark */
+/* Deep blue: navy surfaces at v1.12.4's muted tone (hue ~219°, saturation
+   38-46%) riding the current lightness ramp, so the layer contrast is kept
+   while the color cast stays deep-ocean rather than electric blue. */
 [data-theme="deep-blue"] {
-  --bg-base: #0b111e;
-  --bg-elevated: #142036;
-  --bg-surface: #182338;
-  --bg-overlay: #1e2c49;
-  --bg-hover: #243256;
-  --bg-active: #2b3a5f;
+  --bg-base: #0c1321;
+  --bg-elevated: #16233c;
+  --bg-surface: #202f4b;
+  --bg-overlay: #2c3d5d;
+  --bg-hover: #324974;
+  --bg-active: #3e598c;
+  --bg-titlebar: #0e1726;
 
-  --text-primary: #ffffff;
-  --text-secondary: #c3cfdd;
-  --text-muted: #8fa1bd;
-  --text-disabled: #5f6f8a;
+  --text-primary: #e8eef8;
+  --text-secondary: #c8d5e8;
+  --text-muted: #93a8c8;
+  --text-disabled: #6b84a8;
 
-  --accent: #38bdf8;
-  --accent-glow: rgba(56, 189, 248, 0.18);
-  --accent-subtle: rgba(56, 189, 248, 0.08);
+  --accent: #53caf9;
+  --accent-glow: rgba(83, 202, 249, 0.22);
+  --accent-subtle: rgba(83, 202, 249, 0.12);
 
   --info: #5eb3f5;
-  --info-subtle: rgba(94, 179, 245, 0.1);
+  --info-subtle: rgba(94, 179, 245, 0.12);
   --on-accent: #ffffff;
 
   --chart-1: #4ade80;
@@ -159,42 +162,45 @@
   --border-subtle: rgba(255, 255, 255, 0.16);
   --border-hover: rgba(255, 255, 255, 0.22);
 
+  --scrollbar-thumb: rgba(255, 255, 255, 0.22);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.36);
+
   --shadow-sm: 0 1px 0.125rem rgba(0, 0, 0, 0.4);
   --shadow-md: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.6);
 
-  --el-bg-color: #121c30;
-  --el-bg-color-page: #0b111e;
-  --el-fill-color-blank: #182338;
-  --el-fill-color: #121c30;
-  --el-fill-color-light: #1e2c49;
-  --el-fill-color-lighter: #243256;
-  --el-text-color-primary: #ffffff;
-  --el-text-color-regular: #c3cfdd;
-  --el-text-color-secondary: #8fa1bd;
-  --el-text-color-placeholder: #5f6f8a;
-  --el-border-color: rgba(255, 255, 255, 0.14);
-  --el-border-color-light: rgba(255, 255, 255, 0.1);
-  --el-border-color-lighter: rgba(255, 255, 255, 0.08);
+  --el-bg-color: #16233c;
+  --el-bg-color-page: #0c1321;
+  --el-fill-color-blank: #202f4b;
+  --el-fill-color: #16233c;
+  --el-fill-color-light: #2c3d5d;
+  --el-fill-color-lighter: #324974;
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-disabled);
+  --el-border-color: var(--border-subtle);
+  --el-border-color-light: color-mix(in srgb, #ffffff 7%, var(--bg-base));
+  --el-border-color-lighter: color-mix(in srgb, #ffffff 5%, var(--bg-base));
 
   --el-input-height: 1.75rem;
   --el-component-size: 1.75rem;
 }
 
 [data-theme="light"] {
-  /* Core palette - clean neutral grays */
+  /* White window floor with darker panels and chrome. */
   --bg-base: #ffffff;
-  --bg-elevated: #f5f5f5;
+  --bg-elevated: #f8f8f8;
   --bg-surface: #ebebeb;
-  --bg-overlay: #e0e0e0;
-  --bg-hover: #d5d5d5;
-  --bg-active: #c8c8c8;
+  --bg-overlay: #f2f2f2;
+  --bg-hover: #e2e2e2;
+  --bg-active: #d8d8d8;
+  --bg-titlebar: #ededed;
 
-  /* Text - pure black primary, heavier grays for contrast on white */
-  --text-primary: #000000;
-  --text-secondary: #3d3d3d;
-  --text-muted: #5c5c5c;
-  --text-disabled: #8a8a8a;
+  --text-primary: #101010;
+  --text-secondary: #262626;
+  --text-muted: #505050;
+  --text-disabled: #777777;
 
   /* Accent - system blue */
   --accent: #0078d4;
@@ -227,9 +233,8 @@
   --error-subtle: rgba(209, 52, 56, 0.06);
   --error-glow: rgba(209, 52, 56, 0.15);
 
-  /* Borders - cool light grays */
-  --border-subtle: rgba(0, 0, 0, 0.12);
-  --border-hover: rgba(0, 0, 0, 0.18);
+  --border-subtle: #cbcbcb;
+  --border-hover: #b3b3b3;
 
   /* Scrim - translucent white so dark loading text stays legible */
   --scrim: rgba(255, 255, 255, 0.6);
@@ -243,16 +248,16 @@
   --el-bg-color: #ffffff;
   --el-bg-color-page: #ffffff;
   --el-fill-color-blank: #ffffff;
-  --el-fill-color: #f5f5f5;
+  --el-fill-color: #f4f4f4;
   --el-fill-color-light: #ebebeb;
-  --el-fill-color-lighter: #e0e0e0;
-  --el-text-color-primary: #000000;
-  --el-text-color-regular: #3d3d3d;
-  --el-text-color-secondary: #6e6e6e;
-  --el-text-color-placeholder: #8a8a8a;
-  --el-border-color: rgba(0, 0, 0, 0.12);
-  --el-border-color-light: rgba(0, 0, 0, 0.08);
-  --el-border-color-lighter: rgba(0, 0, 0, 0.06);
+  --el-fill-color-lighter: #dedede;
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-disabled);
+  --el-border-color: var(--border-subtle);
+  --el-border-color-light: color-mix(in srgb, #000000 8%, var(--bg-base));
+  --el-border-color-lighter: color-mix(in srgb, #000000 6%, var(--bg-base));
 
   --el-input-height: 1.75rem;
   --el-component-size: 1.75rem;
@@ -315,6 +320,17 @@
   box-sizing: border-box;
 }
 
+/* Native <button> elements carry the Chromium UA font (10pt/13.33px) and do
+   NOT inherit from their parent, so icon-only buttons sized via 1em boxes
+   (el-icon, lucide svgs) stayed fixed while the rest of the UI scaled with
+   the uiFontSize setting. Inherit font like normalize.css does. Components
+   that set their own font-size override this as usual. */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
 /* Global monospace baseline: pre/code/kbd/samp would otherwise render in the
    browser's default mono stack, bypassing JetBrains Mono. Components with
    their own rules override this as usual. */
@@ -353,41 +369,6 @@ body {
   color: var(--text-primary);
   user-select: none;
   -webkit-user-select: none;
-}
-
-/* Subtle vertical gradient instead of a flat fill so large empty areas don't
-   read as a single dead slab. Always lighter at the top: the dark themes lift
-   the top off --bg-base, while light's --bg-base is already white so it dims
-   the bottom instead. The :not() arm covers the first paint before
-   applyTheme() sets data-theme. */
-html:not([data-theme]) body,
-[data-theme="dark"] body {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 40%, var(--bg-base)) 0%, var(--bg-base) 100%);
-}
-
-[data-theme="deep-blue"] body {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-surface) 40%, var(--bg-base)) 0%, var(--bg-base) 100%);
-}
-
-[data-theme="light"] body {
-  background: linear-gradient(180deg, var(--bg-base) 0%, color-mix(in srgb, var(--bg-base) 95%, #000) 100%);
-}
-
-/* Noise texture overlay for atmosphere */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.015;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 8rem;
-}
-
-[data-theme="light"] body::before {
-  opacity: 0.006;
 }
 
 /* Scrollbar - minimal */
@@ -879,7 +860,8 @@ body::before {
   line-height: 1.25rem !important;
   font-family: var(--font-ui);
   font-size: 0.75rem !important;
-  border-radius: var(--radius-sm);
+  /* No blanket radius: EP's own first/last-child rules round only the group
+     ends, keeping middle segments square (segmented control) */
   transition: all 0.15s ease;
   background: var(--bg-base) !important;
   border-color: var(--border-subtle) !important;
@@ -1121,6 +1103,10 @@ body::before {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-ui);
+  /* Rounded table corners at the control radius; clipped so the header/row
+     fills don't poke past the corners */
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 .el-table__body,
 .el-table__footer,
@@ -1671,4 +1657,17 @@ button:disabled,
 /* Compact query editors on narrow screens: less reserved editor height. */
 @media (max-width: 640px) {
   .sql-editor-wrap { min-height: 4rem !important; }
+}
+
+/* ── Background-image mode: selection rings ──────────────────────────────
+   The has-bg wildcard forces every fill transparent, so selection state
+   (which is fill-only since the panel refresh) becomes invisible over the
+   image. Restore the pre-refresh accent ring on selected items there. */
+.app-container.has-bg .tab-item.active,
+.app-container.has-bg .sidebar-tab.active,
+.app-container.has-bg .bottom-panel-tab.active,
+.app-container.has-bg .connection-item.active,
+.app-container.has-bg .qc-item.active,
+.app-container.has-bg .note-item.active {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }

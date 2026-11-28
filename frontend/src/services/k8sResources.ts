@@ -57,6 +57,58 @@ export interface ResourceDescriptor {
 
 // ── 通用列生成器 ────────────────────────────────────────────────
 
+// Ingress rules describe candidate URLs, not verified reachable endpoints.
+export function ingressRuleLinks(ingress: any): { text: string; url?: string }[] {
+  const tlsHosts: string[] = (ingress.spec?.tls || []).flatMap((tls: any) => tls.hosts || [])
+  const links = new Map<string, { text: string; url?: string }>()
+  for (const rule of ingress.spec?.rules || []) {
+    const host = rule.host || '*'
+    const concreteHost = typeof host === 'string' && host.split('.').every(
+      (label: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label),
+    )
+    const secure = tlsHosts.some(h => h === host ||
+      (h.startsWith('*.') && host.endsWith(h.slice(1)) && host.split('.').length === h.split('.').length))
+    const paths = rule.http?.paths || []
+    if (!paths.length) {
+      links.set(host, { text: host })
+      continue
+    }
+    for (const entry of paths) {
+      const path = entry.path || '/'
+      const text = host + path
+      // Wildcards, regex-like paths and invalid URL characters stay as text.
+      if (!concreteHost || !path.startsWith('/') || /[\\\s?#*+()[\]{}|^$]/.test(path) ||
+          /[\x00-\x1f\x7f]/.test(path)) {
+        links.set(text, { text })
+        continue
+      }
+      const url = (secure ? 'https://' : 'http://') + text
+      links.set(url, { text: url, url })
+    }
+  }
+  return [...links.values()]
+}
+
+// Keep ConfigMap values as strings; language detection is only for display.
+export function configMapEntries(data: Record<string, string> | undefined) {
+  return Object.entries(data || {}).map(([key, value]) => {
+    const ext = key.toLowerCase().split('.').pop()
+    const known: Record<string, string> = { yaml: 'yaml', yml: 'yaml', json: 'json', properties: 'conf', xml: 'xml' }
+    let lang = Object.prototype.hasOwnProperty.call(known, ext || '') ? known[ext!] : undefined
+    const multiline = /[\r\n]/.test(value)
+    if (!lang && multiline) {
+      const trimmed = value.trim()
+      if (/^[{\[]/.test(trimmed)) {
+        try { JSON.parse(trimmed); lang = 'json' } catch { /* not JSON */ }
+      }
+      if (!lang && /^<\?xml\b|^<[a-zA-Z][\w:-]*[\s>]/.test(trimmed)) lang = 'xml'
+      if (!lang && /^\s*[\w.-]+\s*=/m.test(value)) lang = 'conf'
+      if (!lang && /^\s*[\w.-]+:(?:\s|$)/m.test(value)) lang = 'yaml'
+    }
+    return { key, value, lang, multiline: multiline || !!lang }
+  })
+}
+
 export function age(ts: string | undefined): string {
   if (!ts) return '—'
   const diff = Date.now() - new Date(ts).getTime()
@@ -980,7 +1032,7 @@ spec:
       { header: 'Name', value: i => i.metadata?.name || '' },
       { header: 'Namespace', value: i => i.metadata?.namespace || '' },
       { header: 'Class', value: i => i.spec?.ingressClassName || '', searchable: true },
-      { header: 'Hosts', value: i => (i.spec?.rules || []).map((r: any) => r.host).filter(Boolean).join(',') || '*', searchable: true },
+      { header: 'Rules', value: i => ingressRuleLinks(i).map(rule => rule.text).join('\n') || '—', searchable: true },
       { header: 'Address', value: i => (i.status?.loadBalancer?.ingress || []).map((g: any) => g.ip || g.hostname).filter(Boolean).join(','), searchable: true },
       { header: 'Ports', value: i => (i.spec?.tls?.length ? '80,443' : '80') },
       { header: 'Age', value: i => age(i.metadata?.creationTimestamp) },

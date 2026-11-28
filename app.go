@@ -20,6 +20,7 @@ import (
 	stdsync "sync"
 	"sync/atomic"
 	"time"
+	"github.com/google/uuid"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
@@ -1188,10 +1189,19 @@ func (a *App) shutdown() {
 	// "window goes black, then exits" transition. Hiding the window makes that
 	// teardown invisible, so the close feels immediate. Hide() is thread-safe and
 	// dispatches to the UI thread like the rest of shutdown().
+	if a.window != nil {
+		a.window.Hide()
+	}
+
+	// Release the WebView2 COM controller while still on the UI thread and the
+	// message loop is alive (the Hide above is the immediate-close step; do not
+	// repeat it). This gracefully closes the WebView2 control and terminates the
+	// browser subprocess (msedgewebview2.exe) BEFORE the process reaches
+	// ExitProcess, so the WebView2 DLL-detach teardown has no live subprocess to
+	// block on and the app exits normally instead of freezing.
 	// (wails beta.27 never releases WebView2 on quit; see webview2_release.go.)
 	// A nil window (headless/unit-test App) skips both UI steps.
 	if a.window != nil {
-		a.window.Hide()
 		releaseWebView2(a.window)
 	}
 	a.closeRDPKeyboard()
@@ -1246,6 +1256,9 @@ func (a *App) shutdown() {
 	if a.terminalHistoryStore != nil {
 		_ = a.terminalHistoryStore.Close()
 	}
+	// Release the log handle so external cleanup (and tests removing their
+	// temp data dir) can delete the file on production-data cleanup paths.
+	log.Close()
 	os.RemoveAll(a.webviewDataPath)
 }
 
@@ -1602,6 +1615,15 @@ func (a *App) ResolveIdentitySecret(identityID string) (IdentitySecret, error) {
 		}
 	}
 	return IdentitySecret{}, fmt.Errorf("identity not found: %s", identityID)
+}
+
+// GetTOTPCode returns the current code for a decrypted TOTP secret. Bastion
+// web consoles ask the user to type the current code while binding an
+// authenticator, so the UI needs to display what SSH would submit (#1583).
+// The secret the user is typing is already in the webview; this method keeps
+// code generation in one place instead of duplicating RFC 6238 in the renderer.
+func (a *App) GetTOTPCode(secret string) (session.TOTPCode, error) {
+	return session.CurrentTOTPCode(secret, time.Now())
 }
 
 // redactProxies blanks the proxy password and records its presence flag.
@@ -3392,6 +3414,22 @@ func (a *App) OpenPathInExplorer(path string) error {
 	}
 }
 
+// LaunchMstsc opens the given RDP connection in the Windows Remote Desktop
+// client (mstsc.exe) instead of the built-in RDP client. Windows-only;
+// other platforms return an error.
+func (a *App) LaunchMstsc(config session.ConnectionConfig) error {
+	if config.Type != "rdp" {
+		return fmt.Errorf("not an RDP connection")
+	}
+	return platform.LaunchMstsc(platform.MstscOptions{
+		Host:   config.Host,
+		Port:   config.Port,
+		User:   config.User,
+		Domain: config.RdpDomain,
+		Admin:  config.RdpAdminSession,
+	})
+}
+
 type DataDirInfo struct {
 	DataDir  string `json:"dataDir"`
 	Type     string `json:"type"`
@@ -4175,4 +4213,240 @@ func (a *App) FirewallListRules(connID, user, password string) ([]firewall.PortR
 		return nil, err
 	}
 	return a.firewallManager.ListRules(r)
+}
+
+// TestConnection returns a short human-readable description on success, or a
+// readable error (never echoing the password) on failure.
+func (a *App) TestConnection(config session.ConnectionConfig) (string, error) {
+	// Resolve the secrets the redacted frontend config no longer carries
+	// (login password, key passphrase / inline key, sentinel and inline
+	// kubeconfig secrets) from the store, by connection ID — mirrors
+	// CreateSession. Inline one-shot credentials always win.
+	a.fillStoredSecrets(&config)
+	// Resolve identity / proxy references for the protocols that consume them
+	// (ssh-family). No-ops when not configured.
+	mc, err := a.materializeIdentity(config)
+	if err != nil {
+		return "", err
+	}
+	mc, err = a.materializeProxy(mc)
+	if err != nil {
+		return "", err
+	}
+
+	switch mc.Type {
+	case "k8s":
+		return a.testK8sConnection(mc)
+	case "container":
+		return a.testContainerConnection(mc)
+	default:
+		// Honor the jump-host tunnel exactly like a real session connect
+		// (CreateSession): establish the local forward first, point the
+		// probe at the listener, then tear the tunnel down when done.
+		if mc.TunnelSSHConnID != "" {
+			key := uuid.New().String()
+			if err := a.setupJumpHostTunnel(key, mc.Type, &mc); err != nil {
+				return "", err
+			}
+			defer a.tunnelService.Stop(key)
+		}
+		return session.ProbeConnection(mc)
+	}
+}
+
+// testContainerConnection probes the container engine reachability. Reuses the
+// same building blocks as ContainerConnect (NewProvider + ValidateRuntime), but
+// without registering a persistent connection. For SSH transport it loads the
+// referenced SSH connection from the store, materializes its identity, dials,
+// and runs the runtime probe on the remote host.
+func (a *App) testContainerConnection(config session.ConnectionConfig) (string, error) {
+	if a.connectionStore == nil {
+		return "", fmt.Errorf("connection store not initialized")
+	}
+	rt := container.Runtime(config.ContainerRuntime)
+
+	if config.ContainerTransport == "local" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		runner := container.NewLocalRunner()
+		if err := container.ValidateRuntime(ctx, rt, runner); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("container: %s engine reachable locally", rt), nil
+	}
+
+	// SSH transport: resolve the referenced SSH connection.
+	if config.ContainerSSHConnID == "" {
+		return "", fmt.Errorf("referenced SSH connection missing")
+	}
+	data, err := a.connectionStore.Load()
+	if err != nil {
+		return "", err
+	}
+	var sshCfg *session.ConnectionConfig
+	for _, c := range data.Connections {
+		if c.ID == config.ContainerSSHConnID {
+			sshCfg = &c
+			break
+		}
+	}
+	if sshCfg == nil {
+		return "", fmt.Errorf("referenced SSH connection not found: %s", config.ContainerSSHConnID)
+	}
+	if sshCfg.AuthType == "identity" {
+		m, err := a.materializeIdentity(*sshCfg)
+		if err != nil {
+			return "", err
+		}
+		sshCfg = &m
+	}
+
+	// Mirror ContainerConnect: honor the referenced connection's own jump-host
+	// tunnel before dialing through it.
+	if sshCfg.TunnelSSHConnID != "" && a.tunnelService != nil {
+		key := uuid.New().String()
+		if err := a.setupJumpHostTunnel(key, "container", sshCfg); err != nil {
+			return "", err
+		}
+		defer a.tunnelService.Stop(key)
+	}
+
+	client, err := session.DialSSHClient(*sshCfg)
+	if err != nil {
+		return "", fmt.Errorf("container over ssh: %w", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	runner := container.NewSSHRunner(client)
+	if err := container.ValidateRuntime(ctx, rt, runner); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("container: %s engine reachable via ssh %s@%s", rt, sshCfg.User, sshCfg.Host), nil
+}
+
+// testK8sConnection probes the kubernetes apiserver by building a client from
+// the kubeconfig (lazy, no I/O) and issuing a GET /version. Reuses ConnectWith /
+// Request / Disconnect so auth, tunnel dial override and TLS all behave exactly
+// like a real K8sConnect. An incorrect cluster name or credentials surface as
+// a non-2xx status or a dial error.
+func (a *App) testK8sConnection(config session.ConnectionConfig) (string, error) {
+	if a.k8sManager == nil {
+		return "", fmt.Errorf("k8s manager not initialized")
+	}
+
+	sourceIsPath := config.K8sConfigInline == ""
+	source := config.K8sConfigInline
+	if sourceIsPath {
+		source = config.K8sConfigPath
+	}
+	raw, err := readKubeconfigSource(source, sourceIsPath)
+	if err != nil {
+		return "", err
+	}
+	contextName := config.K8sContext
+	tunnelID := config.TunnelSSHConnID
+
+	if tunnelID == "" {
+		opts := k8s.ConnectOptions{}
+		if config.ProxyId != "" {
+			// The "system" sentinel resolves against the apiserver target, so
+			// fill Host/Port from the kubeconfig when the form left them empty.
+			if config.Host == "" || config.Port == 0 {
+				if kc, err := k8s.ParseBytes(raw); err == nil {
+					if host, port, err := k8sContextServerAddr(kc, contextName); err == nil {
+						config.Host, config.Port = host, port
+					}
+				}
+			}
+			mc, err := a.materializeProxy(config)
+			if err != nil {
+				return "", err
+			}
+			if mc.Proxy != nil {
+				opts.DialOverride = session.ProxyDialFunc(mc.Proxy)
+			}
+		}
+		connID, err := a.k8sManager.ConnectWith(raw, contextName, opts)
+		if err != nil {
+			return "", err
+		}
+		defer a.k8sManager.Disconnect(connID)
+		return a.probeK8sAPIServer(connID, contextName)
+	}
+
+	// SSH tunnel for k8s (mirrors K8sConnect).
+	if a.tunnelService == nil || a.connectionStore == nil {
+		return "", fmt.Errorf("tunnel service or connection store not initialized")
+	}
+
+	kc, err := k8s.ParseBytes(raw)
+	if err != nil {
+		return "", fmt.Errorf("kubeconfig: %w", err)
+	}
+	ctxName := contextName
+	if ctxName == "" {
+		ctxName = kc.CurrentContext
+	}
+	ctxEntry, ok := kc.Contexts[ctxName]
+	if !ok {
+		return "", fmt.Errorf("context %q not found", ctxName)
+	}
+	cluster, ok := kc.Clusters[ctxEntry.Cluster]
+	if !ok {
+		return "", fmt.Errorf("cluster %q not found", ctxEntry.Cluster)
+	}
+	targetHost, targetPort, err := k8s.ParseServerAddr(cluster.Server)
+	if err != nil {
+		return "", fmt.Errorf("parse apiserver url: %w", err)
+	}
+
+	tunnelKey := uuid.New().String()
+	tunnelConfig := config
+	tunnelConfig.Host, tunnelConfig.Port = targetHost, targetPort
+	if err := a.setupJumpHostTunnel(tunnelKey, "k8s", &tunnelConfig); err != nil {
+		return "", err
+	}
+	localPort := tunnelConfig.Port
+
+	var dialer net.Dialer
+	dialOverride := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", k8s.LocalAddr(localPort))
+	}
+	onClose := func() { a.tunnelService.Stop(tunnelKey) }
+	connID, err := a.k8sManager.ConnectWith(raw, contextName, k8s.ConnectOptions{
+		PresetID:     tunnelKey,
+		DialOverride: dialOverride,
+		OnClose:      onClose,
+	})
+	if err != nil {
+		a.tunnelService.Stop(tunnelKey)
+		return "", err
+	}
+	defer a.k8sManager.Disconnect(connID)
+	return a.probeK8sAPIServer(connID, contextName)
+}
+
+// probeK8sAPIServer issues a GET /version on an existing k8s connection and maps
+// the result to a readable success/failure.
+func (a *App) probeK8sAPIServer(connID, contextName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	status, _, err := a.k8sManager.Request(ctx, connID, "GET", "/version", nil, "")
+	if err != nil {
+		return "", fmt.Errorf("k8s apiserver: %w", err)
+	}
+	if status >= 400 {
+		label := contextName
+		if label == "" {
+			label = "current context"
+		}
+		return "", fmt.Errorf("k8s apiserver (%s) returned HTTP %d", label, status)
+	}
+	label := contextName
+	if label == "" {
+		label = "current context"
+	}
+	return fmt.Sprintf("k8s: connected to apiserver (context %q)", label), nil
 }

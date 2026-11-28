@@ -1,8 +1,27 @@
 <template>
-  <div ref="sidebarEl" class="ai-sidebar" :class="{ collapsed: !aiStore.visible, resizing: isResizing, maximized: isMaximized }" :style="{ width: sidebarWidth + 'px' }">
-    <div class="resize-handle" @mousedown="onResizeStart" />
+  <!-- The AI view always renders docked (left sidebar / right rail / bottom
+       panel): the dock owns the title bar, width and close button, so this
+       root fills the dock body and the header carries only action buttons. -->
+  <div ref="sidebarEl" class="ai-sidebar" :class="{ collapsed: !aiStore.visible }">
     <div class="ai-header">
-      <span>{{ t('ai.title') }}</span>
+      <!-- Current session's name at the left (fallback: the new-session
+           label until a session exists). Click for inline rename. -->
+      <span
+        v-if="!editingSessionName"
+        class="ai-session-name"
+        :class="{ clickable: !!aiStore.currentSessionId }"
+        :title="currentSessionName"
+        @click="onSessionNameClick"
+      >{{ currentSessionName }}</span>
+      <input
+        v-else
+        ref="sessionNameInputRef"
+        v-model="sessionNameDraft"
+        class="ai-session-name-input"
+        @keydown.enter.prevent="commitSessionName"
+        @keydown.escape.prevent="cancelSessionNameEdit"
+        @blur="commitSessionName"
+      >
       <div class="ai-actions">
         <button class="ai-action-btn" @click="onNewSession" :title="t('ai.newSession')">
           <el-icon><MessageSquarePlus :size="lucideSize('0.875rem')" /></el-icon>
@@ -28,12 +47,7 @@
         <button class="ai-action-btn" @click="searchVisible = !searchVisible" :title="t('ai.search')">
           <el-icon><Search :size="lucideSize('0.875rem')" /></el-icon>
         </button>
-        <button class="ai-action-btn" @click="toggleMaximize" :title="isMaximized ? t('ai.restore') : t('ai.maximize')">
-          <el-icon><Shrink v-if="isMaximized" :size="lucideSize('0.875rem')" /><Expand v-else :size="lucideSize('0.875rem')" /></el-icon>
-        </button>
-        <button class="ai-action-btn" @click="onClose" :title="t('sidebar.collapse')">
-          <el-icon><X :size="lucideSize('0.875rem')" /></el-icon>
-        </button>
+
       </div>
     </div>
 
@@ -334,10 +348,11 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, nextTick, computed, watch, onMounted, onUnmounted } from 'vue'
-import { X, Trash2, Expand, Shrink, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil, Paperclip, FileText, Hash, SquareSlash } from '@lucide/vue'
+import { X, Trash2, History, MessageSquarePlus, Search, ChevronDown, ChevronUp, ArrowUp, Square, Plus, BookOpen, Terminal, Pencil, Paperclip, FileText, Hash, SquareSlash } from '@lucide/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAIStore } from '../stores/aiStore'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useUiLayoutStore } from '../stores/uiLayoutStore'
 import { useSkillStore } from '../stores/skillStore'
 import { useCommandStore } from '../stores/commandStore'
 import { useTabStore } from '../stores/tabStore'
@@ -1058,45 +1073,41 @@ const liveCompactionElapsed = computed(() => {
 const thinkingStartLabel = computed(() => formatClock(aiStore.thinkingStartedAt))
 
 const messagesRef = ref<HTMLDivElement>()
-const AI_SIDEBAR_MIN_WIDTH = 300
-const AI_SIDEBAR_MAX_WIDTH = 800
-const sidebarWidth = ref(360)
-const isResizing = ref(false)
-const isMaximized = ref(false)
-const preMaxWidth = ref(360)
 
-// Restore the persisted width once LocalState is loaded (App.vue awaits
-// init() on mount; children mount first, so re-init here — it is idempotent).
-onMounted(async () => {
-  try {
-    const ls = useLocalStateStore()
-    if (!ls.loaded) await ls.init()
-    const w = ls.state.aiSidebarWidth
-    if (w > 0) sidebarWidth.value = Math.min(Math.max(w, AI_SIDEBAR_MIN_WIDTH), AI_SIDEBAR_MAX_WIDTH)
-  } catch {
-    // keep the default width
-  }
+// Header-left label: the current session's name, falling back to the
+// new-session label before a session exists.
+const currentSessionName = computed(() => {
+  const s = aiStore.sessions.find(s => s.id === aiStore.currentSessionId)
+  return s?.name?.trim() || t('ai.newSession')
 })
 
-function toggleMaximize() {
-  if (isMaximized.value) {
-    sidebarWidth.value = preMaxWidth.value
-    isMaximized.value = false
+// Click the header session name for an inline rename (no dialog): the label
+// swaps for an input, Enter/blur commits, Escape cancels. No-op before a
+// session exists.
+const editingSessionName = ref(false)
+const sessionNameDraft = ref('')
+const sessionNameInputRef = ref<HTMLInputElement | null>(null)
 
-  } else {
-    preMaxWidth.value = sidebarWidth.value
-    isMaximized.value = true
-
-  }
+function onSessionNameClick() {
+  if (!aiStore.currentSessionId) return
+  sessionNameDraft.value = aiStore.sessions.find(s => s.id === aiStore.currentSessionId)?.name || ''
+  editingSessionName.value = true
+  nextTick(() => {
+    const el = sessionNameInputRef.value
+    if (el) { el.focus(); el.select() }
+  })
 }
 
-function onClose() {
-  if (isMaximized.value) {
-    isMaximized.value = false
-    sidebarWidth.value = preMaxWidth.value
+function commitSessionName() {
+  if (!editingSessionName.value) return
+  editingSessionName.value = false
+  const id = aiStore.currentSessionId
+  const v = sessionNameDraft.value.trim()
+  if (id && v && v !== aiStore.sessions.find(s => s.id === id)?.name) aiStore.renameSession(id, v)
+}
 
-  }
-  aiStore.toggle()
+function cancelSessionNameEdit() {
+  editingSessionName.value = false
 }
 const sidebarEl = ref<HTMLDivElement>()
 const aiMenuVisible = ref(false)
@@ -1824,7 +1835,7 @@ function aiAskSelection() {
     if (el) el.textContent = aiSelectionText.value
     syncInputText(); refreshHashDropdown()
     if (!aiStore.visible) {
-      aiStore.visible = true
+      useUiLayoutStore().showView('ai')
     }
   }
   aiMenuVisible.value = false
@@ -1847,11 +1858,6 @@ watch(() => aiStore.currentSessionId, () => {
 watch(() => aiStore.visible, (visible) => {
   if (visible) {
     nextTick(() => editableRef.value?.focus())
-  }
-  if (!visible && isMaximized.value) {
-    isMaximized.value = false
-    sidebarWidth.value = preMaxWidth.value
-
   }
 })
 
@@ -2106,47 +2112,6 @@ async function onContinue() {
   scrollToBottom()
 }
 
-function onResizeStart(e: MouseEvent) {
-  // Without this, the browser keeps the mousedown default action alive during
-  // the drag: the handle point starts a text selection that can promote to a
-  // native OLE drag mid-resize — the drag loop stalls the UI, swallows the
-  // mouseup (resize keeps following the cursor after release) and, on
-  // WebView2 131.x, ends with Edge killing the renderer over a bad
-  // proprietary LocalFrameHost message.
-  e.preventDefault()
-  isResizing.value = true
-  const el = sidebarEl.value
-  if (!el) return
-  const startX = e.clientX
-  const startWidth = el.offsetWidth
-
-  window.dispatchEvent(new CustomEvent('split:resize-start'))
-
-  function onMouseMove(ev: MouseEvent) {
-    if (!isResizing.value) return
-    const delta = startX - ev.clientX
-    const newWidth = Math.min(Math.max(startWidth + delta, AI_SIDEBAR_MIN_WIDTH), AI_SIDEBAR_MAX_WIDTH)
-    if (el) el.style.width = newWidth + 'px'
-  }
-
-  function onMouseUp() {
-    isResizing.value = false
-    if (el) {
-      sidebarWidth.value = el.offsetWidth
-      // Skip while maximised — the CSS forces 100% width, so offsetWidth is
-      // the full window width and must not overwrite the persisted value.
-      if (!isMaximized.value) {
-        useLocalStateStore().update({ aiSidebarWidth: sidebarWidth.value })
-      }
-    }
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-    window.dispatchEvent(new CustomEvent('split:resize-end'))
-  }
-
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-}
 
 function onAskAI(e: Event) {
   const text = (e as CustomEvent).detail as string
@@ -2155,7 +2120,7 @@ function onAskAI(e: Event) {
     if (el) el.textContent = text
     syncInputText(); refreshHashDropdown()
     if (!aiStore.visible) {
-      aiStore.visible = true
+      useUiLayoutStore().showView('ai')
     }
   }
 }
@@ -2195,74 +2160,68 @@ defineExpose({ focusInput })
 </script>
 
 <style scoped>
+/* The AI view is always docked: fill the dock body; the dock owns width,
+   border and frame. Keep the elevated background for contrast. */
 .ai-sidebar {
-  background: var(--bg-elevated);
-  border-left: 1px solid var(--border-subtle);
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   position: relative;
-  flex-shrink: 0;
+  background: var(--bg-elevated);
 }
 .ai-sidebar.collapsed {
-  width: 0 !important;
-  border-left: none;
-  overflow: hidden;
-}
-.ai-sidebar.maximized {
-  position: absolute !important;
-  left: 0;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 100% !important;
-  border-left: none;
-  z-index: 100;
-}
-.ai-sidebar.resizing {
-  transition: none;
-}
-.resize-handle {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 0.375rem;
-  cursor: col-resize;
-  user-select: none;
-  -webkit-user-drag: none;
-  z-index: 10;
-  background: transparent;
-  transition: background 0.15s ease;
-}
-
-.resize-handle:hover::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 0.1875rem;
-  background: var(--accent);
-  box-shadow: 0 0 0.375rem var(--accent-glow);
-}
-
-.resize-handle:hover::before {
-  opacity: 0;
+  /* Out of the flex flow entirely (like BottomPanel's v-show): the outer
+     0.125rem frame margin stays, and no flex gaps leak around the stub */
+  display: none;
 }
 .ai-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Horizontal padding matches the sidebar's toolbar rows. */
-  padding: 0.75rem 0.625rem;
+  gap: 0.5rem;
+  padding: 0.375rem 0.375rem;
   font-size: 0.75rem;
   font-family: var(--font-ui);
   font-weight: 600;
   color: var(--text-primary);
 }
+.ai-session-name {
+  /* Long session names clip instead of pushing the action buttons out.
+     Extra left inset matches the dock title bars (0.625rem from the edge). */
+  flex: 1;
+  min-width: 0;
+  margin-left: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.ai-session-name.clickable {
+  cursor: text;
+}
+.ai-session-name.clickable:hover {
+  color: var(--accent);
+}
+.ai-session-name-input {
+  /* Inline rename: styled as the label it replaces, with an accent outline */
+  flex: 1;
+  min-width: 0;
+  margin-left: 0.25rem;
+  padding: 0 0.25rem;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
 .ai-actions {
   display: flex;
   gap: 0.125rem;
+  flex-shrink: 0;
 }
 .ai-action-btn {
   font-size: 0.875rem;
@@ -2283,7 +2242,7 @@ defineExpose({ focusInput })
   color: var(--text-primary);
 }
 .ai-session-bar {
-  padding: 0.375rem 0.75rem;
+  padding: 0.375rem 0.375rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2339,7 +2298,7 @@ defineExpose({ focusInput })
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -2483,20 +2442,31 @@ defineExpose({ focusInput })
   50% { opacity: 0.5; }
 }
 .ai-input {
-  padding: 0.625rem 1rem;
+  /* Margin (not padding) so the element box hugs the tag strip + input frame
+     exactly and the focus glow traces that border, no gap around it */
+  margin: 0.75rem 0.625rem;
   flex-shrink: 0;
   position: relative;
+  border-radius: var(--radius-sm);
+}
+/* Focus glow wraps the tag strip + input frame as one unit */
+.ai-input:focus-within {
+  box-shadow: 0 0 0 0.1875rem var(--accent-glow);
 }
 .input-container {
   border: 1px solid var(--border-subtle);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  background: var(--bg-elevated);
+  /* Match the plain input background (--bg-base) so the composer reads the
+     same as every other input field */
+  background: var(--bg-base);
   transition: border-color 0.15s ease;
   position: relative;
 }
 .input-container:focus-within {
   border-color: var(--accent);
-  border-top-color: var(--accent);
+  /* The shared edge with the tag strip stays neutral — only the outer frame
+     lights up on focus */
+  border-top-color: var(--border-subtle);
 }
 /* Hover feedback while an OS file drag is over the composer */
 .ai-drop-overlay {
@@ -2587,7 +2557,6 @@ defineExpose({ focusInput })
   display: none;
 }
 .ai-editable {
-  /* Horizontal padding matches the sidebar's toolbar rows. */
   padding: 0.75rem 0.625rem;
   font-size: 0.75rem;
   font-family: var(--font-ui);
@@ -2761,7 +2730,14 @@ defineExpose({ focusInput })
 .ai-panel-tags {
   padding: 0.25rem 0.75rem;
   background: var(--bg-overlay);
+  /* Top/left/right frame matching the composer below; the shared edge stays
+     seamless and the whole strip+composer lights up together on focus */
+  border: 1px solid var(--border-subtle);
+  border-bottom: none;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.ai-input:focus-within .ai-panel-tags {
+  border-color: var(--accent);
 }
 .panel-tags-list {
   display: flex;
@@ -2848,7 +2824,7 @@ defineExpose({ focusInput })
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   font-size: 0.75rem;
   transition: background 0.1s;
 }
@@ -2894,7 +2870,7 @@ defineExpose({ focusInput })
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   font-size: 0.75rem;
   transition: background 0.1s;
 }

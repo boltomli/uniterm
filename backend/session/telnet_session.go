@@ -344,7 +344,7 @@ func (s *TelnetSession) handleNegotiation(cmd byte, opt byte) {
 			}
 		case telnetOptEcho:
 			s.reply(telnetDO, opt) // Accept server echoing
-			s.serverEchoes = true // server owns echoing → do not echo locally
+			s.serverEchoes = true  // server owns echoing → do not echo locally
 		case telnetOptTerminalType:
 			s.reply(telnetDO, opt) // Accept server knows terminal type
 		default:

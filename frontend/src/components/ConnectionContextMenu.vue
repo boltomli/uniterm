@@ -5,12 +5,16 @@
       <MenuItem iconic :icon="Plus" @click="onCreateWorkspace">{{ t('workspace.newWorkspace') }}</MenuItem>
       <MenuItem v-for="w in workspaceTabs" :key="w.id" @click="onConnectToWorkspace(w.id)">{{ w.name }}</MenuItem>
     </MenuSubmenu>
-    <!-- Companion views: session type is not derivable from config.type -->
-    <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'file')">{{ t(connectFileMenuKey(config)) }}</MenuItem>
+    <!-- Companion views: session type is not derivable from config.type.
+         Hidden when the connection disables file transfer ('none'). -->
+    <MenuItem v-if="config?.type === 'ssh' && connectFileMenuKey(config)" @click="onConnectClick($event, 'file')">{{ t(connectFileMenuKey(config)) }}</MenuItem>
     <MenuItem v-if="config?.type === 'wsl'" @click="onConnectClick($event, 'wsl-file')">{{ t('sidebar.connectWslFile') }}</MenuItem>
     <MenuItem v-if="config?.type === 'ssh'" @click="onConnectClick($event, 'monitor')">{{ t('sidebar.connectMonitor') }}</MenuItem>
+    <!-- Launch the OS-native mstsc client instead of the built-in RDP one (#1520). -->
+    <MenuItem v-if="config?.type === 'rdp' && isWindows" @click="onLaunchMstsc">{{ t('sidebar.openInMstsc') }}</MenuItem>
     <MenuItem v-if="config && canLocate" @click="locateSession">{{ t('sidebar.locateSession') }}</MenuItem>
     <MenuItem v-if="canBatchExecute" @click="onBatchExecute">{{ t('sidebar.batchExecute') }}</MenuItem>
+    <MenuItem v-if="canViewTotpCode" @click="onViewTotpCode">{{ t('conn.totpViewCode') }}</MenuItem>
     <MenuDivider />
     <MenuItem :class="{ disabled: targets.length > 1 }" @click="targets.length === 1 && onEditClick()">{{ t('sidebar.edit') }}</MenuItem>
     <MenuItem @click="duplicate()">{{ t('sidebar.duplicate') }}</MenuItem>
@@ -24,6 +28,12 @@
 
   <!-- Batch execute dialog (opened from the context menu) -->
   <BatchExecuteDialog v-model="batchDialogVisible" :hosts="batchHosts" />
+  <!-- Live TOTP code for bastion web-console binding (issue #1583) -->
+  <TotpCodeDialog
+    v-model:visible="totpDialogVisible"
+    :secret="totpConfig?.totpSecret || ''"
+    :host-name="totpConfig?.name"
+  />
 </template>
 
 <script setup lang="ts">
@@ -31,14 +41,15 @@
 // Owns all type metadata (registry labels, companion items, workspace
 // submenu), favorite state and duplicate/delete flows; parents only wire the
 // connect routing and the edit/group dialogs.
-import { computed, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@lucide/vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
 import MenuDivider from './MenuDivider.vue'
 import MenuSubmenu from './MenuSubmenu.vue'
 import BatchExecuteDialog from './BatchExecuteDialog.vue'
+import TotpCodeDialog from './TotpCodeDialog.vue'
 import type { ConnectionConfig } from '../types/session'
 import { CONNECTION_TYPES } from '../utils/connectionTypes'
 import { connectFileMenuKey } from '../utils/fileTransferUtils'
@@ -49,6 +60,7 @@ import { useTabStore } from '../stores/tabStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { isWorkspaceHostType } from '../composables/createWorkspace'
 import { openWorkspaceNameDialog } from '../composables/workspaceNameDialog'
+import { GetPlatform, LaunchMstsc } from '../../bindings/github.com/ys-ll/uniterm/app'
 
 // kind selects a companion view (file browser / monitor / WSL files) whose
 // session type is not derivable from config.type.
@@ -81,6 +93,12 @@ const connectionStore = useConnectionStore()
 
 const menuRef = ref<InstanceType<typeof Menu> | null>(null)
 defineExpose({ openAt: (x: number, y: number, data?: unknown) => menuRef.value?.openAt(x, y, data) })
+
+// mstsc only exists on Windows; the item is hidden on every other platform.
+const isWindows = ref(false)
+onMounted(() => {
+  GetPlatform().then((p: string) => { isWindows.value = p === 'windows' })
+})
 
 const visible = computed({
   get: () => props.visible,
@@ -120,6 +138,23 @@ const batchHosts = computed(() =>
 const canBatchExecute = computed(() => batchHosts.value.length >= 2)
 const batchDialogVisible = ref(false)
 
+// Only offer the live code for a single saved host that already has a secret;
+// the edit form covers the not-yet-saved case. Keep a copy of the config since
+// closing the menu clears the parent's selection.
+const canViewTotpCode = computed(() =>
+  props.targets.length === 1 && !!props.config?.totpEnabled && !!props.config?.totpSecret,
+)
+const totpDialogVisible = ref(false)
+const totpConfig = ref<ConnectionConfig | null>(null)
+
+function onViewTotpCode() {
+  const c = props.config
+  if (!c) return
+  totpConfig.value = c
+  close()
+  totpDialogVisible.value = true
+}
+
 function onBatchExecute() {
   close()
   batchDialogVisible.value = true
@@ -132,6 +167,20 @@ function close() {
 function onConnectClick(event: MouseEvent, kind?: ConnectKind) {
   close()
   emit('connect', props.targets, kind, event)
+}
+
+// Open the right-clicked RDP connection in the Windows Remote Desktop client.
+// The backend pre-fills address/username/domain; mstsc prompts for the
+// password itself, so no credential ever leaves through this path.
+async function onLaunchMstsc() {
+  close()
+  const c = props.config
+  if (!c) return
+  try {
+    await LaunchMstsc(c)
+  } catch (err) {
+    ElMessage.error(String(err))
+  }
 }
 
 function onConnectToWorkspace(workspaceId: string) {

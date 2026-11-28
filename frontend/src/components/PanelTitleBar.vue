@@ -25,7 +25,7 @@
         iconic
         :icon="currentLocation === loc ? Check : undefined"
         @click="moveTo(loc)"
-      >{{ t(loc === 'sidebar' ? 'sidebar.locSidebar' : 'sidebar.locBottom') }}</MenuItem>
+      >{{ t(LOCATION_LABELS[loc]) }}</MenuItem>
     </MenuSubmenu>
     <MenuItem iconic @click="hidePanel">{{ t('sidebar.hidePanel') }}</MenuItem>
   </Menu>
@@ -53,7 +53,13 @@ const props = defineProps<{
 const { t } = useI18n()
 const uiLayout = useUiLayoutStore()
 
-const DOCKS: PanelLocation[] = ['sidebar', 'bottom']
+const DOCKS: PanelLocation[] = ['sidebar', 'right', 'bottom']
+
+const LOCATION_LABELS: Record<PanelLocation, string> = {
+  sidebar: 'sidebar.locSidebar',
+  right: 'sidebar.locRight',
+  bottom: 'sidebar.locBottom',
+}
 
 const visible = ref(false)
 const menuRef = ref<InstanceType<typeof Menu> | null>(null)
@@ -96,7 +102,7 @@ function hidePanel() {
   /* Horizontal padding matches the panels' toolbars (search box etc.) so
      the more button aligns with their right-edge buttons; no vertical
      padding — the tab strip sits right above. */
-  padding: 0 0.625rem;
+  padding: 0 0.375rem;
   flex-shrink: 0;
 }
 

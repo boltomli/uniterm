@@ -2327,7 +2327,8 @@ watch(activeTab, (tab) => {
   transition: background 0.15s ease;
 }
 
-.svc-resizer:hover {
+.svc-resizer:hover,
+.svc-resizer.hint {
   background: var(--accent, #4096ff);
 }
 

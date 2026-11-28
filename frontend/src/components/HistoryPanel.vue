@@ -314,7 +314,7 @@ watch(searchQuery, () => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.625rem 0.625rem 0.375rem;
+  padding: 0.375rem;
   flex-shrink: 0;
 }
 
@@ -329,7 +329,7 @@ watch(searchQuery, () => {
 .qc-item {
   display: flex;
   align-items: center;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   gap: 0.625rem;
   min-height: 2.25rem;
   border-radius: var(--radius-sm);
@@ -342,7 +342,6 @@ watch(searchQuery, () => {
 
 .qc-item.active {
   background: var(--accent-subtle);
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .qc-item.active .history-command { color: var(--accent); }

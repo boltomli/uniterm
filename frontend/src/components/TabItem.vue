@@ -139,7 +139,7 @@
       <!-- ③ 连接功能（ssh / rdp） -->
       <MenuDivider />
       <MenuItem v-if="tab.type === 'rdp' || tab.type === 'vnc' || tab.type === 'spice'" @click="enterDesktopFullScreen">{{ t('remoteDesktop.fullscreen') }}</MenuItem>
-      <MenuSubmenu v-if="isSsh" :label="t('terminal.transfer')">
+      <MenuSubmenu v-if="isSsh && fileMenuKey" :label="t('terminal.transfer')">
         <MenuItem @click="openSftp">{{ t(fileMenuKey) }}</MenuItem>
         <MenuItem @click="uploadFileRz">{{ t('terminal.uploadFileRz') }}</MenuItem>
       </MenuSubmenu>
@@ -371,7 +371,7 @@ const supportsOutputLog = computed(() => {
 // terminals, file transfer, database (incl. mongodb/redis variants), and k8s.
 const canDuplicate = computed(() => {
   const type = props.tab.type
-  return type === 'terminal' || type === 'sftp' || type === 'database' || type === 'mongodb' || type === 'redis' || type === 'elasticsearch' || type === 'k8s'
+  return type === 'terminal' || type === 'sftp' || type === 'database' || type === 'mongodb' || type === 'redis' || type === 'elasticsearch' || type === 'opensearch' || type === 'k8s'
 })
 
 // Channel clone (issue #983): SSH terminal tabs with a live session — the
@@ -391,7 +391,7 @@ const TTY_RECONNECT_TYPES: readonly string[] = ['ssh', 'telnet', 'serial', 'mosh
 const canReconnect = computed(() => {
   const type = props.tab.type
   if (type === 'rdp' || type === 'vnc' || type === 'spice' || type === 'x11-desktop') return true
-  if (type === 'database' || type === 'redis' || type === 'mongodb' || type === 'elasticsearch' || type === 'sftp' || type === 'monitor') {
+  if (type === 'database' || type === 'redis' || type === 'mongodb' || type === 'elasticsearch' || type === 'opensearch' || type === 'sftp' || type === 'monitor') {
     return 'panelId' in props.tab && !!panelStore.getPanel(props.tab.panelId)
   }
   if (type === 'k8s' || type === 'container') {
@@ -780,15 +780,13 @@ onMounted(async () => {
   color: var(--text-primary);
 }
 .tab-item.active {
-  background: var(--bg-hover);
+  background: var(--bg-active);
   color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 /* AI-locked tabs are signalled by the tab icon alone: a solid warning-coloured
    icon with a soft glow. No surface tint — low-alpha warning colour over the
    dark background turns muddy (issue #928), and at higher alpha it reads as a
-   flat orange block. The accent ring stays the sole "which tab is selected"
-   signal. */
+   flat orange block. */
 .tab-type-icon.ai-locked-icon {
   color: var(--warning);
 }

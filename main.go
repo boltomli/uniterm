@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"html"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +28,20 @@ var Version = "dev"
 // Used to gate update downloads (app.go) and to pick the dev WebView2
 // user-data folder (webview2DataPath below).
 var devBuild = Version == "dev"
+
+// singleInstanceID is the single-instance lock key for the GUI. Dev builds
+// (Version left at "dev", i.e. wails3 dev / plain go build) lock under a
+// distinct ID so they never contend with an installed release binary holding
+// the release lock — with the shared release ID the dev process would detect
+// the release instance on startup, notify it and exit before wails3 dev
+// could attach. Release builds get a real version via -ldflags and share the
+// release lock so a second launch just focuses the existing window.
+var singleInstanceID = func() string {
+	if devBuild {
+		return "uniterm-gui-dev"
+	}
+	return "uniterm-gui"
+}()
 
 // webview2DataPath returns the fixed WebView2 user-data folder:
 // %LOCALAPPDATA%\uniTerm\webview2, with a "-dev" suffix on dev builds. The
@@ -78,16 +93,65 @@ func sweepLegacyWebview2Dirs() {
 	}
 }
 
+// initialThemeMetaName is the <meta name=…> element indexNoCache injects into
+// the root document so the hashed pre-paint bootstrap in index.html can pick
+// up the persisted theme without a second (unhashable) inline script. Keep in
+// sync with the script in index.html.
+const initialThemeMetaName = "uniterm-theme"
+
 // indexNoCache serves the root document with no-store so the WebView2 HTTP
 // cache can never pin a stale index.html — and with it the old hashed JS
 // bundle and WASM engine — after an app update. Every other resource is
 // content-hashed, so it self-invalidates on update; only index.html can go
 // stale, and the wails asset server sets no cache headers for it.
-func indexNoCache(next http.Handler) http.Handler {
+//
+// The root document also gets the persisted theme injected as a
+// <meta name="uniterm-theme"> element: the pre-paint script in index.html
+// otherwise picks the theme from the localStorage cache (stale right after a
+// theme switch) or the OS preference (independent of the app theme), so the
+// webview's first paint could flash a different theme than the native window
+// frame — which is painted from the same persisted settings. Serving the
+// resolved value from Go makes frame, first webview paint and the loaded UI
+// one single source (settings.json).
+//
+// The value travels in a meta element, NOT a second inline <script>: the
+// production CSP (app_csp.go) allows exactly one inline script by sha256
+// hash, and a runtime-generated script has no stable hash — it would be
+// blocked (theme flash) or force 'unsafe-inline' into script-src. A meta
+// element needs no CSP allowance and the hashed bootstrap reads it. next
+// still serves when the embedded read fails; the pre-paint script keeps its
+// cache/OS fallback for the vite dev server, which bypasses this middleware
+// entirely.
+func indexNoCache(initialTheme string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Dev builds: "/" must fall through to the asset server's dev proxy
+		// so the webview loads the vite dev server's live index.html. Serving
+		// the embedded build-time index here would pin the hashed bundles of
+		// the dev build — and every asset request then resolves against vite,
+		// which lacks those files and SPA-falls-back to HTML (strict MIME
+		// errors, black screen). The theme injection below only matters for
+		// the embedded document anyway; the dev index reads its fallbacks.
+		if devBuild {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Pragma", "no-cache")
+			if raw, err := assets.ReadFile("frontend/dist/index.html"); err == nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				// Inject right after <head> opens: the pre-paint theme script
+				// lives later in <head> and must see the meta element when it
+				// runs (injecting before </head> was too late — the theme
+				// script had already fallen back to matchMedia).
+				doc := string(raw)
+				if theme := html.EscapeString(initialTheme); theme != "" {
+					doc = strings.Replace(doc, "<head>",
+						"<head><meta name=\""+initialThemeMetaName+"\" content=\""+theme+"\">", 1)
+				}
+				_, _ = w.Write([]byte(doc))
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -220,7 +284,12 @@ func main() {
 	savedTheme := ""
 	var savedSettings store.AppSettings
 
-	deadline := time.After(100 * time.Millisecond)
+	// 400ms rather than 100ms: the window cannot show before WebView2's
+	// environment is up (~0.7-1s even warm), so waiting longer for the theme
+	// and geometry never delays first paint — while a too-tight deadline made
+	// a cold/slow disk silently drop the persisted theme, painting the native
+	// frame in the OS-default colour until the webview corrected it.
+	deadline := time.After(400 * time.Millisecond)
 
 	settingsCh := make(chan store.AppSettings, 1)
 	go func() {
@@ -265,6 +334,19 @@ func main() {
 		// Too slow — windowBackgroundColour falls back to the dark default.
 	}
 
+	// Theme for the injected <meta name="uniterm-theme">: same resolution as
+	// windowBackgroundColour ('' / system → OS preference). Empty only on a
+	// cold-disk deadline miss, where the pre-paint script falls back to the
+	// localStorage cache / OS preference as before.
+	resolvedTheme := savedTheme
+	if resolvedTheme == "" || resolvedTheme == "system" {
+		if systemPrefersDark() {
+			resolvedTheme = "dark"
+		} else {
+			resolvedTheme = "light"
+		}
+	}
+
 	// Clean external-edit scratch dirs left behind by previous runs that
 	// exited without cleanup (crash / force-kill). Old dirs only: a
 	// concurrently running instance keeps its own. Async: it only ever
@@ -294,9 +376,10 @@ func main() {
 			// F-09b: production CSP + nosniff on every asset (dev server
 			// untouched — vite serves wails3 dev), and index.html served
 			// with no-store so a rebuilt bundle is not shadowed by a cached
-			// document.
+			// document. CSP wraps the outside so headers land before the
+			// theme-injecting index handler writes the document.
 			Middleware: func(next http.Handler) http.Handler {
-				return cspMiddleware(indexNoCache(next))
+				return cspMiddleware(indexNoCache(resolvedTheme, next))
 			},
 		},
 		OnShutdown: app.shutdown,
@@ -555,6 +638,15 @@ func main() {
 		}
 	})
 
+	// Windows: the window is deliberately NOT shown early here (unlike the
+	// darwin commit-based show above). A WebView2 controller presents nothing
+	// until an IsVisible false→true cycle runs (wails does it at
+	// NavigationCompleted), and a window visible during that cycle shows the
+	// torn surface as a black frame — measured alternatives (skip, position-
+	// notify, resize kicks, earlier kicks) either never present or present
+	// black for the whole load. The stock timing shows the window with fully
+	// rendered content in one step, no flash.
+
 	err := w3app.Run()
 	if err != nil {
 		log.Writef("Wails run error: %v", err)
@@ -625,11 +717,12 @@ func loadSavedSettings() store.AppSettings {
 
 // windowBackgroundColour maps the persisted app theme to the native window
 // background colour. That colour is only visible before the webview's first
-// paint, so it is matched to the TOP colour of each theme's body gradient in
-// frontend/src/style.css — the seam that would otherwise flash in the wrong
-// colour on startup. 'system' is resolved from the OS the same way the
-// webview engine does (systemtheme_*.go); v3's IsDarkMode() can't be used
-// because it reports false before Run().
+// paint, so it is matched to each theme's --bg-base in
+// frontend/src/style.css — the base surface the loaded UI settles on, so
+// first paint and the loaded UI form one seamless surface. 'system' is
+// resolved from the OS the same way the webview engine does
+// (systemtheme_*.go); v3's IsDarkMode() can't be used because it reports
+// false before Run().
 func windowBackgroundColour(theme string) application.RGBA {
 	resolved := theme
 	if theme == "" || theme == "system" {
@@ -641,11 +734,11 @@ func windowBackgroundColour(theme string) application.RGBA {
 	}
 	switch resolved {
 	case "deep-blue":
-		return application.RGBA{Red: 16, Green: 23, Blue: 40, Alpha: 255} // #101728
+		return application.RGBA{Red: 11, Green: 19, Blue: 34, Alpha: 255} // #0b1322
 	case "light":
 		return application.RGBA{Red: 255, Green: 255, Blue: 255, Alpha: 255} // #ffffff
 	default:
-		return application.RGBA{Red: 27, Green: 31, Blue: 39, Alpha: 255} // #1b1f27
+		return application.RGBA{Red: 16, Green: 16, Blue: 16, Alpha: 255} // #101010
 	}
 }
 

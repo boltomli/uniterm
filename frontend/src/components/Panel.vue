@@ -55,14 +55,7 @@
         >
           <Radio :size="lucideSize('0.875rem')" />
         </button>
-        <button
-          class="panel-ai-lock"
-          :class="{ locked: isAILocked }"
-          @click.stop="emit('toggleAiLock', panel.id)"
-          :title="isAILocked ? t('terminal.aiLockedToPanel') : t('terminal.lockAIToPanel')"
-        >
-          <Sparkles :size="lucideSize('0.875rem')" />
-        </button>
+
         <div class="panel-more-wrapper">
           <button
             class="panel-more"
@@ -80,18 +73,22 @@
               {{ t('tab.duplicateChannel') }}
             </MenuItem>
             <MenuItem @click="forceReconnect(); moreMenuVisible = false">{{ t('tab.reconnect') }}</MenuItem>
-            <MenuItem v-if="serverHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
-            <MenuItem :shortcut="menuShortcut('lockAI')" @click="toggleAiLockFromMenu">
-              {{ isAILocked ? t('terminal.aiLocked') : t('terminal.lockAI') }}
-            </MenuItem>
-            <MenuItem @click="renamePanel">{{ t('tab.rename') }}</MenuItem>
-            <MenuItem v-if="panel.config?.id" @click="locateConnection">{{ t('tab.locate') }}</MenuItem>
-            <MenuItem
-              v-if="(panel.type === 'ssh' || panel.type === 'local' || panel.type === 'wsl') && workspaceId"
-              @click="toggleBroadcastTarget"
-            >
-              {{ isPanelBroadcastTarget ? t('tab.unbroadcast') : t('tab.broadcast') }}
-            </MenuItem>
+            <!-- Tab-management items collapsed into a "标签" submenu, same
+                 folding as the tab context menu; hidden when every child is. -->
+            <MenuSubmenu v-if="hasPanelTabMenu" :label="t('tab.tabMenu')">
+              <MenuItem v-if="serverHost" @click="copyHostAddress">{{ t('tab.copyHostAddress') }}</MenuItem>
+              <MenuItem :shortcut="menuShortcut('lockAI')" @click="toggleAiLockFromMenu">
+                {{ isAILocked ? t('terminal.aiLocked') : t('terminal.lockAI') }}
+              </MenuItem>
+              <MenuItem @click="renamePanel">{{ t('tab.rename') }}</MenuItem>
+              <MenuItem v-if="panel.config?.id" @click="locateConnection">{{ t('tab.locate') }}</MenuItem>
+              <MenuItem
+                v-if="(panel.type === 'ssh' || panel.type === 'local' || panel.type === 'wsl') && workspaceId"
+                @click="toggleBroadcastTarget"
+              >
+                {{ isPanelBroadcastTarget ? t('tab.unbroadcast') : t('tab.broadcast') }}
+              </MenuItem>
+            </MenuSubmenu>
 
             <!-- ② 会话文本操作 -->
             <MenuDivider />
@@ -128,7 +125,7 @@
 
             <!-- ③ 连接功能（ssh） -->
             <MenuDivider />
-            <MenuSubmenu v-if="panel.type === 'ssh'" :label="t('terminal.transfer')">
+            <MenuSubmenu v-if="panel.type === 'ssh' && connectFileMenuKey(panel.config)" :label="t('terminal.transfer')">
               <MenuItem @click="connectSftp(); moreMenuVisible = false">{{ t(connectFileMenuKey(panel.config)) }}</MenuItem>
               <MenuItem @click="uploadFileRz(); moreMenuVisible = false">{{ t('terminal.uploadFileRz') }}</MenuItem>
             </MenuSubmenu>
@@ -159,7 +156,7 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { ref, watch, computed, nextTick, onMounted, onUnmounted, inject } from 'vue'
-import { Radio, Sparkles, MoreHorizontal, X, SquareTerminal, Laptop, LaptopMinimal, Cable, Terminal, Zap, Maximize2, Minimize2 } from '@lucide/vue'
+import { Radio, MoreHorizontal, X, SquareTerminal, Laptop, LaptopMinimal, Cable, Terminal, Zap, Maximize2, Minimize2 } from '@lucide/vue'
 import BaseTerminal from './BaseTerminal.vue'
 import Menu from './Menu.vue'
 import MenuItem from './MenuItem.vue'
@@ -339,6 +336,15 @@ function onHeaderContextMenu(e: MouseEvent) {
 
 // Connection host (IP or hostname) — empty for local/wsl/serial panels.
 const serverHost = computed(() => props.panel.config?.host || '')
+
+/* The "标签" submenu is shown only when at least one of its children is
+   visible (mirrors TabItem's hasTabMenu) */
+const hasPanelTabMenu = computed(
+  () =>
+    !!serverHost.value ||
+    !!props.panel.config?.id ||
+    ((props.panel.type === 'ssh' || props.panel.type === 'local' || props.panel.type === 'wsl') && !!props.workspaceId)
+)
 
 const isPanelBroadcastTarget = computed(() =>
   tabStore.isPanelBroadcasting(props.panel.id)
@@ -734,11 +740,10 @@ watch(() => props.panel.outputLog, (val) => {
 }
 .panel-active .panel-header {
   background: var(--bg-elevated);
-  border-bottom-color: var(--accent);
 }
 /* The AI-locked panel header keeps its normal surface (issue #928: an
    alpha-tinted warning background turns muddy on dark themes); the state is
-   carried by the Sparkles button below, which lights up solid amber. */
+   carried by the title-bar type icon, which lights up solid amber. */
 .panel-title {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -834,25 +839,6 @@ watch(() => props.panel.outputLog, (val) => {
 .broadcast-icon {
   display: inline-block;
   line-height: 1;
-}
-.panel-ai-lock {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  padding: 0.125rem 0.25rem;
-  border-radius: var(--radius-sm);
-  display: inline-flex;
-  align-items: center;
-}
-.ai-lock-icon {
-  display: block;
-}
-.panel-ai-lock:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-.panel-ai-lock.locked {
-  color: var(--warning);
 }
 .panel-duplicate {
   background: none;

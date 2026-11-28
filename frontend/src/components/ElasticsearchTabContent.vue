@@ -803,14 +803,17 @@ function onResizeStart(e: MouseEvent) {
 .health-dot.close, .health-dot.closed { background: var(--text-disabled); }
 
 .es-main {
+  background: var(--bg-titlebar);
   display: flex;
   flex: 1;
   min-height: 0;
 }
 .es-left {
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   min-width: 0;
 }
@@ -910,33 +913,36 @@ function onResizeStart(e: MouseEvent) {
   text-align: center;
 }
 .es-resizer {
-  /* Hover area floats over the tree edge (negative margin) so it takes
-     no layout width when idle and never blanks the content side. */
+  /* Occupies the gutter between the two islands */
   width: 0.25rem;
-  margin-left: -0.25rem;
   position: relative;
   z-index: 1;
   cursor: col-resize;
-  background: transparent;
+  /* The resizer IS the gutter — tint it with the chrome tier */
+  background: var(--bg-titlebar);
   flex-shrink: 0;
 }
-.es-resizer:hover::after {
+.es-resizer:hover::after,
+.es-resizer.hint::after {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
-  width: 0.1875rem;
+  right: 0;
   background: var(--accent);
   box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 
 .es-right {
+  background: var(--bg-base);
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 .es-tab-bar {
   display: flex;

@@ -59,7 +59,7 @@ func ExecuteQueryCtx(parent context.Context, p Provider, db *sql.DB, dbName, sql
 }
 
 func executeQueryArgs(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string, args []any) (*QueryResult, error) {
-	ctx, cancel := context.WithTimeout(parent, queryTimeout)
+	ctx, cancel := dbCtx(parent, db, queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -128,7 +128,7 @@ func ExecuteStatement(p Provider, db *sql.DB, dbName, sqlStr string) (*ExecResul
 // ExecuteStatementCtx is ExecuteStatement with a caller-owned parent context
 // (see ExecuteQueryCtx, DB-16).
 func ExecuteStatementCtx(parent context.Context, p Provider, db *sql.DB, dbName, sqlStr string) (*ExecResult, error) {
-	ctx, cancel := context.WithTimeout(parent, queryTimeout)
+	ctx, cancel := dbCtx(parent, db, queryTimeout)
 	defer cancel()
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -175,7 +175,7 @@ func ExecuteScriptCtx(parent context.Context, p Provider, db *sql.DB, dbName, sc
 	stmts := SplitScript(script, p.DBType())
 	res := &ScriptResult{}
 
-	ctx, cancel := context.WithTimeout(parent, scriptTimeout)
+	ctx, cancel := dbCtx(parent, db, scriptTimeout)
 	defer cancel()
 
 	conn, err := db.Conn(ctx)
@@ -190,8 +190,8 @@ func ExecuteScriptCtx(parent context.Context, p Provider, db *sql.DB, dbName, sc
 
 	for _, st := range stmts {
 		// per-statement deadline so one runaway statement cannot consume the
-		// whole script budget
-		sctx, scancel := context.WithTimeout(ctx, queryTimeout)
+		// whole script budget (background context on dm — see dbCtx)
+		sctx, scancel := dbCtx(parent, db, queryTimeout)
 		r, err := conn.ExecContext(sctx, st.SQL)
 		scancel()
 		if err != nil {

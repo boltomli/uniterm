@@ -158,6 +158,11 @@ type ConnectionConfig struct {
 	ShellArgs string `json:"shellArgs,omitempty"`
 	// Working directory for local terminal (defaults to user home directory if empty)
 	Cwd string `json:"cwd,omitempty"`
+	// LocalDir seeds a file session's local pane start directory. Empty keeps
+	// the local home directory. For local-file connections saved before the
+	// field existed the left pane falls back to Cwd, which used to seed both
+	// panes.
+	LocalDir string `json:"localDir,omitempty"`
 	// Serial port configuration
 	SerialPort     string  `json:"serialPort,omitempty"`
 	SerialBaudRate int     `json:"serialBaudRate,omitempty"`
@@ -165,7 +170,7 @@ type ConnectionConfig struct {
 	SerialStopBits float64 `json:"serialStopBits,omitempty"`
 	SerialParity   string  `json:"serialParity,omitempty"`
 	// Database-specific fields
-	DBType   string `json:"dbType,omitempty"`   // "mysql", "postgres", "rqlite", "oracle", "sqlserver", "redis", "mongodb", "elasticsearch"
+	DBType   string `json:"dbType,omitempty"`   // "mysql", "postgres", "rqlite", "oracle", "sqlserver", "dm", "redis", "mongodb", "elasticsearch"
 	DBName   string `json:"dbName,omitempty"`   // default database name
 	DBParams string `json:"dbParams,omitempty"` // extra DSN query parameters, e.g. "sslmode=require&connect_timeout=30"
 	// Elasticsearch / OpenSearch fields

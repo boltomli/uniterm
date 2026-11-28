@@ -8,7 +8,7 @@
         style="flex: 1"
         clearable
       >
-        <template #prefix><el-icon :size="'0.875rem'"><Search /></el-icon></template>
+        <template #prefix><el-icon :size="lucideSize('0.875rem')"><Search /></el-icon></template>
       </el-input>
       <el-button size="small" @click="showCreate = true">
         <Plus :size="lucideSize('0.875rem')" /> {{ t('settings.skillsCreate') }}
@@ -47,10 +47,10 @@
           :title="skill.locked ? t('settings.skillsLocked') : t('settings.skillsUnlocked')"
           @click="store.toggleLocked(skill.name)"
         >
-          <el-icon :size="'0.9375rem'"><Lock v-if="skill.locked" /><LockOpen v-else /></el-icon>
+          <el-icon :size="lucideSize('0.9375rem')"><Lock v-if="skill.locked" /><LockOpen v-else /></el-icon>
         </el-button>
         <el-button link @click.stop="actionMenuRef?.toggle($event.currentTarget, skill)">
-          <el-icon :size="'0.9375rem'"><Settings2 /></el-icon>
+          <el-icon :size="lucideSize('0.9375rem')"><Settings2 /></el-icon>
         </el-button>
       </div>
     </div>

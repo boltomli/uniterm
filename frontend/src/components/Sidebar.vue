@@ -5,7 +5,7 @@
     :class="{ collapsed: !visible && !uiLayout.draggingPanel, resizing: isResizing }"
     :style="{ width: sidebarWidth + 'px' }"
   >
-    <div class="resize-handle" @mousedown="onResizeStart" />
+    <div class="resize-handle" :class="{ hint: resizeHint }" @mousedown="onResizeStart" />
     <div
       class="sidebar-header"
       :class="{ 'drag-over': tabStripDragOver }"
@@ -17,8 +17,8 @@
         v-for="key in sidebarTabKeys"
         :key="key"
         class="sidebar-tab"
-        :class="{ active: activeView === key, 'drop-before': tabDropIndicator?.key === key && tabDropIndicator?.position === 'before', 'drop-after': tabDropIndicator?.key === key && tabDropIndicator?.position === 'after' }"
-        :title="sidebarTabTitle(key)"
+        :class="{ active: activeView === key, labeled: showTabLabel(key), 'drop-before': tabDropIndicator?.key === key && tabDropIndicator?.position === 'before', 'drop-after': tabDropIndicator?.key === key && tabDropIndicator?.position === 'after' }"
+        :title="sidebarTabTooltip(key)"
         draggable="true"
         @dragstart="onTabDragStart($event, key)"
         @dragend="onTabDragEnd"
@@ -28,8 +28,16 @@
         @click="onTabClick(key)"
       >
         <el-icon><component :is="SIDEBAR_TAB_ICONS[key]" :size="lucideSize('0.875rem')" /></el-icon>
+        <!-- Label per the tab-names mode; plain panel name — NOT the
+             tooltip text, which carries the shortcut suffix. -->
+        <span v-if="showTabLabel(key)" class="sidebar-tab-label">{{ t(sidebarTabLabelKey(key)) }}</span>
       </button>
-      <button class="icon-btn" @click="emit('toggle')" :title="t('sidebar.collapse')"><el-icon><X :size="lucideSize('0.875rem')" /></el-icon></button>
+      <div class="strip-actions">
+        <!-- More menu of the active panel (move to dock / hide) sits left of
+             the collapse button; the per-panel title row is gone. -->
+        <PanelTitleBar v-if="activeView" :view="activeView" button-mode />
+        <button class="icon-btn" @click="emit('toggle')" :title="t('sidebar.collapse')"><el-icon><X :size="lucideSize('0.875rem')" /></el-icon></button>
+      </div>
     </div>
 
     <!-- Empty sidebar (every view moved to the bottom panel or hidden):
@@ -43,7 +51,7 @@
           class="empty-chip"
           @click="uiLayout.movePanel(key, 'sidebar', Number.MAX_SAFE_INTEGER)"
         >
-          <el-icon><component :is="SIDEBAR_TAB_ICONS[key]" :size="'0.75rem'" /></el-icon>
+          <el-icon><component :is="SIDEBAR_TAB_ICONS[key]" :size="lucideSize('0.75rem')" /></el-icon>
           {{ t(sidebarTabLabelKey(key)) }}
         </button>
       </div>
@@ -54,10 +62,7 @@
          renders it in place otherwise, i.e. the normal sidebar layout. The
          bottom panel is always mounted, so the target exists whenever a
          docked view renders. -->
-    <DockHost :docked="uiLayout.panelLocation('connections') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('connections')" view="connections" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('connections')">
     <template v-if="uiLayout.isViewActive('connections')">
       <div class="search-box">
         <el-input
@@ -255,59 +260,35 @@
     </template>
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('quickCommands') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('quickCommands')" view="quickCommands" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('quickCommands')">
       <QuickCommandsPanel v-if="uiLayout.isViewActive('quickCommands')" ref="quickCommandsRef" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('tunnels') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('tunnels')" view="tunnels" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('tunnels')">
       <TunnelsPanel v-if="uiLayout.isViewActive('tunnels')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('history') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('history')" view="history" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('history')">
       <HistoryPanel v-if="uiLayout.isViewActive('history')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('files') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('files')" view="files" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('files')">
       <FileSidebar v-if="uiLayout.isViewActive('files')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('monitor') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('monitor')" view="monitor" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('monitor')">
       <MonitorOverviewSidebar v-if="uiLayout.isViewActive('monitor')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('commandSend') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('commandSend')" view="commandSend" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('commandSend')">
       <CommandSendPanel v-if="uiLayout.isViewActive('commandSend')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('notes') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('notes')" view="notes" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('notes')">
       <NotesPanel v-if="uiLayout.isViewActive('notes')" />
     </DockHost>
 
-    <DockHost :docked="uiLayout.panelLocation('personalization') === 'bottom'">
-      <template #title>
-        <PanelTitleBar v-if="uiLayout.isViewActive('personalization')" view="personalization" />
-      </template>
+    <DockHost :location="uiLayout.effectiveLocation('personalization')">
     <template v-if="uiLayout.isViewActive('personalization')">
       <div class="personalization-panel">
         <div class="persist-section-title">{{ t('settings.app') }}</div>
@@ -415,6 +396,16 @@
     </template>
     </DockHost>
 
+    <!-- AI assistant: a regular dockable view since #1646. Stays MOUNTED
+         (v-show, not v-if) while it lives in one dock — unmounting would
+         lose the composer draft and transcript scroll position across tab
+         switches, and its internal auto-open paths assume the component
+         exists. Embedded mode drops the floating sidebar's own width and
+         collapse chrome; the dock's tab strip provides title + close. -->
+    <DockHost :location="uiLayout.effectiveLocation('ai')">
+      <AISidebar ref="aiRef" v-show="uiLayout.isViewActive('ai')" embedded @open-settings="emit('openSettings')" />
+    </DockHost>
+
     <ConnectionForm v-model="showForm" :edit-config="editConfig" :default-group-id="newConnGroupId" @save="onSave" @connect="onConnectFromForm" @connect-only="(c: ConnectionConfig) => { showForm = false; editConfig = undefined; emit('connectOnly', c) }" />
     <ExportDialog v-model:visible="showExportDialog" />
     <ImportDialog v-model:visible="showImportDialog" />
@@ -488,7 +479,7 @@
 import { lucideSize } from '../utils/lucideSize'
 import { ref, onMounted, onUnmounted, computed, watch, nextTick, provide } from 'vue'
 import { storeToRefs } from 'pinia'
-import { X, ChevronRight, ChevronDown, Filter, Network, Zap, Clock, Plus, Palette, SquareTerminal, Activity, Pencil, MoreHorizontal, FolderTree, ArrowRightLeft, Star, Send, NotebookPen } from '@lucide/vue'
+import { X, ChevronRight, ChevronDown, Filter, Network, Zap, Clock, Plus, Palette, SquareTerminal, Activity, Pencil, MoreHorizontal, FolderTree, ArrowRightLeft, Star, Send, NotebookPen, Sparkles } from '@lucide/vue'
 import { getShellLabel as getShellLabelBase } from '../utils/shellLabel'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFavoriteStore } from '../stores/favoriteStore'
@@ -505,6 +496,7 @@ import TunnelsPanel from './TunnelsPanel.vue'
 import HistoryPanel from './HistoryPanel.vue'
 import CommandSendPanel from './CommandSendPanel.vue'
 import NotesPanel from './NotesPanel.vue'
+import AISidebar from './AISidebar.vue'
 import FileSidebar from './FileSidebar.vue'
 import MonitorOverviewSidebar from './MonitorOverviewSidebar.vue'
 import { useCompanionStore } from '../stores/companionStore'
@@ -536,13 +528,12 @@ import { useLocalStateStore } from '../stores/localStateStore'
 import { useUiLayoutStore } from '../stores/uiLayoutStore'
 import type { SidebarView } from '../stores/uiLayoutStore'
 import { usePanelStripDrag } from '../composables/usePanelStripDrag'
-import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
-import { isMobilePlatform } from '../utils/platform'
+import { shortcutSuffix, PANEL_VIEW_ACTIONS } from '../composables/shortcutHint'
 
 defineProps<{
   visible: boolean
 }>()
-const emit = defineEmits(['connect', 'connectToWorkspace', 'createWorkspace', 'connectOnly', 'toggle', 'openNetscan'])
+const emit = defineEmits(['connect', 'connectToWorkspace', 'createWorkspace', 'connectOnly', 'toggle', 'openNetscan', 'openSettings'])
 const connectionStore = useConnectionStore()
 const favoriteStore = useFavoriteStore()
 const settingsStore = useSettingsStore()
@@ -553,15 +544,6 @@ const panelStore = usePanelStore()
 const tabStore = useTabStore()
 const companionStore = useCompanionStore()
 const { t } = useI18n()
-const isMacPlatform = /Mac|iPhone|iPad/.test(navigator.userAgent)
-const quickCommandsTitle = computed(() => {
-  const label = t('quickCommands.quickCommandsTab')
-  // No hardware keyboard on mobile — the shortcut hint is meaningless there.
-  if (isMobilePlatform()) return label
-  const binding = settingsStore.settings.keyboard.openQuickCommands
-  const shortcut = binding ? formatKeyBinding(binding, isMacPlatform) : ''
-  return shortcut ? `${label} (${shortcut})` : label
-})
 // Connection ids that currently have an open panel/session (panel.config.id),
 // plus saved-workspace records whose live workspace tab is open. Reactive
 // over the panel/tab stores, so it updates as panels and tabs open/close.
@@ -586,10 +568,13 @@ const editConfig = ref<ConnectionConfig | undefined>(undefined)
 const uiLayout = useUiLayoutStore()
 const { sidebarActiveView: activeView } = storeToRefs(uiLayout)
 const quickCommandsRef = ref<InstanceType<typeof QuickCommandsPanel> | null>(null)
+const aiRef = ref<InstanceType<typeof AISidebar> | null>(null)
 
 // Point a view's activation at the dock it currently lives in.
 function setActiveViewForDock(view: SidebarView) {
-  if (uiLayout.panelLocation(view) === 'bottom') uiLayout.bottomActiveView = view
+  const loc = uiLayout.effectiveLocation(view)
+  if (loc === 'bottom') uiLayout.bottomActiveView = view
+  else if (loc === 'right') uiLayout.rightActiveView = view
   else activeView.value = view
 }
 
@@ -648,12 +633,12 @@ function tabInSidebar(key: string): boolean {
 // Sidebar-strip tabs in persisted order, filtered to views docked here.
 const sidebarTabKeys = computed(() => uiLayout.orderedViews.filter(v => tabInSidebar(v)))
 
-// Empty-sidebar hint: views that could be moved back here (bottom-docked,
-// visible ones). Fixed SIDEBAR_TAB_ORDER — the hint list must not jump
-// around as the user reorders tabs.
+// Empty-sidebar hint: views that could be moved back here (docked to the
+// bottom panel or the right rail, visible ones). Fixed SIDEBAR_TAB_ORDER —
+// the hint list must not jump around as the user reorders tabs.
 const sidebarDockableViews = computed(() =>
   SIDEBAR_TAB_ORDER.map(tab => tab.key)
-    .filter(v => tabVisible(v) && uiLayout.panelLocation(v) === 'bottom')
+    .filter(v => tabVisible(v) && uiLayout.panelLocation(v) !== 'sidebar')
 )
 
 function sidebarTabLabelKey(key: string): string {
@@ -672,12 +657,26 @@ const SIDEBAR_TAB_ICONS: Record<string, any> = {
   personalization: Palette,
   commandSend: Send,
   notes: NotebookPen,
+  ai: Sparkles,
 }
 
 function sidebarTabTitle(key: string): string {
-  if (key === 'quickCommands') return quickCommandsTitle.value
   const entry = SIDEBAR_TAB_ORDER.find(tab => tab.key === key)
   return entry ? t(entry.labelKey) : key
+}
+
+// Whether this tab carries a text label: 'all' labels every tab, 'active'
+// only the strip's current tab, 'none' is icon-only.
+function showTabLabel(key: string): boolean {
+  const mode = uiLayout.panelTabLabels
+  return mode === 'all' || (mode === 'active' && activeView.value === key)
+}
+
+// Tab tooltip: panel name plus the bound toggle shortcut, e.g.
+// "命令 (Alt+Q)". '' suffix when unbound / on mobile.
+function sidebarTabTooltip(key: string): string {
+  const action = PANEL_VIEW_ACTIONS[key]
+  return sidebarTabTitle(key) + (action ? shortcutSuffix(action) : '')
 }
 
 // Click routes to each tab's own open logic (files/monitor set companion
@@ -1009,10 +1008,16 @@ watch(searchQuery, (q) => {
 })
 
 // ── Resize ──
-const SIDEBAR_MIN_WIDTH = 240
+const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 400
+/* Dragging below this hides the panel (VS Code-style); the same drag reopening
+   past it restores the panel at the min width */
+const SIDEBAR_COLLAPSE_AT = 90
 const sidebarWidth = ref(SIDEBAR_MIN_WIDTH)
 const isResizing = ref(false)
+/* Lit from App.vue while the bottom panel's T-junction corner is hovered, so
+   both dragged edges show their indicator bars during a corner gesture */
+const resizeHint = ref(false)
 const sidebarEl = ref<HTMLDivElement>()
 
 // Restore the persisted width once LocalState is loaded (App.vue awaits
@@ -1040,17 +1045,38 @@ function onResizeStart(e: MouseEvent) {
 
   window.dispatchEvent(new CustomEvent('split:resize-start'))
 
+  let collapsedDuringDrag = false
+
   function onMouseMove(ev: MouseEvent) {
     if (!isResizing.value) return
-    const delta = ev.clientX - startX
-    const newWidth = Math.min(Math.max(startWidth + delta, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
+    const raw = startWidth + (ev.clientX - startX)
+    /* Dragged past the collapse point: hide the panel, but keep tracking the
+       drag — pulling back reopens it at the min width */
+    if (raw <= SIDEBAR_COLLAPSE_AT) {
+      collapsedDuringDrag = true
+      el!.style.width = '0px'
+      return
+    }
+    collapsedDuringDrag = false
+    const newWidth = Math.min(Math.max(raw, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
     el!.style.width = newWidth + 'px'
+    /* Keep the :style-bound ref in sync: any re-render mid-drag re-applies
+       this binding and would otherwise snap the width back (corner-drag jitter) */
+    sidebarWidth.value = newWidth
   }
 
   function onMouseUp() {
     isResizing.value = false
-    sidebarWidth.value = el!.offsetWidth
-    useLocalStateStore().update({ sidebarWidth: sidebarWidth.value })
+    if (collapsedDuringDrag) {
+      /* Closed via drag: flip visibility and persist a sane width so the next
+         open doesn't restore 0 */
+      sidebarWidth.value = SIDEBAR_MIN_WIDTH
+      useLocalStateStore().update({ sidebarWidth: sidebarWidth.value })
+      emit('toggle')
+    } else {
+      sidebarWidth.value = el!.offsetWidth
+      useLocalStateStore().update({ sidebarWidth: sidebarWidth.value })
+    }
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     window.dispatchEvent(new CustomEvent('split:resize-end'))
@@ -1785,12 +1811,11 @@ function onSave(config: ConnectionConfig) {
   editConfig.value = undefined
 }
 
-function onConnectFromForm(config: ConnectionConfig) {
-  if (editConfig.value?.id) {
-    connectionStore.update(config.id, config)
-  } else {
-    connectionStore.add(config)
-  }
+async function onConnectFromForm(config: ConnectionConfig) {
+  const saved = editConfig.value?.id
+    ? await connectionStore.update(config.id, config)
+    : await connectionStore.add(config)
+  if (!saved) return
   showForm.value = false
   editConfig.value = undefined
   emit('connect', config)
@@ -1860,13 +1885,16 @@ function openChangeGroupForGroup(groupId: string) {
   showChangeGroupDialog.value = true
 }
 
-defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, openChangeGroupForGroup, activeView })
+defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, openChangeGroupForGroup, activeView, startResize: onResizeStart, setResizeHint: (v: boolean) => { resizeHint.value = v }, focusAIInput: () => aiRef.value?.focusInput() })
 </script>
 
 <style scoped>
 .sidebar {
   background: var(--bg-elevated);
-  border-right: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  /* No overflow:hidden here: the resize handle lives OUTSIDE the panel's
+     box (in the gutter) and overflow clipping would hide it */
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -1874,21 +1902,24 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
 }
 
 .sidebar.collapsed {
-  width: 0 !important;
-  border-right: none;
-  overflow: hidden;
+  /* Out of the flex flow entirely (like BottomPanel's v-show): the outer
+     0.125rem frame margin stays, and no flex gaps leak around the stub */
+  display: none;
 }
 
 .sidebar.resizing {
   transition: none;
 }
 
-.resize-handle {
+ .resize-handle {
   position: absolute;
-  right: -0.375rem;
+  /* Sit centered in the 4px gutter to the right of the panel. The offset is
+     from the padding-box edge, and the panel's 1px border shifts that 1px
+     outward, so the extra -1px puts the handle exactly over the gutter. */
+  right: calc(-0.25rem - 1px);
   top: 0;
   bottom: 0;
-  width: 0.375rem;
+  width: 0.25rem;
   cursor: col-resize;
   user-select: none;
   -webkit-user-drag: none;
@@ -1896,14 +1927,17 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   background: transparent;
 }
 
-/* Hover: 0.1875rem accent bar extending into sidebar */
-.resize-handle:hover::after {
+/* Hover: accent bar filling the whole 4px gutter. Full-fill is the only
+   width that stays pixel-crisp at fractional DPRs (125%/150% scale) and it
+   is centered by construction. */
+.resize-handle:hover::after,
+.resize-handle.hint::after {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
-  width: 0.1875rem;
+  right: 0;
   background: var(--accent);
   box-shadow: 0 0 0.375rem var(--accent-glow);
 }
@@ -1912,16 +1946,22 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   display: flex;
   align-items: center;
   gap: 0.125rem;
-  /* Bottom padding separates the tab strip from the title bar / panel
-     content below (their own rows carry no vertical padding). Horizontal
-     padding matches the panels' toolbars so right-edge buttons align. */
-  padding: 0.625rem 0.625rem 0.5rem;
+  /* No bottom padding: the panel content starts right below the strip
+     (the old spacing made sense with a title row between, which is gone) */
+  padding: 0.375rem 0.375rem 0;
   flex-shrink: 0;
 }
 
 .sidebar-header .icon-btn {
-  margin-left: auto;
   font-size: 0.875rem;
+}
+
+/* Right-aligned group: active panel's more menu + collapse button */
+.strip-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
 }
 
 
@@ -1978,6 +2018,25 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   position: relative;
 }
 
+/* Active tab spells its panel name out: grow from a square icon button into
+   an icon+label pill. */
+.sidebar-tab.labeled {
+  width: auto;
+  padding: 0 0.5rem;
+  gap: 0.25rem;
+}
+
+.sidebar-tab-label {
+  font-size: 0.75rem;
+  font-family: var(--font-ui);
+  white-space: nowrap;
+  /* Long locales (fr "Envoi de commandes" = 18 chars) must not push the
+     strip's action buttons out — clip with an ellipsis instead. */
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Drag & drop insertion line (tab reorder / cross-dock move) */
 .sidebar-tab.drop-before::before,
 .sidebar-tab.drop-after::after {
@@ -2025,7 +2084,7 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
+  padding: 0.25rem 0.375rem;
   font-size: 0.75rem;
   font-family: var(--font-ui);
   color: var(--text-secondary);
@@ -2048,15 +2107,23 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
 }
 
 .sidebar-tab.active {
-  color: var(--accent);
-  background: var(--accent-subtle);
+  /* Activity-bar tab: neutral gray rounded highlight, bright icon —
+     not an accent-tinted button */
+  color: var(--text-primary);
+  background: var(--bg-active);
+}
+
+/* View title bars docked in THIS sidebar sit further in from the left edge
+   than the shell-wide 0.375rem (bottom panel keeps its own tighter value) */
+.sidebar :deep(.panel-title-bar) {
+  padding-left: 0.625rem;
 }
 
 .search-box {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.625rem 0.625rem 0.375rem;
+  padding: 0.375rem;
   flex-shrink: 0;
 }
 
@@ -2088,7 +2155,7 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.375rem 0.625rem 0.375rem 0.375rem;
+  padding: 0.375rem;
   user-select: none;
   border-radius: var(--radius-sm);
   transition: background 0.12s ease;
@@ -2135,7 +2202,7 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  padding: 0.5rem 0.625rem;
+  padding: 0.5rem 0.375rem;
   border-radius: var(--radius-sm);
   transition: all 0.12s ease;
   margin-bottom: 0.125rem;
@@ -2168,7 +2235,6 @@ defineExpose({ focusSearch, openQuickCommands, openTab, openChangeGroupFor, open
 
 .connection-item.active {
   background: var(--accent-subtle);
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .connection-item.active .name {

@@ -90,6 +90,12 @@ func (s *WebDAVSession) Connect(config ConnectionConfig) error {
 	s.mu.Lock()
 	s.client = client
 	s.cwd = "/"
+	// Seed the start path (a server-absolute path) and the local pane before
+	// reporting connected; anything else keeps the server root default.
+	if dir := strings.TrimSpace(config.Cwd); strings.HasPrefix(dir, "/") {
+		s.cwd = path.Clean(dir)
+	}
+	applyLocalStartDir(&s.localFSOps, config.LocalDir)
 	s.mu.Unlock()
 	s.setStatus(StatusConnected)
 	return nil

@@ -47,13 +47,39 @@ type quoteRule struct {
 // dialect joining the registry must be added here — the length check below
 // fails otherwise, which is exactly the "the test missed sqlite" gap the
 // 2026-10-25 audit found (DB-21).
+// quoteRules lists the wrapper characters each dialect's Quote uses. Every
+// dialect in the provider registry must appear here so the matrix below
+// exercises it (TestQuoteNeverReturnsEmpty fails on a registry entry with no
+// rule). The PostgreSQL-family wrappers (openGauss and everything embedding
+// it or postgresProvider) inherit `"`…`"`; the MySQL-family wrappers inherit
+// `…`; ClickHouse, DM and GBase 8s use ANSI `"`…`"` as well.
 var quoteRules = map[string]quoteRule{
-	"mysql":     {open: "`", close: "`", esc: "`"},
-	"postgres":  {open: `"`, close: `"`, esc: `"`},
-	"rqlite":    {open: `"`, close: `"`, esc: `"`},
-	"sqlite":    {open: `"`, close: `"`, esc: `"`},
-	"oracle":    {open: `"`, close: `"`, esc: `"`},
-	"sqlserver": {open: `[`, close: `]`, esc: `]`},
+	"mysql":       {open: "`", close: "`", esc: "`"},
+	"mariadb":     {open: "`", close: "`", esc: "`"},
+	"tidb":        {open: "`", close: "`", esc: "`"},
+	"oceanbase":   {open: "`", close: "`", esc: "`"},
+	"doris":       {open: "`", close: "`", esc: "`"},
+	"starrocks":   {open: "`", close: "`", esc: "`"},
+	"gbase8a":     {open: "`", close: "`", esc: "`"},
+	"greatsql":    {open: "`", close: "`", esc: "`"},
+	"goldendb":    {open: "`", close: "`", esc: "`"},
+	"postgres":    {open: `"`, close: `"`, esc: `"`},
+	"opengauss":   {open: `"`, close: `"`, esc: `"`},
+	"kingbase":    {open: `"`, close: `"`, esc: `"`},
+	"cloudberry":  {open: `"`, close: `"`, esc: `"`},
+	"cockroachdb": {open: `"`, close: `"`, esc: `"`},
+	"greenplum":   {open: `"`, close: `"`, esc: `"`},
+	"gbase8c":     {open: `"`, close: `"`, esc: `"`},
+	"highgo":      {open: `"`, close: `"`, esc: `"`},
+	"vastbase":    {open: `"`, close: `"`, esc: `"`},
+	"yugabytedb":  {open: `"`, close: `"`, esc: `"`},
+	"clickhouse":  {open: `"`, close: `"`, esc: `"`},
+	"dm":          {open: `"`, close: `"`, esc: `"`},
+	"gbase8s":     {open: `"`, close: `"`, esc: `"`},
+	"rqlite":      {open: `"`, close: `"`, esc: `"`},
+	"sqlite":      {open: `"`, close: `"`, esc: `"`},
+	"oracle":      {open: `"`, close: `"`, esc: `"`},
+	"sqlserver":   {open: `[`, close: `]`, esc: `]`},
 }
 
 // TestQuoteNeverReturnsEmpty guards the swallowed-error regression: names

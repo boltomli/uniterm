@@ -88,9 +88,36 @@ export function getXtermTheme(name: string, customThemes?: CustomTerminalTheme[]
   switch (name) {
     case 'uniterm-dark':
       return base
+    case 'uniterm-darkblue':
+      /* Companion palette for the deep-blue app theme: floor matches its
+         --bg-base (#0b111e), ANSI hues mirror uniterm-dark with the whites
+         tinted blue for contrast on the navy background */
+      return {
+        background: '#0b111e',
+        foreground: '#c9d4e4',
+        cursor: '#38bdf8',
+        selectionBackground: 'rgba(56, 189, 248, 0.2)',
+        black: '#3a4a66',
+        red: '#f87171',
+        green: '#34d399',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#b0bfd4',
+        brightBlack: '#5c6f8f',
+        brightRed: '#fca5a5',
+        brightGreen: '#6ee7b7',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#dce6f5'
+      }
     case 'uniterm-light':
       return {
-        background: '#e8e8e8',
+        /* Between the original #e8e8e8 (too dark) and plain white (too stark) */
+        background: '#f2f2f2',
         foreground: '#2c2c2c',
         cursor: '#1976d2',
         selectionBackground: 'rgba(25, 118, 210, 0.15)',
@@ -350,11 +377,11 @@ export function getXtermTheme(name: string, customThemes?: CustomTerminalTheme[]
       return {
         background: '#1e1e1e', foreground: '#ececec', cursor: '#b4b4c0',
         selectionBackground: 'rgba(236,236,236,0.2)',
-        black: '#1e1e1e', red: '#ff6060', green: '#0eb16c', yellow: '#dedc12',
-        blue: '#1296be', magenta: '#ff4dff', cyan: '#54ccef', white: '#cccccc',
-        brightBlack: '#808080', brightRed: '#ff8080', brightGreen: '#18ed93',
-        brightYellow: '#ffff36', brightBlue: '#1bbae9', brightMagenta: '#ff7dff',
-        brightCyan: '#8eddf4', brightWhite: '#cccccc'
+        black: '#000000', red: '#ff6060', green: '#0eb16c', yellow: '#ffff36',
+        blue: '#6060ff', magenta: '#ff36ff', cyan: '#36ffff', white: '#ececec',
+        brightBlack: '#363636', brightRed: '#ff8080', brightGreen: '#18ed93',
+        brightYellow: '#ffff80', brightBlue: '#1bbae9', brightMagenta: '#ff80ff',
+        brightCyan: '#80ffff', brightWhite: '#ffffff'
       }
     // MobaXterm / GNOME Ubuntu terminal style (common built-in alternative)
     case 'mobaxterm-ubuntu':
@@ -427,7 +454,7 @@ export function useTerminal(
   function getTerminalOptions() {
     const ts = settingsStore.settings.terminal
     const ls = useLocalStateStore()
-    const themeName = resolveTerminalThemeName(ts.theme, settingsStore.resolvedAppTheme)
+    const themeName = resolveTerminalThemeName(ts.theme, settingsStore.rawAppTheme)
     const theme = resolveXtermBackground(
       getXtermTheme(themeName, settingsStore.settings.customTerminalThemes),
       ls.state.backgroundEnabled,
@@ -778,7 +805,7 @@ export function useTerminal(
     if (!terminal) return
     const ls = useLocalStateStore()
     const theme = resolveXtermBackground(
-      getXtermTheme(resolveTerminalThemeName(themeName, settingsStore.resolvedAppTheme), settingsStore.settings.customTerminalThemes),
+      getXtermTheme(resolveTerminalThemeName(themeName, settingsStore.rawAppTheme), settingsStore.settings.customTerminalThemes),
       ls.state.backgroundEnabled,
       ls.state.backgroundImage
     )
@@ -810,7 +837,7 @@ export function useTerminal(
 
   // Re-apply when the app theme flips so FOLLOW_APP_THEME tracks it live.
   watch(
-    () => settingsStore.resolvedAppTheme,
+    () => settingsStore.rawAppTheme,
     () => applyXtermTheme(settingsStore.settings.terminal.theme || 'dark')
   )
 

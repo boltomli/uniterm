@@ -4,7 +4,7 @@
     <div class="drawer-resizer" @mousedown="onResizeStart"></div>
     <div class="detail-drawer-header">
       <span class="detail-drawer-title">{{ target?.name || '' }}</span>
-      <el-button link @click="$emit('close')"><el-icon><Close :size="'1rem'" /></el-icon></el-button>
+      <el-button link @click="$emit('close')"><el-icon><Close :size="lucideSize('1rem')" /></el-icon></el-button>
     </div>
 
     <template v-if="mode === 'detail'">
@@ -61,6 +61,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ElButton, ElIcon, ElMessage, ElSelect, ElOption, ElCheckbox } from 'element-plus'
 import { Close } from '@element-plus/icons-vue'
@@ -307,7 +308,8 @@ onBeforeUnmount(stopLogs)
   background: transparent;
   transition: background 0.15s ease;
 }
-.drawer-resizer:hover {
+.drawer-resizer:hover,
+.drawer-resizer.hint {
   background: var(--accent, #4096ff);
 }
 

@@ -345,6 +345,17 @@ async function onRemove(c: ContainerInfo) {
 
 .k8s-list-table {
   flex: 1;
+  /* Floats inside the island pane now: keep the top divider only, and let
+     the bottom line back now that the pane no longer supplies one */
+  border-radius: 0;
+}
+.k8s-list-table::before,
+.k8s-list-table::after {
+  display: none;
+}
+.k8s-list-table.el-table--border {
+  border-left: none;
+  border-right: none;
 }
 
 /* Action-column cell: tighter padding + 0.25rem gap between .btn-icon buttons

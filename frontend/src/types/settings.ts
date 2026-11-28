@@ -12,7 +12,7 @@ export const SUPPORTED_LOCALES = [
 export type Locale = typeof SUPPORTED_LOCALES[number]
 export type Language = Locale | 'system'
 export type Theme = 'dark' | 'deep-blue' | 'light' | 'system'
-export type TerminalTheme = 'uniterm-dark' | 'uniterm-light' | 'solarized-dark' | 'solarized-light' | 'monokai' | 'dracula' | 'molokai' | 'tomorrow-night' | 'tomorrow-night-bright' | 'tomorrow' | 'one-dark' | 'one-light' | 'github-dark' | 'github-light' | 'gotham' | 'hybrid' | 'nord' | 'gruvbox-dark' | 'gruvbox-light' | 'catppuccin-mocha' | 'catppuccin-latte' | 'tokyo-night' | 'tokyo-day' | 'rose-pine' | 'rose-pine-dawn' | 'everforest-dark' | 'everforest-light' | 'xshell-xterm' | 'xshell-ansi-black' | 'xshell-new-black' | 'mobaxterm-default' | 'mobaxterm-ubuntu' | 'finalshell-dark' | 'finalshell-light'
+export type TerminalTheme = 'uniterm-dark' | 'uniterm-darkblue' | 'uniterm-light' | 'solarized-dark' | 'solarized-light' | 'monokai' | 'dracula' | 'molokai' | 'tomorrow-night' | 'tomorrow-night-bright' | 'tomorrow' | 'one-dark' | 'one-light' | 'github-dark' | 'github-light' | 'gotham' | 'hybrid' | 'nord' | 'gruvbox-dark' | 'gruvbox-light' | 'catppuccin-mocha' | 'catppuccin-latte' | 'tokyo-night' | 'tokyo-day' | 'rose-pine' | 'rose-pine-dawn' | 'everforest-dark' | 'everforest-light' | 'xshell-xterm' | 'xshell-ansi-black' | 'xshell-new-black' | 'mobaxterm-default' | 'mobaxterm-ubuntu' | 'finalshell-dark' | 'finalshell-light'
 
 // Magic value for `AppSettings.terminal.theme`: the effective built-in theme
 // is derived from the current app theme (dark / deep-blue -> uniterm-dark,
@@ -449,9 +449,9 @@ export interface AppSettings {
   // Which connection-sidebar tab icons are visible, keyed by view id.
   // Missing keys fall back to SIDEBAR_TAB_DEFAULTS.
   sidebarTabs: Record<string, boolean>
-  // Dock position per sidebar view ("sidebar" | "bottom"). Missing keys
-  // fall back to PANEL_LOCATION_DEFAULTS. Layout companion of sidebarTabs.
-  panelLocations: Record<string, 'sidebar' | 'bottom'>
+  // Dock position per sidebar view ("sidebar" | "right" | "bottom"). Missing
+  // keys fall back to PANEL_LOCATION_DEFAULTS. Layout companion of sidebarTabs.
+  panelLocations: Record<string, 'sidebar' | 'right' | 'bottom'>
   // Global tab order across both docks (view ids); views absent from the
   // list append in SIDEBAR_TAB_ORDER order.
   panelOrder: string[]
@@ -474,6 +474,7 @@ export const SIDEBAR_TAB_DEFAULTS: Record<string, boolean> = {
   personalization: true,
   commandSend: true,
   notes: true,
+  ai: true,
 }
 
 // Canonical sidebar tab order shared by the tab-strip context menu and the
@@ -488,14 +489,16 @@ export const SIDEBAR_TAB_ORDER: { key: string; labelKey: string }[] = [
   { key: 'personalization', labelKey: 'sidebar.personalization' },
   { key: 'commandSend', labelKey: 'sidebar.commandSend' },
   { key: 'notes', labelKey: 'notes.notesTab' },
+  { key: 'ai', labelKey: 'ai.title' },
 ]
 
-// Default dock position per sidebar view: "sidebar" (left) or "bottom"
-// (docked panel under the tab area). Views absent from a saved
-// PanelLocations map fall back to these. Everything ships docked to the
-// left sidebar by default; the bottom panel only starts non-empty because
-// the command-send panel targets batch sends there (issue #1341).
-export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'bottom'> = {
+// Default dock position per sidebar view: "sidebar" (left), "right" (right
+// rail) or "bottom" (docked panel under the tab area). Views absent from a
+// saved PanelLocations map fall back to these. Everything ships docked to
+// the left sidebar by default; the bottom panel only starts non-empty
+// because the command-send panel targets batch sends there (issue #1341),
+// and the AI assistant owns the right rail (issue #1646).
+export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'right' | 'bottom'> = {
   connections: 'sidebar',
   files: 'sidebar',
   monitor: 'sidebar',
@@ -505,6 +508,7 @@ export const PANEL_LOCATION_DEFAULTS: Record<string, 'sidebar' | 'bottom'> = {
   history: 'sidebar',
   commandSend: 'bottom',
   notes: 'bottom',
+  ai: 'right',
 }
 
 // Monitor sections with their default enabled state. Disabled sections are
@@ -637,6 +641,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export interface TerminalThemeEntry { label: string; value: string; type: 'dark' | 'light' }
 export const TERMINAL_THEMES: TerminalThemeEntry[] = [
   { label: 'uniTerm Dark', value: 'uniterm-dark', type: 'dark' },
+  { label: 'uniTerm Dark Blue', value: 'uniterm-darkblue', type: 'dark' },
   { label: 'uniTerm Light', value: 'uniterm-light', type: 'light' },
   { label: 'Solarized Dark', value: 'solarized-dark', type: 'dark' },
   { label: 'Solarized Light', value: 'solarized-light', type: 'light' },

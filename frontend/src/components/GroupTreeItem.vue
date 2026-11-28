@@ -56,7 +56,7 @@
       @dblclick="onItemDblClick(conn)"
       @contextmenu.prevent="onConnCtxMenu($event, conn)"
     >
-      <span class="conn-icon"><component :is="connIcon(conn)" :size="'0.875rem'" /></span>
+      <span class="conn-icon"><component :is="connIcon(conn)" :size="lucideSize('0.875rem')" /></span>
       <div class="conn-details">
         <span class="name">{{ conn.name }}</span>
         <span class="conn-meta">
@@ -268,7 +268,6 @@ function onMoreClick(e: MouseEvent, conn: ConnectionConfig) {
 }
 .connection-item.active {
   background: var(--accent-subtle);
-  box-shadow: inset 0 0 0 1px var(--accent);
 }
 .connection-item.active .name {
   color: var(--accent);

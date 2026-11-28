@@ -14,11 +14,10 @@
       @close="onClose"
     />
 
-    <!-- Connections button (icon only, leftmost) -->
-    <button class="header-btn" :class="{ active: sidebarVisible }" @click="emit('toggle-sidebar')" :title="t('sidebar.locSidebar') + shortcutSuffix('toggleSidebar')">
-      <el-icon><PanelLeft :size="lucideSize('0.875rem')" /></el-icon>
-    </button>
-
+    <!-- Brand mark anchors the tab strip; the panel toggles share the right side. -->
+    <div v-if="showBrandMark" class="brand-mark" role="img" aria-label="uniTerm" title="uniTerm">
+      <img src="/favicon.png" alt="" draggable="false" />
+    </div>
 
     <!-- Tabs list -->
     <div class="header-tabs">
@@ -63,27 +62,41 @@
       </MenuSubmenu>
     </Menu>
 
-    <!-- Bottom panel toggle (left of the AI button); hidden in narrow
-         layout, where the bottom panel's views merge into the sidebar. -->
-    <button
-      v-if="!uiLayout.narrowLayout"
-      class="header-btn"
-      :class="{ active: bottomPanelShown }"
-      @click="emit('toggle-bottom-panel')"
-      :title="t('sidebar.locBottom')"
-    >
-      <el-icon><PanelBottom :size="lucideSize('0.875rem')" /></el-icon>
-    </button>
+    <div class="panel-toggles">
+      <button class="header-btn" @click="emit('toggle-sidebar')" :title="t('sidebar.locSidebar')" :aria-label="t('sidebar.locSidebar')" :aria-pressed="!!sidebarVisible">
+        <PanelToggleIcon side="left" :active="!!sidebarVisible" />
+      </button>
 
-    <!-- AI button -->
-    <button class="header-btn" :class="{ active: aiStore.visible }" @click="emit('toggle-ai')" :title="t('header.ai') + shortcutSuffix('focusAI')">
-      <el-icon><Bot :size="lucideSize('0.875rem')" /></el-icon>
-    </button>
+      <!-- In narrow layout these views merge into the left sidebar. -->
+      <button
+        v-if="!uiLayout.narrowLayout"
+        class="header-btn"
+        @click="emit('toggle-bottom-panel')"
+        :title="t('sidebar.locBottom')"
+        :aria-label="t('sidebar.locBottom')"
+        :aria-pressed="bottomPanelShown"
+      >
+        <PanelToggleIcon side="bottom" :active="bottomPanelShown" />
+      </button>
+
+      <!-- Right rail toggle: shows/hides the whole dock (like the left
+           sidebar and bottom panel buttons), not a single panel's. -->
+      <button
+        v-if="!uiLayout.narrowLayout"
+        class="header-btn"
+        @click="emit('toggle-right-panel')"
+        :title="t('sidebar.locRight')"
+        :aria-label="t('sidebar.locRight')"
+        :aria-pressed="rightPanelShown"
+      >
+        <PanelToggleIcon side="right" :active="rightPanelShown" />
+      </button>
+    </div>
 
     <!-- Settings button opens a dropdown menu with common settings items -->
     <div class="settings-wrap">
       <button ref="settingsBtnRef" class="header-btn" @click.stop="toggleSettingsMenu" :title="t('header.menu')">
-        <el-icon><MenuIcon :size="lucideSize('0.875rem')" /></el-icon>
+        <el-icon><MenuIcon class="header-icon" /></el-icon>
       </button>
 
       <!-- Settings dropdown (theme / language / ai / identities / proxies / settings / check update) -->
@@ -172,6 +185,9 @@
           <MenuItem @click="openCategory('tunnels')">{{ t('settings.tunnels') }}</MenuItem>
         </MenuSubmenu>
 
+        <!-- 开发者工具箱：JSON 格式化 / 哈希与编码 -->
+        <MenuItem @click="openTools">{{ t('tools.title') }}</MenuItem>
+
         <!-- AI 子菜单（与设置页 AI 分组一致） -->
         <MenuSubmenu :label="t('menu.ai')">
           <MenuItem @click="openCategory('ai')">{{ t('settings.ai') }}</MenuItem>
@@ -222,9 +238,8 @@
 </template>
 
 <script setup lang="ts">
-import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
-import { Menu as MenuIcon, PanelLeft, PanelBottom, Bot } from '@lucide/vue'
+import { Menu as MenuIcon } from '@lucide/vue'
 import { ElMessageBox, ElCheckbox } from 'element-plus'
 import type { CheckboxValueType } from 'element-plus'
 import { useI18n } from '../i18n'
@@ -234,14 +249,14 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { formatKeyBinding } from '../composables/useKeyboardShortcuts'
 import { isWebServerMode } from '../services/webSftpBridge'
-import { useAIStore } from '../stores/aiStore'
 import { useLocalStateStore } from '../stores/localStateStore'
 import { useUiLayoutStore } from '../stores/uiLayoutStore'
 import { useUpdateCheck } from '../composables/useUpdateCheck'
 import { LANGUAGE_OPTIONS, TERMINAL_THEMES, FOLLOW_APP_THEME } from '../types/settings'
 import type { AppSettings, ShortcutAction } from '../types/settings'
-import { detectPlatformSync, isMobilePlatform } from '../utils/platform'
+import { detectPlatformSync, isMobilePlatform, isPhoneLayout } from '../utils/platform'
 import WindowControls from './WindowControls.vue'
+import PanelToggleIcon from './icons/PanelToggleIcon.vue'
 import TabsList from './TabsList.vue'
 import ImportDialog from './ImportDialog.vue'
 import ExportDialog from './ExportDialog.vue'
@@ -349,6 +364,11 @@ function openNetscan() {
   closeSettingsMenu()
 }
 
+function openTools() {
+  emit('open-tools')
+  closeSettingsMenu()
+}
+
 function openPacketcap() {
   emit('open-packetcap')
   closeSettingsMenu()
@@ -376,17 +396,6 @@ function checkUpdate() {
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
-// " (Ctrl+Shift+K)" suffix for a shortcut action's tooltip, '' when unset.
-// Reactive via settingsStore, so tooltips update when the user rebinds keys.
-// '' on mobile too — no hardware keyboard, so the hint is meaningless.
-function shortcutSuffix(action: 'focusAI' | 'toggleSidebar'): string {
-  if (isMobilePlatform(platform.value)) return ''
-  const b = settingsStore.settings.keyboard[action]
-  if (!b) return ''
-  const key = formatKeyBinding(b, isMac)
-  return key ? ` (${key})` : ''
-}
-
 // Right-aligned keybinding hint for a menu item, '' when unset. Reactive via
 // settingsStore, so hints follow the user's rebinds.
 function menuShortcut(action: ShortcutAction): string {
@@ -397,8 +406,8 @@ function menuShortcut(action: ShortcutAction): string {
 }
 
 const hasActiveConnections = computed(() =>
-  mcpSessions.value.some(({ status }) => status === 'connected') || tabStore.tabs.some(t => {
-    if (t.type === 'start' || t.type === 'settings' || t.type === 'netscan') return false
+  tabStore.tabs.some(t => {
+    if (t.type === 'start' || t.type === 'settings' || t.type === 'tools' || t.type === 'netscan') return false
     const panelIds = t.type === 'workspace' ? t.panelIds : 'panelId' in t ? [t.panelId] : []
     return panelIds.some(pid => {
       const p = panelStore.getPanel(pid)
@@ -413,21 +422,20 @@ const hasActiveConnections = computed(() =>
 // the layout store (no prop drilling).
 const uiLayout = useUiLayoutStore()
 const bottomPanelShown = computed(() => uiLayout.bottomPanelVisible)
+const rightPanelShown = computed(() => uiLayout.rightPanelVisible)
 
-// Sidebar/AI/bottom-panel toggle buttons mirror their panel's open state
-// with the shared .header-btn.active pressed style.
+// Sidebar/right-rail/bottom-panel toggle icons fill the corresponding region when open.
 defineProps<{
   sidebarVisible?: boolean
 }>()
 
-const aiStore = useAIStore()
-
 const emit = defineEmits<{
-  'toggle-ai': []
+  'toggle-right-panel': []
   'toggle-bottom-panel': []
   'toggle-sidebar': []
   'open-settings': [category?: string]
   'open-netscan': []
+  'open-tools': []
   'open-packetcap': []
   'open-firewall': []
   'open-local-services': []
@@ -464,6 +472,16 @@ const showWindowControls = computed(
     !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar) &&
     !isMobilePlatform(platform.value) &&
     !webServerMode.value
+)
+
+// The OS title bar already carries the app icon. Wait for the persisted frame
+// choice so the custom logo cannot flash briefly over a native title bar.
+// Phone layouts hide it too: the strip is narrow there and the tabs need the room.
+const showBrandMark = computed(() =>
+  platform.value !== 'darwin' &&
+  localStateStore.loaded &&
+  !isPhoneLayout.value &&
+  !(systemTitleBarAtStartup.value ?? localStateStore.state.systemTitleBar)
 )
 
 async function updateMaximisedState() {
@@ -610,8 +628,7 @@ onUnmounted(() => {
   height: 2.75rem;
   padding: 0 0.5rem;
   gap: 0.125rem;
-  background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-titlebar);
   flex-shrink: 0;
   position: relative;
   z-index: 10;
@@ -627,12 +644,46 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.brand-mark {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  overflow: hidden;
+  border-radius: 0.375rem;
+  position: relative;
+  margin-right: 0.25rem;
+}
+
+.brand-mark img {
+  width: 1.75rem;
+  height: 1.75rem;
+  max-width: none;
+  max-height: none;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.app-header.platform-darwin :deep(.window-controls.mac) {
+  margin-right: 0.75rem;
+}
+
+.panel-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+  margin-left: 0.375rem;
+}
+
 .header-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 1.75rem;
-  padding: 0.3125rem 0.5rem;
+  padding: 0.3125rem 0.375rem;
   font-family: var(--font-ui);
   font-size: 0.75rem;
   font-weight: 500;
@@ -651,8 +702,8 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
-/* Open-panel state: color the icon only — no pressed background. Hover
-   still shows the standard hover surface on top of it. */
+/* Other active header actions use an accent icon; panel toggles indicate
+   their state by filling the corresponding region of their icon. */
 .header-btn.active {
   background: transparent;
   color: var(--accent);
@@ -675,6 +726,11 @@ onUnmounted(() => {
 
 .header-btn .el-icon {
   font-size: 0.875rem;
+}
+
+.header-btn :deep(.header-icon) {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .mcp-sessions-btn {

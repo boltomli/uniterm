@@ -418,42 +418,52 @@ onBeforeUnmount(() => {
   position: relative;
 }
 .db-main {
+  /* Chrome tier behind the islands: shows through their rounded corners */
+  background: var(--bg-titlebar);
+
   flex: 1;
   display: flex;
   overflow: hidden;
 }
 .db-left {
+  background: var(--bg-base);
+
   flex-shrink: 0;
-  border-right: 1px solid var(--border-subtle, #333);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .db-resizer {
-  /* Hover area floats over the tree edge (negative margin) so it takes
-     no layout width when idle and never blanks the content side. */
+  /* Occupies the gutter between the two islands */
   width: 0.25rem;
-  margin-left: -0.25rem;
   position: relative;
   z-index: 1;
   cursor: col-resize;
-  background: transparent;
+  /* The resizer IS the gutter — tint it with the chrome tier */
+  background: var(--bg-titlebar);
   flex-shrink: 0;
   transition: background 0.15s ease;
 }
-.db-resizer:hover::after {
+.db-resizer:hover::after,
+.db-resizer.hint::after {
   content: '';
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
-  width: 0.1875rem;
+  right: 0;
   background: var(--accent);
   box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 .db-right {
+  background: var(--bg-base);
+
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
 }
 .k8s-fatal {
   color: var(--el-color-danger, #f56);

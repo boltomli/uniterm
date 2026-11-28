@@ -146,7 +146,7 @@ func TestX11DesktopConnectResolvesProxyAndTunnel(t *testing.T) {
 // TestTestConnectionUsesSharedResolver keeps the earlier fix honest:
 // TestConnection resolves through fillStoredSecrets, not a raw password fill.
 func TestTestConnectionUsesSharedResolver(t *testing.T) {
-	body := funcBody(t, "test_connection.go", "(a *App) TestConnection")
+	body := funcBody(t, "app.go", "(a *App) TestConnection")
 	if strings.Contains(body, "EnsurePassword(") {
 		t.Errorf("TestConnection must resolve secrets via fillStoredSecrets, not an unguarded EnsurePassword fallback")
 	}

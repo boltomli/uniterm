@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/go-sql-driver/mysql"
 	pgx "github.com/jackc/pgx/v5"
 	pgxstdlib "github.com/jackc/pgx/v5/stdlib"
@@ -102,21 +103,26 @@ func NewDBWithDialKey(dbType, dsn string, dialFunc DialContextFunc, registryKey 
 		err error
 	)
 	switch dbType {
-	case "postgres":
+	// The MySQL-family and PostgreSQL-family dbTypes all reuse their family's
+	// dial injection point; only genuinely different drivers get their own
+	// branch.
+	case "postgres", "kingbase", "opengauss", "greenplum", "gbase8c", "cockroachdb", "yugabytedb", "highgo", "cloudberry", "vastbase":
 		db, err = openPostgresWithDial(dsn, dialFunc)
-	case "mysql":
+	case "mysql", "mariadb", "tidb", "oceanbase", "doris", "starrocks", "gbase8a", "greatsql", "goldendb":
 		db, err = openMySQLWithDial(dsn, dialFunc, registryKey)
 	case "sqlserver":
 		db, err = openSQLServerWithDial(dsn, dialFunc)
 	case "oracle":
 		db, err = openOracleWithDial(dsn, dialFunc)
+	case "clickhouse":
+		db, err = openClickHouseWithDial(dsn, dialFunc)
 	default:
 		db, err = openDB(dbType, dsn)
 	}
 	if err != nil {
 		return nil, err
 	}
-	configureDBPool(db)
+	configureDBPool(db, dbDriverName(dbType))
 	return db, nil
 }
 
@@ -129,11 +135,18 @@ func openDB(dbType, dsn string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", dbType, err)
 	}
-	configureDBPool(db)
+	configureDBPool(db, p.DriverName())
 	return db, nil
 }
 
-func configureDBPool(db *sql.DB) {
+// trackDBDriver records db's driver name at open time (see dbDrivers).
+func trackDBDriver(db *sql.DB, name string) {
+	dbDrivers.Store(db, name)
+}
+
+// configureDBPool applies the shared pool limits and records the driver name.
+func configureDBPool(db *sql.DB, driver string) {
+	trackDBDriver(db, driver)
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
@@ -196,6 +209,59 @@ func openOracleWithDial(dsn string, dialFunc DialContextFunc) (*sql.DB, error) {
 	return sql.OpenDB(conn), nil
 }
 
+func openClickHouseWithDial(dsn string, dialFunc DialContextFunc) (*sql.DB, error) {
+	cfg, err := clickhouse.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open clickhouse: %w", err)
+	}
+	cfg.DialContext = func(ctx context.Context, addr string) (net.Conn, error) {
+		return dialFunc(ctx, "tcp", addr)
+	}
+	return clickhouse.OpenDB(cfg), nil
+}
+
+// dbCtx returns the execution context for queries on db, derived from parent
+// so the caller's cancellation (the frontend's cancel button, DB-16) still
+// reaches the driver. The dm driver nil-derefs when a parameterized query runs
+// with a deadline context (gitee.com/travelliu/dm v1.8.11192), so dm gets the
+// parent unchanged — no deadline, but cancellation still propagates; the
+// driver is not context-aware anyway and ConnMaxLifetime still bounds stalled
+// connections. db may be a *sql.DB, a *sql.Conn (DB-24 pinned SQL Server
+// connection) or anything else exposing QueryContext; only *sql.DB carries a
+// recorded driver name.
+func dbCtx(parent context.Context, db *sql.DB, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if driverNameOf(db) == "dm" {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+// dbDrivers maps each open *sql.DB to its driver name; database/sql does not
+// expose the driver name on the handle. Written once at open time.
+var dbDrivers sync.Map
+
+// driverNameOf returns the recorded driver name for db, or "" if unknown.
+func driverNameOf(db *sql.DB) string {
+	if v, ok := dbDrivers.Load(db); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// dbDriverName maps a database type to the driver name sql.Open will use.
+func dbDriverName(dbType string) string {
+	switch dbType {
+	case "postgres", "kingbase", "opengauss", "greenplum", "gbase8c", "cockroachdb", "yugabytedb", "highgo", "cloudberry", "vastbase":
+		return "pgx"
+	default:
+		if p, err := NewProvider(dbType); err == nil {
+			return p.DriverName()
+		}
+		return dbType
+	}
+}
+
+
 // queryer is satisfied by *sql.DB and *sql.Conn — metadata probes run on
 // either depending on the dialect's connection policy (DB-24 pins SQL
 // Server's database switch to a dedicated connection).
@@ -204,10 +270,12 @@ type queryer interface {
 }
 
 // queryStrings executes a SQL query and returns all rows as []map[string]string.
-// F-12.4: runs under queryTimeout — schema/metadata probes against a slow or
-// hung server must not pin a goroutine (and its connection) forever.
-func queryStrings(db queryer, query string, args ...any) ([]map[string]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+// It serves the schema/metadata probes, so it runs under schemaTimeout —
+// F-12.4: a probe against a slow or hung server must not pin a goroutine (and
+// its connection) forever. Row-data queries go through ExecuteQueryCtx with
+// the caller's context and queryTimeout.
+func queryStrings(db *sql.DB, query string, args ...any) ([]map[string]string, error) {
+	ctx, cancel := dbCtx(context.Background(), db, schemaTimeout)
 	defer cancel()
 	return queryStringsCtx(ctx, db, query, args...)
 }
@@ -239,7 +307,12 @@ func queryStringsCtx(ctx context.Context, db queryer, query string, args ...any)
 		}
 		row := make(map[string]string, len(cols))
 		for i, col := range cols {
+			// Keep the driver-reported key (providers like ClickHouse and
+			// SQLite read it as-is) and add an upper-case alias: Oracle/DM
+			// report upper-case column names natively while the GBase 8s
+			// driver lower-cases them.
 			row[col] = scanToStringCol(values[i], isGuidCol(guids, i))
+			row[strings.ToUpper(col)] = row[col]
 		}
 		result = append(result, row)
 	}
@@ -250,7 +323,7 @@ func queryStringsCtx(ctx context.Context, db queryer, query string, args ...any)
 // Returns rows, column names in SQL order, and error. Bounded by queryTimeout
 // for the same reason as queryStrings. (F-12.4)
 func queryAny(db *sql.DB, query string, args ...any) ([]map[string]any, []string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := dbCtx(context.Background(), db, schemaTimeout)
 	defer cancel()
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -292,6 +365,9 @@ func scanToAnyCol(v any, guid bool) any {
 	if v == nil {
 		return nil
 	}
+	if s, ok := dmClobText(v); ok {
+		return s
+	}
 	switch s := v.(type) {
 	case []byte:
 		return formatBytes(s, guid)
@@ -308,6 +384,9 @@ func scanToString(v any) string {
 func scanToStringCol(v any, guid bool) string {
 	if v == nil {
 		return ""
+	}
+	if s, ok := dmClobText(v); ok {
+		return s
 	}
 	switch x := v.(type) {
 	case []byte:

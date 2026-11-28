@@ -19,7 +19,7 @@
         :key="key"
         class="bottom-panel-tab"
         :class="{ active: uiLayout.bottomActiveView === key, 'drop-before': dropIndicator?.key === key && dropIndicator?.position === 'before', 'drop-after': dropIndicator?.key === key && dropIndicator?.position === 'after' }"
-        :title="t(tabTitleKey(key))"
+        :title="tabTooltip(key)"
         draggable="true"
         @dragstart="onDragStart($event, key)"
         @dragend="onDragEnd"
@@ -28,7 +28,7 @@
         @contextmenu.prevent.stop="onTabContextMenu($event, key)"
         @click="emit('select', key)"
       >
-        <el-icon><component :is="TAB_ICONS[key]" :size="'0.75rem'" /></el-icon>
+        <el-icon><component :is="TAB_ICONS[key]" :size="lucideSize('0.75rem')" /></el-icon>
         <span class="bottom-panel-tab-label">{{ t(tabTitleKey(key)) }}</span>
       </button>
       <span class="bottom-panel-spacer" />
@@ -47,7 +47,7 @@
       <!-- Empty panel: the toggle button opens it even with nothing docked;
            offer one-click docking for the views living in the sidebar. -->
       <div v-if="bottomTabKeys.length === 0" class="bottom-panel-empty">
-        <div class="empty-hint">{{ t('sidebar.bottomPanelEmpty') }}</div>
+        <div class="empty-hint">{{ t('sidebar.sidebarEmpty') }}</div>
         <div class="empty-actions">
           <button
             v-for="key in dockableViews"
@@ -55,7 +55,7 @@
             class="empty-chip"
             @click="uiLayout.movePanel(key, 'bottom', Number.MAX_SAFE_INTEGER)"
           >
-            <el-icon><component :is="TAB_ICONS[key]" :size="'0.75rem'" /></el-icon>
+            <el-icon><component :is="TAB_ICONS[key]" :size="lucideSize('0.75rem')" /></el-icon>
             {{ t(tabTitleKey(key)) }}
           </button>
         </div>
@@ -69,12 +69,16 @@
 <script setup lang="ts">
 import { lucideSize } from '../utils/lucideSize'
 import { computed, onMounted, ref, watch } from 'vue'
-import { X, Network, FolderTree, Activity, ArrowRightLeft, Zap, Clock, Palette, Send, NotebookPen } from '@lucide/vue'
+import { X, Network, FolderTree, Activity, ArrowRightLeft, Zap, Clock, Palette, Send, NotebookPen, Sparkles } from '@lucide/vue'
 import { useI18n } from '../i18n'
 import { useUiLayoutStore, BOTTOM_PANEL_MIN_HEIGHT, type SidebarView } from '../stores/uiLayoutStore'
+/* Dragging the panel height below this hides it (VS Code-style); the same drag
+   pulling back up restores it at the min height */
+const BOTTOM_PANEL_COLLAPSE_AT = 60
 import { useSettingsStore } from '../stores/settingsStore'
 import { SIDEBAR_TAB_DEFAULTS, SIDEBAR_TAB_ORDER } from '../types/settings'
 import { usePanelStripDrag } from '../composables/usePanelStripDrag'
+import { shortcutSuffix, PANEL_VIEW_ACTIONS } from '../composables/shortcutHint'
 import PanelStripMenu from './PanelStripMenu.vue'
 import PanelTitleBar from './PanelTitleBar.vue'
 
@@ -96,6 +100,7 @@ const TAB_ICONS: Record<string, any> = {
   personalization: Palette,
   commandSend: Send,
   notes: NotebookPen,
+  ai: Sparkles,
 }
 
 function tabVisible(key: string): boolean {
@@ -124,6 +129,13 @@ const dockableViews = computed(() =>
 function tabTitleKey(key: string): string {
   const entry = SIDEBAR_TAB_ORDER.find(tab => tab.key === key)
   return entry ? entry.labelKey : key
+}
+
+// Tab tooltip: panel name plus the bound toggle shortcut, e.g. "Send (Alt+S)".
+// '' suffix when unbound / on mobile.
+function tabTooltip(key: string): string {
+  const action = PANEL_VIEW_ACTIONS[key]
+  return t(tabTitleKey(key)) + (action ? shortcutSuffix(action) : '')
 }
 
 // ── Tab-strip drag & drop (reorder / move between sidebar and bottom) ──
@@ -156,16 +168,34 @@ function onResizeStart(e: MouseEvent) {
 
   window.dispatchEvent(new CustomEvent('split:resize-start'))
 
+  let collapsedDuringDrag = false
+
   function onMouseMove(ev: MouseEvent) {
     if (!isResizing.value) return
+    const raw = startHeight + (startY - ev.clientY)
+    /* Dragged below the collapse point: hide the panel, but keep tracking the
+       drag — pulling back up reopens it at the min height (VS Code-style) */
+    if (raw <= BOTTOM_PANEL_COLLAPSE_AT) {
+      collapsedDuringDrag = true
+      el!.style.height = '0px'
+      return
+    }
+    collapsedDuringDrag = false
     const maxHeight = window.innerHeight - 160
-    const newHeight = Math.min(Math.max(startHeight + (startY - ev.clientY), BOTTOM_PANEL_MIN_HEIGHT), maxHeight)
+    const newHeight = Math.min(Math.max(raw, BOTTOM_PANEL_MIN_HEIGHT), maxHeight)
     el!.style.height = newHeight + 'px'
   }
 
   function onMouseUp() {
     isResizing.value = false
-    uiLayout.setBottomPanelHeight(el!.offsetHeight)
+    if (collapsedDuringDrag) {
+      /* Closed via drag: hide the panel and persist a sane height so the next
+         open doesn't restore 0 */
+      uiLayout.setBottomPanelHeight(BOTTOM_PANEL_MIN_HEIGHT)
+      uiLayout.setBottomPanelVisible(false)
+    } else {
+      uiLayout.setBottomPanelHeight(el!.offsetHeight)
+    }
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     window.dispatchEvent(new CustomEvent('split:resize-end'))
@@ -201,7 +231,9 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated);
-  border-top: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  /* No overflow:hidden: the resize handle sits outside the box in the gutter */
 }
 
 .bottom-panel.resizing {
@@ -210,23 +242,27 @@ onMounted(() => {
 
 .resize-handle {
   position: absolute;
+  /* Sit centered in the 4px gutter above the panel. The offset is from the
+     padding-box edge, and the panel's 1px border shifts that 1px downward,
+     so the extra -1px puts the handle exactly over the gutter. */
   left: 0;
   right: 0;
-  top: 0;
-  height: 0.375rem;
+  top: calc(-0.25rem - 1px);
+  height: 0.25rem;
   cursor: row-resize;
   z-index: 10;
   background: transparent;
 }
 
-/* Hover: 0.1875rem accent bar along the top edge */
-.resize-handle:hover::after {
+/* Hover or crossing-grip hint: accent bar filling the 4px gutter */
+.resize-handle:hover::after,
+.resize-handle.hint::after {
   content: '';
   position: absolute;
   left: 0;
   right: 0;
   top: 0;
-  height: 0.1875rem;
+  bottom: 0;
   background: var(--accent);
   box-shadow: 0 0 0.375rem var(--accent-glow);
 }
@@ -235,8 +271,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.125rem;
-  /* Horizontal padding matches the sidebar's toolbar rows. */
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -286,8 +321,9 @@ onMounted(() => {
 }
 
 .bottom-panel-tab.active {
-  color: var(--accent);
-  background: var(--accent-subtle);
+  /* Activity-bar tab: neutral gray rounded highlight, bright label */
+  color: var(--text-primary);
+  background: var(--bg-active);
 }
 
 .bottom-panel-spacer {
@@ -349,7 +385,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
+  padding: 0.25rem 0.375rem;
   font-size: 0.75rem;
   font-family: var(--font-ui);
   color: var(--text-secondary);

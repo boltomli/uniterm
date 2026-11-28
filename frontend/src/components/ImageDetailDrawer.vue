@@ -4,7 +4,7 @@
     <div class="drawer-resizer" @mousedown="onResizeStart"></div>
     <div class="detail-drawer-header">
       <span class="detail-drawer-title">{{ target ? fullRef(target) : '' }}</span>
-      <el-button link @click="$emit('close')"><el-icon><Close :size="'1rem'" /></el-icon></el-button>
+      <el-button link @click="$emit('close')"><el-icon><Close :size="lucideSize('1rem')" /></el-icon></el-button>
     </div>
 
     <div class="db-tabs">
@@ -65,6 +65,7 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { computed, ref, watch } from 'vue'
 import { ElButton, ElIcon, ElMessage } from 'element-plus'
 import { Close } from '@element-plus/icons-vue'
@@ -324,7 +325,8 @@ watch(() => [props.mode, props.target], () => {
   background: transparent;
   transition: background 0.15s ease;
 }
-.drawer-resizer:hover {
+.drawer-resizer:hover,
+.drawer-resizer.hint {
   background: var(--accent, #4096ff);
 }
 

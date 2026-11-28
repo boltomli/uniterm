@@ -14,7 +14,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useTabStore } from '../stores/tabStore'
 import { useSessionStore } from '../stores/sessionStore'
-import { fileTransferProto } from '../utils/fileTransferUtils'
+import { fileTransferProto, fileTransferDisabled } from '../utils/fileTransferUtils'
 import { parseWslFromShell } from '../utils/shellLabel'
 import { t } from '../i18n'
 import { msg } from '../services/message'
@@ -58,19 +58,19 @@ export interface LaunchOptions {
 
 // Shared persistence bookkeeping for the save / connect / connect-only entry
 // points (mirrors the former onConnect prelude).
-export function persistConnection(config: ConnectionConfig, wasEdit = false) {
+export async function persistConnection(config: ConnectionConfig, wasEdit = false) {
   const connectionStore = useConnectionStore()
   if (wasEdit) {
-    connectionStore.update(config.id, config)
+    return connectionStore.update(config.id, config)
   } else {
-    connectionStore.add(config)
+    return connectionStore.add(config)
   }
 }
 
 export async function launchConnection(config: ConnectionConfig, opts: LaunchOptions = {}) {
   const persist = opts.persist ?? true
-  if (persist) {
-    persistConnection(config, opts.wasEdit ?? false)
+  if (persist && !(await persistConnection(config, opts.wasEdit ?? false))) {
+    return
   } else if (!config.id) {
     // Give the transient session a stable id for panel/tab wiring even
     // though it will not be persisted to the connection list.
@@ -88,8 +88,11 @@ export async function launchConnection(config: ConnectionConfig, opts: LaunchOpt
 // Open the protocol-agnostic file browser for a config — the SSH companion
 // (SFTP/SCP per the connection's fileTransferProto preference) and the
 // app:connect-sftp window event all land here. Unlike launchConnection this
-// forces the SFTP spec regardless of config.type.
+// forces the SFTP spec regardless of config.type. A connection with file
+// transfer disabled ('none') never opens a browser — the entry points are
+// hidden, this guards the window-event path.
 export async function launchFileBrowser(config: ConnectionConfig, opts: LaunchOptions = {}) {
+  if (fileTransferDisabled(config)) return
   const persist = opts.persist ?? true
   if (persist) persistConnection(config)
   await runSpec('sftp', config, SPECS.sftp, opts)
@@ -211,6 +214,7 @@ const SPECS: Record<string, ConnectSpec> = {
   redis: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
   mongodb: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
   elasticsearch: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
+  opensearch: { panelType: 'database', initSession: true, title: dbTitle, onError: dbOnError },
   k8s: {
     componentSession: true,
     needsCredentials: false,

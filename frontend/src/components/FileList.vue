@@ -269,11 +269,7 @@
         <MenuItem @click="emit('up')">{{ t('sftp.goUp') }}</MenuItem>
         <MenuDivider />
       </template>
-      <MenuItem v-if="!flatToolbar" @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
-      <MenuItem v-if="!flatToolbar" @click="doMkdir">{{ t('sftp.newDirectory') }}</MenuItem>
-      <MenuItem v-if="supportsSymlink" @click="doSymlink">{{ t('sftp.newLink') }}</MenuItem>
-      <MenuDivider />
-      <!-- 新建 actions collapsed into a submenu, same as the context menu. -->
+      <!-- 新建 actions live only in the submenu (same as the context menu) -->
       <MenuSubmenu :label="t('sftp.newMenu')">
         <MenuItem @click="doNewFile">{{ t('sftp.newFile') }}</MenuItem>
         <MenuItem @click="doMkdir">{{ t('sftp.newDirectory') }}</MenuItem>
@@ -1188,7 +1184,7 @@ function applyBandSelection() {
   display: flex;
   align-items: center;
   gap: 0.125rem;
-  padding: 0.375rem 0.625rem;
+  padding: 0.375rem 0.375rem;
   border-bottom: 1px solid var(--border-subtle);
 }
 .filter-bar .el-input {
@@ -1248,7 +1244,7 @@ function applyBandSelection() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.375rem 0.75rem;
+  padding: 0.375rem 0.375rem;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 0.75rem;
 }
@@ -1260,7 +1256,7 @@ function applyBandSelection() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.375rem 0.75rem;
+  padding: 0.375rem 0.375rem;
   border-top: 1px solid var(--border-subtle);
   font-size: 0.75rem;
   color: var(--text-secondary);

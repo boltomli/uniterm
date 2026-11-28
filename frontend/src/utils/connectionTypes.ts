@@ -14,7 +14,7 @@ import {
   Activity, AppWindow, ArrowLeftRight, Box, Boxes, Cable, Cloud, Database, DatabaseSearch,
   DatabaseZap, FileBox, FileUp, Folder, FolderOpen, FolderUp, Folders, Globe, HardDrive, Laptop,
   LaptopMinimal, LayoutDashboard, Layers, Monitor, MonitorCloud, MonitorSmartphone,
-  MoreHorizontal, Settings, ShipWheel, SquarePlus, SquareTerminal, Terminal, Zap,
+  MoreHorizontal, Settings, ShipWheel, SquarePlus, SquareTerminal, Terminal, Wrench, Zap,
 } from '@lucide/vue'
 
 export type ConnectionCategory = 'terminal' | 'filetransfer' | 'remote' | 'sql' | 'nosql' | 'container' | 'other'
@@ -42,6 +42,9 @@ export interface ConnectionTypeInfo {
   // that is never persisted as a connection (wsl-file, k8s-exec,
   // container-exec). Icons and labels still resolve from the registry.
   formHidden?: boolean
+  // Always visible in the new-connection form's collapsed single row (SQL
+  // family only). Unpinned SQL types live behind the row's expand toggle.
+  formPinned?: boolean
 }
 
 export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
@@ -74,16 +77,37 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   { type: 'spice', label: 'SPICE', icon: MonitorCloud, category: 'remote', defaultPort: 5900, connectMenuKey: 'sidebar.connectSPICE' },
   { type: 'x11-desktop', label: 'X11 Desktop', icon: AppWindow, category: 'remote', defaultPort: 22, connectMenuKey: 'sidebar.connectX11Desktop' },
   // SQL family: shared 'database' type with a dbType discriminator
-  { type: 'database', dbType: 'mysql', label: 'MySQL', icon: Database, category: 'sql', defaultPort: 3306, connectMenuKey: 'db.connectDB' },
-  { type: 'database', dbType: 'postgres', label: 'PostgreSQL', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
-  { type: 'database', dbType: 'oracle', label: 'Oracle', icon: Database, category: 'sql', defaultPort: 1521, connectMenuKey: 'db.connectDB' },
-  { type: 'database', dbType: 'sqlserver', label: 'SQL Server', icon: Database, category: 'sql', defaultPort: 1433, connectMenuKey: 'db.connectDB' },
-  { type: 'database', dbType: 'sqlite', label: 'SQLite', icon: Database, category: 'sql', connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'mysql', label: 'MySQL', icon: Database, category: 'sql', defaultPort: 3306, connectMenuKey: 'db.connectDB', formPinned: true },
+  { type: 'database', dbType: 'postgres', label: 'PostgreSQL', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB', formPinned: true },
+  { type: 'database', dbType: 'oracle', label: 'Oracle', icon: Database, category: 'sql', defaultPort: 1521, connectMenuKey: 'db.connectDB', formPinned: true },
+  { type: 'database', dbType: 'sqlserver', label: 'SQL Server', icon: Database, category: 'sql', defaultPort: 1433, connectMenuKey: 'db.connectDB', formPinned: true },
+  { type: 'database', dbType: 'sqlite', label: 'SQLite', icon: Database, category: 'sql', connectMenuKey: 'db.connectDB', formPinned: true },
   { type: 'database', dbType: 'rqlite', label: 'rqlite', icon: Database, category: 'sql', defaultPort: 4001, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'dm', label: 'DM', labelKey: 'db.dm', icon: Database, category: 'sql', defaultPort: 5236, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'mariadb', label: 'MariaDB', icon: Database, category: 'sql', defaultPort: 3306, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'tidb', label: 'TiDB', icon: Database, category: 'sql', defaultPort: 4000, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'oceanbase', label: 'OceanBase', icon: Database, category: 'sql', defaultPort: 2881, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'doris', label: 'Doris', icon: Database, category: 'sql', defaultPort: 9030, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'starrocks', label: 'StarRocks', icon: Database, category: 'sql', defaultPort: 9030, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'gbase8a', label: 'GBase 8a', labelKey: 'db.gbase8a', icon: Database, category: 'sql', defaultPort: 5258, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'gbase8c', label: 'GBase 8c', labelKey: 'db.gbase8c', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'gbase8s', label: 'GBase 8s', labelKey: 'db.gbase8s', icon: Database, category: 'sql', defaultPort: 9088, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'greenplum', label: 'Greenplum', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'kingbase', label: 'KingbaseES', labelKey: 'db.kingbase', icon: Database, category: 'sql', defaultPort: 54321, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'opengauss', label: 'openGauss', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'cockroachdb', label: 'CockroachDB', icon: Database, category: 'sql', defaultPort: 26257, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'yugabytedb', label: 'YugabyteDB', icon: Database, category: 'sql', defaultPort: 5433, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'greatsql', label: 'GreatSQL', icon: Database, category: 'sql', defaultPort: 3306, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'goldendb', label: 'GoldenDB', labelKey: 'db.goldendb', icon: Database, category: 'sql', defaultPort: 3306, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'highgo', label: 'HighGo', labelKey: 'db.highgo', icon: Database, category: 'sql', defaultPort: 5866, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'vastbase', label: 'Vastbase', labelKey: 'db.vastbase', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'cloudberry', label: 'Cloudberry', icon: Database, category: 'sql', defaultPort: 5432, connectMenuKey: 'db.connectDB' },
+  { type: 'database', dbType: 'clickhouse', label: 'ClickHouse', icon: Database, category: 'sql', defaultPort: 9000, connectMenuKey: 'db.connectDB', formPinned: true },
   // NoSQL: standalone connection types
   { type: 'redis', label: 'Redis', icon: DatabaseZap, category: 'nosql', defaultPort: 6379, connectMenuKey: 'sidebar.connectRedis' },
   { type: 'mongodb', label: 'MongoDB', icon: Layers, category: 'nosql', defaultPort: 27017, connectMenuKey: 'sidebar.connectMongodb' },
   { type: 'elasticsearch', label: 'Elasticsearch', icon: DatabaseSearch, category: 'nosql', defaultPort: 9200, connectMenuKey: 'sidebar.connectElasticsearch' },
+  { type: 'opensearch', label: 'OpenSearch', icon: DatabaseSearch, category: 'nosql', defaultPort: 9200, connectMenuKey: 'sidebar.connectElasticsearch' },
   // Containers
   { type: 'k8s', label: 'Kubernetes', icon: ShipWheel, category: 'container', connectMenuKey: 'sidebar.connectK8s' },
   { type: 'container', containerRuntime: 'docker', label: 'Docker', icon: Boxes, category: 'container', connectMenuKey: 'sidebar.connectContainer' },
@@ -97,6 +121,7 @@ export const CONNECTION_TYPES: ConnectionTypeInfo[] = [
   { type: 'workspace', label: 'Workspace', icon: LayoutDashboard, category: 'other', formHidden: true, connectMenuKey: 'workspace.openSaved' },
   { type: 'settings', label: 'Settings', icon: Settings, category: 'other', formHidden: true },
   { type: 'netscan', label: 'Network Scan', icon: Activity, category: 'other', formHidden: true },
+  { type: 'tools', label: 'Tools', icon: Wrench, category: 'other', formHidden: true },
   { type: 'start', label: 'Start', icon: SquarePlus, category: 'other', formHidden: true },
 ]
 

@@ -27,7 +27,7 @@
             @click="$emit('update:modelValue', r.key)"
           >
             <span class="table-icon-spacer" />
-            <component :is="iconOf(r.icon)" class="table-icon" :size="'0.875rem'" />
+            <component :is="iconOf(r.icon)" class="table-icon" :size="lucideSize('0.875rem')" />
             <span class="table-name">{{ r.label }}</span>
           </div>
           <div v-if="group.resources.length === 0" class="empty-hint">

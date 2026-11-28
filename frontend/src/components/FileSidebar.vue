@@ -2,7 +2,10 @@
   <div
     class="companion-sidebar file-sidebar"
   >
-    <div v-if="!sessionId || connectError" class="companion-empty">
+    <div v-if="transferOff" class="companion-empty">
+      <span>{{ t('companion.transferDisabled') }}</span>
+    </div>
+    <div v-else-if="!sessionId || connectError" class="companion-empty">
       <span v-if="connecting">{{ t('companion.connecting') }}</span>
       <template v-else-if="connectError">
         <span>{{ connectError }}</span>
@@ -158,7 +161,7 @@ import { ElMessageBox } from 'element-plus'
 import { useI18n } from '../i18n'
 import { msg } from '../services/message'
 import { backendErrorText } from '../utils/backendError'
-import { fileTransferProto } from '../utils/fileTransferUtils'
+import { fileTransferProto, fileTransferDisabled } from '../utils/fileTransferUtils'
 import { useCompanionStore } from '../stores/companionStore'
 import { usePanelStore } from '../stores/panelStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -201,6 +204,14 @@ const scpSwitchHintVisible = computed(() => {
   const pid = companionStore.activeFilesPanelId
   const config = pid ? panelStore.getPanel(pid)?.config : undefined
   return !!config && config.type === 'ssh' && fileTransferProto(config) === 'sftp'
+})
+// File transfer explicitly disabled on the connection ('none', issue #1624):
+// the sidebar shows a static notice instead of ever creating a companion
+// session — no probing, no error chatter.
+const transferOff = computed(() => {
+  const pid = companionStore.activeFilesPanelId
+  const panel = pid ? panelStore.getPanel(pid) : undefined
+  return panel?.type === 'ssh' && fileTransferDisabled(panel.config)
 })
 // Transfer panel: default height (px), adjustable by dragging its top edge.
 const transferHeight = ref(130)
@@ -246,6 +257,7 @@ function scheduleRefresh(delay = 250) {
 async function ensureConnected() {
   const pid = companionStore.activeFilesPanelId
   if (!pid || !companionStore.filesVisible) return
+  if (transferOff.value) return
   connecting.value = true
   connectError.value = ''
   try {
@@ -575,11 +587,10 @@ function bindListeners() {
     if (payload.id !== sessionId.value) return
     const connMatch = payload.data.match(/\[Connection failed: ([^\]]+)\]/)
     if (connMatch) {
+      // Inline only (issue #1624): no global toasts — hosts without a file
+      // transfer service must not spam popups while the sidebar merely sits
+      // open; the empty state below surfaces the error when the user looks.
       connectError.value = connMatch[1]
-      msg.error(connMatch[1])
-      if (scpSwitchHintVisible.value) {
-        msg.warning(t('sftp.scpSwitchHint'))
-      }
       return
     }
   })
@@ -724,7 +735,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.625rem;
+  padding: 0.5rem 0.375rem;
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-primary);
@@ -866,7 +877,7 @@ onUnmounted(() => {
 }
 .file-footer {
   flex-shrink: 0;
-  padding: 0.25rem 0.625rem;
+  padding: 0.25rem 0.375rem;
   font-size: 0.6875rem;
   color: var(--text-muted);
   border-top: 1px solid var(--border-subtle);

@@ -8,6 +8,8 @@ import { Events } from '@wailsio/runtime'
 import { setLocale } from '../i18n'
 import { useAIConfigStore } from './aiConfigStore'
 import { useLocalStateStore } from './localStateStore'
+import { deferToIdle } from '../utils/deferToIdle'
+import { hasAndroidSystemBarBridge, setAndroidSystemBarBackground } from '../utils/androidSystemBars'
 
 // Module-level un-subscriber for the cross-window store:settings:changed listener.
 // Tracked at module scope so re-imports under HMR can detach the previous
@@ -43,6 +45,12 @@ export const useSettingsStore = defineStore('settings', () => {
     if (settings.value.theme === 'system') return systemPrefersDark.value ? 'dark' : 'light'
     // 'dark' and 'deep-blue' are both dark.
     return 'dark'
+  })
+  // The app theme choice with 'system' resolved but 'deep-blue' kept distinct —
+  // the terminal's follow-app mapping gives deep-blue its own navy palette.
+  const rawAppTheme = computed<'dark' | 'deep-blue' | 'light'>(() => {
+    if (settings.value.theme === 'system') return systemPrefersDark.value ? 'dark' : 'light'
+    return settings.value.theme
   })
 
   const activeModel = computed(() =>
@@ -117,6 +125,18 @@ export const useSettingsStore = defineStore('settings', () => {
       theme = prefersDark ? 'dark' : 'light'
     }
     document.documentElement.dataset.theme = theme
+    // On Android, paint the system-bar/cutout padding with the theme's
+    // chrome background so the bars around the app don't stay the hard-coded
+    // default color (issue #1599). Only the Android shell injects the JS
+    // bridge, so gate the (desktop: no-op) style read on it too — and never
+    // let the bar paint abort the rest of the theme switch (localStorage cache
+    // below drives the pre-paint script, issue #1135).
+    if (hasAndroidSystemBarBridge()) {
+      try {
+        const barBg = getComputedStyle(document.documentElement).getPropertyValue('--bg-titlebar').trim()
+        if (barBg) setAndroidSystemBarBackground(barBg)
+      } catch { /* bar paint is cosmetic; theme still applies */ }
+    }
     // Cache the resolved theme for the pre-paint script in index.html (issue
     // #1135): it applies this before the first paint so the window doesn't
     // flash the dark no-[data-theme] default while settings load.
@@ -170,11 +190,17 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     lastSavedAiJson = JSON.stringify(settings.value.ai)
     applyUiFontSize()
-    try {
-      availableShells.value = await GetAvailableShells()
-    } catch {
-      availableShells.value = []
-    }
+    // The shell probe enumerates installed shells (slow IPC: process
+    // spawning on the Go side) and is only needed by the settings UI and the
+    // "+" button — keep it off the startup critical path so first paint and
+    // the remaining init IPCs are not delayed behind it. Consumers read the
+    // reactive availableShells and already handle the empty (not-yet-loaded)
+    // state.
+    deferToIdle(() => {
+      GetAvailableShells()
+        .then((shells: string[]) => { availableShells.value = shells })
+        .catch(() => { availableShells.value = [] })
+    })
     // Push the persisted log directory override to the backend so
     // logs enabled before the user opens the settings tab already
     // respect it. Fire-and-forget; the backend has a safe empty fallback.
@@ -428,6 +454,7 @@ export const useSettingsStore = defineStore('settings', () => {
     refreshAvailableShells,
     theme,
     resolvedAppTheme,
+    rawAppTheme,
     language,
     terminal,
     ai,

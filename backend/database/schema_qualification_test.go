@@ -78,8 +78,8 @@ func TestSchemaPinnedMetadataProbes(t *testing.T) {
 	}
 	pgSrc := string(pg)
 	for _, needle := range []string{
-		"c.table_schema = $2",  // columns
-		"n.nspname = $2",       // PK + index probes
+		"c.table_schema = $2", // columns
+		"n.nspname = $2",      // PK + index probes
 		"GetTableSchemaRef(db *sql.DB, ref TableRef)",
 	} {
 		if !strings.Contains(pgSrc, needle) {
@@ -93,10 +93,10 @@ func TestSchemaPinnedMetadataProbes(t *testing.T) {
 	}
 	ssSrc := string(ss)
 	for _, needle := range []string{
-		"AND TABLE_SCHEMA = @p2",                       // columns
-		"tc.TABLE_SCHEMA = @p2 AND kcu.TABLE_SCHEMA",   // PK
-		"SCHEMA_NAME(t.schema_id) = @p2",               // indexes + constraint probes
-		"GetTableSchemaRef(db *sql.DB, ref TableRef)",  // ref entry point
+		"AND TABLE_SCHEMA = @p2",                      // columns
+		"tc.TABLE_SCHEMA = @p2 AND kcu.TABLE_SCHEMA",  // PK
+		"SCHEMA_NAME(t.schema_id) = @p2",              // indexes + constraint probes
+		"GetTableSchemaRef(db *sql.DB, ref TableRef)", // ref entry point
 	} {
 		if !strings.Contains(ssSrc, needle) {
 			t.Errorf("sqlserver metadata probes lost the schema pin: %s", needle)
@@ -105,19 +105,67 @@ func TestSchemaPinnedMetadataProbes(t *testing.T) {
 }
 
 // GetTables must publish the schema so the tree can disambiguate same-named
-// tables and the doc model can carry the choice back.
+// tables and the doc model can carry the choice back. The PostgreSQL listing
+// was factored out to the package-level pgListTables (shared with the other
+// pg-family providers), so follow that delegation when locating the body.
 func TestGetTablesPublishesSchema(t *testing.T) {
 	for _, f := range []string{"provider_postgres.go", "provider_sqlserver.go"} {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		fn := string(src)
-		fn = fn[strings.Index(fn, "func (p *"):]
-		idx := strings.Index(fn, "GetTables(db *sql.DB")
-		fn = fn[idx:strings.Index(fn[idx:], "\nfunc ")+idx]
-		if !strings.Contains(fn, "Schema:") {
-			t.Errorf("%s: GetTables does not fill TableInfo.Schema (DB-06/DB-07)", f)
+		text := string(src)
+		idx := strings.Index(text, "GetTables(db *sql.DB")
+		if idx < 0 {
+			t.Fatalf("%s: GetTables not found", f)
+		}
+		body := text[idx : strings.Index(text[idx:], "\nfunc ")+idx]
+		if strings.Contains(body, "Schema:") {
+			continue
+		}
+		// Not inline: the body may live in a helper GetTables delegates to.
+		// Follow one level (pgListTables) so the guard survives that refactor
+		// without weakening the assertion.
+		if h := delegatedHelper(body); h != "" && funcBodyHasSchema(text, h) {
+			continue
+		}
+		t.Errorf("%s: GetTables does not fill TableInfo.Schema (DB-06/DB-07)", f)
+	}
+}
+
+// delegatedHelper returns the name of the package-level function that the
+// GetTables body hands off to as a bare `return name(...)` — empty when
+// there is no such delegation.
+func delegatedHelper(body string) string {
+	i := strings.Index(body, "\n\treturn ")
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len("\n\treturn "):]
+	end := strings.Index(rest, "(")
+	if end <= 0 {
+		return ""
+	}
+	name := rest[:end]
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_') {
+			return ""
 		}
 	}
+	return name
+}
+
+// funcBodyHasSchema reports whether the top-level function `name(` in src
+// contains a `Schema:` field assignment.
+func funcBodyHasSchema(src, name string) bool {
+	i := strings.Index(src, "\nfunc "+name+"(")
+	if i < 0 {
+		return false
+	}
+	i++ // start at "func"
+	j := strings.Index(src[i:], "\nfunc ")
+	if j < 0 {
+		j = len(src) - i
+	}
+	return strings.Contains(src[i:i+j], "Schema:")
 }

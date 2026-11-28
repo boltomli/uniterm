@@ -12,7 +12,7 @@
   >
     <!-- Connecting state -->
     <div v-if="status === 'connecting'" class="rdp-overlay">
-      <el-icon class="is-loading" :size="'2rem'"><Loader /></el-icon>
+      <el-icon class="is-loading" :size="lucideSize('2rem')"><Loader /></el-icon>
       <p>{{ t('rdp.connecting', { host: config?.host || '...' }) }}</p>
     </div>
 
@@ -81,6 +81,7 @@
         <el-option v-for="q in RDP_QUALITY_OPTIONS" :key="q.value" :value="q.value" :label="t(q.label)" />
       </el-select>
       <span class="rdp-status-spacer" />
+      <RemoteDesktopKeysMenu :disabled="status !== 'connected'" @send="onSendKeys" @closed="focusDesktop" />
       <button class="rdp-fullscreen-btn" @click="toggleFullscreen">{{ t('remoteDesktop.fullscreen') }}</button>
     </div>
 
@@ -109,6 +110,15 @@
         >
           <el-option v-for="r in resolutionOptions" :key="r.value" :value="r.value" :label="r.label" />
         </el-select>
+      </template>
+      <template #keys>
+        <RemoteDesktopKeysMenu
+          compact
+          :disabled="status !== 'connected'"
+          :teleported="false"
+          @send="onSendKeys"
+          @closed="focusDesktop"
+        />
       </template>
       <!-- Keep the toolbar order identical to the status bar: resolution, zoom, quality. -->
       <template #after-zoom>
@@ -146,9 +156,11 @@
 </template>
 
 <script setup lang="ts">
+import { lucideSize } from '../utils/lucideSize'
 import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated, nextTick } from 'vue'
 import { Loader } from '@lucide/vue'
 import RemoteDesktopToolbar from './RemoteDesktopToolbar.vue'
+import RemoteDesktopKeysMenu from './RemoteDesktopKeysMenu.vue'
 import RemoteMobileControls from './RemoteMobileControls.vue'
 import { useI18n } from '../i18n'
 import type { ConnectionConfig } from '../types/session'
@@ -164,7 +176,7 @@ import { RdpClipboardSync, RdpInputQueue } from '../utils/rdpClipboard'
 import { RdpFileTransfer } from '../utils/rdpFileTransfer'
 import { adaptiveRdpSize, rdpPointerPosition } from '../utils/rdpGeometry'
 import type { RdpDesktopSize } from '../utils/rdpGeometry'
-import { DEFAULT_RDP_QUALITY, normalizeRdpQuality, rdpQualityProfile } from '../utils/rdpQuality'
+import { normalizeRdpQuality, qualityExtensions } from '../utils/rdpQuality'
 import type { RdpQuality } from '../utils/rdpQuality'
 import { RDP_RESOLUTION_PRESETS, resolutionSentinels, seedResolutionChoice } from '../utils/rdpResolutions'
 import type { RdpResolutionChoice } from '../utils/rdpResolutions'
@@ -173,7 +185,7 @@ import { rdpErrorHintKey } from '../utils/rdpErrorHint'
 import { adaptiveSizeRatio, zoomedCssSize } from '../utils/rdpZoom'
 import RemoteDesktopZoomSelect from './RemoteDesktopZoomSelect.vue'
 import { useRemoteDesktopPreferences } from '../composables/useRemoteDesktopPreferences'
-import { queueRemoteKeyboardChange, isRdpPasteKey, REMOTE_KEY_SCANCODES as KEY_SCANCODES } from '../utils/remoteKeyboard'
+import { queueRemoteKeyboardChange, isRdpPasteKey, REMOTE_KEY_COMBOS, REMOTE_KEY_SCANCODES as KEY_SCANCODES } from '../utils/remoteKeyboard'
 import type { NativeRdpKey } from '../utils/remoteKeyboard'
 import { charToScancode } from '../utils/remoteCharInput'
 import { resolveIdentityCredentials } from '../utils/identityCredentials'
@@ -484,12 +496,11 @@ async function startClient(proxyUrl: string, desktopSizeOverride?: RdpDesktopSiz
     builder.extension(new mod.Extension('autologon', !!password))
     // Low-bandwidth tiers negotiate a smaller connection_type and strip
     // server-side graphics features (wallpaper, theming, animations). The
-    // default tier equals the engine's built-in values, so it is not sent —
-    // connections keep their current behavior on older WASM builds too.
-    if (activeQuality.value !== DEFAULT_RDP_QUALITY) {
-      const profile = rdpQualityProfile(activeQuality.value)
-      builder.extension(new mod.Extension('connection_type', profile.connectionType))
-      builder.extension(new mod.Extension('performance_flags', profile.performanceFlags))
+    // selected tier is always sent, including the default `balanced`: the
+    // engine's built-in values are LAN/high, so omitting it would silently
+    // keep the server defaults instead of the tier shown in the UI.
+    for (const ext of qualityExtensions(activeQuality.value)) {
+      builder.extension(new mod.Extension(ext.name, ext.value))
     }
     sessionQuality.value = activeQuality.value
     sessionResolution.value = activeResolution.value
@@ -844,6 +855,28 @@ function queueKey(scancode: number, down: boolean, repeat: boolean, ctrl: boolea
     inputQueue.enqueue(() => syncLocalClipboardNow())
   }
   inputQueue.enqueue(() => sendScancode(scancode, down))
+}
+
+// Combos the local OS reserves before they can reach the webview
+// (Ctrl+Alt+Del, Win+L) plus a few conveniences, each sent as one
+// press-then-release scancode transaction — the same sequence mstsc sends.
+function sendCombo(scancodes: number[]) {
+  if (!session || !wasmModule) return
+  try {
+    const tx = new wasmModule.InputTransaction()
+    for (const code of scancodes) tx.addEvent(wasmModule.DeviceEvent.keyPressed(code))
+    for (const code of [...scancodes].reverse()) tx.addEvent(wasmModule.DeviceEvent.keyReleased(code))
+    session.applyInputs(tx)
+  } catch (err) {
+    rdpLog(`key combo send failed: ${String(err)}`)
+  }
+}
+
+function onSendKeys(id: string) {
+  const combo = REMOTE_KEY_COMBOS[id]
+  if (!combo || status.value !== 'connected') return
+  sendCombo(combo)
+  focusDesktop()
 }
 
 function ownsRemoteKeyboard(): boolean {
